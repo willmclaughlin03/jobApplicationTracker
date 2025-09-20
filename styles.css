@@ -1,0 +1,138 @@
+body{
+    background-color: whitesmoke;
+    font-family: Arial, Helvetica, sans-serif;
+    
+}
+
+#main-header{
+    text-align: center;
+    margin: 0;
+    padding-top: 20px;
+}
+
+#explanation-p{
+    text-align: center;
+    font-size: 18px;
+    font-weight: bold;
+    padding: 30px;
+    margin: 0;
+    
+}
+
+#explanation-list{
+
+    margin: 20px;
+    padding: 0;
+    text-align: center;
+}
+
+
+#list-detail{
+    list-style: none;
+    line-height: 26px;
+
+}
+
+#job-board{
+    margin: 60px;
+    margin-top: 20px;
+    display: grid;
+    gap: 10px;
+    grid-template-columns:  1fr;
+    border: 2px black solid;
+    border-style: line;
+    border-radius: 3px;
+    box-shadow: 0 3px #bbb;
+    padding: 15px;
+}
+
+#job-board input{
+    padding: none;
+    font-size: 16px;
+    min-width: 150px;
+}
+
+#job-board-save-button{
+    background-color: green;
+    border: none;
+    color: white;
+    padding: 8px 15px;
+    text-align: center;
+    text-decoration: none;
+    display: inline-flex;
+    font-size: 12px;
+    border-radius: 8px;
+    box-shadow: 0 3px #bbb;
+}
+
+#job-board-save-button:active{
+    box-shadow: 0 3px #bbb;
+    transform: translateY(3px)
+}
+
+#job-display-board-list{
+    list-style: none;
+    display: grid;
+    gap: 20px;
+    grid-template-columns: repeat(3, 1fr);
+    text-align: justify;
+    border: 2px black solid;
+    border-style: line;
+    border-radius: 3px;
+    box-shadow: 0 3px #bbb;
+    padding: 15px;
+
+}
+
+#job-div{
+    width: 100%;
+    white-space: normal;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    padding-top: 10px;
+    padding-bottom: 8px;
+    padding-right: 3px;
+}
+
+#filter-job{
+    text-align: center;
+    font-size: 16px;
+}
+
+.status-hired {background-color: #7FFFD4; color: black;}
+.status-waiting{background-color: #FFFFE0; color: black;}
+.status-denied { background-color: #DB7093; color: black; }
+.status-ghosted { background-color: gray; color: white; }
+
+
+
+
+/* contact me styling */
+
+#contact-list{
+    list-style: none;
+    text-align: center;
+}
+
+#contact-link{
+    font-size: 16px;
+}
+
+#contact-me-div{
+    text-align: center;
+}
+
+#contact-list{
+    list-style: none;
+    font-size: 18px;
+    line-height: 2em;
+    margin: 0;
+    padding: 0;
+}
+
+#contact-header{
+    text-align: center;
+    display: block;
+    margin: 35px;
+    padding: 0;
+}
