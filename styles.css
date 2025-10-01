@@ -81,7 +81,7 @@ body{
     gap: 20px;
     grid-template-columns: repeat(3, 1fr);
     text-align: justify;
-    border: 2px whitesmoke;
+    border: 3px whitesmoke solid;
     border-style: line;
     border-radius: 3px;
     box-shadow: 0 3px #bbb;
@@ -131,7 +131,7 @@ body{
 #contact-me-div{
     display: inline-block;
     text-align: center;
-    border: 2px black solid;
+    border: 2px solid whitesmoke;
     border-style: line;
     border-radius: 6px;
     padding: 8px 12px;
