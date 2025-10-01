@@ -1,14 +1,3 @@
-
-// Things needed in js to process the addition and display of job:
-
-// Job input needs to be collected
-// job input needs to be saved in local storage
-// job input needs to be displayed
-
-// job input needs to be able to be edited AFTER it is displayed
-// job input needs to be saved again in local storage
-// job input needs to be displayed
-
 let editIndex = null;
 
 
