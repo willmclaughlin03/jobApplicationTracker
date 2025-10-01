@@ -35,7 +35,7 @@
     </select>
     <label for="notes">Notes:</label>
     <input id = "notes" name ="notes" type="text">
-    <button id = "job-board-save-button" onclick="displayJobInfo()" type ="button">Submit</button>
+    <button id = "job-board-save-button" onclick="renderJobs()" type ="button">Submit</button>
   </div>
 
   <div id = "job-display-board">
@@ -47,20 +47,10 @@
 
   <div id = "filter-job">
   <input type = "text" placeholder = "Filter Job Entries.." id = "filter">
-  <select id ="status-search" class = "status-search">
-      <option value = "none">Select:</option>
-      <option value = "waiting">Waiting</option>
-      <option value = "hired">Hired</option>
-      <option value ="denied">Denied</option>
-      <option value = "ghosted">Ghosted</option>
-    </select>
-  <button type = "button" onclick="displayFilterResults()">Filter</button>
+  <button type = "button" onclick="filterJobs()">Filter</button>
+  <button type = "button" onclick="renderJobs()">Reset</button>
   </div>
 
-  <div id = "filter-display-board">
-  <ul id = "filter-display-board-list">
-    <div id ="filter-div"></div>
-  </ul>
   <script src="job-application-script.js"></script>
 </body>
 <footer idb = 'footer'>

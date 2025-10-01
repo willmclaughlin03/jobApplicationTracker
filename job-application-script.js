@@ -12,18 +12,12 @@
 let editIndex = null;
 
 
-function displayJobInfo(){
-    document.getElementById("job-board-save-button").addEventListener("click", afterPressDiplayJobs);
+function renderJobs(filteredJobs){
 
-}
-
-function displayFilterResults(){
-    document.getElementById("filter").addEventListener("click", filterJobs)
-}
-
-function renderJobs(){
     // rebuilds the pages
-    let jobArray = JSON.parse(localStorage.getItem("jobArray")) || [];
+    
+    let jobArray = filteredJobs || JSON.parse(localStorage.getItem("jobArray")) || [];
+
     const addToBoard = document.getElementById("job-display-board-list");
     addToBoard.innerHTML = "";
 
@@ -35,8 +29,12 @@ function renderJobs(){
         <div id = "job-div">${job.company} - ${job.position} (${job.status}) (${job.notes})</div>
         <button data-index="${index}" class="editBtn">Edit</button>
         <button data-index="${index}" class="deleteBtn">Delete</button>`;
+
+
         liJob.classList.add('status-' + job.status);
         addToBoard.appendChild(liJob);
+
+
         // loads and handles edit values and btn
         liJob.querySelector(".editBtn").addEventListener("click", () => {
         document.getElementById("company").value = job.company;
@@ -57,16 +55,16 @@ function renderJobs(){
             renderJobs();
         });
     });
-}
 
+}
 
 
 function afterPressDiplayJobs(){
     // recieves the input
-    const company = document.getElementById("company").value
-    const position = document.getElementById("position").value
-    const status = document.getElementById("status").value
-    const notes = document.getElementById("notes").value
+    const company = document.getElementById("company").value.trim()
+    const position = document.getElementById("position").value.trim()
+    const status = document.getElementById("status").value.trim()
+    const notes = document.getElementById("notes").value.trim()
 
     if(!company || !position){
         alert("Please fill out both the company and position fields");
@@ -93,36 +91,23 @@ function afterPressDiplayJobs(){
 
 
 function filterJobs(){
-    let filterEntry = document.getElementById("filter").value.toLowerCase();
-    let filterSelect = document.getElementById("status-search").value;
-    let jobArray = JSON.parse(localStorage.getItem("jobArray")) || [];
+    let filterEntry = document.getElementById("filter").value.trim().toLowerCase();
 
+     let jobArray = JSON.parse(localStorage.getItem("jobArray")) || [];
+    
     let filteredJobs = jobArray.filter(job => {
-        let matchEntry = filterEntry === "" ||
-        job.company.toLowerCase().includes(filterEntry) ||
-        job.position.toLowerCase().includes(filterEntry);
+        return job.company.toLowerCase().includes(filterEntry) || job.position.toLowerCase().includes(filterEntry);
+    });
+    
 
-        let matchStatus = filterSelect === "none" || job.status === filterSelect;
-        return matchEntry && matchStatus;
-    
-    })
-    
-    // if(filterEntry !== ""){
-    //     filteredJobs = jobArray.filter(job =>
-    //         job.company.includes(filterEntry) || job.position.includes(filterEntry));
-    //         renderJobs(filteredJobs);
-    // }
-    // if(filterSelect !== "none"){
-    //     filteredJobs = jobArray.filter(job =>
-    //         job.status === filterSelect
-    //     );
-    //     renderJobs(filteredJobs);
-    // }
     if(filteredJobs.length === 0){
         alert("No Results found");
-        // renderJobs();
-    }
+        renderJobs();
+    }else{
     renderJobs(filteredJobs);
 }
+}
+
+
 
 renderJobs();
