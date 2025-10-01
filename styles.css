@@ -1,13 +1,14 @@
 body{
-    background-color: whitesmoke;
-    font-family: Arial, Helvetica, sans-serif;
-    
+    background-image: url(images/Black-Abstract-HD-Wallpaper.jpg);
+    color: whitesmoke;
+    font-family: 'Times New Roman', Times, serif;
 }
 
 #main-header{
     text-align: center;
     margin: 0;
     padding-top: 20px;
+    color: white;
 }
 
 #explanation-p{
@@ -43,7 +44,7 @@ body{
     display: grid;
     gap: 10px;
     grid-template-columns:  1fr;
-    border: 2px black solid;
+    border: 2px whitesmoke solid;
     border-style: line;
     border-radius: 3px;
     box-shadow: 0 3px #bbb;
@@ -80,7 +81,7 @@ body{
     gap: 20px;
     grid-template-columns: repeat(3, 1fr);
     text-align: justify;
-    border: 2px black solid;
+    border: 2px whitesmoke;
     border-style: line;
     border-radius: 3px;
     box-shadow: 0 3px #bbb;
