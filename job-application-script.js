@@ -3,6 +3,11 @@ let editIndex = null;
 
 function renderJobs(filteredJobs){
 
+    // modal
+    const modal = document.getElementById("editModal");
+    const closeModal = document.getElementById("closeModal");
+    const saveBtn = document.getElementById("saveEditBtn")
+
     // rebuilds the pages
     
     let jobArray = filteredJobs || JSON.parse(localStorage.getItem("jobArray")) || [];
@@ -26,24 +31,52 @@ function renderJobs(filteredJobs){
 
         // loads and handles edit values and btn
         liJob.querySelector(".editBtn").addEventListener("click", () => {
-        document.getElementById("company").value = job.company;
-        document.getElementById("position").value = job.position;
-        document.getElementById("status").value = job.status;
-        document.getElementById("notes").value = job.notes;
+        document.getElementById("editCompany").value = job.company;
+        document.getElementById("editPosition").value = job.position;
+        document.getElementById("editStatus").value = job.status;
+        document.getElementById("editNotes").value = job.notes;
         editIndex = index;
-
+        
+        modal.classList.add("show");
     });
+    saveBtn.addEventListener("click", () => {
+    jobArray[editIndex].company = document.getElementById("editCompany").value;
+    jobArray[editIndex].position = document.getElementById("editPosition").value;
+    jobArray[editIndex].status = document.getElementById("editStatus").value;
+    jobArray[editIndex].notes = document.getElementById("editNotes").value
+
+    localStorage.setItem("jobArray", JSON.stringify(jobArray));
+    modal.classList.remove("show");
+
+    renderJobs();
+    })
+
+
+
+    closeModal.addEventListener("click", () =>{
+        modal.classList.remove("show");
+    })
+
+
+
     liJob.querySelector(".deleteBtn").addEventListener("click", () => {
             let jobArray = JSON.parse(localStorage.getItem("jobArray")) || [];
 
+            let userResponse = confirm("Are you sure you want to delete this?");
+
+            if(userResponse === true){
             // deletes one item at that index
             jobArray.splice(index, 1); 
 
             localStorage.setItem("jobArray", JSON.stringify(jobArray));
 
             renderJobs();
+            }else{
+                return;
+            }
         });
     });
+
 
 }
 
@@ -96,6 +129,15 @@ function filterJobs(){
     renderJobs(filteredJobs);
 }
 }
+
+function clearAll(){
+    document.getElementById("company").value = '';
+    document.getElementById("position").value = '';
+    document.getElementById("status").value = 'none';
+    document.getElementById("notes").value = '';
+}
+
+
 
 
 

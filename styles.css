@@ -105,11 +105,63 @@ body{
 }
 
 .status-hired {background-color: #7FFFD4; color: black;}
-.status-waiting{background-color: #FFFFE0; color: black;}
+.status-waiting{background-color: #ffff00; color: black;}
 .status-denied { background-color: #DB7093; color: black; }
 .status-ghosted { background-color: gray; color: white; }
+.status-archived{background-color: #fffacd; color: black}
 
 
+/* edit modal styling */
+
+#editModal{
+    display:none;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: 0; 
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.4);
+    color: black;
+    z-index: 1000;
+}
+
+#editModal.show{
+    display: flex;
+}
+
+
+#modal-content{
+    background: #C0C0C0;
+    padding: 20px 25px;
+    border-radius:8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    width: 100%;
+    max-width: 500px; 
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+#closeModal {
+    align-self: flex-end;
+    font-size: 22px;
+    font-weight: bold;
+    color: black;
+    cursor: pointer;
+    margin-bottom: 10px;
+}
+
+#saveEditBtn{
+    background-color: green;
+    color: white
+}
+
+#saveEditBtn:active{
+    box-shadow: 0 3px #bbb;
+    transform: translateY(3px)
+}
 
 
 /* contact me styling */
@@ -153,3 +205,5 @@ body{
     margin: 35px;
     padding: 0;
 }
+
+

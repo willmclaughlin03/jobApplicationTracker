@@ -32,11 +32,36 @@
       <option value = "hired">Hired</option>
       <option value ="denied">Denied</option>
       <option value = "ghosted">Ghosted</option>
+      <option value ="archived">Archived</option>
     </select>
     <label for="notes">Notes:</label>
     <input id = "notes" name ="notes" type="text">
-    <button id = "job-board-save-button" onclick="afterPressDiplayJobs()" type ="button">Submit</button>
+    <button id = "job-board-save-button" onclick="afterPressDiplayJobs(); clearAll()" type ="button">Submit</button>
   </div>
+
+  <div id="editModal" class="modal-hidden">
+  <div id="modal-content">
+    <span id="closeModal">&times;</span>
+    <h2>Edit Job</h2>
+    <label for="company">Company Name:</label>
+    <input id = "editCompany"  type="text">
+    <label for="position">Position Name:</label>
+    <input id = "editPosition" type="text">
+    <label for="status">Select an option:</label>
+    <select id ="editStatus" class = "status">
+      <option value = "none">Select:</option>
+      <option value = "waiting">Waiting</option>
+      <option value = "hired">Hired</option>
+      <option value ="denied">Denied</option>
+      <option value = "ghosted">Ghosted</option>
+      <option value ="archived">Archived</option>
+    </select>
+    <label for="notes">Notes:</label>
+    <input id = "editNotes" name ="notes" type="text">
+    <button id="saveEditBtn">Save</button>
+  </div>
+  </div>
+
 
   <div id = "job-display-board">
   <ul id = "job-display-board-list">
@@ -48,7 +73,7 @@
   <div id = "filter-job">
   <input type = "text" placeholder = "Filter Job Entries.." id = "filter">
   <button type = "button" onclick="filterJobs()">Filter</button>
-  <button type = "button" onclick="renderJobs()">Reset</button>
+  <button type = "button" onclick="renderJobs(); document.getElementById('filter').value = ''" id = "resetBtn">Reset</button>
   </div>
 
   <script src="job-application-script.js"></script>
