@@ -1,4 +1,5 @@
 let editIndex = null;
+let jobArray = [];
 
 function renderJobs(filteredJobs){
 
@@ -13,20 +14,25 @@ function renderJobs(filteredJobs){
 
     let displayNewJobs = filteredJobs || jobArray
 
-    const addToBoard = document.getElementById("job-display-board-list");
+    const addToBoard = document.getElementById("job-table-body");
     addToBoard.innerHTML = "";
 
     displayNewJobs.forEach((job, index) => {
 
         // this part of loop handles the rendering of jobs/ creation
-        const liJob = document.createElement("li");
+        const liJob = document.createElement("tr");
+        liJob.classList.add('status-' + job.status)
         liJob.innerHTML =  `
-        <div id = "job-div">${job.company} - ${job.position} (${job.status}) (${job.notes})</div>
-        <button data-index="${index}" class="editBtn">Edit</button>
-        <button data-index="${index}" class="deleteBtn">Delete</button>`;
+        <td>${job.company}</td>
+        <td>${job.position}</td>
+        <td>${job.status}</td>
+        <td>${job.notes}</td>
+        <td class="action-buttons">
+            <button class="editBtn" data-index="${index}">Edit</button>
+            <button class="deleteBtn" data-index="${index}">Delete</button>
+        </td>`;
 
 
-        liJob.classList.add('status-' + job.status);
         addToBoard.appendChild(liJob);
 
 

@@ -98,28 +98,34 @@ body{
     transform: translateY(3px)
 }
 
-#job-display-board-list{
-    list-style: none;
-    display: grid;
-    gap: 5px;
-    grid-template-columns: repeat(3, 1fr);
-    text-align: justify;
-    border: 3px whitesmoke solid;
-    border-style: line;
-    border-radius: 3px;
-    box-shadow: 0 3px #bbb;
-    padding: 15px;
-
+#job-table-container{
+    margin: 20px 60px;
+    overflow-x: auto;
 }
 
-#job-div{
+#job-table{
     width: 100%;
-    white-space: normal;
-    overflow-wrap: break-word;
-    word-break: break-word;
-    padding-top: 10px;
-    padding-bottom: 8px;
-    padding-right: 3px;
+    border-collapse: collapse;
+    border: 3px whitesmoke solid;
+    box-shadow: 0 3px #bbb;
+}
+
+#job-table th{
+    background-color: #333;
+    color: white;
+    padding: 12px;
+    text-align: left;
+    border: 1px solid whitesmoke;
+    font-weight: bold;
+}
+
+#job-table td{
+    padding: 10px;
+    border: 1px solid black;
+}
+
+#job-table tbody tr:hover{
+    opacity: 0.9;
 }
 
 #filter-job{
@@ -132,6 +138,27 @@ body{
 .status-denied { background-color: #DB7093; color: black; }
 .status-ghosted { background-color: gray; color: white; }
 .status-archived{background-color: #fffacd; color: black}
+
+.editBtn{
+    background: #87cefa;
+    border-radius: 3px;
+}
+
+.editBtn:active{
+    box-shadow: 0 3px #bbb;
+    transform: translateY(3px)
+}
+
+.deleteBtn{
+    background-color: #c40233 ;
+    color: white;
+    border-radius: 3px;
+}
+
+.deleteBtn:active{
+    box-shadow: 0 3px #bbb;
+    transform: translateY(3px)
+}
 
 
 /* edit modal styling */
