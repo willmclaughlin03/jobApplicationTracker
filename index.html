@@ -16,18 +16,18 @@
     <ul id = "list-detail">
         <li>Add applications with details</li>
         <li>Edit status of applications</li>
-        <li>Filter by status or company name</li>
+        <li>Filter by status, position, or company name</li>
     </ul>
   </div>
 
   <div id="job-board">
-    <label for="company">Company Name:</label>
+    <label for="company">*Company Name:</label>
     <input id = "company"  type="text">
-    <label for="position">Position Name:</label>
+    <label for="position">*Position Name:</label>
     <input id = "position" type="text">
-    <label for="status">Select an option:</label>
+    <label for="status">Status:</label>
     <select id ="status" class = "status">
-      <option value = "none">Select:</option>
+      <option value = "">Select:</option>
       <option value = "waiting">Waiting</option>
       <option value = "hired">Hired</option>
       <option value ="denied">Denied</option>
@@ -36,7 +36,10 @@
     </select>
     <label for="notes">Notes:</label>
     <input id = "notes" name ="notes" type="text">
+    <div id = "buttons">
     <button id = "job-board-save-button" onclick="afterPressDiplayJobs(); clearAll()" type ="button">Submit</button>
+    <button id = "clearInput" onclick="clearAll()" type = "button">Clear Input</button>
+    </div>
   </div>
 
   <div id="editModal" class="modal-hidden">
@@ -73,7 +76,7 @@
   <div id = "filter-job">
   <input type = "text" placeholder = "Filter Job Entries.." id = "filter">
   <button type = "button" onclick="filterJobs()">Filter</button>
-  <button type = "button" onclick="renderJobs(); document.getElementById('filter').value = ''" id = "resetBtn">Reset</button>
+  <button type = "button" onclick="renderJobs(); clearReset()" id = "resetBtn">Reset</button>
   </div>
 
   <script src="job-application-script.js"></script>

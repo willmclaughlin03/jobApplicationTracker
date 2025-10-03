@@ -1,21 +1,22 @@
 let editIndex = null;
 
-
 function renderJobs(filteredJobs){
 
-    // modal
+    // // modal
     const modal = document.getElementById("editModal");
     const closeModal = document.getElementById("closeModal");
     const saveBtn = document.getElementById("saveEditBtn")
 
     // rebuilds the pages
     
-    let jobArray = filteredJobs || JSON.parse(localStorage.getItem("jobArray")) || [];
+    let jobArray = JSON.parse(localStorage.getItem("jobArray")) || [];
+
+    let displayNewJobs = filteredJobs || jobArray
 
     const addToBoard = document.getElementById("job-display-board-list");
     addToBoard.innerHTML = "";
 
-    jobArray.forEach((job, index) => {
+    displayNewJobs.forEach((job, index) => {
 
         // this part of loop handles the rendering of jobs/ creation
         const liJob = document.createElement("li");
@@ -35,49 +36,67 @@ function renderJobs(filteredJobs){
         document.getElementById("editPosition").value = job.position;
         document.getElementById("editStatus").value = job.status;
         document.getElementById("editNotes").value = job.notes;
-        editIndex = index;
+
+        // responsible for full array index, not just filtered
+        editIndex = jobArray.findIndex(j =>
+            j.company === job.company &&
+            j.position === job.position &&
+            j.status === job.status &&
+            j.notes === job.notes
+        );
         
         modal.classList.add("show");
     });
-    saveBtn.addEventListener("click", () => {
-    jobArray[editIndex].company = document.getElementById("editCompany").value;
-    jobArray[editIndex].position = document.getElementById("editPosition").value;
-    jobArray[editIndex].status = document.getElementById("editStatus").value;
-    jobArray[editIndex].notes = document.getElementById("editNotes").value
-
-    localStorage.setItem("jobArray", JSON.stringify(jobArray));
-    modal.classList.remove("show");
-
-    renderJobs();
-    })
-
-
-
-    closeModal.addEventListener("click", () =>{
-        modal.classList.remove("show");
-    })
-
-
 
     liJob.querySelector(".deleteBtn").addEventListener("click", () => {
-            let jobArray = JSON.parse(localStorage.getItem("jobArray")) || [];
 
             let userResponse = confirm("Are you sure you want to delete this?");
 
             if(userResponse === true){
-            // deletes one item at that index
-            jobArray.splice(index, 1); 
+            // Find the correct index in the full array
+            let deleteIndex = jobArray.findIndex(j =>
+                j.company === job.company &&
+                j.position === job.position &&
+                j.status === job.status &&
+                j.notes === job.notes
+            );
+            
+            jobArray.splice(deleteIndex, 1); 
 
             localStorage.setItem("jobArray", JSON.stringify(jobArray));
 
             renderJobs();
-            }else{
-                return;
             }
         });
     });
+}
 
+// Fix to not being able to reset after saving modal edit
+function setupModalListeners(){
+    const modal = document.getElementById("editModal");
+    const closeModal = document.getElementById("closeModal");
+    const saveBtn = document.getElementById("saveEditBtn");
 
+    saveBtn.addEventListener("click", () => {
+        if(editIndex !== null){
+            let jobArray = JSON.parse(localStorage.getItem("jobArray")) || [];
+            
+            jobArray[editIndex].company = document.getElementById("editCompany").value;
+            jobArray[editIndex].position = document.getElementById("editPosition").value;
+            jobArray[editIndex].status = document.getElementById("editStatus").value;
+            jobArray[editIndex].notes = document.getElementById("editNotes").value;
+
+            localStorage.setItem("jobArray", JSON.stringify(jobArray));
+            modal.classList.remove("show");
+
+            renderJobs();
+            editIndex = null;
+        }
+    });
+
+    closeModal.addEventListener("click", () =>{
+        modal.classList.remove("show");
+    });
 }
 
 
@@ -93,11 +112,7 @@ function afterPressDiplayJobs(){
         return;
     }
 
-
-
     let jobArray = JSON.parse(localStorage.getItem("jobArray")) || [];
-
-
 
     if(editIndex !== null){
         jobArray[editIndex] = { company, position, status, notes};
@@ -118,7 +133,7 @@ function filterJobs(){
      let jobArray = JSON.parse(localStorage.getItem("jobArray")) || [];
     
     let filteredJobs = jobArray.filter(job => {
-        return job.company.toLowerCase().includes(filterEntry) || job.position.toLowerCase().includes(filterEntry);
+        return job.company.toLowerCase().includes(filterEntry) || job.position.toLowerCase().includes(filterEntry) || job.status.toLowerCase().includes(filterEntry);
     });
     
 
@@ -126,20 +141,22 @@ function filterJobs(){
         alert("No Results found");
         renderJobs();
     }else{
-    renderJobs(filteredJobs);
-}
+        renderJobs(filteredJobs);
+    }
 }
 
 function clearAll(){
     document.getElementById("company").value = '';
     document.getElementById("position").value = '';
-    document.getElementById("status").value = 'none';
+    document.getElementById("status").value = '';
     document.getElementById("notes").value = '';
+}
+
+function clearReset(){
+    document.getElementById("filter").value = '';
 }
 
 
 
-
-
+setupModalListeners();
 renderJobs();
-
