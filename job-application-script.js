@@ -15,6 +15,9 @@ function renderJobs(filteredJobs){
     let displayNewJobs = filteredJobs || jobArray
 
     const addToBoard = document.getElementById("job-table-body");
+
+
+
     addToBoard.innerHTML = "";
 
     displayNewJobs.forEach((job, index) => {
@@ -161,6 +164,8 @@ function clearAll(){
 function clearReset(){
     document.getElementById("filter").value = '';
 }
+
+
 
 
 

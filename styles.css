@@ -133,6 +133,10 @@ body{
     font-size: 16px;
 }
 
+#filter{
+    width: 28%;
+}
+
 .status-hired {background-color: #7FFFD4; color: black;}
 .status-waiting{background-color: #ffff00; color: black;}
 .status-denied { background-color: #DB7093; color: black; }
