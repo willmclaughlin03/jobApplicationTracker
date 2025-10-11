@@ -165,7 +165,29 @@ function clearReset(){
     document.getElementById("filter").value = '';
 }
 
+function submitContactMe(){
+    const submissionEmail = document.getElementById("messageContact").value.trim();
+    const submissionName = document.getElementById("messageName").value.trim();
+    const submissionNote = document.getElementById("messageNote").value.trim();
 
+    if(!submissionEmail || !submissionName){
+        alert("Please submit your email and name!");
+        return;
+    }
+
+    localStorage.setItem("submissionEmail", JSON.stringify(submissionEmail));
+    localStorage.setItem("submissionName", JSON.stringify(submissionName));
+    
+    if(submissionNote){
+        localStorage.setItem("submissionNote", JSON.stringify(submissionNote));
+    }
+
+    alert("Thank you for your submission");
+
+    document.getElementById("messageContact").value = "";
+    document.getElementById("messageName").value = "";
+    document.getElementById("messageNote").value = "";
+}
 
 
 
