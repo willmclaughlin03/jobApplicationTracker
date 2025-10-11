@@ -189,7 +189,20 @@ function submitContactMe(){
     document.getElementById("messageNote").value = "";
 }
 
+function getName(){
+    const storedName = localStorage.getItem("submissionName");
+    const mainHeader = document.getElementById("main-header");
+
+    if(storedName){
+        const displayName =  JSON.parse(storedName);
+        mainHeader.innerText = `Welcome ${displayName}!`;
+    }
+
+
+}
+
 
 
 setupModalListeners();
 renderJobs();
+getName();
