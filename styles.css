@@ -297,12 +297,6 @@ body{
 
 
 
-#footer {
-  max-width: 400px;      /* same width as advice box */
-  width: 100%;
-  margin: 5px auto 20px auto; /* small gap above, 20px below */
-  text-align: center;    /* center the content */
-}
 
 /* advice */
 
