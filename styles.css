@@ -297,7 +297,43 @@ body{
 
 
 
-#contact-me-div li {
-    text-align: center;
-    list-style: none;
+#footer {
+  max-width: 400px;      /* same width as advice box */
+  width: 100%;
+  margin: 5px auto 20px auto; /* small gap above, 20px below */
+  text-align: center;    /* center the content */
+}
+
+/* advice */
+
+#advice-div {
+  max-width: 400px;
+  margin: 10px auto 20px auto;
+  text-align: center;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+  padding: 15px;
+}
+
+#advice-p{
+  color: whitesmoke;
+  margin: 0;
+}
+
+#advice-btn {
+  margin-top: 10px;
+  background: #007bff;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 0.5em 1em;
+  cursor: pointer;
+}
+
+#advice-btn:hover {
+  background: #0056b3;
+}
+
+#advice-btn:active{
+    box-shadow: 0 3px #bbb;
+    transform: translateY(3px)
 }

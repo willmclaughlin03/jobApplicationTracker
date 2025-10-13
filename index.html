@@ -20,6 +20,8 @@
     </ul>
   </div>
 
+  <div id = "input-advice-container">
+
   <div id="job-board">
     <label for="company">*Company Name:</label>
     <input id = "company"  type="text">
@@ -42,6 +44,8 @@
     </div>
   </div>
 
+
+</div>
   <div id="editModal" class="modal-hidden">
   <div id="modal-content">
     <span id="closeModal">&times;</span>
@@ -81,6 +85,7 @@
       </tbody>
     </table>
   </div>
+  <div id = "pagination-container"></div>
 
   <div id="demo"></div>
 
@@ -90,11 +95,16 @@
   <button type = "button" onclick="renderJobs(); clearReset()" id = "resetBtn">Reset</button>
   </div>
 
+  <div id = "advice-div">
+    <p id = "advice-p">Click for some random advice</p>
+    <button id="advice-btn" onclick="getAdvice()">Advice</button>
+  </div>
+
   <script src="job-application-script.js"></script>
 </body>
 <footer id = 'footer'>
   <ul>
-    <li id = "contact-list"><a id = "contact-link" href ="contact-me.html" target="_blank" style="color:whitesmoke">Contact Me</a></li>
+    <p id = "contact-list"><a id = "contact-link" href ="contact-me.html" target="_blank" style="color:whitesmoke">Contact Me</a></p>
   </ul>
 </footer>
 </html>

@@ -1,6 +1,7 @@
 let editIndex = null;
 let jobArray = [];
 
+
 function renderJobs(filteredJobs){
 
     // // modal
@@ -198,6 +199,20 @@ function getName(){
         mainHeader.innerText = `Welcome ${displayName}!`;
     }
 
+
+}
+
+async function getAdvice(){
+    try{
+        const response = await fetch("https://api.adviceslip.com/advice", {
+      cache: "no-cache"});
+
+      const data = await response.json();
+      document.getElementById("advice-p").textContent = data.slip.advice;
+    }catch(error){
+        document.getElementById("advice-p").textContent = "Try again later";
+        console.error("error fetching data", error)
+    }
 
 }
 
