@@ -270,12 +270,17 @@ body{
 
 
 #contact-me-div input[type="text"] {
-    width: 90%;
+    width: 100%;
     padding: 8px;
     margin-bottom: 12px;
     border-radius: 4px;
     border: 1px solid #ccc;
     font-size: 14px;
+    box-sizing: border-box;
+}
+
+#contact-me-div li {
+    margin-bottom: 8px;
 }
 
 #messageSubmitBtn {
@@ -330,4 +335,30 @@ body{
 #advice-btn:active{
     box-shadow: 0 3px #bbb;
     transform: translateY(3px)
+}
+
+#footer{
+    max-width: 400px;
+    margin: 0 auto;
+    text-align: center;
+    padding: 10px;
+}
+
+#footer ul{
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+#contact-list{
+    margin: 0;
+    padding: 0;
+}
+
+#contact-link{
+    text-decoration: none;
+}
+
+#contact-link:hover{
+    text-decoration: underline;
 }
