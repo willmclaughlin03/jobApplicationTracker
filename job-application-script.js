@@ -171,23 +171,28 @@ function submitContactMe(){
     const submissionName = document.getElementById("messageName").value.trim();
     const submissionNote = document.getElementById("messageNote").value.trim();
 
-    if(!submissionEmail || !submissionName){
+    if(!submissionEmail || !submissionName || !submissionNote){
         alert("Please submit your email and name!");
         return;
     }
 
-    localStorage.setItem("submissionEmail", JSON.stringify(submissionEmail));
-    localStorage.setItem("submissionName", JSON.stringify(submissionName));
-    
-    if(submissionNote){
-        localStorage.setItem("submissionNote", JSON.stringify(submissionNote));
-    }
+    const params = {
+        from_name: submissionName,
+        email: submissionEmail,
+        message: submissionNote,
+    };
 
-    alert("Thank you for your submission");
-
-    document.getElementById("messageContact").value = "";
-    document.getElementById("messageName").value = "";
-    document.getElementById("messageNote").value = "";
+    emailjs.send("service_wwbxbqb", "template_5ssnfjh", params)
+    .then(() => {
+        alert("Thank you for your submission");
+        document.getElementById("messageContact").value = "";
+        document.getElementById("messageName").value = "";
+        document.getElementById("messageNote").value = "";
+    })
+    .catch((error) => {
+        console.error("EmailJS error:", error);
+        alert("Failed to send email. Please try again later!")
+    })
 }
 
 function getName(){

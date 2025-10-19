@@ -22,7 +22,7 @@
     <li><input id = "messageContact"type = "text"></li>
     <label>*Name:</label>
     <li><input id = "messageName" type = "text"></li>
-    <label>Notes:</label>
+    <label>*Message:</label>
     <li><input id = "messageNote" type = "text"></li>
     <button id = "messageSubmitBtn" onclick="submitContactMe()" type = "button">Submit</button>
 
@@ -31,7 +31,17 @@
     </ul>
   </div>
 </div>
-<script src="job-application-script.js"></script>
+<script type="text/javascript"
+src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js">
+</script>
+<script type="text/javascript">
+   (function(){
+      emailjs.init({
+        publicKey: "F-_EdjJXDiwR2oKRJ",
+      });
+   })();
+</script>
+<script src="contact_me.js"></script>
   </body>
   </html>
 </body>
