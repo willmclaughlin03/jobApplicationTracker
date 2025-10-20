@@ -301,6 +301,26 @@ body{
 }
 
 
+#messageNote {
+    width: 100%;          
+    max-width: 400px;     
+    height: 100px;        
+    padding: 8px 10px;    
+    font-size: 16px;      
+    border: 2px solid whitesmoke;
+    border-radius: 4px;
+    resize: vertical;     
+    box-sizing: border-box; 
+    margin-bottom: 12px;   
+}
+
+@media (max-width: 600px){
+    #messageNote {
+        width: 90%;
+        font-size: 15px;
+    }
+}
+
 
 
 /* advice */
