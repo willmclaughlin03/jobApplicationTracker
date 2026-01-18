@@ -2,16 +2,20 @@ import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase.js';
 import { normalizeError, ERROR_MESSAGES } from '../lib/errors.js';
 
+const PAGE_SIZE = 10;
+
 export function useJobs(userId) {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(null);
   const [error, setError] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
 
   const clearError = useCallback(() => setError(null), []);
 
-  const fetchJobs = useCallback(async () => {
+  const fetchJobs = useCallback(async (page = currentPage) => {
     if (!userId) {
       setJobs([]);
       setLoading(false);
@@ -21,11 +25,15 @@ export function useJobs(userId) {
     setLoading(true);
     setError(null);
 
-    const { data, error: supabaseError } = await supabase
+    const from = (page - 1) * PAGE_SIZE;
+    const to = from + PAGE_SIZE - 1;
+
+    const { data, error: supabaseError, count } = await supabase
       .from('jobs')
-      .select('*')
+      .select('*', { count: 'exact' })
       .eq('user_id', userId)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .range(from, to);
 
     if (supabaseError) {
       const normalizedError = normalizeError(supabaseError, ERROR_MESSAGES.FETCH_FAILED);
@@ -35,9 +43,11 @@ export function useJobs(userId) {
     }
 
     setJobs(data || []);
+    setTotalCount(count || 0);
+    setCurrentPage(page);
     setLoading(false);
     return { success: true, data, error: null };
-  }, [userId]);
+  }, [userId, currentPage]);
 
   const addJob = useCallback(async (jobData) => {
     if (!userId) {
@@ -62,6 +72,7 @@ export function useJobs(userId) {
     }
 
     setJobs(prev => [...data, ...prev]);
+    setTotalCount(prev => prev + 1);
     return { success: true, data: data[0], error: null };
   }, [userId]);
 
@@ -137,5 +148,9 @@ export function useJobs(userId) {
     updateJob,
     deleteJob,
     refetch: fetchJobs,
+    currentPage,
+    totalCount,
+    pageSize: PAGE_SIZE,
+    goToPage: fetchJobs,
   };
 }

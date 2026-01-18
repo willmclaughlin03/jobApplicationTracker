@@ -5,11 +5,12 @@ import { useJobs } from '../hooks/useJobs';
 import JobTable from '../components/JobTable';
 import JobForm from '../components/JobForm';
 import EditModal from '../components/EditModal';
+import NextPageButton from '../components/NextPageButton';
 
 export default function Dashboard() {
   const { user, loading: authLoading, signOut } = useAuth();
   const router = useRouter();
-  const { jobs, loading, saving, deleting, error, clearError, addJob, updateJob, deleteJob } = useJobs(user?.id);
+  const { jobs, loading, saving, deleting, error, clearError, addJob, updateJob, deleteJob, currentPage, totalCount, pageSize, goToPage } = useJobs(user?.id);
 
   const [showForm, setShowForm] = useState(false);
   const [editingJob, setEditingJob] = useState(null);
@@ -93,7 +94,6 @@ export default function Dashboard() {
             {showForm ? 'Cancel' : 'Add New Job'}
           </button>
         </div>
-
         {showForm && (
           <JobForm
             onSubmit={handleAddJob}
@@ -111,12 +111,21 @@ export default function Dashboard() {
             <p>No job applications yet. Click "Add New Job" to get started!</p>
           </div>
         ) : (
-          <JobTable
-            jobs={jobs}
-            onEdit={handleEditJob}
-            onDelete={handleDeleteJob}
-            deleting={deleting}
-          />
+          <>
+            <JobTable
+              jobs={jobs}
+              onEdit={handleEditJob}
+              onDelete={handleDeleteJob}
+              deleting={deleting}
+            />
+          
+          <NextPageButton
+              currentPage={currentPage}
+              totalCount={totalCount}
+              pageSize={pageSize}
+              onPageChange={goToPage}
+            />
+          </>
         )}
 
         {editingJob && (
