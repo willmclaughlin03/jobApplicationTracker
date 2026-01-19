@@ -3,8 +3,11 @@
  *
  * Purpose: Configure global test environment settings
  * Runs before each test file
+ *
+ * Connects to: dotenv for loading environment variables from .env
  */
 
-// Set test environment variables
-process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://test-project.supabase.co';
-process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role-key';
+const dotenv = require('dotenv');
+
+// Load environment variables from .env file
+dotenv.config();
