@@ -1,156 +1,93 @@
-import { useState, useEffect, useCallback } from 'react';
-import { supabase } from '../lib/supabase.js';
-import { normalizeError, ERROR_MESSAGES } from '../lib/errors.js';
+import { useEffect, useCallback, useMemo, useRef } from 'react';
+import { usePagination } from './usePagination.js';
+import { useJobsQuery, useAddJob, useUpdateJob, useDeleteJob } from './jobs/index.js';
 
 const PAGE_SIZE = 10;
 
-export function useJobs(userId) {
-  const [jobs, setJobs] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(null);
-  const [error, setError] = useState(null);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [totalCount, setTotalCount] = useState(0);
+export function useJobs(userId, statusFilter = null) {
+  const pagination = usePagination(PAGE_SIZE);
+  const { currentPage, setTotalCount, goToPage: paginationGoToPage } = pagination;
+  const prevFilterRef = useRef(statusFilter);
 
-  const clearError = useCallback(() => setError(null), []);
+  const query = useJobsQuery();
+  const { jobs, loading, fetchJobs, prependJob, updateJobInList, removeJobFromList } = query;
 
-  const fetchJobs = useCallback(async (page = currentPage) => {
-    if (!userId) {
-      setJobs([]);
-      setLoading(false);
-      return { success: true, data: [], error: null };
-    }
-
-    setLoading(true);
-    setError(null);
-
-    const from = (page - 1) * PAGE_SIZE;
-    const to = from + PAGE_SIZE - 1;
-
-    const { data, error: supabaseError, count } = await supabase
-      .from('jobs')
-      .select('*', { count: 'exact' })
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .range(from, to);
-
-    if (supabaseError) {
-      const normalizedError = normalizeError(supabaseError, ERROR_MESSAGES.FETCH_FAILED);
-      setError(normalizedError);
-      setLoading(false);
-      return { success: false, data: null, error: normalizedError };
-    }
-
-    setJobs(data || []);
-    setTotalCount(count || 0);
-    setCurrentPage(page);
-    setLoading(false);
-    return { success: true, data, error: null };
-  }, [userId, currentPage]);
-
-  const addJob = useCallback(async (jobData) => {
-    if (!userId) {
-      const err = normalizeError(null, ERROR_MESSAGES.UNAUTHORIZED);
-      return { success: false, data: null, error: err };
-    }
-
-    setSaving(true);
-    setError(null);
-
-    const { data, error: supabaseError } = await supabase
-      .from('jobs')
-      .insert([{ ...jobData, user_id: userId }])
-      .select();
-
-    setSaving(false);
-
-    if (supabaseError) {
-      const normalizedError = normalizeError(supabaseError, ERROR_MESSAGES.ADD_FAILED);
-      setError(normalizedError);
-      return { success: false, data: null, error: normalizedError };
-    }
-
-    setJobs(prev => [...data, ...prev]);
+  const add = useAddJob((newJob) => {
+    prependJob(newJob);
     setTotalCount(prev => prev + 1);
-    return { success: true, data: data[0], error: null };
-  }, [userId]);
+  });
 
-  const updateJob = useCallback(async (id, updates) => {
-    if (!userId) {
-      const err = normalizeError(null, ERROR_MESSAGES.UNAUTHORIZED);
-      return { success: false, data: null, error: err };
+  const update = useUpdateJob((id, updates) => {
+    updateJobInList(id, updates);
+  });
+
+  const del = useDeleteJob((id) => {
+    removeJobFromList(id);
+    setTotalCount(prev => prev - 1);
+  });
+
+  const loadPage = useCallback(async (page = currentPage) => {
+    const range = { from: (page - 1) * PAGE_SIZE, to: page * PAGE_SIZE - 1 };
+    const result = await fetchJobs(userId, range, statusFilter);
+    if (result.success) {
+      setTotalCount(result.count);
+      paginationGoToPage(page);
     }
+    return result;
+  }, [userId, currentPage, statusFilter, fetchJobs, setTotalCount, paginationGoToPage]);
 
-    setSaving(true);
-    setError(null);
-
-    const { data, error: supabaseError } = await supabase
-      .from('jobs')
-      .update(updates)
-      .eq('id', id)
-      .eq('user_id', userId)
-      .select();
-
-    setSaving(false);
-
-    if (supabaseError) {
-      const normalizedError = normalizeError(supabaseError, ERROR_MESSAGES.UPDATE_FAILED);
-      setError(normalizedError);
-      return { success: false, data: null, error: normalizedError };
-    }
-
-    setJobs(prev => prev.map(job =>
-      job.id === id ? { ...job, ...updates } : job
-    ));
-    return { success: true, data: data[0], error: null };
-  }, [userId]);
-
-  const deleteJob = useCallback(async (id) => {
-    if (!userId) {
-      const err = normalizeError(null, ERROR_MESSAGES.UNAUTHORIZED);
-      return { success: false, error: err };
-    }
-
-    setDeleting(id);
-    setError(null);
-
-    const { error: supabaseError } = await supabase
-      .from('jobs')
-      .delete()
-      .eq('id', id)
-      .eq('user_id', userId);
-
-    setDeleting(null);
-
-    if (supabaseError) {
-      const normalizedError = normalizeError(supabaseError, ERROR_MESSAGES.DELETE_FAILED);
-      setError(normalizedError);
-      return { success: false, error: normalizedError };
-    }
-
-    setJobs(prev => prev.filter(job => job.id !== id));
-    return { success: true, error: null };
+  useEffect(() => {
+    loadPage(1);
   }, [userId]);
 
   useEffect(() => {
-    fetchJobs();
-  }, [fetchJobs]);
+    if (prevFilterRef.current !== statusFilter) {
+      prevFilterRef.current = statusFilter;
+      loadPage(1);
+    }
+  }, [statusFilter, loadPage]);
+
+  const error = useMemo(() =>
+    query.error || add.error || update.error || del.error,
+    [query.error, add.error, update.error, del.error]
+  );
+
+  const clearError = useCallback(() => {
+    query.clearError();
+    add.clearError();
+    update.clearError();
+    del.clearError();
+  }, [query, add, update, del]);
+
+  const addJob = useCallback((jobData) =>
+    add.addJob(userId, jobData),
+    [userId, add]
+  );
+
+  const updateJob = useCallback((id, updates) =>
+    update.updateJob(userId, id, updates),
+    [userId, update]
+  );
+
+  const deleteJob = useCallback((id) =>
+    del.deleteJob(userId, id),
+    [userId, del]
+  );
 
   return {
     jobs,
     loading,
-    saving,
-    deleting,
+    saving: add.saving || update.saving,
+    deleting: del.deleting,
     error,
     clearError,
     addJob,
     updateJob,
     deleteJob,
-    refetch: fetchJobs,
-    currentPage,
-    totalCount,
+    refetch: loadPage,
+    currentPage: pagination.currentPage,
+    totalCount: pagination.totalCount,
     pageSize: PAGE_SIZE,
-    goToPage: fetchJobs,
+    goToPage: loadPage,
   };
 }

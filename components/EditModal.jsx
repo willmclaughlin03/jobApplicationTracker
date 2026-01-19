@@ -1,20 +1,8 @@
 import { useState, useEffect } from 'react';
-
-const STATUS_OPTIONS = [
-  { value: 'applied', label: 'Applied' },
-  { value: 'interviewing', label: 'Interviewing' },
-  { value: 'offered', label: 'Offered' },
-  { value: 'rejected', label: 'Rejected' },
-  { value: 'accepted', label: 'Accepted' },
-];
+import { JobFormFields, INITIAL_FORM_DATA } from './forms/index.js';
 
 export default function EditModal({ job, onSave, onClose, saving }) {
-  const [formData, setFormData] = useState({
-    company: '',
-    position: '',
-    status: 'applied',
-    notes: '',
-  });
+  const [formData, setFormData] = useState(INITIAL_FORM_DATA);
 
   useEffect(() => {
     if (job) {
@@ -57,71 +45,7 @@ export default function EditModal({ job, onSave, onClose, saving }) {
         </div>
 
         <form onSubmit={handleSubmit}>
-          <div className="mb-4">
-            <label htmlFor="edit-company" className="block text-sm font-medium text-gray-700 mb-1.5">
-              Company *
-            </label>
-            <input
-              id="edit-company"
-              name="company"
-              type="text"
-              value={formData.company}
-              onChange={handleChange}
-              required
-              placeholder="Company name"
-              className="w-full px-3 py-2.5 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500 transition-colors"
-            />
-          </div>
-
-          <div className="mb-4">
-            <label htmlFor="edit-position" className="block text-sm font-medium text-gray-700 mb-1.5">
-              Position *
-            </label>
-            <input
-              id="edit-position"
-              name="position"
-              type="text"
-              value={formData.position}
-              onChange={handleChange}
-              required
-              placeholder="Job title"
-              className="w-full px-3 py-2.5 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500 transition-colors"
-            />
-          </div>
-
-          <div className="mb-4">
-            <label htmlFor="edit-status" className="block text-sm font-medium text-gray-700 mb-1.5">
-              Status
-            </label>
-            <select
-              id="edit-status"
-              name="status"
-              value={formData.status}
-              onChange={handleChange}
-              className="w-full px-3 py-2.5 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500 transition-colors"
-            >
-              {STATUS_OPTIONS.map(option => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="mb-5">
-            <label htmlFor="edit-notes" className="block text-sm font-medium text-gray-700 mb-1.5">
-              Notes
-            </label>
-            <textarea
-              id="edit-notes"
-              name="notes"
-              value={formData.notes}
-              onChange={handleChange}
-              placeholder="Add any notes about this application..."
-              rows={3}
-              className="w-full px-3 py-2.5 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500 transition-colors resize-none"
-            />
-          </div>
+          <JobFormFields formData={formData} onChange={handleChange} idPrefix="edit" />
 
           <div className="flex gap-3 justify-end">
             <button
