@@ -1,13 +1,5 @@
 import { useState } from 'react';
-import { STATUS_OPTIONS, STATUS_COLORS } from './forms/constants';
-
-const STATUS_DOT_COLORS = {
-  applied: 'bg-blue-500',
-  interviewing: 'bg-orange-500',
-  offered: 'bg-green-500',
-  rejected: 'bg-red-500',
-  accepted: 'bg-green-700',
-};
+import { STATUS_OPTIONS, STATUS_COLORS, STATUS_DOT_COLORS } from './forms/constants';
 
 export default function JobStatsSidebar({
   statusCounts,
