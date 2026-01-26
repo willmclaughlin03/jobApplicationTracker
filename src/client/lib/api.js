@@ -1,5 +1,5 @@
 import { supabase } from './supabase.js'
-import { ERROR_MESSAGES } from './errors.js'
+import { ERROR_MESSAGES } from '../../shared/errors.js'
 
 /**
  * Makes an authenticated API request using the current Supabase session

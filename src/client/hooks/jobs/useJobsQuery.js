@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { supabase } from '../../lib/supabase.js';
-import { normalizeError, ERROR_MESSAGES } from '../../lib/errors.js';
+import { normalizeError, ERROR_MESSAGES } from '../../../shared/errors.js';
 
 export function useJobsQuery() {
   const [jobs, setJobs] = useState([]);

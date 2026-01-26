@@ -1,14 +1,14 @@
 import { useState, useCallback } from 'react';
 import { supabase } from '../../lib/supabase.js';
-import { normalizeError, ERROR_MESSAGES } from '../../lib/errors.js';
+import { normalizeError, ERROR_MESSAGES } from '../../../shared/errors.js';
 
-export function useUpdateJob(onSuccess) {
+export function useAddJob(onSuccess) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
   const clearError = useCallback(() => setError(null), []);
 
-  const updateJob = useCallback(async (userId, id, updates) => {
+  const addJob = useCallback(async (userId, jobData) => {
     if (!userId) {
       const err = normalizeError(null, ERROR_MESSAGES.UNAUTHORIZED);
       setError(err);
@@ -20,28 +20,26 @@ export function useUpdateJob(onSuccess) {
 
     const { data, error: supabaseError } = await supabase
       .from('jobs')
-      .update(updates)
-      .eq('id', id)
-      .eq('user_id', userId)
+      .insert([{ ...jobData, user_id: userId }])
       .select();
 
     setSaving(false);
 
     if (supabaseError) {
-      const normalizedError = normalizeError(supabaseError, ERROR_MESSAGES.UPDATE_FAILED);
+      const normalizedError = normalizeError(supabaseError, ERROR_MESSAGES.ADD_FAILED);
       setError(normalizedError);
       return { success: false, data: null, error: normalizedError };
     }
 
-    if (onSuccess) {
-      onSuccess(id, updates);
+    if (onSuccess && data?.[0]) {
+      onSuccess(data[0]);
     }
 
     return { success: true, data: data[0], error: null };
   }, [onSuccess]);
 
   return {
-    updateJob,
+    addJob,
     saving,
     error,
     clearError,

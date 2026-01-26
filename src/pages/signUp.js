@@ -1,14 +1,16 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../client/contexts/AuthContext';
 
-export default function Login() {
+export default function SignUp() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const { signIn, user, loading: authLoading } = useAuth();
+  const [success, setSuccess] = useState(false);
+  const { signUp, user, loading: authLoading } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
@@ -20,15 +22,27 @@ export default function Login() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
+
+    if (password !== confirmPassword) {
+      setError('Passwords do not match');
+      return;
+    }
+
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters');
+      return;
+    }
+
     setLoading(true);
 
-    const { error } = await signIn(email, password);
+    const { error } = await signUp(email, password);
 
     if (error) {
-      setError(error.message || 'Failed to sign in');
+      setError(error.message || 'Failed to create account');
       setLoading(false);
     } else {
-      router.push('/');
+      setSuccess(true);
+      setLoading(false);
     }
   };
 
@@ -44,11 +58,27 @@ export default function Login() {
     return null;
   }
 
+  if (success) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100 p-5">
+        <div className="bg-white p-10 rounded-lg shadow-md w-full max-w-md">
+          <h1 className="text-2xl font-semibold text-gray-800 mb-4">Check your email</h1>
+          <p className="text-gray-600 mb-6">
+            We've sent a confirmation link to {email}. Please check your inbox to verify your account.
+          </p>
+          <Link href="/login" className="block w-full text-center bg-blue-600 text-white py-2.5 px-4 rounded text-sm font-medium hover:bg-blue-700 transition-colors">
+            Back to Sign In
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-100 p-5">
       <div className="bg-white p-10 rounded-lg shadow-md w-full max-w-md">
-        <h1 className="text-2xl font-semibold text-gray-800 mb-2">Sign In</h1>
-        <p className="text-gray-500 mb-6">Welcome back to Job Tracker</p>
+        <h1 className="text-2xl font-semibold text-gray-800 mb-2">Create Account</h1>
+        <p className="text-gray-500 mb-6">Start tracking your job applications</p>
 
         {error && (
           <div className="bg-red-100 text-red-800 p-3 rounded mb-4 text-sm">
@@ -82,7 +112,22 @@ export default function Login() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              placeholder="Enter your password"
+              placeholder="Create a password"
+              className="w-full px-3 py-2.5 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500 transition-colors"
+            />
+          </div>
+
+          <div className="mb-4">
+            <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 mb-1.5">
+              Confirm Password
+            </label>
+            <input
+              id="confirmPassword"
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              required
+              placeholder="Confirm your password"
               className="w-full px-3 py-2.5 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500 transition-colors"
             />
           </div>
@@ -92,14 +137,14 @@ export default function Login() {
             className="w-full bg-blue-600 text-white py-2.5 px-4 rounded text-sm font-medium hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
             disabled={loading}
           >
-            {loading ? 'Signing in...' : 'Sign In'}
+            {loading ? 'Creating account...' : 'Sign Up'}
           </button>
         </form>
 
         <p className="text-center mt-5 text-gray-500 text-sm">
-          Don't have an account?{' '}
-          <Link href="/signUp" className="text-blue-600 hover:underline">
-            Sign up
+          Already have an account?{' '}
+          <Link href="/login" className="text-blue-600 hover:underline">
+            Sign in
           </Link>
         </p>
       </div>

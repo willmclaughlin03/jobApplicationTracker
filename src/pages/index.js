@@ -1,14 +1,14 @@
 import { useState } from 'react';
 import { useRouter } from 'next/router';
-import { useAuth } from '../contexts/AuthContext';
-import { useJobs } from '../hooks/useJobs';
-import { useJobStats } from '../hooks/useJobStats';
-import { useJobFormModal } from '../hooks/useJobFormModal';
-import JobTable from '../components/JobTable';
-import JobForm from '../components/JobForm';
-import EditModal from '../components/EditModal';
-import NextPageButton from '../components/NextPageButton';
-import JobStatsSidebar from '../components/JobStatsSidebar';
+import { useAuth } from '../client/contexts/AuthContext';
+import { useJobs } from '../client/hooks/useJobs';
+import { useJobStats } from '../client/hooks/useJobStats';
+import { useJobFormModal } from '../client/hooks/useJobFormModal';
+import JobTable from '../client/components/JobTable';
+import JobForm from '../client/components/JobForm';
+import EditModal from '../client/components/EditModal';
+import NextPageButton from '../client/components/NextPageButton';
+import JobStatsSidebar from '../client/components/JobStatsSidebar';
 
 export default function Dashboard() {
   const { user, loading: authLoading, signOut } = useAuth();

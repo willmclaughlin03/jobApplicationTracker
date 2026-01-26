@@ -11,4 +11,4 @@ export {
   INITIAL_FORM_DATA,
   DEFAULT_STATUS,
   STATUSES
-} from '../../lib/constants/statuses.js';
+} from '../../../shared/constants/statuses.js'

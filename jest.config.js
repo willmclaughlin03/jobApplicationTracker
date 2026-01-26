@@ -10,9 +10,10 @@ module.exports = {
   testPathIgnorePatterns: ['/node_modules/', '/.next/'],
   moduleFileExtensions: ['js', 'jsx', 'json'],
   collectCoverageFrom: [
-    'lib/**/*.js',
-    'pages/api/**/*.js',
-    'hooks/**/*.js',
+    'src/shared/**/*.js',
+    'src/server/**/*.js',
+    'src/pages/api/**/*.js',
+    'src/client/hooks/**/*.js',
     '!**/node_modules/**',
   ],
   setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
