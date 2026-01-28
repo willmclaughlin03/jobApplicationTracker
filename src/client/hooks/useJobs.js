@@ -28,13 +28,13 @@ export function useJobs(userId, statusFilter = null) {
 
   const loadPage = useCallback(async (page = currentPage) => {
     const range = { from: (page - 1) * PAGE_SIZE, to: page * PAGE_SIZE - 1 };
-    const result = await fetchJobs(userId, range, statusFilter);
+    const result = await fetchJobs(range, statusFilter);
     if (result.success) {
       setTotalCount(result.count);
       paginationGoToPage(page);
     }
     return result;
-  }, [userId, currentPage, statusFilter, fetchJobs, setTotalCount, paginationGoToPage]);
+  }, [currentPage, statusFilter, fetchJobs, setTotalCount, paginationGoToPage]);
 
   useEffect(() => {
     loadPage(1);
@@ -60,18 +60,18 @@ export function useJobs(userId, statusFilter = null) {
   }, [query, add, update, del]);
 
   const addJob = useCallback((jobData) =>
-    add.addJob(userId, jobData),
-    [userId, add]
+    add.addJob(jobData),
+    [add]
   );
 
   const updateJob = useCallback((id, updates) =>
-    update.updateJob(userId, id, updates),
-    [userId, update]
+    update.updateJob(id, updates),
+    [update]
   );
 
   const deleteJob = useCallback((id) =>
-    del.deleteJob(userId, id),
-    [userId, del]
+    del.deleteJob(id),
+    [del]
   );
 
   return {

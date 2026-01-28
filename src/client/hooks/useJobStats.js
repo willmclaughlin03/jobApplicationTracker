@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { supabase } from '../lib/supabase.js';
+import { api } from '../lib/api.js';
+import { normalizeError, ERROR_MESSAGES } from '../../shared/errors.js';
 
 export function useJobStats(userId) {
   const [statusCounts, setStatusCounts] = useState({
@@ -11,6 +12,9 @@ export function useJobStats(userId) {
   });
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const clearError = useCallback(() => setError(null), []);
 
   const fetchStats = useCallback(async () => {
     if (!userId) {
@@ -27,17 +31,18 @@ export function useJobStats(userId) {
     }
 
     setLoading(true);
+    setError(null);
 
-    const { data, error } = await supabase
-      .from('jobs')
-      .select('status')
-      .eq('user_id', userId);
+    const { data: response, error: apiError } = await api.get('/api');
 
-    if (error) {
-      console.error('Error fetching job stats:', error);
+    if (apiError || response?.error) {
+      const normalizedError = normalizeError(apiError || response?.error, ERROR_MESSAGES.FETCH_FAILED);
+      setError(normalizedError);
       setLoading(false);
       return;
     }
+
+    const jobsData = response?.data?.data || [];
 
     const counts = {
       applied: 0,
@@ -47,14 +52,14 @@ export function useJobStats(userId) {
       accepted: 0,
     };
 
-    (data || []).forEach(job => {
-      if (counts.hasOwnProperty(job.status)) {
+    jobsData.forEach(job => {
+      if (Object.prototype.hasOwnProperty.call(counts, job.status)) {
         counts[job.status]++;
       }
     });
 
     setStatusCounts(counts);
-    setTotal(data?.length || 0);
+    setTotal(jobsData.length);
     setLoading(false);
   }, [userId]);
 
@@ -66,6 +71,8 @@ export function useJobStats(userId) {
     statusCounts,
     total,
     loading,
+    error,
+    clearError,
     refetch: fetchStats,
   };
 }

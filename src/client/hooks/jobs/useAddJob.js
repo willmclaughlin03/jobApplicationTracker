@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { supabase } from '../../lib/supabase.js';
+import { api } from '../../lib/api.js';
 import { normalizeError, ERROR_MESSAGES } from '../../../shared/errors.js';
 
 export function useAddJob(onSuccess) {
@@ -8,34 +8,27 @@ export function useAddJob(onSuccess) {
 
   const clearError = useCallback(() => setError(null), []);
 
-  const addJob = useCallback(async (userId, jobData) => {
-    if (!userId) {
-      const err = normalizeError(null, ERROR_MESSAGES.UNAUTHORIZED);
-      setError(err);
-      return { success: false, data: null, error: err };
-    }
-
+  const addJob = useCallback(async (jobData) => {
     setSaving(true);
     setError(null);
 
-    const { data, error: supabaseError } = await supabase
-      .from('jobs')
-      .insert([{ ...jobData, user_id: userId }])
-      .select();
+    const { data: response, error: apiError } = await api.post('/api', jobData);
 
     setSaving(false);
 
-    if (supabaseError) {
-      const normalizedError = normalizeError(supabaseError, ERROR_MESSAGES.ADD_FAILED);
+    if (apiError || response?.error) {
+      const normalizedError = normalizeError(apiError || response?.error, ERROR_MESSAGES.ADD_FAILED);
       setError(normalizedError);
       return { success: false, data: null, error: normalizedError };
     }
 
-    if (onSuccess && data?.[0]) {
-      onSuccess(data[0]);
+    const newJob = response?.data?.[0];
+
+    if (onSuccess && newJob) {
+      onSuccess(newJob);
     }
 
-    return { success: true, data: data[0], error: null };
+    return { success: true, data: newJob, error: null };
   }, [onSuccess]);
 
   return {

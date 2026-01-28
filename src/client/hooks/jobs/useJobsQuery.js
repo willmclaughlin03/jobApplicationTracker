@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { supabase } from '../../lib/supabase.js';
+import { api } from '../../lib/api.js';
 import { normalizeError, ERROR_MESSAGES } from '../../../shared/errors.js';
 
 export function useJobsQuery() {
@@ -9,39 +9,33 @@ export function useJobsQuery() {
 
   const clearError = useCallback(() => setError(null), []);
 
-  const fetchJobs = useCallback(async (userId, { from, to }, statusFilter = null) => {
-    if (!userId) {
-      setJobs([]);
-      setLoading(false);
-      return { success: true, data: [], count: 0, error: null };
-    }
-
+  const fetchJobs = useCallback(async ({ from, to }, statusFilter = null) => {
     setLoading(true);
     setError(null);
 
-    let query = supabase
-      .from('jobs')
-      .select('*', { count: 'exact' })
-      .eq('user_id', userId);
+    const params = new URLSearchParams();
+    if (from !== undefined) params.append('from', from);
+    if (to !== undefined) params.append('to', to);
+    if (statusFilter) params.append('status', statusFilter);
 
-    if (statusFilter) {
-      query = query.eq('status', statusFilter);
-    }
+    const queryString = params.toString();
+    const endpoint = queryString ? `/api?${queryString}` : '/api';
 
-    const { data, error: supabaseError, count } = await query
-      .order('created_at', { ascending: false })
-      .range(from, to);
+    const { data: response, error: apiError } = await api.get(endpoint);
 
-    if (supabaseError) {
-      const normalizedError = normalizeError(supabaseError, ERROR_MESSAGES.FETCH_FAILED);
+    if (apiError || response?.error) {
+      const normalizedError = normalizeError(apiError || response?.error, ERROR_MESSAGES.FETCH_FAILED);
       setError(normalizedError);
       setLoading(false);
       return { success: false, data: null, count: 0, error: normalizedError };
     }
 
-    setJobs(data || []);
+    const jobsData = response?.data?.data || [];
+    const count = response?.data?.count || 0;
+
+    setJobs(jobsData);
     setLoading(false);
-    return { success: true, data, count: count || 0, error: null };
+    return { success: true, data: jobsData, count, error: null };
   }, []);
 
   const prependJob = useCallback((job) => {

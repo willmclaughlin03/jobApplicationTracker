@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import { supabase } from '../../lib/supabase.js';
+import { api } from '../../lib/api.js';
 import { normalizeError, ERROR_MESSAGES } from '../../../shared/errors.js';
 
 export function useDeleteJob(onSuccess) {
@@ -8,26 +8,16 @@ export function useDeleteJob(onSuccess) {
 
   const clearError = useCallback(() => setError(null), []);
 
-  const deleteJob = useCallback(async (userId, id) => {
-    if (!userId) {
-      const err = normalizeError(null, ERROR_MESSAGES.UNAUTHORIZED);
-      setError(err);
-      return { success: false, error: err };
-    }
-
+  const deleteJob = useCallback(async (id) => {
     setDeleting(id);
     setError(null);
 
-    const { error: supabaseError } = await supabase
-      .from('jobs')
-      .delete()
-      .eq('id', id)
-      .eq('user_id', userId);
+    const { data: response, error: apiError } = await api.delete('/api', { id });
 
     setDeleting(null);
 
-    if (supabaseError) {
-      const normalizedError = normalizeError(supabaseError, ERROR_MESSAGES.DELETE_FAILED);
+    if (apiError || response?.error) {
+      const normalizedError = normalizeError(apiError || response?.error, ERROR_MESSAGES.DELETE_FAILED);
       setError(normalizedError);
       return { success: false, error: normalizedError };
     }
