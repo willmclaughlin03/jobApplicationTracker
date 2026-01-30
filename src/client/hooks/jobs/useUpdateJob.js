@@ -12,7 +12,8 @@ export function useUpdateJob(onSuccess) {
     setSaving(true);
     setError(null);
 
-    const { data: response, error: apiError } = await api.put('/api', { id, ...updates });
+    // RESTful endpoint: ID in URL path, updates in body
+    const { data: response, error: apiError } = await api.put(`/api/${id}`, updates);
 
     setSaving(false);
 

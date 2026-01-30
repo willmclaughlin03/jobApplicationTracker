@@ -12,6 +12,14 @@ import { STATUSES, DEFAULT_STATUS } from "../constants/statuses.js"
 
 const sanitize = (val) => DOMPurify.sanitize(val, { ALLOWED_TAGS: [] })
 
+/**
+ * UUID validation schema
+ *
+ * Purpose: Validate job IDs from URL parameters
+ * Used by: API routes that accept job ID in path (e.g., /api/jobs/[id])
+ */
+export const uuidSchema = z.string().uuid({ error: "Invalid UUID format" });
+
 export const jobSchema = z.object({
     company: z.string().min(1, "Required").max(100, "Too long").trim().transform(sanitize),
     position: z.string().min(1, "Required").max(100, "Too long").trim().transform(sanitize),

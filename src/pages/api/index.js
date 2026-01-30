@@ -1,8 +1,8 @@
 import { ERROR_MESSAGES } from '../../shared/errors.js';
 import { getUserFromRequest } from '../../server/lib/supabaseServer.js';
-import { jobSchema, jobUpdateSchema } from '../../shared/validations/jobSchema.js';
+import { jobSchema } from '../../shared/validations/jobSchema.js';
 import { sendSuccess, sendError } from '../../shared/response.js';
-import { getJobsByUserId, createJob, updateJob, deleteJob } from '../../server/services/jobService.js';
+import { getJobsByUserId, createJob } from '../../server/services/jobService.js';
 
 /**
  * Handles GET requests - retrieves jobs for authenticated user
@@ -64,66 +64,15 @@ async function handlePost(req, res, user) {
 }
 
 /**
- * Handles PUT requests - updates an existing job application
- *
- * Purpose: Update job application details (status, notes, etc.)
- * Connects to: jobService.updateJob() for database operations
- * Validation: Uses jobUpdateSchema to validate request body
- * Security: jobService validates user ownership of the job
- */
-async function handlePut(req, res, user) {
-  const { id, ...bodyWithoutId } = req.body;
-
-  if (!id) {
-    return sendError(res, 400, ERROR_MESSAGES.NOT_FOUND, 'ID not found');
-  }
-
-  const updateResult = jobUpdateSchema.safeParse(bodyWithoutId);
-
-  if (!updateResult.success) {
-    return sendError(res, 400, ERROR_MESSAGES.UPDATE_FAILED, 'Update failed');
-  }
-
-  const updatedData = updateResult.data;
-  const { data, error } = await updateJob(id, updatedData, user.id);
-
-  if (error) {
-    return sendError(res, 400, ERROR_MESSAGES.UPDATE_FAILED, 'Failed to update job data');
-  }
-
-  return sendSuccess(res, 200, data, 'Successfully updated job details');
-}
-
-/**
- * Handles DELETE requests - removes an existing job application
- *
- * Purpose: Delete job application from user's tracking list
- * Connects to: jobService.deleteJob() for database operations
- * Security: jobService validates user ownership of the job
- */
-async function handleDelete(req, res, user) {
-  const { id } = req.body;
-
-  if (!id) {
-    return sendError(res, 400, ERROR_MESSAGES.NOT_FOUND, 'ID not found');
-  }
-
-  const { data, error } = await deleteJob(id, user.id);
-
-  if (error) {
-    return sendError(res, 400, ERROR_MESSAGES.DELETE_FAILED, 'Failed to delete job');
-  }
-
-  return sendSuccess(res, 200, data, 'Successfully deleted job');
-}
-
-/**
  * Main request handler with authentication and routing
  *
- * Purpose: Entry point for /api/jobs endpoint
+ * Purpose: Entry point for /api/jobs endpoint (collection operations)
  * Connects to:
  * - getUserFromRequest() for authentication
- * - handleGet/handlePost/handlePut for specific operations
+ * - handleGet for listing jobs
+ * - handlePost for creating jobs
+ *
+ * Note: Single job operations (GET/PUT/DELETE by ID) are handled by [id].js
  *
  * Security: Validates user authentication before processing requests
  */
@@ -148,13 +97,8 @@ export default async function handler(req, res) {
     case 'POST':
       return await handlePost(req, res, user);
 
-    case 'PUT':
-      return await handlePut(req, res, user);
-
-    case 'DELETE':
-      return await handleDelete(req, res, user);
-
     default:
+      // PUT, DELETE, and other methods should use /api/jobs/[id] endpoint
       return sendError(res, 405, ERROR_MESSAGES.METHOD_NOT_ALLOWED, 'Method not allowed');
   }
 }

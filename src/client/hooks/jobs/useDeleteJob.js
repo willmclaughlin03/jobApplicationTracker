@@ -12,7 +12,8 @@ export function useDeleteJob(onSuccess) {
     setDeleting(id);
     setError(null);
 
-    const { data: response, error: apiError } = await api.delete('/api', { id });
+    // RESTful endpoint: ID in URL path, no body needed
+    const { data: response, error: apiError } = await api.delete(`/api/${id}`);
 
     setDeleting(null);
 

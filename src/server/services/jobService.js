@@ -73,6 +73,67 @@ export async function getJobsByUserId(userId, options = {}) {
 }
 
 /**
+ * Retrieves a single job by ID for a specific user
+ *
+ * Purpose: Fetch a specific job application by its UUID
+ * Connects to: supabaseAdmin for database queries
+ *
+ * @param {string} jobId - The job's UUID
+ * @param {string} userId - The user's ID
+ * @returns {Promise<{data: Object|null, error: Error|null}>}
+ *
+ * Security: Enforces user ownership by requiring user_id match
+ * - Returns null if job doesn't exist OR user doesn't own it (prevents enumeration)
+ */
+export async function getJobById(jobId, userId) {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('jobs')
+      .select('*')
+      .eq('id', jobId)
+      .eq('user_id', userId)
+      .single();
+
+    if (error) {
+      // PGRST116 = "No rows found" - treat as not found, not as error
+      if (error.code === 'PGRST116') {
+        logger.debug('Job not found or unauthorized', {
+          operation: 'getJobById',
+          userId,
+          jobId,
+        });
+        return { data: null, error: new Error('Job not found or unauthorized') };
+      }
+
+      logger.error('Database query failed', {
+        operation: 'getJobById',
+        userId,
+        jobId,
+        error: error.message,
+      });
+      return { data: null, error };
+    }
+
+    logger.debug('Job retrieved successfully', {
+      operation: 'getJobById',
+      userId,
+      jobId,
+    });
+
+    return { data, error: null };
+  } catch (error) {
+    logger.error('Unexpected error in getJobById', {
+      operation: 'getJobById',
+      userId,
+      jobId,
+      error: error.message,
+      stack: error.stack,
+    });
+    return { data: null, error };
+  }
+}
+
+/**
  * Creates a new job for a user
  *
  * @param {Object} jobData - The job data to insert (validated by jobSchema)
