@@ -4,4 +4,7 @@ node_modules/
 
 .next/
 
-./src/shared/
+src/shared/
+
+shared/
+
