@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.90.1",
+    "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.36.2",
     "dotenv": "^17.2.3",
     "isomorphic-dompurify": "^2.35.0",

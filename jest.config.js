@@ -25,6 +25,6 @@ module.exports = {
     '^.+\\.(js|jsx)$': ['babel-jest', { presets: ['next/babel'] }],
   },
   transformIgnorePatterns: [
-    '/node_modules/(?!(@supabase|isomorphic-dompurify|@exodus|html-encoding-sniffer)/)',
+    '/node_modules/(?!(@supabase|isomorphic-dompurify|@exodus|html-encoding-sniffer|@upstash)/)',
   ],
 };
