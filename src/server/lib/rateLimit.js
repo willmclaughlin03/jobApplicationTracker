@@ -8,18 +8,18 @@ import { logger } from '../../shared/logger';
 
 
 
-const cacheKey = new Map()
+/** @type {Map<string, {limiter: Ratelimit, redis: Redis}>} Cached limiter instances keyed by tier:operation:window */
+const limiterCache = new Map()
 
 function getOrCreateLimiter(tier, operation, windowType){
     const key = `${tier}:${operation}:${windowType}`
     const redis = getRedisClient()
 
-    // if redis changed, cached limit holds a null ref, so we clear with this
-    const cached = cacheKey.get(key)
-    if (cached && cached._redis === redis){
-        return cached
+    // if redis client changed, cached limiter holds a stale connection, so rebuild
+    const cached = limiterCache.get(key)
+    if (cached && cached.redis === redis){
+        return cached.limiter
     }
-
 
     const limit = TIER_LIMITS[tier]?.[operation]?.[windowType]
 
@@ -35,22 +35,49 @@ function getOrCreateLimiter(tier, operation, windowType){
         prefix: `rl:${key}`
     })
 
-    limiter._redis = redis
-
-    cacheKey.set(key, limiter)
+    limiterCache.set(key, { limiter, redis })
 
     return limiter
 }
 
 
+/**
+ * Checks rate limit for a given identifier, tier, and operation
+ *
+ * Validates inputs, checks Redis health, then evaluates both hourly
+ * and daily windows. Returns the most restrictive result.
+ *
+ * Connects to:
+ * - getOrCreateLimiter() for cached Ratelimit instances
+ * - Redis via Upstash for actual limit evaluation
+ *
+ * @param {string} identifier - Rate limit key (e.g. 'user:uuid' or 'ip:1.2.3.4')
+ * @param {string} tier - User tier from TIERS constant
+ * @param {string} operation - Operation type from OPERATIONS constant
+ * @returns {Promise<Object>} Rate limit result with success, limit, remaining, reset, window
+ */
 export async function checkRateLimit(identifier, tier, operation){
+    if(!identifier || typeof identifier !== 'string'){
+        logger.error('checkRateLimit called with invalid identifier', { tier, operation });
+        return { success: false, unavailable: true }
+    }
+
+    if(!Object.values(TIERS).includes(tier)){
+        logger.error('checkRateLimit called with invalid tier', { tier, operation });
+        return { success: false, unavailable: true }
+    }
+
+    if(!Object.values(OPERATIONS).includes(operation)){
+        logger.error('checkRateLimit called with invalid operation', { tier, operation });
+        return { success: false, unavailable: true }
+    }
 
     const redis = getRedisClient()
 
     try{
         // left to right check, if !redis true, never ping redis
         if (!redis || !(await isRedisHealthy())){
-            logger.warn('Rate limiting is unavaliable - Redis not healthy', {
+            logger.warn('Rate limiting is unavailable - Redis not healthy', {
                 hasClient: !!redis,
                 operation
             });
@@ -65,23 +92,24 @@ export async function checkRateLimit(identifier, tier, operation){
 
         let mostRestrictive = null;
 
-        if (hourlyLimiter) {
-            const hourly = await hourlyLimiter.limit(identifier);
-            if (!hourly.success) {
-                return { success: false, limit: hourly.limit, remaining: 0, reset: hourly.reset, window: 'hourly' };
-            }
-            mostRestrictive = { ...hourly, window: 'hourly' };
-        }
-
+        // Check daily (broader) window FIRST to avoid draining the smaller hourly bucket
         if (dailyLimiter) {
             const daily = await dailyLimiter.limit(identifier);
             if (!daily.success) {
                 return { success: false, limit: daily.limit, remaining: 0, reset: daily.reset, window: 'daily' };
-            }
-            if (!mostRestrictive || daily.remaining <= mostRestrictive.remaining) {
-                mostRestrictive = { ...daily, window: 'daily' };
-            }
         }
+            mostRestrictive = { ...daily, window: 'daily' };
+        }
+
+        if (hourlyLimiter) {
+            const hourly = await hourlyLimiter.limit(identifier);
+            if (!hourly.success) {
+                return { success: false, limit: hourly.limit, remaining: 0, reset: hourly.reset, window: 'hourly' };
+        }
+            if (!mostRestrictive || hourly.remaining <= mostRestrictive.remaining) {
+                mostRestrictive = { ...hourly, window: 'hourly' };
+        }
+    }
 
         return {
             success: true,
@@ -96,7 +124,7 @@ export async function checkRateLimit(identifier, tier, operation){
         logger.error('Rate limit check failed', {
             error: error.message,
             stack: error.stack,
-            identifier,
+            identifierType: identifier?.split(':')[0] || 'unknown',
             tier,
             operation
         });
