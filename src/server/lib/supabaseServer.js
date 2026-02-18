@@ -9,6 +9,7 @@
  * - Supabase Database with admin privileges (bypasses RLS)
  */
 import { createClient } from '@supabase/supabase-js';
+import { logger } from '../../shared/logger.js';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -61,8 +62,7 @@ export async function getUserFromRequest(req) {
     const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
 
     if (error) {
-      // Log the actual error for debugging (server-side only)
-      console.error('[Auth] Token validation failed:', {
+      logger.error('Token validation failed', {
         message: error.message,
         status: error.status,
         timestamp: new Date().toISOString()
@@ -76,8 +76,7 @@ export async function getUserFromRequest(req) {
 
     return { user, error: null };
   } catch (err) {
-    // Log unexpected errors for debugging
-    console.error('[Auth] Unexpected error during authentication:', {
+    logger.error('Unexpected authentication error', {
       message: err.message,
       stack: err.stack,
       timestamp: new Date().toISOString()

@@ -1,8 +1,8 @@
 import { ERROR_MESSAGES } from '../../shared/errors.js';
-import { getUserFromRequest } from '../../server/lib/supabaseServer.js';
 import { jobSchema } from '../../shared/validations/jobSchema.js';
 import { sendSuccess, sendError } from '../../shared/response.js';
 import { getJobsByUserId, createJob } from '../../server/services/jobService.js';
+import { withRateLimit } from '../../server/middleware/withRateLimit.js';
 
 /**
  * Handles GET requests - retrieves jobs for authenticated user
@@ -76,29 +76,21 @@ async function handlePost(req, res, user) {
  *
  * Security: Validates user authentication before processing requests
  */
-export default async function handler(req, res) {
-  let user = null;
+async function handler(req, res) {
+  const user = req._rateLimitUser
 
-  try {
-    const authResult = await getUserFromRequest(req);
-    user = authResult.user;
-
-    if (!user) {
-      return sendError(res, 401, ERROR_MESSAGES.UNAUTHORIZED, 'Unauthorized');
-    }
-  } catch (error) {
-    return sendError(res, 401, ERROR_MESSAGES.UNAUTHORIZED, 'Unauthorized');
-  }
-
-  switch (req.method) {
+  switch(req.method){
     case 'GET':
-      return await handleGet(req, res, user);
+      return await handleGet(req,res,user)
 
     case 'POST':
-      return await handlePost(req, res, user);
-
+      return await handlePost(req,res,user)
+    
     default:
-      // PUT, DELETE, and other methods should use /api/jobs/[id] endpoint
-      return sendError(res, 405, ERROR_MESSAGES.METHOD_NOT_ALLOWED, 'Method not allowed');
+      //PUT DELETE and other methods use [id] endpoint
+      return sendError(res, 405, ERROR_MESSAGES.METHOD_NOT_ALLOWED, 'Method not allowed')
   }
+
 }
+
+export default withRateLimit(handler, { requireAuth: true})

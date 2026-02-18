@@ -1,9 +1,9 @@
 import { ERROR_MESSAGES } from '../../shared/errors.js';
-import { getUserFromRequest } from '../../server/lib/supabaseServer.js';
 import { jobUpdateSchema, uuidSchema } from '../../shared/validations/jobSchema.js';
 import { sendSuccess, sendError } from '../../shared/response.js';
 import { getJobById, updateJob, deleteJob } from '../../server/services/jobService.js';
 import { logger } from '../../shared/logger.js';
+import { withRateLimit } from '../../server/middleware/withRateLimit.js';
 
 /**
  * Validates UUID format using Zod schema
@@ -110,7 +110,7 @@ async function handleDelete(req, res, user, jobId) {
  * - Ownership verified at service layer (defense in depth)
  * - Returns 404 for both "not found" and "not owned" (prevents enumeration)
  */
-export default async function handler(req, res) {
+async function handler(req, res) {
   const { id } = req.query;
 
   // Validate UUID format FIRST (before auth to reject malformed IDs early)
@@ -124,21 +124,7 @@ export default async function handler(req, res) {
   }
 
   // Authenticate user via JWT
-  let user = null;
-  try {
-    const authResult = await getUserFromRequest(req);
-    user = authResult.user;
-
-    if (!user) {
-      return sendError(res, 401, ERROR_MESSAGES.UNAUTHORIZED, 'Unauthorized');
-    }
-  } catch (error) {
-    logger.error('Authentication error', {
-      operation: 'handler',
-      error: error.message,
-    });
-    return sendError(res, 401, ERROR_MESSAGES.UNAUTHORIZED, 'Unauthorized');
-  }
+  const user = req._rateLimitUser
 
   // Route to appropriate handler based on HTTP method
   switch (req.method) {
@@ -155,3 +141,6 @@ export default async function handler(req, res) {
       return sendError(res, 405, ERROR_MESSAGES.METHOD_NOT_ALLOWED, 'Method not allowed');
   }
 }
+
+
+export default withRateLimit(handler, { requireAuth: true})

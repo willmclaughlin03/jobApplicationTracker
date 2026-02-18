@@ -127,7 +127,11 @@ export function withRateLimit(handler, options = {}){
 
         //unmapped methods skip rate limits
         if(!operation){
-            return handler(req,res);
+            // allows potential CORS implementation in future
+            if(req.method === 'OPTIONS'){
+                return res.status(204).end()
+            }
+            return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED)
         }
 
         let identifier;

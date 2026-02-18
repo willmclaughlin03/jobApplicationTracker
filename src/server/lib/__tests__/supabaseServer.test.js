@@ -19,6 +19,17 @@ jest.mock('@supabase/supabase-js', () => ({
   createClient: jest.fn(() => mockSupabaseClient),
 }));
 
+// Mock logger to verify structured logging (replaces console.error usage)
+const mockLogger = {
+  info: jest.fn(),
+  error: jest.fn(),
+  warn: jest.fn(),
+  debug: jest.fn(),
+};
+jest.mock('../../../shared/logger.js', () => ({
+  logger: mockLogger,
+}));
+
 const { getUserFromRequest, withAuth } = require('../supabaseServer.js');
 
 describe('supabaseServer', () => {
@@ -117,6 +128,7 @@ describe('supabaseServer', () => {
     /**
      * Test: Valid token but Supabase returns an error
      * Expected: Returns generic error message (not exposing internal details)
+     * Verifies: logger.error called with structured context, console.error NOT called
      */
     it('should return error when Supabase auth fails', async () => {
       mockGetUser.mockResolvedValue({
@@ -130,7 +142,6 @@ describe('supabaseServer', () => {
         },
       };
 
-      // Suppress console.error for this test
       const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
 
       const result = await getUserFromRequest(req);
@@ -139,7 +150,15 @@ describe('supabaseServer', () => {
         user: null,
         error: 'Invalid or expired token',
       });
-      expect(consoleSpy).toHaveBeenCalled();
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        'Token validation failed',
+        expect.objectContaining({
+          message: 'Token expired',
+          status: 401,
+          timestamp: expect.any(String),
+        })
+      );
+      expect(consoleSpy).not.toHaveBeenCalled();
 
       consoleSpy.mockRestore();
     });
@@ -171,6 +190,7 @@ describe('supabaseServer', () => {
     /**
      * Test: Supabase throws an unexpected exception
      * Expected: Returns service unavailable error
+     * Verifies: logger.error called with structured context, console.error NOT called
      */
     it('should return error when Supabase throws an exception', async () => {
       mockGetUser.mockRejectedValue(new Error('Network error'));
@@ -181,7 +201,6 @@ describe('supabaseServer', () => {
         },
       };
 
-      // Suppress console.error for this test
       const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
 
       const result = await getUserFromRequest(req);
@@ -190,7 +209,15 @@ describe('supabaseServer', () => {
         user: null,
         error: 'Authentication service unavailable',
       });
-      expect(consoleSpy).toHaveBeenCalled();
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        'Unexpected authentication error',
+        expect.objectContaining({
+          message: 'Network error',
+          stack: expect.any(String),
+          timestamp: expect.any(String),
+        })
+      );
+      expect(consoleSpy).not.toHaveBeenCalled();
 
       consoleSpy.mockRestore();
     });

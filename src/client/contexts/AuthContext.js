@@ -19,7 +19,7 @@ import {
 } from '../../shared/validations/authSchema.js';
 import { ERROR_MESSAGES } from '../../shared/errors.js';
 
-const AuthContext = createContext({});
+const AuthContext = createContext(undefined);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);

@@ -54,6 +54,7 @@ describe('withRateLimit middleware', () => {
             status: jest.fn().mockReturnThis(),
             json: jest.fn().mockReturnThis(),
             setHeader: jest.fn(),
+            end: jest.fn().mockReturnThis(),
         };
         return res;
     };
@@ -73,18 +74,18 @@ describe('withRateLimit middleware', () => {
     // =========================================================================
     // normalizeIp validation (findings a + e)
     // =========================================================================
-    describe('IP validation and normalization', () => {
+    describe('IP validation and normalization (requireAuth: false)', () => {
         /**
          * Test: Valid IPv4 addresses pass through normalizeIp
          * Edge case: Verifies the regex accepts standard dotted-quad format
+         * Note: IP path only reachable with requireAuth: false (public routes)
          */
         it('should accept valid IPv4 addresses', async () => {
-            mockGetUserFromRequest.mockResolvedValue({ user: null, error: 'No auth' });
             const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.1' });
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { requireAuth: false })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
                 'ip:10.0.0.1',
@@ -98,12 +99,11 @@ describe('withRateLimit middleware', () => {
          * Edge case: Node.js often reports IPv4 connections as ::ffff:x.x.x.x
          */
         it('should strip ::ffff: prefix from IPv4-mapped IPv6', async () => {
-            mockGetUserFromRequest.mockResolvedValue({ user: null, error: 'No auth' });
             const req = createMockRequest('GET', {}, { remoteAddress: '::ffff:192.168.1.1' });
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { requireAuth: false })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
                 'ip:192.168.1.1',
@@ -119,12 +119,11 @@ describe('withRateLimit middleware', () => {
          */
         it('should accept valid IPv6 addresses', async () => {
             process.env.VERCEL = '1';
-            mockGetUserFromRequest.mockResolvedValue({ user: null, error: 'No auth' });
             const req = createMockRequest('GET', { 'x-real-ip': '2001:db8::1' });
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { requireAuth: false })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
                 'ip:2001:db8::1',
@@ -139,7 +138,6 @@ describe('withRateLimit middleware', () => {
          * Security: Prevents spoofed headers from creating arbitrary rate limit keys
          */
         it('should reject non-IP strings from x-real-ip header', async () => {
-            mockGetUserFromRequest.mockResolvedValue({ user: null, error: 'No auth' });
             const req = createMockRequest(
                 'GET',
                 { 'x-real-ip': "'; DROP TABLE users;--" },
@@ -148,7 +146,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { requireAuth: false })(req, res);
 
             expect(res.status).toHaveBeenCalledWith(403);
             expect(res.json).toHaveBeenCalledWith(
@@ -164,7 +162,6 @@ describe('withRateLimit middleware', () => {
          * Security: Prevents memory abuse via oversized rate limit keys
          */
         it('should reject IPs longer than 45 characters', async () => {
-            mockGetUserFromRequest.mockResolvedValue({ user: null, error: 'No auth' });
             const longString = 'a'.repeat(46);
             const req = createMockRequest(
                 'GET',
@@ -174,7 +171,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { requireAuth: false })(req, res);
 
             expect(res.status).toHaveBeenCalledWith(403);
             expect(handler).not.toHaveBeenCalled();
@@ -185,7 +182,6 @@ describe('withRateLimit middleware', () => {
          * Edge case: Header present but empty value
          */
         it('should reject empty string IPs', async () => {
-            mockGetUserFromRequest.mockResolvedValue({ user: null, error: 'No auth' });
             const req = createMockRequest(
                 'GET',
                 { 'x-real-ip': '' },
@@ -194,7 +190,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { requireAuth: false })(req, res);
 
             expect(res.status).toHaveBeenCalledWith(403);
             expect(handler).not.toHaveBeenCalled();
@@ -238,16 +234,15 @@ describe('withRateLimit middleware', () => {
         });
 
         /**
-         * Test: Unauthenticated requests fall back to IP
-         * Verifies: ip:{address} format used when no auth
+         * Test: Public routes use IP-based identifier
+         * Verifies: ip:{address} format used with requireAuth: false
          */
-        it('should fall back to IP for unauthenticated requests', async () => {
-            mockGetUserFromRequest.mockResolvedValue({ user: null, error: 'No auth' });
+        it('should use IP for public routes (requireAuth: false)', async () => {
             const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.5' });
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { requireAuth: false })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
                 'ip:10.0.0.5',
@@ -257,11 +252,10 @@ describe('withRateLimit middleware', () => {
         });
 
         /**
-         * Test: No valid identifier returns 403 (finding c)
+         * Test: No valid identifier returns 403 on public routes (finding c)
          * Prevents: Shared 'anonymous' bucket that rate-limits all unidentified users
          */
-        it('should return 403 when no valid identifier is available', async () => {
-            mockGetUserFromRequest.mockResolvedValue({ user: null, error: 'No auth' });
+        it('should return 403 when no valid IP on public route', async () => {
             const req = createMockRequest(
                 'GET',
                 {},
@@ -271,7 +265,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { requireAuth: false })(req, res);
 
             expect(res.status).toHaveBeenCalledWith(403);
             expect(res.json).toHaveBeenCalledWith(
@@ -289,7 +283,6 @@ describe('withRateLimit middleware', () => {
          */
         it('should prefer x-real-ip over socket.remoteAddress', async () => {
             process.env.VERCEL = '1';
-            mockGetUserFromRequest.mockResolvedValue({ user: null, error: 'No auth' });
             const req = createMockRequest(
                 'GET',
                 { 'x-real-ip': '203.0.113.1' },
@@ -298,7 +291,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { requireAuth: false })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
                 'ip:203.0.113.1',
@@ -438,10 +431,10 @@ describe('withRateLimit middleware', () => {
     // =========================================================================
     describe('unmapped methods', () => {
         /**
-         * Test: Unmapped HTTP methods skip rate limiting entirely
-         * Edge case: OPTIONS, HEAD, etc. should pass through
+         * Test: OPTIONS returns 204 without rate limiting or calling handler
+         * Edge case: Supports CORS preflight requests
          */
-        it('should skip rate limiting for unmapped methods', async () => {
+        it('should return 204 for OPTIONS without rate limiting', async () => {
             const req = createMockRequest('OPTIONS');
             const res = createMockResponse();
             const handler = jest.fn();
@@ -449,7 +442,24 @@ describe('withRateLimit middleware', () => {
             await withRateLimit(handler)(req, res);
 
             expect(mockCheckRateLimit).not.toHaveBeenCalled();
-            expect(handler).toHaveBeenCalledWith(req, res);
+            expect(res.status).toHaveBeenCalledWith(204);
+            expect(res.end).toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Test: HEAD and other unmapped methods return 405
+         * Verifies: Only OPTIONS gets special treatment
+         */
+        it('should return 405 for other unmapped methods', async () => {
+            const req = createMockRequest('HEAD');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler)(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(405);
+            expect(handler).not.toHaveBeenCalled();
         });
     });
 
@@ -543,14 +553,31 @@ describe('withRateLimit middleware', () => {
     });
 
     // =========================================================================
-    // Auth extraction failure fallback
+    // requireAuth: true (protected routes) — auth failure behavior
     // =========================================================================
-    describe('auth extraction errors', () => {
+    describe('requireAuth: true (protected routes)', () => {
         /**
-         * Test: getUserFromRequest throwing falls back to IP
-         * Edge case: Auth service crash should not block requests
+         * Test: Auth failure returns 401, does NOT fall back to IP
+         * Verifies: Protected routes block unauthenticated requests entirely
          */
-        it('should fall back to IP when getUserFromRequest throws', async () => {
+        it('should return 401 when auth fails on protected route', async () => {
+            mockGetUserFromRequest.mockResolvedValue({ user: null, error: 'No auth' });
+            const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.1' });
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler)(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(401);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Test: Auth service crash returns 401, does NOT fall back to IP
+         * Verifies: Even when auth throws, protected routes don't degrade to IP
+         */
+        it('should return 401 when getUserFromRequest throws on protected route', async () => {
             mockGetUserFromRequest.mockRejectedValue(new Error('Auth service down'));
             const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.99' });
             const res = createMockResponse();
@@ -558,19 +585,16 @@ describe('withRateLimit middleware', () => {
 
             await withRateLimit(handler)(req, res);
 
-            expect(mockCheckRateLimit).toHaveBeenCalledWith(
-                'ip:10.0.0.99',
-                expect.any(String),
-                expect.any(String)
-            );
-            expect(handler).toHaveBeenCalled();
+            expect(res.status).toHaveBeenCalledWith(401);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
         });
 
         /**
-         * Test: _rateLimitUser is NOT set when auth fails
+         * Test: _rateLimitUser is NOT set when auth fails on protected route
          * Verifies: No stale user data leaks into the request
          */
-        it('should not set _rateLimitUser for unauthenticated requests', async () => {
+        it('should not set _rateLimitUser when auth fails', async () => {
             mockGetUserFromRequest.mockResolvedValue({ user: null, error: 'No auth' });
             const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.1' });
             const res = createMockResponse();
@@ -661,18 +685,17 @@ describe('withRateLimit middleware', () => {
     // =========================================================================
     // IP whitespace trimming
     // =========================================================================
-    describe('IP normalization edge cases', () => {
+    describe('IP normalization edge cases (requireAuth: false)', () => {
         /**
          * Test: Leading/trailing whitespace in IP is trimmed
          * Edge case: Some proxies may pad IP with whitespace
          */
         it('should trim whitespace from IP addresses', async () => {
-            mockGetUserFromRequest.mockResolvedValue({ user: null, error: 'No auth' });
             const req = createMockRequest('GET', {}, { remoteAddress: '  10.0.0.1  ' });
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { requireAuth: false })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
                 'ip:10.0.0.1',

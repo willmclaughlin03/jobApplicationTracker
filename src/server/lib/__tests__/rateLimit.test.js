@@ -252,4 +252,223 @@ describe('checkRateLimit', () => {
             expect(result.remaining).toBe(0);
         });
     });
+
+    // =========================================================================
+    // Dual-window evaluation logic
+    // =========================================================================
+    describe('dual-window evaluation', () => {
+        /**
+         * Test: Daily fails → returns daily failure (hourly not checked)
+         * Verifies short-circuit: if daily bucket is exhausted, hourly
+         * is never consumed, preserving the smaller bucket.
+         */
+        it('should return daily failure without checking hourly when daily fails', async () => {
+            // insert has both hourly (30) and daily (60) limits
+            mockLimit
+                .mockResolvedValueOnce({
+                    // daily limiter checked first
+                    success: false,
+                    limit: 60,
+                    remaining: 0,
+                    reset: Date.now() + 86400000,
+                })
+                // hourly should NOT be called, but mock it just in case
+                .mockResolvedValueOnce({
+                    success: true,
+                    limit: 30,
+                    remaining: 25,
+                    reset: Date.now() + 3600000,
+                });
+
+            const result = await checkRateLimit('user:abc', 'free', 'insert');
+
+            expect(result.success).toBe(false);
+            expect(result.window).toBe('daily');
+            expect(result.remaining).toBe(0);
+            // Only 1 call means hourly was never checked
+            expect(mockLimit).toHaveBeenCalledTimes(1);
+        });
+
+        /**
+         * Test: Daily passes, hourly fails → returns hourly failure
+         */
+        it('should return hourly failure when daily passes but hourly fails', async () => {
+            mockLimit
+                .mockResolvedValueOnce({
+                    // daily passes
+                    success: true,
+                    limit: 60,
+                    remaining: 40,
+                    reset: Date.now() + 86400000,
+                })
+                .mockResolvedValueOnce({
+                    // hourly fails
+                    success: false,
+                    limit: 30,
+                    remaining: 0,
+                    reset: Date.now() + 3600000,
+                });
+
+            const result = await checkRateLimit('user:abc', 'free', 'insert');
+
+            expect(result.success).toBe(false);
+            expect(result.window).toBe('hourly');
+            expect(result.remaining).toBe(0);
+        });
+
+        /**
+         * Test: Both pass, hourly more restrictive (lower remaining) → returns hourly
+         */
+        it('should return hourly when both pass and hourly has lower remaining', async () => {
+            mockLimit
+                .mockResolvedValueOnce({
+                    // daily passes with plenty remaining
+                    success: true,
+                    limit: 60,
+                    remaining: 50,
+                    reset: Date.now() + 86400000,
+                })
+                .mockResolvedValueOnce({
+                    // hourly passes but nearly exhausted
+                    success: true,
+                    limit: 30,
+                    remaining: 2,
+                    reset: Date.now() + 3600000,
+                });
+
+            const result = await checkRateLimit('user:abc', 'free', 'insert');
+
+            expect(result.success).toBe(true);
+            expect(result.window).toBe('hourly');
+            expect(result.remaining).toBe(2);
+        });
+
+        /**
+         * Test: Both pass, daily more restrictive (lower remaining) → returns daily
+         */
+        it('should return daily when both pass and daily has lower remaining', async () => {
+            mockLimit
+                .mockResolvedValueOnce({
+                    // daily passes but nearly exhausted
+                    success: true,
+                    limit: 60,
+                    remaining: 1,
+                    reset: Date.now() + 86400000,
+                })
+                .mockResolvedValueOnce({
+                    // hourly passes with plenty remaining
+                    success: true,
+                    limit: 30,
+                    remaining: 20,
+                    reset: Date.now() + 3600000,
+                });
+
+            const result = await checkRateLimit('user:abc', 'free', 'insert');
+
+            expect(result.success).toBe(true);
+            expect(result.window).toBe('daily');
+            expect(result.remaining).toBe(1);
+        });
+
+        /**
+         * Test: Read operation (daily limit is null) → only hourly checked
+         * read tier has daily: null, so only the hourly limiter is created.
+         */
+        it('should only check hourly when daily limit is null (read operation)', async () => {
+            mockLimit.mockResolvedValueOnce({
+                success: true,
+                limit: 300,
+                remaining: 290,
+                reset: Date.now() + 3600000,
+            });
+
+            const result = await checkRateLimit('user:abc', 'free', 'read');
+
+            expect(result.success).toBe(true);
+            expect(result.window).toBe('hourly');
+            expect(result.remaining).toBe(290);
+            // Only 1 call because daily limiter is null
+            expect(mockLimit).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    // =========================================================================
+    // Limiter cache invalidation
+    // =========================================================================
+    describe('limiter cache invalidation', () => {
+        /**
+         * Uses jest.resetModules() to get a fresh limiterCache per test.
+         * This ensures cache behavior is isolated.
+         */
+        let freshCheckRateLimit;
+        let freshRatelimit;
+
+        beforeEach(() => {
+            jest.resetModules();
+
+            // Re-apply mocks on fresh module registry
+            jest.doMock('@upstash/ratelimit', () => {
+                const limitFn = jest.fn().mockResolvedValue({
+                    success: true,
+                    limit: 300,
+                    remaining: 299,
+                    reset: Date.now() + 3600000,
+                });
+                const RatelimitClass = jest.fn().mockImplementation(() => ({
+                    limit: limitFn,
+                }));
+                RatelimitClass.fixedWindow = jest.fn().mockReturnValue('fixedWindowConfig');
+                return { Ratelimit: RatelimitClass };
+            });
+
+            jest.doMock('../redis', () => ({
+                getRedisClient: jest.fn(),
+                isRedisHealthy: jest.fn().mockResolvedValue(true),
+            }));
+
+            jest.doMock('../../../shared/logger', () => ({
+                logger: { info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() },
+            }));
+
+            freshRatelimit = require('@upstash/ratelimit').Ratelimit;
+            const redis = require('../redis');
+            // Start with a stable mock client
+            const mockClient = { id: 'client-1' };
+            redis.getRedisClient.mockReturnValue(mockClient);
+
+            freshCheckRateLimit = require('../rateLimit').checkRateLimit;
+        });
+
+        /**
+         * Test: Same Redis client → limiter is reused from cache
+         */
+        it('should reuse cached limiter when Redis client is unchanged', async () => {
+            await freshCheckRateLimit('user:abc', 'free', 'read');
+            const callsAfterFirst = freshRatelimit.mock.calls.length;
+
+            await freshCheckRateLimit('user:abc', 'free', 'read');
+            const callsAfterSecond = freshRatelimit.mock.calls.length;
+
+            // No new Ratelimit constructor calls on second invocation
+            expect(callsAfterSecond).toBe(callsAfterFirst);
+        });
+
+        /**
+         * Test: Redis client reference changes → limiter is rebuilt
+         */
+        it('should rebuild limiter when Redis client reference changes', async () => {
+            await freshCheckRateLimit('user:abc', 'free', 'read');
+            const callsAfterFirst = freshRatelimit.mock.calls.length;
+
+            // Simulate Redis reconnection → new client object
+            const redis = require('../redis');
+            redis.getRedisClient.mockReturnValue({ id: 'client-2' });
+
+            await freshCheckRateLimit('user:abc', 'free', 'read');
+            const callsAfterSecond = freshRatelimit.mock.calls.length;
+
+            // Should have created a new Ratelimit instance
+            expect(callsAfterSecond).toBeGreaterThan(callsAfterFirst);
+        });
+    });
 });

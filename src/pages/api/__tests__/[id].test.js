@@ -4,14 +4,21 @@
  * Purpose: Verify single job operations (GET, PUT, DELETE) work correctly
  * Connects to: pages/api/[id].js
  *
+ * Note: Authentication and rate limiting are tested in withRateLimit.test.js.
+ * These tests mock withRateLimit as a passthrough and focus on handler business logic.
+ *
  * Test coverage:
  * - UUID validation (format checking)
- * - Authentication (JWT validation)
  * - GET single job (ownership verification)
  * - PUT update job (validation + ownership)
  * - DELETE remove job (ownership verification)
  * - Method handling (405 for unsupported methods)
  */
+
+// Mock withRateLimit as passthrough so we test handler logic directly
+jest.mock('../../../server/middleware/withRateLimit.js', () => ({
+  withRateLimit: (handler) => handler,
+}));
 
 // Mock jobService before importing handler
 const mockGetJobById = jest.fn();
@@ -22,13 +29,6 @@ jest.mock('../../../server/services/jobService.js', () => ({
   getJobById: mockGetJobById,
   updateJob: mockUpdateJob,
   deleteJob: mockDeleteJob,
-}));
-
-// Mock getUserFromRequest
-const mockGetUserFromRequest = jest.fn();
-
-jest.mock('../../../server/lib/supabaseServer.js', () => ({
-  getUserFromRequest: mockGetUserFromRequest,
 }));
 
 // Mock logger to prevent console output during tests
@@ -73,7 +73,10 @@ describe('[id] API handler', () => {
     user_id: 'user-123',
   };
 
-  // Helper to create mock request
+  /**
+   * Helper to create mock request with _rateLimitUser pre-set
+   * Simulates what withRateLimit provides after successful auth
+   */
   const createMockRequest = (method, id, body = {}, headers = {}) => ({
     method,
     query: { id },
@@ -82,6 +85,7 @@ describe('[id] API handler', () => {
       authorization: 'Bearer valid-token',
       ...headers,
     },
+    _rateLimitUser: mockUser,
   });
 
   // Helper to create mock response
@@ -95,8 +99,6 @@ describe('[id] API handler', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    // Default: authenticated user
-    mockGetUserFromRequest.mockResolvedValue({ user: mockUser, error: null });
     // Default: valid update data
     mockSafeParse.mockReturnValue({ success: true, data: {} });
   });
@@ -104,7 +106,7 @@ describe('[id] API handler', () => {
   describe('UUID Validation', () => {
     /**
      * Test: Invalid UUID format
-     * Expected: Returns 400 before any auth or DB calls
+     * Expected: Returns 400 before any DB calls
      */
     it('should return 400 for invalid UUID format', async () => {
       const req = createMockRequest('GET', 'not-a-valid-uuid');
@@ -118,8 +120,7 @@ describe('[id] API handler', () => {
           error: expect.stringContaining('Invalid job ID'),
         })
       );
-      // Should not attempt auth or DB calls
-      expect(mockGetUserFromRequest).not.toHaveBeenCalled();
+      // Should not attempt DB calls
       expect(mockGetJobById).not.toHaveBeenCalled();
     });
 
@@ -151,7 +152,7 @@ describe('[id] API handler', () => {
 
     /**
      * Test: Valid UUID format accepted
-     * Expected: Proceeds to auth check (not rejected at validation)
+     * Expected: Proceeds to handler logic (not rejected at validation)
      */
     it('should accept valid UUID v4 format', async () => {
       const req = createMockRequest('GET', validUUID);
@@ -161,66 +162,8 @@ describe('[id] API handler', () => {
 
       await handler(req, res);
 
-      // Should have proceeded past UUID validation to auth
-      expect(mockGetUserFromRequest).toHaveBeenCalled();
-    });
-  });
-
-  describe('Authentication', () => {
-    /**
-     * Test: Missing Authorization header
-     * Expected: Returns 401
-     */
-    it('should return 401 when Authorization header is missing', async () => {
-      mockGetUserFromRequest.mockResolvedValue({
-        user: null,
-        error: 'Missing Authorization header',
-      });
-
-      const req = createMockRequest('GET', validUUID, {}, { authorization: undefined });
-      const res = createMockResponse();
-
-      await handler(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(401);
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          error: expect.stringContaining('must be logged in'),
-        })
-      );
-    });
-
-    /**
-     * Test: Invalid token
-     * Expected: Returns 401
-     */
-    it('should return 401 when token is invalid', async () => {
-      mockGetUserFromRequest.mockResolvedValue({
-        user: null,
-        error: 'Invalid or expired token',
-      });
-
-      const req = createMockRequest('GET', validUUID);
-      const res = createMockResponse();
-
-      await handler(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(401);
-    });
-
-    /**
-     * Test: Auth service throws exception
-     * Expected: Returns 401 (graceful handling)
-     */
-    it('should return 401 when auth service throws', async () => {
-      mockGetUserFromRequest.mockRejectedValue(new Error('Service unavailable'));
-
-      const req = createMockRequest('GET', validUUID);
-      const res = createMockResponse();
-
-      await handler(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(401);
+      // Should have proceeded past UUID validation to DB call
+      expect(mockGetJobById).toHaveBeenCalled();
     });
   });
 
