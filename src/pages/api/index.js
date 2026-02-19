@@ -28,7 +28,7 @@ async function handleGet(req, res, user) {
   const { data, count, error } = await getJobsByUserId(user.id, options);
 
   if (error) {
-    return sendError(res, 503, ERROR_MESSAGES.FETCH_FAILED, 'Server unavailable');
+    return sendError(res, 503, 'FETCH_FAILED', ERROR_MESSAGES.FETCH_FAILED);
   }
 
   return sendSuccess(res, 200, { data, count }, 'Jobs retrieved successfully');
@@ -57,7 +57,7 @@ async function handlePost(req, res, user) {
   const { data, error } = await createJob(finalizedData, user.id);
 
   if (error) {
-    return sendError(res, 400, ERROR_MESSAGES.ADD_FAILED, 'Failed to add job data');
+    return sendError(res, 400, 'ADD_FAILED', ERROR_MESSAGES.ADD_FAILED);
   }
 
   return sendSuccess(res, 201, data, 'Successfully added job');
@@ -88,7 +88,7 @@ async function handler(req, res) {
     
     default:
       //PUT DELETE and other methods use [id] endpoint
-      return sendError(res, 405, ERROR_MESSAGES.METHOD_NOT_ALLOWED, 'Method not allowed')
+      return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED)
   }
 
 }

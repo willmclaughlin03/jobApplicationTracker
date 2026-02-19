@@ -34,7 +34,7 @@ async function handleGet(req, res, user, jobId) {
   const { data, error } = await getJobById(jobId, user.id);
 
   if (error || !data) {
-    return sendError(res, 404, ERROR_MESSAGES.NOT_FOUND, 'Job not found');
+    return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);
   }
 
   return sendSuccess(res, 200, data, 'Job retrieved successfully');
@@ -59,7 +59,7 @@ async function handlePut(req, res, user, jobId) {
     return sendError(
       res,
       400,
-      ERROR_MESSAGES.UPDATE_FAILED,
+      'VALIDATION_ERROR',
       updateResult.error.issues.map((i) => i.message).join(', ')
     );
   }
@@ -68,7 +68,7 @@ async function handlePut(req, res, user, jobId) {
   const { data, error } = await updateJob(jobId, updatedData, user.id);
 
   if (error || !data) {
-    return sendError(res, 404, ERROR_MESSAGES.NOT_FOUND, 'Job not found');
+    return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);
   }
 
   return sendSuccess(res, 200, data, 'Successfully updated job details');
@@ -89,7 +89,7 @@ async function handleDelete(req, res, user, jobId) {
   const { data, error } = await deleteJob(jobId, user.id);
 
   if (error || !data) {
-    return sendError(res, 404, ERROR_MESSAGES.NOT_FOUND, 'Job not found');
+    return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);
   }
 
   return sendSuccess(res, 200, data, 'Successfully deleted job');
@@ -120,7 +120,7 @@ async function handler(req, res) {
       id: id || 'empty',
       method: req.method,
     });
-    return sendError(res, 400, ERROR_MESSAGES.INVALID_ID, 'Invalid job ID format');
+    return sendError(res, 400, 'INVALID_ID', ERROR_MESSAGES.INVALID_ID);
   }
 
   // Authenticate user via JWT
@@ -138,7 +138,7 @@ async function handler(req, res) {
       return await handleDelete(req, res, user, id);
 
     default:
-      return sendError(res, 405, ERROR_MESSAGES.METHOD_NOT_ALLOWED, 'Method not allowed');
+      return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
   }
 }
 
