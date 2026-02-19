@@ -258,27 +258,37 @@ describe('checkRateLimit', () => {
     // =========================================================================
     describe('dual-window evaluation', () => {
         /**
+         * Reset mockLimit before each dual-window test.
+         *
+         * jest.clearAllMocks() only clears call history — it does NOT flush
+         * mockResolvedValueOnce queues. Any unconsumed "once" values from a
+         * prior test would leak into the next test and produce incorrect results.
+         * mockReset() flushes the queue completely; we then restore the default.
+         */
+        beforeEach(() => {
+            mockLimit.mockReset();
+            mockLimit.mockResolvedValue({
+                success: true,
+                limit: 20,
+                remaining: 19,
+                reset: Date.now() + 3600000,
+            });
+        });
+
+        /**
          * Test: Daily fails → returns daily failure (hourly not checked)
          * Verifies short-circuit: if daily bucket is exhausted, hourly
          * is never consumed, preserving the smaller bucket.
          */
         it('should return daily failure without checking hourly when daily fails', async () => {
             // insert has both hourly (30) and daily (60) limits
-            mockLimit
-                .mockResolvedValueOnce({
-                    // daily limiter checked first
-                    success: false,
-                    limit: 60,
-                    remaining: 0,
-                    reset: Date.now() + 86400000,
-                })
-                // hourly should NOT be called, but mock it just in case
-                .mockResolvedValueOnce({
-                    success: true,
-                    limit: 30,
-                    remaining: 25,
-                    reset: Date.now() + 3600000,
-                });
+            mockLimit.mockResolvedValueOnce({
+                // daily limiter checked first
+                success: false,
+                limit: 60,
+                remaining: 0,
+                reset: Date.now() + 86400000,
+            });
 
             const result = await checkRateLimit('user:abc', 'free', 'insert');
 
