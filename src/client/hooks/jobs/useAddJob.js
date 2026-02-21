@@ -17,7 +17,12 @@ export function useAddJob(onSuccess) {
     setSaving(false);
 
     if (apiError || response?.error) {
-      const normalizedError = normalizeError(apiError || response?.error, ERROR_MESSAGES.ADD_FAILED);
+      // Use the backend's message and code when available (e.g. STORAGE_LIMIT_EXCEEDED),
+      // otherwise fall back to the generic apiError string
+      const errorData = response?.error
+        ? { message: response?.message, code: response?.error }
+        : apiError;
+      const normalizedError = normalizeError(errorData, ERROR_MESSAGES.ADD_FAILED);
       setError(normalizedError);
       return { success: false, data: null, error: normalizedError };
     }

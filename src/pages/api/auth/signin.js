@@ -58,5 +58,6 @@ async function handler(req, res) {
 
 export default withRateLimit(handler, {
     requireAuth: false,
-    operation: OPERATIONS.AUTH
+    operation: OPERATIONS.AUTH,
+    allowedMethods: ['POST']
 });

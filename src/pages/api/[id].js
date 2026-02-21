@@ -143,4 +143,4 @@ async function handler(req, res) {
 }
 
 
-export default withRateLimit(handler, { requireAuth: true})
+export default withRateLimit(handler, { requireAuth: true, allowedMethods: ['GET', 'PUT', 'DELETE'] })

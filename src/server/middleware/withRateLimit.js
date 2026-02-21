@@ -50,14 +50,24 @@ function normalizeIp(ip){
  * Purpose: Provides IP identifier for public/unauthenticated routes
  * Connects to: normalizeIp() for IP validation
  *
+ * Security: On deployed Vercel (production/preview), only x-real-ip is trusted.
+ * socket.remoteAddress on Vercel is always the internal load balancer IP, not
+ * the client — falling back to it would bucket all traffic under one key,
+ * defeating per-client rate limiting. Returns null (→ 403) when x-real-ip is
+ * absent so misconfiguration is visible rather than silently bypassed.
+ *
+ * In local Vercel dev (VERCEL_ENV=development), socket.remoteAddress is
+ * the real client, so the fallback is safe.
+ *
  * @param {import('next').NextApiRequest} req - Next.js API request
  * @returns {string|null} 'ip:{address}' or null if no valid IP
  */
 function extractIpIdentifier(req){
-    const IS_VERCEL = !!process.env.VERCEL;
+    const IS_VERCEL_DEPLOYED = process.env.VERCEL && process.env.VERCEL_ENV !== 'development';
 
-    const rawIp = IS_VERCEL ? req.headers['x-real-ip'] ||
-    req.socket?.remoteAddress : req.socket?.remoteAddress;
+    const rawIp = IS_VERCEL_DEPLOYED
+        ? req.headers['x-real-ip'] ?? null
+        : req.socket?.remoteAddress;
 
     const ip = rawIp ? normalizeIp(rawIp) : null;
 
@@ -102,6 +112,13 @@ function setRateLimitHeaders(res, rateLimitResult){
  * - Protected routes (requireAuth=true): Auth failure blocks request with 401
  * - Public routes (requireAuth=false): IP-based rate limiting, no auth required
  *
+ * Method guard (allowedMethods):
+ * - Fails closed: if allowedMethods is omitted, all requests return 405
+ * - Quota is only consumed for methods explicitly listed in allowedMethods
+ * - Prevents malicious scanners from draining quota with junk method calls on
+ *   mapped methods (e.g. DELETE /api/jobs counting against delete quota before
+ *   the route handler rejects it)
+ *
  * Connects to:
  * - getUserFromRequest() for user authentication (protected routes)
  * - extractIpIdentifier() for IP identification (public routes)
@@ -114,24 +131,34 @@ function setRateLimitHeaders(res, rateLimitResult){
  * @param {boolean} [options.requireAuth=true] - If true, block when auth fails (protected routes).
  *                                               If false, use IP-based rate limiting (public routes).
  * @param {string} [options.operation] - Override operation type. If not set, derived from HTTP method.
+ * @param {string[]} [options.allowedMethods=null] - HTTP methods this route accepts (e.g. ['GET', 'POST']).
+ *                                                   If omitted, all requests return 405 (fail-closed).
  * @returns {Function} Wrapped handler with rate limiting applied
  */
 export function withRateLimit(handler, options = {}){
     const {
         requireAuth = true,
-        operation: operationOverride = null
+        operation: operationOverride = null,
+        allowedMethods = null
     } = options;
 
     return async(req, res) => {
+        // OPTIONS: allow CORS preflight before any method, quota, or auth checks
+        if(req.method === 'OPTIONS'){
+            return res.status(204).end();
+        }
+
+        // Fail-closed: 405 if allowedMethods not declared or method not in list.
+        // Prevents quota drain from mis-routed or scanner requests on mapped methods.
+        if(!allowedMethods || !allowedMethods.includes(req.method)){
+            return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
+        }
+
         const operation = operationOverride || METHOD_TO_OPERATIONS[req.method];
 
-        //unmapped methods skip rate limits
+        // Safety net: allowed method with no operation mapping and no override
         if(!operation){
-            // allows potential CORS implementation in future
-            if(req.method === 'OPTIONS'){
-                return res.status(204).end()
-            }
-            return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED)
+            return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
         }
 
         let identifier;

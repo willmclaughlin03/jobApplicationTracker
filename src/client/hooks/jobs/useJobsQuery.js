@@ -9,19 +9,24 @@ export function useJobsQuery() {
 
   const clearError = useCallback(() => setError(null), []);
 
-  const fetchJobs = useCallback(async ({ from, to }, statusFilter = null) => {
+  /**
+   * Fetches all jobs for the authenticated user in a single request.
+   *
+   * Purpose: Loads the complete job list once on mount so all subsequent
+   * filtering (status, search) and pagination happen client-side at zero
+   * additional API / rate-limit cost.
+   *
+   * Connects to:
+   * - api.get('/api') — returns { data: { data: Job[], count: number } }
+   * - normalizeError — converts raw API errors to a consistent shape
+   *
+   * @returns {Promise<{ success: boolean, data: Job[]|null, count: number, error: string|null }>}
+   */
+  const fetchJobs = useCallback(async () => {
     setLoading(true);
     setError(null);
 
-    const params = new URLSearchParams();
-    if (from !== undefined) params.append('from', from);
-    if (to !== undefined) params.append('to', to);
-    if (statusFilter) params.append('status', statusFilter);
-
-    const queryString = params.toString();
-    const endpoint = queryString ? `/api?${queryString}` : '/api';
-
-    const { data: response, error: apiError } = await api.get(endpoint);
+    const { data: response, error: apiError } = await api.get('/api');
 
     if (apiError || response?.error) {
       const normalizedError = normalizeError(apiError || response?.error, ERROR_MESSAGES.FETCH_FAILED);

@@ -31,12 +31,13 @@ export async function apiRequest(endpoint, options = {}) {
         }
 
         const response = await fetch(endpoint, fetchOptions)
+        const data = await response.json().catch(() => null)
 
         if (!response.ok) {
-            return { data: null, error: ERROR_MESSAGES.FETCH_FAILED }
+            // Return parsed body as data so callers can inspect response?.error and response?.message
+            return { data, error: null }
         }
 
-        const data = await response.json()
         return { data, error: null }
 
     } catch (error) {

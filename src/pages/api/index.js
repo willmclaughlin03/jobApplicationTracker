@@ -1,5 +1,5 @@
 import { ERROR_MESSAGES } from '../../shared/errors.js';
-import { jobSchema } from '../../shared/validations/jobSchema.js';
+import { jobSchema, getQuerySchema } from '../../shared/validations/jobSchema.js';
 import { sendSuccess, sendError } from '../../shared/response.js';
 import { getJobsByUserId, createJob } from '../../server/services/jobService.js';
 import { withRateLimit } from '../../server/middleware/withRateLimit.js';
@@ -12,13 +12,24 @@ import { withRateLimit } from '../../server/middleware/withRateLimit.js';
  * Query params: from, to (pagination), status (filter)
  */
 async function handleGet(req, res, user) {
-  const { from, to, status } = req.query;
+  const queryResult = getQuerySchema.safeParse(req.query);
+
+  if (!queryResult.success) {
+    return sendError(
+      res,
+      400,
+      'VALIDATION_ERROR',
+      queryResult.error.issues.map((i) => i.message).join(', ')
+    );
+  }
+
+  const { from, to, status } = queryResult.data;
 
   const options = {};
 
   if (from !== undefined && to !== undefined) {
-    options.from = parseInt(from, 10);
-    options.to = parseInt(to, 10);
+    options.from = from;
+    options.to = to;
   }
 
   if (status) {
@@ -57,6 +68,9 @@ async function handlePost(req, res, user) {
   const { data, error } = await createJob(finalizedData, user.id);
 
   if (error) {
+    if (error.code === 'STORAGE_LIMIT_EXCEEDED') {
+      return sendError(res, 409, 'STORAGE_LIMIT_EXCEEDED', ERROR_MESSAGES.STORAGE_LIMIT_EXCEEDED);
+    }
     return sendError(res, 400, 'ADD_FAILED', ERROR_MESSAGES.ADD_FAILED);
   }
 
@@ -93,4 +107,4 @@ async function handler(req, res) {
 
 }
 
-export default withRateLimit(handler, { requireAuth: true})
+export default withRateLimit(handler, { requireAuth: true, allowedMethods: ['GET', 'POST'] })

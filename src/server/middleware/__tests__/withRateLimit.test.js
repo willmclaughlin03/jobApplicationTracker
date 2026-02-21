@@ -11,6 +11,7 @@
  * - extractIdentifier: Auth user extraction, IP fallback, null on invalid
  * - withRateLimit: Header setting, 429/503/403 responses, error codes
  * - Double auth prevention: req._rateLimitUser caching
+ * - allowedMethods guard: fail-closed default, quota protection
  */
 
 const mockGetUserFromRequest = jest.fn();
@@ -85,7 +86,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler, { requireAuth: false })(req, res);
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
                 'ip:10.0.0.1',
@@ -103,7 +104,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler, { requireAuth: false })(req, res);
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
                 'ip:192.168.1.1',
@@ -123,7 +124,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler, { requireAuth: false })(req, res);
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
                 'ip:2001:db8::1',
@@ -146,7 +147,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler, { requireAuth: false })(req, res);
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
             expect(res.status).toHaveBeenCalledWith(403);
             expect(res.json).toHaveBeenCalledWith(
@@ -171,7 +172,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler, { requireAuth: false })(req, res);
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
             expect(res.status).toHaveBeenCalledWith(403);
             expect(handler).not.toHaveBeenCalled();
@@ -190,7 +191,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler, { requireAuth: false })(req, res);
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
             expect(res.status).toHaveBeenCalledWith(403);
             expect(handler).not.toHaveBeenCalled();
@@ -210,7 +211,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
                 `user:${mockUser.id}`,
@@ -228,7 +229,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(req._rateLimitUser).toEqual(mockUser);
         });
@@ -242,7 +243,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler, { requireAuth: false })(req, res);
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
                 'ip:10.0.0.5',
@@ -265,7 +266,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler, { requireAuth: false })(req, res);
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
             expect(res.status).toHaveBeenCalledWith(403);
             expect(res.json).toHaveBeenCalledWith(
@@ -291,7 +292,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler, { requireAuth: false })(req, res);
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
                 'ip:203.0.113.1',
@@ -299,6 +300,179 @@ describe('withRateLimit middleware', () => {
                 expect.any(String)
             );
             delete process.env.VERCEL;
+        });
+    });
+
+    // =========================================================================
+    // Vercel IP extraction security (IS_VERCEL_DEPLOYED guard)
+    // =========================================================================
+    describe('Vercel IP extraction security', () => {
+        afterEach(() => {
+            delete process.env.VERCEL;
+            delete process.env.VERCEL_ENV;
+        });
+
+        /**
+         * Test: Vercel production — missing x-real-ip returns 403, no socket fallback
+         * Security: socket.remoteAddress on Vercel is the internal load balancer IP.
+         * Falling back would bucket every client under the same key, bypassing rate limiting.
+         */
+        it('should return 403 on Vercel production when x-real-ip is absent', async () => {
+            process.env.VERCEL = '1';
+            process.env.VERCEL_ENV = 'production';
+            const req = createMockRequest(
+                'GET',
+                {},
+                { remoteAddress: '10.10.10.1' } // Vercel internal IP — must NOT be used
+            );
+            delete req.headers['x-real-ip'];
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(403);
+            expect(res.json).toHaveBeenCalledWith(
+                expect.objectContaining({ error: 'UNIDENTIFIABLE_CLIENT' })
+            );
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Test: Vercel preview — same strict behaviour as production
+         * Security: Preview deployments go through the same Vercel load balancer;
+         * socket.remoteAddress is equally unreliable.
+         */
+        it('should return 403 on Vercel preview when x-real-ip is absent', async () => {
+            process.env.VERCEL = '1';
+            process.env.VERCEL_ENV = 'preview';
+            const req = createMockRequest(
+                'GET',
+                {},
+                { remoteAddress: '10.10.10.1' }
+            );
+            delete req.headers['x-real-ip'];
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(403);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Test: Vercel dev — socket.remoteAddress fallback is allowed
+         * Context: `vercel dev` sets VERCEL=1 but does not go through the load
+         * balancer, so socket.remoteAddress is the real client IP and is safe.
+         */
+        it('should use socket.remoteAddress on Vercel dev when x-real-ip is absent', async () => {
+            process.env.VERCEL = '1';
+            process.env.VERCEL_ENV = 'development';
+            const req = createMockRequest(
+                'GET',
+                {},
+                { remoteAddress: '127.0.0.1' }
+            );
+            delete req.headers['x-real-ip'];
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'ip:127.0.0.1',
+                expect.any(String),
+                expect.any(String)
+            );
+            expect(handler).toHaveBeenCalled();
+        });
+
+        /**
+         * Test: Vercel production — x-real-ip present → used correctly, no 403
+         * Verifies: The happy path still works after narrowing the guard.
+         */
+        it('should use x-real-ip on Vercel production when header is present', async () => {
+            process.env.VERCEL = '1';
+            process.env.VERCEL_ENV = 'production';
+            const req = createMockRequest(
+                'GET',
+                { 'x-real-ip': '203.0.113.42' },
+                { remoteAddress: '10.10.10.1' }
+            );
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'ip:203.0.113.42',
+                expect.any(String),
+                expect.any(String)
+            );
+            expect(handler).toHaveBeenCalled();
+        });
+
+        /**
+         * Test: VERCEL=1 with VERCEL_ENV unset → treated as deployed, returns 403 not socket fallback
+         * Edge case (gap 6a): When VERCEL_ENV is undefined, `undefined !== 'development'` is true,
+         * so IS_VERCEL_DEPLOYED is truthy. The guard must NOT silently fall back to
+         * socket.remoteAddress in this ambiguous state — 403 is the safe response.
+         */
+        it('should return 403 when VERCEL=1 and VERCEL_ENV is unset and x-real-ip is absent', async () => {
+            process.env.VERCEL = '1';
+            // VERCEL_ENV deliberately not set — undefined !== 'development' → IS_VERCEL_DEPLOYED truthy
+            const req = createMockRequest(
+                'GET',
+                {},
+                { remoteAddress: '10.10.10.1' } // internal Vercel address — must NOT be used
+            );
+            delete req.headers['x-real-ip'];
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(403);
+            expect(res.json).toHaveBeenCalledWith(
+                expect.objectContaining({ error: 'UNIDENTIFIABLE_CLIENT' })
+            );
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Test: x-real-ip header is ignored when VERCEL is not set (gap 6b)
+         * Security: Other deployment platforms (e.g. Render, Fly.io) can also set
+         * x-real-ip. Trusting it unconditionally would let a different proxy's header
+         * override the real socket address, breaking per-client isolation.
+         * Verifies: IS_VERCEL_DEPLOYED gate means x-real-ip is ONLY trusted on Vercel.
+         */
+        it('should ignore x-real-ip and use socket.remoteAddress when VERCEL is not set', async () => {
+            delete process.env.VERCEL; // guarantee non-Vercel environment
+            const req = createMockRequest(
+                'GET',
+                { 'x-real-ip': '203.0.113.99' }, // present but must be ignored
+                { remoteAddress: '10.0.0.7' }     // this is the authoritative source
+            );
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'ip:10.0.0.7',
+                expect.any(String),
+                expect.any(String)
+            );
+            // x-real-ip value must NOT appear as the identifier
+            expect(mockCheckRateLimit).not.toHaveBeenCalledWith(
+                'ip:203.0.113.99',
+                expect.any(String),
+                expect.any(String)
+            );
+            expect(handler).toHaveBeenCalled();
         });
     });
 
@@ -322,7 +496,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(res.status).toHaveBeenCalledWith(429);
             expect(res.json).toHaveBeenCalledWith(
@@ -344,7 +518,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(res.status).toHaveBeenCalledWith(503);
             expect(res.json).toHaveBeenCalledWith(
@@ -363,7 +537,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(res.status).toHaveBeenCalledWith(503);
             expect(res.json).toHaveBeenCalledWith(
@@ -394,7 +568,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(res.setHeader).toHaveBeenCalledWith('X-RateLimit-Limit', 20);
             expect(res.setHeader).toHaveBeenCalledWith('X-RateLimit-Remaining', 19);
@@ -417,7 +591,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(res.setHeader).toHaveBeenCalledWith(
                 'Retry-After',
@@ -432,7 +606,8 @@ describe('withRateLimit middleware', () => {
     describe('unmapped methods', () => {
         /**
          * Test: OPTIONS returns 204 without rate limiting or calling handler
-         * Edge case: Supports CORS preflight requests
+         * Edge case: OPTIONS fires before the allowedMethods check, so no
+         * allowedMethods declaration is needed on the call site for preflight
          */
         it('should return 204 for OPTIONS without rate limiting', async () => {
             const req = createMockRequest('OPTIONS');
@@ -448,8 +623,8 @@ describe('withRateLimit middleware', () => {
         });
 
         /**
-         * Test: HEAD and other unmapped methods return 405
-         * Verifies: Only OPTIONS gets special treatment
+         * Test: HEAD with no allowedMethods returns 405 (fail-closed default)
+         * Verifies: Unmapped or undeclared methods are rejected before quota
          */
         it('should return 405 for other unmapped methods', async () => {
             const req = createMockRequest('HEAD');
@@ -483,7 +658,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 60);
             expect(res.status).toHaveBeenCalledWith(429);
@@ -505,7 +680,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 0);
         });
@@ -524,7 +699,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(handler).toHaveBeenCalledWith(req, res);
             expect(handler).toHaveBeenCalledTimes(1);
@@ -546,7 +721,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(handler).not.toHaveBeenCalled();
         });
@@ -566,7 +741,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(res.status).toHaveBeenCalledWith(401);
             expect(mockCheckRateLimit).not.toHaveBeenCalled();
@@ -583,7 +758,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(res.status).toHaveBeenCalledWith(401);
             expect(mockCheckRateLimit).not.toHaveBeenCalled();
@@ -600,7 +775,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(req._rateLimitUser).toBeUndefined();
         });
@@ -625,7 +800,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { allowedMethods: [method] })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
                 `user:${mockUser.id}`,
@@ -655,7 +830,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(res.setHeader).toHaveBeenCalledWith('X-RateLimit-Remaining', 0);
         });
@@ -676,7 +851,7 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler)(req, res);
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(res.setHeader).toHaveBeenCalledWith('X-RateLimit-Limit', 0);
         });
@@ -695,13 +870,105 @@ describe('withRateLimit middleware', () => {
             const res = createMockResponse();
             const handler = jest.fn();
 
-            await withRateLimit(handler, { requireAuth: false })(req, res);
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
                 'ip:10.0.0.1',
                 expect.any(String),
                 expect.any(String)
             );
+        });
+    });
+
+    // =========================================================================
+    // allowedMethods guard (fail-closed behaviour)
+    // =========================================================================
+    describe('allowedMethods guard (fail-closed)', () => {
+        /**
+         * Test: allowedMethods omitted → 405 for any mapped method, no auth, no quota
+         * Verifies: Fail-closed default — developers must explicitly declare what
+         * methods a route accepts, preventing silent quota drain on mis-routed requests
+         */
+        it('should return 405 and skip auth and quota when allowedMethods is not provided', async () => {
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler)(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(405);
+            expect(mockGetUserFromRequest).not.toHaveBeenCalled();
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Test: Empty allowedMethods array → 405
+         * Edge case: Explicit empty array is still fail-closed
+         */
+        it('should return 405 when allowedMethods is an empty array', async () => {
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { allowedMethods: [] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(405);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Test: Method not in allowedMethods → 405, no quota consumed, no auth
+         * Core fix: Prevents quota drain from mis-routed mapped methods
+         * (e.g. DELETE /api/jobs draining delete quota before route returns 405)
+         */
+        it('should return 405 and skip quota when method is not in allowedMethods', async () => {
+            const req = createMockRequest('DELETE');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { allowedMethods: ['GET', 'POST'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(405);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(mockGetUserFromRequest).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Test: Method in allowedMethods → proceeds through auth, quota, and handler
+         * Verifies: Happy path still works with allowedMethods declared
+         */
+        it('should proceed when method is in allowedMethods', async () => {
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalled();
+            expect(handler).toHaveBeenCalledWith(req, res);
+        });
+
+        /**
+         * Test: Only methods listed in allowedMethods are permitted
+         * Verifies: Method-level granularity — POST allowed, GET rejected on same config
+         */
+        it('should only permit methods listed in allowedMethods', async () => {
+            const handler = jest.fn();
+
+            const postReq = createMockRequest('POST');
+            const postRes = createMockResponse();
+            await withRateLimit(handler, { allowedMethods: ['POST'] })(postReq, postRes);
+
+            const getReq = createMockRequest('GET');
+            const getRes = createMockResponse();
+            await withRateLimit(handler, { allowedMethods: ['POST'] })(getReq, getRes);
+
+            expect(handler).toHaveBeenCalledTimes(1);
+            expect(getRes.status).toHaveBeenCalledWith(405);
+            expect(mockCheckRateLimit).toHaveBeenCalledTimes(1);
         });
     });
 });

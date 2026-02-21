@@ -10,6 +10,8 @@
  */
 import { supabaseAdmin } from '../lib/supabaseServer.js';
 import { logger } from '../../shared/logger.js';
+import { getStorargeLimitForTier, TIERS } from '../../shared/constants/tiers.js';
+import { ERROR_MESSAGES } from '../../shared/errors.js';
 
 /**
  * Retrieves jobs for a specific user with optional pagination and filtering
@@ -136,14 +138,62 @@ export async function getJobById(jobId, userId) {
 /**
  * Creates a new job for a user
  *
+ * Purpose: Insert a new job application, enforcing the per-user storage limit
+ * Connects to:
+ * - supabaseAdmin for count query and insert
+ * - getStorargeLimitForTier to retrieve the maxJobs limit for the user's tier
+ *
  * @param {Object} jobData - The job data to insert (validated by jobSchema)
  * @param {string} userId - The user's ID
  * @returns {Promise<{data: Object|null, error: Error|null}>}
  *
  * Security: Associates job with user_id to enforce ownership
+ * Storage: Rejects insert if user is at or over their tier's maxJobs limit
  */
 export async function createJob(jobData, userId) {
   try {
+    // Check storage limit before inserting
+    const { maxJobs } = getStorargeLimitForTier(TIERS.FREE);
+
+    // Fail closed: if the tier config is broken, deny the insert rather than
+    // silently allowing unlimited entries ((count ?? 0) >= undefined is false)
+    if (typeof maxJobs !== 'number' || maxJobs <= 0) {
+      logger.error('Storage limit configuration is invalid', {
+        operation: 'createJob',
+        userId,
+        maxJobs,
+      });
+      return { data: null, error: new Error('Storage limit configuration is invalid') };
+    }
+
+    const { count, error: countError } = await supabaseAdmin
+      .from('jobs')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId);
+
+    if (countError) {
+      logger.error('Failed to check job count before insert', {
+        operation: 'createJob',
+        userId,
+        error: countError.message,
+      });
+      return { data: null, error: countError };
+    }
+
+    if ((count ?? 0) >= maxJobs) {
+      logger.warn('Storage limit reached', {
+        operation: 'createJob',
+        userId,
+        count,
+        maxJobs,
+      });
+      const limitError = Object.assign(
+        new Error(ERROR_MESSAGES.STORAGE_LIMIT_EXCEEDED),
+        { code: 'STORAGE_LIMIT_EXCEEDED' }
+      );
+      return { data: null, error: limitError };
+    }
+
     const { data, error } = await supabaseAdmin
       .from('jobs')
       .insert({ ...jobData, user_id: userId })
