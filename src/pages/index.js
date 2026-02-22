@@ -9,11 +9,13 @@ import JobForm from '../client/components/JobForm';
 import EditModal from '../client/components/EditModal';
 import NextPageButton from '../client/components/NextPageButton';
 import JobStatsSidebar from '../client/components/JobStatsSidebar';
+import Spinner from '../client/components/Spinner';
 
 export default function Dashboard() {
   const { user, loading: authLoading, signOut } = useAuth();
   const router = useRouter();
   const [statusFilter, setStatusFilter] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const {
     statusCounts,
@@ -36,7 +38,7 @@ export default function Dashboard() {
     totalCount,
     pageSize,
     goToPage,
-  } = useJobs(user?.id, statusFilter);
+  } = useJobs(user?.id, statusFilter, searchQuery);
 
   const {
     showForm,
@@ -54,8 +56,8 @@ export default function Dashboard() {
 
   if (authLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center text-gray-500">
-        Loading...
+      <div className="min-h-screen flex items-center justify-center">
+        <Spinner size="lg" className="text-gray-400" />
       </div>
     );
   }
@@ -125,6 +127,8 @@ export default function Dashboard() {
               loading={statsLoading}
               activeFilter={statusFilter}
               onFilterChange={setStatusFilter}
+              searchQuery={searchQuery}
+              onSearchChange={setSearchQuery}
             />
           </div>
 
@@ -148,12 +152,18 @@ export default function Dashboard() {
             )}
 
             {loading ? (
-              <div className="flex items-center justify-center py-12 text-gray-500">
-                Loading jobs...
+              <div className="flex items-center justify-center py-12">
+                <Spinner size="md" className="text-gray-400" />
               </div>
             ) : jobs.length === 0 ? (
               <div className="text-center py-16 px-5 text-gray-500 bg-white rounded-lg">
-                <p>{statusFilter ? `No jobs with status "${statusFilter}".` : 'No job applications yet. Click "Add New Job" to get started!'}</p>
+                <p>
+                  {searchQuery
+                    ? `No jobs matching "${searchQuery}"${statusFilter ? ` with status "${statusFilter}"` : ''}.`
+                    : statusFilter
+                    ? `No jobs with status "${statusFilter}".`
+                    : 'No job applications yet. Click "Add New Job" to get started!'}
+                </p>
               </div>
             ) : (
               <>

@@ -22,7 +22,7 @@ export function filterJobs(jobs, statusFilter, searchQuery) {
 
   const q = searchQuery && searchQuery.trim().toLowerCase();
   if (q) {
-    result = result.filter(j => j.company.toLowerCase().includes(q));
+    result = result.filter(j => (j.company ?? '').toLowerCase().includes(q));
   }
 
   return result;

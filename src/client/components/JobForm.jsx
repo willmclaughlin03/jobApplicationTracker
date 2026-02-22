@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { JobFormFields, INITIAL_FORM_DATA } from './forms/index.js';
+import Spinner from './Spinner.jsx';
 
 export default function JobForm({ onSubmit, onCancel, saving }) {
   const [formData, setFormData] = useState(INITIAL_FORM_DATA);
@@ -33,7 +34,7 @@ export default function JobForm({ onSubmit, onCancel, saving }) {
           className="bg-blue-600 text-white px-5 py-2 rounded text-sm font-medium hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
           disabled={saving}
         >
-          {saving ? 'Adding...' : 'Add Job'}
+          {saving ? <><Spinner size="sm" className="inline mr-1.5" />Adding...</> : 'Add Job'}
         </button>
       </div>
     </form>

@@ -1,6 +1,9 @@
 import { supabase } from './supabase.js'
 import { ERROR_MESSAGES } from '../../shared/errors.js'
 
+const MAX_CLIENT_RETRIES = 2;
+const CLIENT_RETRY_DELAY_MS = 500;
+
 /**
  * Makes an authenticated API request using the current Supabase session
  *
@@ -30,14 +33,22 @@ export async function apiRequest(endpoint, options = {}) {
             }
         }
 
-        const response = await fetch(endpoint, fetchOptions)
-        const data = await response.json().catch(() => null)
+        let response;
+        let data;
 
-        if (!response.ok) {
-            // Return parsed body as data so callers can inspect response?.error and response?.message
-            return { data, error: null }
+        for (let attempt = 0; attempt <= MAX_CLIENT_RETRIES; attempt++) {
+            if (attempt > 0) {
+                await new Promise(resolve => setTimeout(resolve, CLIENT_RETRY_DELAY_MS));
+            }
+            response = await fetch(endpoint, fetchOptions);
+            data = await response.json().catch(() => null);
+
+            // Only retry on SERVICE_UNAVAILABLE (Redis cold start), not on other errors
+            const isServiceUnavailable = !response.ok && data?.error === 'SERVICE_UNAVAILABLE';
+            if (!isServiceUnavailable || attempt === MAX_CLIENT_RETRIES) break;
         }
 
+        // Return parsed body as data so callers can inspect response?.error and response?.message
         return { data, error: null }
 
     } catch (error) {

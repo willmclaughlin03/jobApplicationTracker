@@ -1,4 +1,5 @@
 import { STATUS_COLORS } from './forms/constants';
+import Spinner from './Spinner.jsx';
 
 export default function JobCard({ job, onEdit, onDelete, isDeleting }) {
   return (
@@ -25,7 +26,7 @@ export default function JobCard({ job, onEdit, onDelete, isDeleting }) {
             className="bg-red-600 text-white px-3 py-1.5 rounded text-xs font-medium hover:bg-red-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
             disabled={isDeleting}
           >
-            {isDeleting ? 'Deleting...' : 'Delete'}
+            {isDeleting ? <><Spinner size="sm" className="inline mr-1" />Deleting...</> : 'Delete'}
           </button>
         </div>
       </td>

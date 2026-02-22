@@ -15,6 +15,9 @@ const IPV4_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
 const IPV6_REGEX = /^[0-9a-fA-F:]{2,45}$/;
 const MAX_IP_LENGTH = 45;
 
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 300;
+
 /**
  * Validates and normalizes an IP address string
  *
@@ -209,15 +212,28 @@ export function withRateLimit(handler, options = {}){
             }
 
             const tier = TIERS.FREE;
-            rateLimitResult = await checkRateLimit(identifier, tier, operation);
-        }catch(error){
-            logger.error('Rate limit check threw unexpected error', {
-                error: error.message,
-                stack: error.stack,
-                method: req.method,
-                operation
-            });
 
+            // Initial attempt — convert thrown exceptions into unavailable state
+            try {
+                rateLimitResult = await checkRateLimit(identifier, tier, operation);
+            } catch(initialError) {
+                logger.warn('Rate limit initial check failed', { error: initialError.message, operation });
+                rateLimitResult = { success: false, unavailable: true };
+            }
+
+            // Retry up to 2 times if Redis unavailable (handles cold start / Upstash resume latency)
+            for (let attempt = 0; attempt < MAX_RETRIES && rateLimitResult.unavailable; attempt++) {
+                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+                try {
+                    rateLimitResult = await checkRateLimit(identifier, tier, operation);
+                } catch(retryError) {
+                    logger.warn('Rate limit retry failed', { attempt: attempt + 1, error: retryError.message, operation });
+                    rateLimitResult = { success: false, unavailable: true };
+                }
+            }
+        } catch(error) {
+            // Safety net for unexpected errors outside checkRateLimit (e.g. auth layer)
+            logger.error('Unexpected middleware error', { error: error.message, method: req.method, operation });
             return sendError(
                 res,
                 503,
@@ -226,10 +242,9 @@ export function withRateLimit(handler, options = {}){
             );
         }
 
-
-        // block req on redis down
+        // block req on redis down after all retries exhausted
         if(rateLimitResult.unavailable){
-            logger.warn('Rate limiting unavailable, req denied', {
+            logger.warn('Rate limiting unavailable after retries, req denied', {
                 operation,
                 method: req.method
             });

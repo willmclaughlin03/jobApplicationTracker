@@ -22,7 +22,7 @@ const PAGE_SIZE = 10;
  * @param {string} searchQuery - Case-insensitive company name search (client-side, no API call)
  */
 export function useJobs(userId, statusFilter = null, searchQuery = '') {
-  const { currentPage, setTotalCount, goToPage } = usePagination(PAGE_SIZE);
+  const { currentPage, setCurrentPage, setTotalCount, goToPage } = usePagination(PAGE_SIZE);
 
   const query = useJobsQuery();
   const { jobs: allJobs, loading, fetchJobs, prependJob, updateJobInList, removeJobFromList } = query;
@@ -38,18 +38,23 @@ export function useJobs(userId, statusFilter = null, searchQuery = '') {
     [allJobs, statusFilter, searchQuery]
   );
 
-  // Sync pagination total and reset to page 1 whenever the filtered set changes
+  // Keep usePagination's internal totalPages correct so goToPage can clamp properly
   useEffect(() => {
     setTotalCount(filteredJobs.length);
-    goToPage(1);
-  }, [filteredJobs.length, setTotalCount, goToPage]);
+  }, [filteredJobs.length, setTotalCount]);
+
+  // Reset to page 1 when filters change. Uses setCurrentPage (stable useState setter)
+  // rather than goToPage to avoid a double-run caused by goToPage changing reference
+  // whenever totalPages updates after setTotalCount.
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [statusFilter, searchQuery, setCurrentPage]);
 
   // Slice the filtered list for the current page
   const pageStart = (currentPage - 1) * PAGE_SIZE;
   const jobs = filteredJobs.slice(pageStart, pageStart + PAGE_SIZE);
 
-  // Pass stable list-mutation helpers directly as onSuccess callbacks;
-  // totalCount is derived from filteredJobs.length so no manual setTotalCount needed
+  // Pass stable list-mutation helpers directly as onSuccess callbacks
   const add = useAddJob(prependJob);
   const update = useUpdateJob(updateJobInList);
   const del = useDeleteJob(removeJobFromList);
@@ -64,11 +69,12 @@ export function useJobs(userId, statusFilter = null, searchQuery = '') {
     add.clearError();
     update.clearError();
     del.clearError();
-  }, [query, add, update, del]);
+  }, [query.clearError, add.clearError, update.clearError, del.clearError]);
 
-  const addJob = useCallback((jobData) => add.addJob(jobData), [add]);
-  const updateJob = useCallback((id, updates) => update.updateJob(id, updates), [update]);
-  const deleteJob = useCallback((id) => del.deleteJob(id), [del]);
+  // The inner hooks already return stable useCallback references, so no wrapper needed
+  const addJob = add.addJob;
+  const updateJob = update.updateJob;
+  const deleteJob = del.deleteJob;
 
   return {
     jobs,

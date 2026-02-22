@@ -211,4 +211,70 @@ describe('filterJobs', () => {
       expect(jobs).toEqual(original);
     });
   });
+
+  // =========================================================================
+  // Malformed company field (guardrail tests)
+  // Reasoning: The Zod schema prevents null/undefined company from entering the
+  // database through normal app flow, but legacy records or direct DB edits
+  // could still produce invalid rows. These tests confirm filterJobs never
+  // crashes and degrades gracefully (jobs without a company are excluded from
+  // search results rather than throwing a TypeError).
+  // =========================================================================
+  describe('malformed company field', () => {
+    /**
+     * Test: company: null does not throw and job is excluded from search results
+     * Reasoning: Null coalesces to '' which never matches a non-empty query
+     */
+    it('should not throw and exclude the job when company is null', () => {
+      const malformed = [{ id: 10, company: null, status: 'applied' }];
+      expect(() => filterJobs(malformed, null, 'google')).not.toThrow();
+      expect(filterJobs(malformed, null, 'google')).toHaveLength(0);
+    });
+
+    /**
+     * Test: company: undefined does not throw and job is excluded from search results
+     * Reasoning: Same coercion path as null — undefined ?? '' === ''
+     */
+    it('should not throw and exclude the job when company is undefined', () => {
+      const malformed = [{ id: 11, company: undefined, status: 'applied' }];
+      expect(() => filterJobs(malformed, null, 'google')).not.toThrow();
+      expect(filterJobs(malformed, null, 'google')).toHaveLength(0);
+    });
+
+    /**
+     * Test: company: '' does not throw and job is excluded from search results
+     * Reasoning: An empty string never includes a non-empty query substring
+     */
+    it('should not throw and exclude the job when company is an empty string', () => {
+      const malformed = [{ id: 12, company: '', status: 'applied' }];
+      expect(() => filterJobs(malformed, null, 'google')).not.toThrow();
+      expect(filterJobs(malformed, null, 'google')).toHaveLength(0);
+    });
+
+    /**
+     * Test: Mixed list — null-company jobs are excluded, valid matches are returned
+     * Reasoning: Real-world scenario where one bad row coexists with good data;
+     * the valid job must still be found and the bad row must not crash the filter
+     */
+    it('should return only valid matches when list mixes null and valid companies', () => {
+      const mixed = [
+        { id: 13, company: null, status: 'applied' },
+        { id: 14, company: 'Google', status: 'applied' },
+      ];
+      const result = filterJobs(mixed, null, 'google');
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe(14);
+    });
+
+    /**
+     * Test: No search query active — null-company jobs pass through without crashing
+     * Reasoning: The null guard must not interfere with status-only filtering;
+     * a job with a null company is still a valid row for status filter purposes
+     */
+    it('should return null-company jobs when no search query is active', () => {
+      const malformed = [{ id: 15, company: null, status: 'applied' }];
+      expect(() => filterJobs(malformed, null, '')).not.toThrow();
+      expect(filterJobs(malformed, null, '')).toHaveLength(1);
+    });
+  });
 });

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { JobFormFields, INITIAL_FORM_DATA } from './forms/index.js';
+import Spinner from './Spinner.jsx';
 
 export default function EditModal({ job, onSave, onClose, saving }) {
   const [formData, setFormData] = useState(INITIAL_FORM_DATA);
@@ -60,7 +61,7 @@ export default function EditModal({ job, onSave, onClose, saving }) {
               className="bg-blue-600 text-white px-5 py-2 rounded text-sm font-medium hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
               disabled={saving}
             >
-              {saving ? 'Saving...' : 'Save Changes'}
+              {saving ? <><Spinner size="sm" className="inline mr-1.5" />Saving...</> : 'Save Changes'}
             </button>
           </div>
         </form>
