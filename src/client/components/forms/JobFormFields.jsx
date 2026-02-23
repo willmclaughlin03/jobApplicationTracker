@@ -1,6 +1,6 @@
 import { STATUS_OPTIONS } from './constants.js';
 
-export default function JobFormFields({ formData, onChange, idPrefix = '' }) {
+export default function JobFormFields({ formData, onChange, idPrefix = '', errors = {} }) {
   const prefix = idPrefix ? `${idPrefix}-` : '';
 
   return (
@@ -20,6 +20,9 @@ export default function JobFormFields({ formData, onChange, idPrefix = '' }) {
             placeholder="Company name"
             className="w-full px-3 py-2.5 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500 transition-colors"
           />
+          {errors.company && (
+            <p className="mt-1 text-xs text-red-600">{errors.company}</p>
+          )}
         </div>
 
         <div>
@@ -36,6 +39,9 @@ export default function JobFormFields({ formData, onChange, idPrefix = '' }) {
             placeholder="Job title"
             className="w-full px-3 py-2.5 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500 transition-colors"
           />
+          {errors.position && (
+            <p className="mt-1 text-xs text-red-600">{errors.position}</p>
+          )}
         </div>
       </div>
 
@@ -68,9 +74,11 @@ export default function JobFormFields({ formData, onChange, idPrefix = '' }) {
           value={formData.notes}
           onChange={onChange}
           placeholder="Add any notes about this application..."
-          rows={3}
-          className="w-full px-3 py-2.5 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500 transition-colors resize-none"
+          className="w-full px-3 py-2.5 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500 transition-colors resize-none [field-sizing:content] min-h-[72px]"
         />
+        {errors.notes && (
+          <p className="mt-1 text-xs text-red-600">{errors.notes}</p>
+        )}
       </div>
     </>
   );

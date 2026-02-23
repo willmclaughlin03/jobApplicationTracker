@@ -2,13 +2,16 @@ import { useState, useRef, useEffect } from 'react';
 import { STATUS_OPTIONS, STATUS_COLORS, STATUS_DOT_COLORS } from './forms/constants';
 
 /**
- * Sidebar showing job statistics, status filter buttons, and a company search input.
+ * Sidebar drawer showing job statistics, status filter buttons, and a company search input.
  *
  * Purpose: Allows users to filter the job list by status and/or search by company name.
+ * Renders as a fixed overlay drawer that slides in from the left.
  * Connects to:
- * - Dashboard (index.js) — receives statusFilter and searchQuery state + setters
+ * - Dashboard (index.js) — receives isOpen/onClose and filter state + setters
  * - useJobs — filters are applied client-side via filterJobs, zero extra API calls
  *
+ * @param {boolean} isOpen - Whether the drawer is visible
+ * @param {Function} onClose - Callback to close the drawer
  * @param {Object} statusCounts - Count of jobs per status key
  * @param {number} total - Total unfiltered job count
  * @param {boolean} loading - Whether jobs are being fetched
@@ -18,6 +21,8 @@ import { STATUS_OPTIONS, STATUS_COLORS, STATUS_DOT_COLORS } from './forms/consta
  * @param {Function} onSearchChange - Callback to update search query in parent
  */
 export default function JobStatsSidebar({
+  isOpen,
+  onClose,
   statusCounts,
   total,
   loading,
@@ -26,7 +31,6 @@ export default function JobStatsSidebar({
   searchQuery,
   onSearchChange,
 }) {
-  const [isCollapsed, setIsCollapsed] = useState(true);
   const [localSearch, setLocalSearch] = useState(searchQuery || '');
   const debounceTimerRef = useRef(null);
 
@@ -60,26 +64,39 @@ export default function JobStatsSidebar({
   };
 
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-      <button
-        onClick={() => setIsCollapsed(!isCollapsed)}
-        className="w-full px-4 py-3 flex items-center justify-between md:cursor-default"
-      >
-        <h2 className="text-sm font-semibold text-gray-800">Job Statistics</h2>
-        <svg
-          className={`w-5 h-5 text-gray-500 transition-transform md:hidden ${
-            isCollapsed ? '' : 'rotate-180'
-          }`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
+    <>
+      {/* Backdrop */}
+      {isOpen && (
+        <div
+          className="fixed inset-0 bg-black/40 z-30"
+          onClick={onClose}
+          aria-hidden="true"
+        />
+      )}
 
-      <div className={`${isCollapsed ? 'hidden' : 'block'} md:block`}>
-        <div className="px-4 pb-3 border-b border-gray-100">
+      {/* Drawer panel */}
+      <div
+        className={`fixed inset-y-0 left-0 z-40 w-72 bg-white shadow-xl flex flex-col overflow-y-auto
+          transition-transform duration-200
+          ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}
+        aria-label="Filters sidebar"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
+          <h2 className="text-sm font-semibold text-gray-800">Job Statistics</h2>
+          <button
+            onClick={onClose}
+            aria-label="Close sidebar"
+            className="text-gray-400 hover:text-gray-600 transition-colors"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Total count */}
+        <div className="px-4 py-3 border-b border-gray-100">
           <div className="flex items-center justify-between">
             <span className="text-sm text-gray-600">Total Applications</span>
             <span className="text-lg font-bold text-gray-900">
@@ -88,6 +105,7 @@ export default function JobStatsSidebar({
           </div>
         </div>
 
+        {/* Status filters */}
         <div className="p-2">
           {STATUS_OPTIONS.map(({ value, label }) => {
             const isActive = activeFilter === value;
@@ -116,6 +134,7 @@ export default function JobStatsSidebar({
           })}
         </div>
 
+        {/* Company search */}
         <div className="px-4 pb-3 border-t border-gray-100 pt-3">
           <label
             htmlFor="job-search"
@@ -161,6 +180,6 @@ export default function JobStatsSidebar({
           </div>
         )}
       </div>
-    </div>
+    </>
   );
 }

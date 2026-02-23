@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
 import { JobFormFields, INITIAL_FORM_DATA } from './forms/index.js';
 import Spinner from './Spinner.jsx';
+import { COMPANY_MAX_LENGTH, POSITION_MAX_LENGTH, NOTES_MAX_LENGTH } from '../../shared/validations/jobSchema.js';
 
 export default function EditModal({ job, onSave, onClose, saving }) {
   const [formData, setFormData] = useState(INITIAL_FORM_DATA);
+  const [fieldErrors, setFieldErrors] = useState({});
 
   useEffect(() => {
     if (job) {
@@ -13,16 +15,31 @@ export default function EditModal({ job, onSave, onClose, saving }) {
         status: job.status || 'applied',
         notes: job.notes || '',
       });
+      setFieldErrors({});
     }
   }, [job]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
+    if (fieldErrors[name]) {
+      setFieldErrors(prev => ({ ...prev, [name]: null }));
+    }
   };
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    const newErrors = {};
+    if (formData.company && formData.company.length > COMPANY_MAX_LENGTH)
+      newErrors.company = `Company must be ${COMPANY_MAX_LENGTH} characters or fewer (${formData.company.length}/${COMPANY_MAX_LENGTH})`;
+    if (formData.position && formData.position.length > POSITION_MAX_LENGTH)
+      newErrors.position = `Position must be ${POSITION_MAX_LENGTH} characters or fewer (${formData.position.length}/${POSITION_MAX_LENGTH})`;
+    if (formData.notes && formData.notes.length > NOTES_MAX_LENGTH)
+      newErrors.notes = `Notes must be ${NOTES_MAX_LENGTH} characters or fewer (${formData.notes.length}/${NOTES_MAX_LENGTH})`;
+    if (Object.keys(newErrors).length) {
+      setFieldErrors(newErrors);
+      return;
+    }
     onSave(job.id, formData);
   };
 
@@ -46,7 +63,7 @@ export default function EditModal({ job, onSave, onClose, saving }) {
         </div>
 
         <form onSubmit={handleSubmit}>
-          <JobFormFields formData={formData} onChange={handleChange} idPrefix="edit" />
+          <JobFormFields formData={formData} onChange={handleChange} idPrefix="edit" errors={fieldErrors} />
 
           <div className="flex gap-3 justify-end">
             <button

@@ -40,6 +40,8 @@ export default function Dashboard() {
     goToPage,
   } = useJobs(user?.id, statusFilter, searchQuery);
 
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
   const {
     showForm,
     editingJob,
@@ -119,69 +121,79 @@ export default function Dashboard() {
           </div>
         )}
 
-        <div className="flex flex-col md:flex-row gap-6">
-          <div className="md:w-64 flex-shrink-0">
-            <JobStatsSidebar
-              statusCounts={statusCounts}
-              total={totalJobs}
-              loading={statsLoading}
-              activeFilter={statusFilter}
-              onFilterChange={setStatusFilter}
-              searchQuery={searchQuery}
-              onSearchChange={setSearchQuery}
+        <JobStatsSidebar
+          isOpen={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
+          statusCounts={statusCounts}
+          total={totalJobs}
+          loading={statsLoading}
+          activeFilter={statusFilter}
+          onFilterChange={setStatusFilter}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+        />
+
+        <div>
+          <div className="flex items-center justify-between mb-6">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="relative flex items-center gap-2 bg-white border border-gray-300 text-gray-700 px-4 py-2.5 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4h18M7 8h10M10 12h4" />
+              </svg>
+              Filters
+              {(statusFilter || searchQuery) && (
+                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-blue-500" />
+              )}
+            </button>
+            <button
+              onClick={toggleAddForm}
+              className="bg-blue-600 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+              disabled={saving}
+            >
+              {showForm ? 'Cancel' : 'Add New Job'}
+            </button>
+          </div>
+
+          {showForm && (
+            <JobForm
+              onSubmit={handleAddJob}
+              onCancel={closeAddForm}
+              saving={saving}
             />
-          </div>
+          )}
 
-          <div className="flex-1 min-w-0">
-            <div className="flex justify-center mb-6">
-              <button
-                onClick={toggleAddForm}
-                className="bg-blue-600 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
-                disabled={saving}
-              >
-                {showForm ? 'Cancel' : 'Add New Job'}
-              </button>
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <Spinner size="md" className="text-gray-400" />
             </div>
-
-            {showForm && (
-              <JobForm
-                onSubmit={handleAddJob}
-                onCancel={closeAddForm}
-                saving={saving}
+          ) : jobs.length === 0 ? (
+            <div className="text-center py-16 px-5 text-gray-500 bg-white rounded-lg">
+              <p>
+                {searchQuery
+                  ? `No jobs matching "${searchQuery}"${statusFilter ? ` with status "${statusFilter}"` : ''}.`
+                  : statusFilter
+                  ? `No jobs with status "${statusFilter}".`
+                  : 'No job applications yet. Click "Add New Job" to get started!'}
+              </p>
+            </div>
+          ) : (
+            <>
+              <JobTable
+                jobs={jobs}
+                onEdit={openEditForm}
+                onDelete={handleDeleteJob}
+                deleting={deleting}
               />
-            )}
-
-            {loading ? (
-              <div className="flex items-center justify-center py-12">
-                <Spinner size="md" className="text-gray-400" />
-              </div>
-            ) : jobs.length === 0 ? (
-              <div className="text-center py-16 px-5 text-gray-500 bg-white rounded-lg">
-                <p>
-                  {searchQuery
-                    ? `No jobs matching "${searchQuery}"${statusFilter ? ` with status "${statusFilter}"` : ''}.`
-                    : statusFilter
-                    ? `No jobs with status "${statusFilter}".`
-                    : 'No job applications yet. Click "Add New Job" to get started!'}
-                </p>
-              </div>
-            ) : (
-              <>
-                <JobTable
-                  jobs={jobs}
-                  onEdit={openEditForm}
-                  onDelete={handleDeleteJob}
-                  deleting={deleting}
-                />
-                <NextPageButton
-                  currentPage={currentPage}
-                  totalCount={totalCount}
-                  pageSize={pageSize}
-                  onPageChange={goToPage}
-                />
-              </>
-            )}
-          </div>
+              <NextPageButton
+                currentPage={currentPage}
+                totalCount={totalCount}
+                pageSize={pageSize}
+                onPageChange={goToPage}
+              />
+            </>
+          )}
         </div>
 
         {editingJob && (

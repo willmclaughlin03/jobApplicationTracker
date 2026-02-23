@@ -19,6 +19,18 @@ const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 300;
 
 /**
+ * Formats a human-readable retry message from a seconds-until-reset value
+ * @param {number} seconds - Seconds until the rate limit window resets
+ * @returns {string} User-facing message indicating when to retry
+ */
+function formatRateLimitMessage(seconds) {
+    if (seconds <= 0) return 'Rate limit exceeded. Please try again.';
+    if (seconds < 60) return `Rate limit exceeded. Try again in ${seconds} second${seconds === 1 ? '' : 's'}.`;
+    const minutes = Math.ceil(seconds / 60);
+    return `Rate limit exceeded. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`;
+}
+
+/**
  * Validates and normalizes an IP address string
  *
  * Strips IPv4-mapped IPv6 prefix and validates basic format.
@@ -276,7 +288,7 @@ export function withRateLimit(handler, options = {}){
                 res,
                 429,
                 'RATE_LIMIT_EXCEEDED',
-                ERROR_MESSAGES.RATE_LIMIT_EXCEEDED
+                formatRateLimitMessage(retryAfterSeconds)
             );
         }
 
