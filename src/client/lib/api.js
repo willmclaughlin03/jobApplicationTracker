@@ -21,6 +21,7 @@ export async function apiRequest(endpoint, options = {}) {
         const { data: { session }, error: sessionError } = await supabase.auth.getSession()
 
         if (sessionError || !session) {
+            await supabase.auth.signOut(); // clears stale local state, triggers onAuthStateChange → SIGNED_OUT
             return { data: null, error: ERROR_MESSAGES.UNAUTHORIZED }
         }
 
