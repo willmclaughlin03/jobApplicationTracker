@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '../../../server/lib/supabaseServer.js';
+import { createApiRouteClient } from '../../../server/lib/supabaseApiRoute.js';
 import { signInSchema, getFirstErrorMessage } from '../../../shared/validations/authSchema.js';
 import { sendSuccess, sendError } from '../../../shared/response.js';
 import { ERROR_MESSAGES } from '../../../shared/errors.js';
@@ -43,10 +44,20 @@ async function handler(req, res) {
             return sendError(res, 401, 'SIGN_IN_FAILED', ERROR_MESSAGES.SIGN_IN_FAILED);
         }
 
-        return sendSuccess(res, 200, {
-            user: data.user,
-            session: data.session
-        }, 'Signed in successfully');
+        const ssrClient = createApiRouteClient(req, res);
+        const { error: sessionError } = await ssrClient.auth.setSession({
+            access_token: data.session.access_token,
+            refresh_token: data.session.refresh_token
+        });
+
+        if (sessionError) {
+            logger.error('Failed to set session cookies after sign-in', {
+                error: sessionError.message
+            });
+            return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+        }
+
+        return sendSuccess(res, 200, { user: data.user }, 'Signed in successfully');
     } catch (error) {
         logger.error('Sign-in service error', {
             error: error.message,

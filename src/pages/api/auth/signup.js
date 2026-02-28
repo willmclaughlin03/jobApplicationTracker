@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '../../../server/lib/supabaseServer.js';
+import { createApiRouteClient } from '../../../server/lib/supabaseApiRoute.js';
 import { signUpSchema, getFirstErrorMessage } from '../../../shared/validations/authSchema.js';
 import { sendSuccess, sendError } from '../../../shared/response.js';
 import { ERROR_MESSAGES } from '../../../shared/errors.js';
@@ -43,10 +44,27 @@ async function handler(req, res) {
             return sendError(res, 400, 'SIGN_UP_FAILED', ERROR_MESSAGES.SIGN_UP_FAILED);
         }
 
-        return sendSuccess(res, 201, {
-            user: data.user,
-            session: data.session
-        }, 'Account created successfully');
+        // data.session is null when email confirmation is required
+        if (data.session) {
+            const ssrClient = createApiRouteClient(req, res);
+            const { error: sessionError } = await ssrClient.auth.setSession({
+                access_token: data.session.access_token,
+                refresh_token: data.session.refresh_token
+            });
+
+            if (sessionError) {
+                logger.error('Failed to set session cookies after sign-up', {
+                    error: sessionError.message
+                });
+                return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+            }
+        }
+
+        const message = data.session
+            ? 'Account created successfully'
+            : 'Account created. Please check your email to confirm your account.';
+
+        return sendSuccess(res, 201, { user: data.user }, message);
     } catch (error) {
         logger.error('Sign-up service error', {
             error: error.message,

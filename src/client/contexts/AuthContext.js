@@ -26,6 +26,14 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // One-time cleanup: remove stale sb-* keys left in localStorage from the
+    // previous Bearer token approach so they don't linger as an XSS target.
+    if (typeof window !== 'undefined') {
+      Object.keys(localStorage)
+        .filter(k => k.startsWith('sb-'))
+        .forEach(k => localStorage.removeItem(k));
+    }
+
     // Check active session on mount
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
@@ -69,6 +77,7 @@ export function AuthProvider({ children }) {
     try {
       const response = await fetch('/api/auth/signin', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: validationResult.data.email,
@@ -85,13 +94,10 @@ export function AuthProvider({ children }) {
         };
       }
 
-      // Sync session with Supabase client so onAuthStateChange fires
-      if (result.data?.session) {
-        await supabase.auth.setSession({
-          access_token: result.data.session.access_token,
-          refresh_token: result.data.session.refresh_token
-        });
-      }
+      // Server already wrote auth cookies in the response — read them back to
+      // sync client state immediately without waiting for onAuthStateChange.
+      const { data: { session } } = await supabase.auth.getSession();
+      setUser(session?.user ?? null);
 
       return { data: result.data, error: null };
     } catch (error) {
@@ -135,6 +141,7 @@ export function AuthProvider({ children }) {
     try {
       const response = await fetch('/api/auth/signup', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: validationResult.data.email,
@@ -152,13 +159,10 @@ export function AuthProvider({ children }) {
         };
       }
 
-      // Sync session if returned (depends on email confirmation config)
-      if (result.data?.session) {
-        await supabase.auth.setSession({
-          access_token: result.data.session.access_token,
-          refresh_token: result.data.session.refresh_token
-        });
-      }
+      // Read cookie-based session set by the server. Will be null if email
+      // confirmation is required (Supabase returns session: null in that case).
+      const { data: { session } } = await supabase.auth.getSession();
+      setUser(session?.user ?? null);
 
       return { data: result.data, error: null };
     } catch (error) {
@@ -177,6 +181,17 @@ export function AuthProvider({ children }) {
    * @returns {Promise<{error: Object|null}>} Sign out result
    */
   const signOut = async () => {
+    try {
+      // Clear httpOnly cookies server-side — client JS cannot do this directly
+      await fetch('/api/auth/signout', {
+        method: 'POST',
+        credentials: 'same-origin'
+      });
+    } catch (err) {
+      // Network error — proceed to clear client state anyway
+    }
+
+    // Clear client-side session state regardless of API result
     const { error } = await supabase.auth.signOut();
     return { error };
   };

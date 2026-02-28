@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { createBrowserClient } from "@supabase/ssr";
 
 const clientURLSupabase = process.env.NEXT_PUBLIC_SUPABASE_URL
 const clientKeySupabase = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -11,4 +11,4 @@ if (!clientKeySupabase) {
   throw new Error('Missing SUPABASE_ANON_KEY environment variable');
 }
 
-export const supabase = createClient(clientURLSupabase, clientKeySupabase)
+export const supabase = createBrowserClient(clientURLSupabase, clientKeySupabase)

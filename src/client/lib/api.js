@@ -1,4 +1,3 @@
-import { supabase } from './supabase.js'
 import { ERROR_MESSAGES } from '../../shared/errors.js'
 
 const MAX_CLIENT_RETRIES = 2;
@@ -18,18 +17,11 @@ const CLIENT_RETRY_DELAY_MS = 500;
  */
 export async function apiRequest(endpoint, options = {}) {
     try {
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession()
-
-        if (sessionError || !session) {
-            await supabase.auth.signOut(); // clears stale local state, triggers onAuthStateChange → SIGNED_OUT
-            return { data: null, error: ERROR_MESSAGES.UNAUTHORIZED }
-        }
-
         const fetchOptions = {
             ...options,
+            credentials: 'same-origin',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${session.access_token}`,
                 ...options.headers
             }
         }
@@ -47,6 +39,10 @@ export async function apiRequest(endpoint, options = {}) {
             // Only retry on SERVICE_UNAVAILABLE (Redis cold start), not on other errors
             const isServiceUnavailable = !response.ok && data?.error === 'SERVICE_UNAVAILABLE';
             if (!isServiceUnavailable || attempt === MAX_CLIENT_RETRIES) break;
+        }
+
+        if (response.status === 401) {
+            return { data: null, error: ERROR_MESSAGES.UNAUTHORIZED };
         }
 
         // Return parsed body as data so callers can inspect response?.error and response?.message

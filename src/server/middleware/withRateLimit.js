@@ -183,7 +183,7 @@ export function withRateLimit(handler, options = {}){
             if(requireAuth){
                 // PROTECTED ROUTE: Auth is mandatory, no IP fallback
                 try{
-                    const { user, error } = await getUserFromRequest(req);
+                    const { user, error } = await getUserFromRequest(req, res);
                     if(!user){
                         logger.warn('Auth required but failed on protected route', {
                             error: error || 'Unknown auth failure',
