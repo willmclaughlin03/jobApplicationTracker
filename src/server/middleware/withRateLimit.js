@@ -1,5 +1,6 @@
 import { getUserFromRequest } from '../lib/supabaseServer.js';
 import { checkRateLimit } from '../lib/rateLimit.js';
+import { validateCsrfToken } from '../lib/csrf.js';
 import { METHOD_TO_OPERATIONS, TIERS } from '../../shared/constants/tiers.js';
 import { ERROR_MESSAGES } from '../../shared/errors.js';
 import { sendError } from '../../shared/response.js';
@@ -154,8 +155,13 @@ export function withRateLimit(handler, options = {}){
     const {
         requireAuth = true,
         operation: operationOverride = null,
-        allowedMethods = null
+        allowedMethods = null,
+        csrfProtect,
     } = options;
+
+    // Default: protected routes (requireAuth: true) get CSRF protection.
+    // Pass csrfProtect: false explicitly to opt out (e.g., the csrf.js endpoint itself).
+    const shouldCsrfProtect = csrfProtect !== undefined ? csrfProtect : requireAuth;
 
     return async(req, res) => {
         // OPTIONS: allow CORS preflight before any method, quota, or auth checks
@@ -220,6 +226,16 @@ export function withRateLimit(handler, options = {}){
                         'UNIDENTIFIABLE_CLIENT',
                         'Unable to identify client. Please try again.'
                     );
+                }
+            }
+
+            // CSRF validation — runs after auth (userId available), before rate limit
+            // so forged tokens don't consume quota
+            if (shouldCsrfProtect && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+                const userId = req._rateLimitUser?.id;
+                if (!userId || !validateCsrfToken(req, userId)) {
+                    logger.warn('CSRF validation failed', { method: req.method, hasUser: !!userId });
+                    return sendError(res, 403, 'CSRF_VALIDATION_FAILED', ERROR_MESSAGES.CSRF_VALIDATION_FAILED);
                 }
             }
 
