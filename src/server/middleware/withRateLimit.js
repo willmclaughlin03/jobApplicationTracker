@@ -164,9 +164,10 @@ export function withRateLimit(handler, options = {}){
     const shouldCsrfProtect = csrfProtect !== undefined ? csrfProtect : requireAuth;
 
     return async(req, res) => {
-        // OPTIONS: allow CORS preflight before any method, quota, or auth checks
+        // Same-origin app — no CORS headers are served, so OPTIONS has no purpose.
+        // Reject with 405 rather than silently succeeding with an empty 204.
         if(req.method === 'OPTIONS'){
-            return res.status(204).end();
+            return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
         }
 
         // Fail-closed: 405 if allowedMethods not declared or method not in list.

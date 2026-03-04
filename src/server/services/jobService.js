@@ -166,6 +166,13 @@ export async function createJob(jobData, userId) {
       return { data: null, error: new Error('Storage limit configuration is invalid') };
     }
 
+    // TOCTOU note: There is a race window between the count check and the insert below.
+    // Concurrent requests could both pass the check and exceed the 300-job limit by a few rows.
+    // Accepted risk: the 30 req/hour rate limit makes concurrent exploitation extremely unlikely,
+    // and the cap is a storage hygiene limit, not a billing or security boundary. Any overshoot
+    // is self-correcting — subsequent requests will see the true count and block further inserts.
+    // If this ever guards a financial or security-critical limit, replace with a Supabase RPC
+    // (stored procedure) that performs the count + insert atomically in a single transaction.
     const { count, error: countError } = await supabaseAdmin
       .from('jobs')
       .select('*', { count: 'exact', head: true })
