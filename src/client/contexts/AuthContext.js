@@ -156,8 +156,7 @@ export function AuthProvider({ children }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: validationResult.data.email,
-          password: validationResult.data.password,
-          confirmPassword: validationResult.data.confirmPassword
+          password: validationResult.data.password
         })
       });
 

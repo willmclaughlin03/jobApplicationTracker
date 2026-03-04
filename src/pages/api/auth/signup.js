@@ -1,6 +1,6 @@
 import { supabaseAdmin } from '../../../server/lib/supabaseServer.js';
 import { createApiRouteClient } from '../../../server/lib/supabaseApiRoute.js';
-import { signUpSchema, getFirstErrorMessage } from '../../../shared/validations/authSchema.js';
+import { signUpServerSchema, getFirstErrorMessage } from '../../../shared/validations/authSchema.js';
 import { sendSuccess, sendError } from '../../../shared/response.js';
 import { ERROR_MESSAGES } from '../../../shared/errors.js';
 import { logger } from '../../../shared/logger.js';
@@ -23,7 +23,7 @@ async function handler(req, res) {
         return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
     }
 
-    const validation = signUpSchema.safeParse(req.body);
+    const validation = signUpServerSchema.safeParse(req.body);
     if (!validation.success) {
         return sendError(res, 400, 'VALIDATION_ERROR',
             getFirstErrorMessage(validation.error));
