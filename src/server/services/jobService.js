@@ -68,7 +68,7 @@ export async function getJobsByUserId(userId, options = {}) {
       operation: 'getJobsByUserId',
       userId,
       error: error.message,
-      stack: error.stack,
+      ...(process.env.NODE_ENV !== 'production' && { stack: error.stack }),
     });
     return { data: null, count: 0, error };
   }
@@ -129,7 +129,7 @@ export async function getJobById(jobId, userId) {
       userId,
       jobId,
       error: error.message,
-      stack: error.stack,
+      ...(process.env.NODE_ENV !== 'production' && { stack: error.stack }),
     });
     return { data: null, error };
   }
@@ -220,7 +220,7 @@ export async function createJob(jobData, userId) {
       operation: 'createJob',
       userId,
       error: error.message,
-      stack: error.stack,
+      ...(process.env.NODE_ENV !== 'production' && { stack: error.stack }),
     });
     return { data: null, error };
   }
@@ -279,7 +279,7 @@ export async function updateJob(jobId, updateData, userId) {
       userId,
       jobId,
       error: error.message,
-      stack: error.stack,
+      ...(process.env.NODE_ENV !== 'production' && { stack: error.stack }),
     });
     return { data: null, error };
   }
@@ -336,7 +336,7 @@ export async function deleteJob(jobId, userId) {
       userId,
       jobId,
       error: error.message,
-      stack: error.stack,
+      ...(process.env.NODE_ENV !== 'production' && { stack: error.stack }),
     });
     return { data: null, error };
   }

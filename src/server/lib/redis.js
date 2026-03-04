@@ -134,7 +134,7 @@ function notifyStateChange(newState) {
         } catch (error) {
             logger.error('Redis state change listener error', {
                 error: error.message,
-                stack: error.stack
+                ...(process.env.NODE_ENV !== 'production' && { stack: error.stack })
             });
         }
     }

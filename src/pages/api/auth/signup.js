@@ -68,7 +68,7 @@ async function handler(req, res) {
     } catch (error) {
         logger.error('Sign-up service error', {
             error: error.message,
-            stack: error.stack
+            ...(process.env.NODE_ENV !== 'production' && { stack: error.stack })
         });
         return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
     }

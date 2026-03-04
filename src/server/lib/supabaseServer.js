@@ -71,39 +71,9 @@ export async function getUserFromRequest(req, res) {
   } catch (err) {
     logger.error('Unexpected authentication error', {
       message: err.message,
-      stack: err.stack,
+      ...(process.env.NODE_ENV !== 'production' && { stack: err.stack }),
       timestamp: new Date().toISOString()
     });
     return { user: null, error: 'Authentication service unavailable' };
   }
-}
-
-/**
- * Middleware wrapper for protected API routes
- *
- * Purpose: Simplify authentication in API handlers
- * Connects to: getUserFromRequest for token validation
- *
- * @param {Function} handler - The API handler function (req, res, user) => Promise
- * @returns {Function} Wrapped handler with authentication
- *
- * @example
- * export default withAuth(async (req, res, user) => {
- *   // user is guaranteed to be authenticated here
- *   res.json({ userId: user.id });
- * });
- */
-export function withAuth(handler) {
-  return async (req, res) => {
-    const { user, error } = await getUserFromRequest(req, res);
-
-    if (!user) {
-      return res.status(401).json({
-        error: error || 'Unauthorized',
-        code: 'UNAUTHORIZED'
-      });
-    }
-
-    return handler(req, res, user);
-  };
 }
