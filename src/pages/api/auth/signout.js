@@ -22,6 +22,7 @@ import { logger } from '../../../shared/logger.js';
 import { withRateLimit } from '../../../server/middleware/withRateLimit.js';
 import { OPERATIONS } from '../../../shared/constants/tiers.js';
 import { serialize } from 'cookie';
+import { clearCsrfCookie } from '../../../server/lib/csrf.js';
 
 const AUTH_COOKIE_PATTERN = /^sb-.+-auth-token/;
 
@@ -79,6 +80,9 @@ async function handler(req, res) {
     });
     clearAuthCookies(req, res);
   }
+
+  // Clear CSRF cookie on every signout path (success and fallback)
+  clearCsrfCookie(res);
 
   // Always return 200 — the goal (no valid session, no auth cookies) is achieved
   // regardless of whether signOut() succeeded or the fallback ran.

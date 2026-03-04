@@ -24,6 +24,12 @@ jest.mock('../../lib/rateLimit.js', () => ({
     checkRateLimit: mockCheckRateLimit,
 }));
 
+// Stub out csrf.js so the module-level CSRF_SECRET check doesn't throw.
+// CSRF behaviour is tested separately in withRateLimit.csrf.test.js.
+jest.mock('../../lib/csrf.js', () => ({
+    validateCsrfToken: jest.fn().mockReturnValue(true),
+}));
+
 jest.mock('../../../shared/logger.js', () => ({
     logger: {
         info: jest.fn(),

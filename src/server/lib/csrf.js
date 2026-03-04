@@ -148,9 +148,14 @@ export function validateCsrfToken(req, userId) {
   const [nonce, timestamp, signature] = parts;
 
   // Expiration check
-  const ageSeconds = Math.floor(Date.now() / 1000) - parseInt(timestamp, 10);
-  if (ageSeconds > CSRF_MAX_AGE_SECONDS) {
-    logger.warn('CSRF validation failed: expired token', { ageSeconds });
+  const parsedTimestamp = parseInt(timestamp, 10);
+  if (isNaN(parsedTimestamp)) {
+    logger.warn('CSRF validation failed: non-numeric timestamp');
+    return false;
+  }
+  const ageSeconds = Math.floor(Date.now() / 1000) - parsedTimestamp;
+  if (ageSeconds < 0 || ageSeconds > CSRF_MAX_AGE_SECONDS) {
+    logger.warn('CSRF validation failed: expired or future token', { ageSeconds });
     return false;
   }
 

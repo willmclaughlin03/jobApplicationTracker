@@ -38,6 +38,10 @@ export function AuthProvider({ children }) {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
       setLoading(false);
+      // Prime the CSRF cookie so state-changing requests work immediately
+      if (session?.user) {
+        fetch('/api/auth/csrf', { credentials: 'same-origin' }).catch(() => {});
+      }
     });
 
     // Listen for auth changes
@@ -75,6 +79,8 @@ export function AuthProvider({ children }) {
     }
 
     try {
+      // Raw fetch (not apiRequest) — signIn is a pre-auth endpoint with
+      // csrfProtect: false, so no x-csrf-token header or CSRF retry needed.
       const response = await fetch('/api/auth/signin', {
         method: 'POST',
         credentials: 'same-origin',
@@ -98,6 +104,9 @@ export function AuthProvider({ children }) {
       // sync client state immediately without waiting for onAuthStateChange.
       const { data: { session } } = await supabase.auth.getSession();
       setUser(session?.user ?? null);
+
+      // New session — fetch a fresh CSRF token bound to this user
+      fetch('/api/auth/csrf', { credentials: 'same-origin' }).catch(() => {});
 
       return { data: result.data, error: null };
     } catch (error) {
@@ -139,6 +148,8 @@ export function AuthProvider({ children }) {
     }
 
     try {
+      // Raw fetch (not apiRequest) — signUp is a pre-auth endpoint with
+      // csrfProtect: false, so no x-csrf-token header or CSRF retry needed.
       const response = await fetch('/api/auth/signup', {
         method: 'POST',
         credentials: 'same-origin',
@@ -164,6 +175,11 @@ export function AuthProvider({ children }) {
       const { data: { session } } = await supabase.auth.getSession();
       setUser(session?.user ?? null);
 
+      // Fetch CSRF token if a session was created (no email confirmation required)
+      if (session?.user) {
+        fetch('/api/auth/csrf', { credentials: 'same-origin' }).catch(() => {});
+      }
+
       return { data: result.data, error: null };
     } catch (error) {
       return {
@@ -182,7 +198,8 @@ export function AuthProvider({ children }) {
    */
   const signOut = async () => {
     try {
-      // Clear httpOnly cookies server-side — client JS cannot do this directly
+      // Raw fetch (not apiRequest) — signOut uses requireAuth: false with
+      // csrfProtect: false so it remains reachable with expired sessions.
       await fetch('/api/auth/signout', {
         method: 'POST',
         credentials: 'same-origin'

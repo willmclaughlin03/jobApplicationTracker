@@ -1,275 +1,335 @@
 /**
- * Tests for apiRequest
+ * @jest-environment jsdom
  *
- * Purpose: Verify authenticated API request handling, including session expiry
- *          behaviour, Authorization header injection, retry logic, and error propagation.
+ * Tests for apiRequest (cookie-based auth)
+ *
+ * Purpose: Verify authenticated API request handling, including CSRF header
+ * injection, CSRF retry logic, SERVICE_UNAVAILABLE retry, and error propagation.
  *
  * Connects to: src/client/lib/api.js
  *
+ * Auth model: Cookie-based (httpOnly). No Authorization header is set client-side;
+ * the browser sends auth cookies automatically via credentials: 'same-origin'.
+ *
  * Test coverage:
- * - Successful authenticated request — data returned, correct headers sent
- * - No session → signOut() called, UNAUTHORIZED returned, fetch not called
- * - Session error → signOut() called, UNAUTHORIZED returned
- * - Valid session → signOut() never called
- * - SERVICE_UNAVAILABLE retry logic (recovers on second attempt)
- * - Retries exhausted — last response returned after MAX_CLIENT_RETRIES attempts
+ * - Successful GET — data returned, no CSRF header, credentials forwarded
+ * - Successful POST — x-csrf-token header read from cookie
+ * - POST with no cookie — x-csrf-token header absent (not null/undefined sent)
+ * - 401 response → UNAUTHORIZED returned
+ * - SERVICE_UNAVAILABLE retry — recovers on second attempt
+ * - Retries exhausted — last response returned after MAX_CLIENT_RETRIES
  * - Non-SERVICE_UNAVAILABLE error — no retry
+ * - CSRF_VALIDATION_FAILED — refreshes token and retries once
+ * - CSRF refresh fails — original 403 returned, not the refresh error
  * - fetch throws — FETCH_FAILED returned
  */
 
-jest.mock('../supabase.js', () => ({
-  supabase: {
-    auth: {
-      getSession: jest.fn(),
-      signOut: jest.fn(),
-    },
-  },
-}));
-
-const { supabase } = require('../supabase.js');
-const { apiRequest } = require('../api.js');
 const { ERROR_MESSAGES } = require('../../../shared/errors.js');
 
-const VALID_SESSION = {
-  user: { id: 'user-123' },
-  access_token: 'test-access-token',
-  refresh_token: 'test-refresh-token',
-};
+// Mock the CSRF constants module so tests are not coupled to NODE_ENV
+jest.mock('../../../shared/constants/csrf.js', () => ({
+    CSRF_COOKIE_NAME: 'csrf-token',
+}));
 
-describe('apiRequest', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    supabase.auth.signOut.mockResolvedValue({});
-  });
+const { apiRequest } = require('../api.js');
 
-  // =========================================================================
-  // Successful requests
-  // =========================================================================
-  describe('successful request', () => {
-    /**
-     * Test: Valid session — fetch is called and response data returned
-     * Reasoning: Happy path; session exists, fetch succeeds, body is returned as data
-     */
-    it('should return data from a successful authenticated fetch', async () => {
-      supabase.auth.getSession.mockResolvedValue({ data: { session: VALID_SESSION }, error: null });
-      const responseData = { jobs: [{ id: 1 }] };
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        json: jest.fn().mockResolvedValue(responseData),
-      });
+// =========================================================================
+// Helpers
+// =========================================================================
 
-      const { data, error } = await apiRequest('/api/jobs');
+function mockFetchOnce(status, body, ok = status < 400) {
+    return {
+        ok,
+        status,
+        json: jest.fn().mockResolvedValue(body),
+    };
+}
 
-      expect(error).toBeNull();
-      expect(data).toEqual(responseData);
+function setCsrfCookie(value) {
+    Object.defineProperty(document, 'cookie', {
+        writable: true,
+        value: `csrf-token=${value}`,
+    });
+}
+
+function clearCsrfCookie() {
+    Object.defineProperty(document, 'cookie', {
+        writable: true,
+        value: '',
+    });
+}
+
+// =========================================================================
+// GET requests (no CSRF)
+// =========================================================================
+describe('apiRequest — GET requests', () => {
+    beforeEach(() => {
+        jest.clearAllMocks();
+        clearCsrfCookie();
     });
 
     /**
-     * Test: Authorization header is set using the session access_token
-     * Reasoning: Server validates the Bearer token — must match the session's access_token
+     * Test: Happy path — data is returned and error is null
      */
-    it('should include an Authorization Bearer header from the session access_token', async () => {
-      supabase.auth.getSession.mockResolvedValue({ data: { session: VALID_SESSION }, error: null });
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        json: jest.fn().mockResolvedValue({}),
-      });
+    it('returns data from a successful GET', async () => {
+        const responseData = { jobs: [{ id: 1 }] };
+        global.fetch = jest.fn().mockResolvedValue(mockFetchOnce(200, responseData));
 
-      await apiRequest('/api/jobs');
+        const { data, error } = await apiRequest('/api/jobs', { method: 'GET' });
 
-      const [, fetchOptions] = global.fetch.mock.calls[0];
-      expect(fetchOptions.headers['Authorization']).toBe(`Bearer ${VALID_SESSION.access_token}`);
+        expect(error).toBeNull();
+        expect(data).toEqual(responseData);
+    });
+
+    /**
+     * Test: credentials: 'same-origin' is always set so auth cookies are sent
+     */
+    it('sends credentials: same-origin on GET', async () => {
+        global.fetch = jest.fn().mockResolvedValue(mockFetchOnce(200, {}));
+
+        await apiRequest('/api/jobs', { method: 'GET' });
+
+        const [, opts] = global.fetch.mock.calls[0];
+        expect(opts.credentials).toBe('same-origin');
+    });
+
+    /**
+     * Test: x-csrf-token header is NOT set on GET (read-only, no state change)
+     */
+    it('does not send x-csrf-token on GET', async () => {
+        setCsrfCookie('some-token');
+        global.fetch = jest.fn().mockResolvedValue(mockFetchOnce(200, {}));
+
+        await apiRequest('/api/jobs', { method: 'GET' });
+
+        const [, opts] = global.fetch.mock.calls[0];
+        expect(opts.headers['x-csrf-token']).toBeUndefined();
+    });
+
+    /**
+     * Test: 401 response → UNAUTHORIZED error regardless of body
+     */
+    it('returns UNAUTHORIZED on 401', async () => {
+        global.fetch = jest.fn().mockResolvedValue(mockFetchOnce(401, { error: 'UNAUTHORIZED' }, false));
+
+        const { data, error } = await apiRequest('/api/jobs', { method: 'GET' });
+
+        expect(data).toBeNull();
+        expect(error).toBe(ERROR_MESSAGES.UNAUTHORIZED);
+    });
+
+    /**
+     * Test: fetch throws → FETCH_FAILED returned
+     */
+    it('returns FETCH_FAILED when fetch throws', async () => {
+        global.fetch = jest.fn().mockRejectedValue(new Error('Network error'));
+
+        const { data, error } = await apiRequest('/api/jobs', { method: 'GET' });
+
+        expect(data).toBeNull();
+        expect(error).toBe(ERROR_MESSAGES.FETCH_FAILED);
+    });
+});
+
+// =========================================================================
+// POST/PUT/DELETE/PATCH requests (CSRF required)
+// =========================================================================
+describe('apiRequest — state-changing requests', () => {
+    beforeEach(() => {
+        jest.clearAllMocks();
+        clearCsrfCookie();
+    });
+
+    /**
+     * Test: x-csrf-token header is set from the cookie for POST
+     */
+    it('sends x-csrf-token header on POST using cookie value', async () => {
+        setCsrfCookie('my-csrf-token');
+        global.fetch = jest.fn().mockResolvedValue(mockFetchOnce(200, {}));
+
+        await apiRequest('/api/jobs', { method: 'POST', body: '{}' });
+
+        const [, opts] = global.fetch.mock.calls[0];
+        expect(opts.headers['x-csrf-token']).toBe('my-csrf-token');
+    });
+
+    /**
+     * Test: x-csrf-token is sent for PUT, DELETE, PATCH too
+     */
+    it.each(['PUT', 'DELETE', 'PATCH'])(
+        'sends x-csrf-token header on %s',
+        async (method) => {
+            setCsrfCookie('token-for-' + method);
+            global.fetch = jest.fn().mockResolvedValue(mockFetchOnce(200, {}));
+
+            await apiRequest('/api/jobs/1', { method });
+
+            const [, opts] = global.fetch.mock.calls[0];
+            expect(opts.headers['x-csrf-token']).toBe('token-for-' + method);
+        }
+    );
+
+    /**
+     * Test: If cookie is absent, x-csrf-token is not sent (falsy getCookie result)
+     */
+    it('does not send x-csrf-token header when cookie is absent', async () => {
+        clearCsrfCookie();
+        global.fetch = jest.fn().mockResolvedValue(mockFetchOnce(200, {}));
+
+        await apiRequest('/api/jobs', { method: 'POST', body: '{}' });
+
+        const [, opts] = global.fetch.mock.calls[0];
+        expect(opts.headers['x-csrf-token']).toBeUndefined();
     });
 
     /**
      * Test: Caller-supplied method and body are forwarded to fetch
-     * Reasoning: Callers pass method/body via options; they must survive the header merge
      */
-    it('should forward caller method and body options to fetch', async () => {
-      supabase.auth.getSession.mockResolvedValue({ data: { session: VALID_SESSION }, error: null });
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        json: jest.fn().mockResolvedValue({}),
-      });
+    it('forwards method and body to fetch', async () => {
+        global.fetch = jest.fn().mockResolvedValue(mockFetchOnce(200, {}));
+        const body = JSON.stringify({ company: 'Acme' });
 
-      const body = JSON.stringify({ company: 'Acme' });
-      await apiRequest('/api/jobs', { method: 'POST', body });
+        await apiRequest('/api/jobs', { method: 'POST', body });
 
-      const [, fetchOptions] = global.fetch.mock.calls[0];
-      expect(fetchOptions.method).toBe('POST');
-      expect(fetchOptions.body).toBe(body);
+        const [, opts] = global.fetch.mock.calls[0];
+        expect(opts.method).toBe('POST');
+        expect(opts.body).toBe(body);
+    });
+});
+
+// =========================================================================
+// SERVICE_UNAVAILABLE retry logic
+// =========================================================================
+describe('apiRequest — SERVICE_UNAVAILABLE retry', () => {
+    beforeEach(() => {
+        jest.clearAllMocks();
+        clearCsrfCookie();
     });
 
     /**
-     * Test: Valid session — signOut is never called
-     * Reasoning: signOut is only for expired-session cleanup; must not fire on normal requests
+     * Test: First attempt fails with SERVICE_UNAVAILABLE, second succeeds
      */
-    it('should not call signOut when the session is valid', async () => {
-      supabase.auth.getSession.mockResolvedValue({ data: { session: VALID_SESSION }, error: null });
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        json: jest.fn().mockResolvedValue({}),
-      });
+    it('retries on SERVICE_UNAVAILABLE and returns data on success', async () => {
+        global.fetch = jest.fn()
+            .mockResolvedValueOnce(mockFetchOnce(503, { error: 'SERVICE_UNAVAILABLE' }, false))
+            .mockResolvedValueOnce(mockFetchOnce(200, { jobs: [] }));
 
-      await apiRequest('/api/jobs');
+        const { data, error } = await apiRequest('/api/jobs', { method: 'GET' });
 
-      expect(supabase.auth.signOut).not.toHaveBeenCalled();
-    });
-  });
-
-  // =========================================================================
-  // Session expiry / no session
-  // =========================================================================
-  describe('session expiry', () => {
-    /**
-     * Test: No session — signOut() called to clear stale local state
-     * Reasoning: signOut() triggers onAuthStateChange → SIGNED_OUT so the UI redirects to login
-     */
-    it('should call signOut() when getSession returns no session', async () => {
-      supabase.auth.getSession.mockResolvedValue({ data: { session: null }, error: null });
-
-      await apiRequest('/api/jobs');
-
-      expect(supabase.auth.signOut).toHaveBeenCalledTimes(1);
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+        expect(error).toBeNull();
+        expect(data).toEqual({ jobs: [] });
     });
 
     /**
-     * Test: No session — UNAUTHORIZED error returned
-     * Reasoning: Caller needs the error so it can react if the redirect has not yet fired
+     * Test: All attempts return SERVICE_UNAVAILABLE — last response body returned
+     * Note: This test takes ~1s due to retry delays (2 × 500 ms) — intentional
      */
-    it('should return UNAUTHORIZED when session is null', async () => {
-      supabase.auth.getSession.mockResolvedValue({ data: { session: null }, error: null });
+    it('stops after max retries and returns the last response', async () => {
+        global.fetch = jest.fn().mockResolvedValue(
+            mockFetchOnce(503, { error: 'SERVICE_UNAVAILABLE' }, false)
+        );
 
-      const { data, error } = await apiRequest('/api/jobs');
+        const { data } = await apiRequest('/api/jobs', { method: 'GET' });
 
-      expect(data).toBeNull();
-      expect(error).toBe(ERROR_MESSAGES.UNAUTHORIZED);
-    });
-
-    /**
-     * Test: No session — fetch is never called
-     * Reasoning: No valid token means there is no point hitting the network
-     */
-    it('should not call fetch when session is null', async () => {
-      supabase.auth.getSession.mockResolvedValue({ data: { session: null }, error: null });
-      global.fetch = jest.fn();
-
-      await apiRequest('/api/jobs');
-
-      expect(global.fetch).not.toHaveBeenCalled();
-    });
-
-    /**
-     * Test: getSession error — signOut() called
-     * Reasoning: A session error is treated the same as no session; stale state must be cleared
-     */
-    it('should call signOut() when getSession returns an error', async () => {
-      supabase.auth.getSession.mockResolvedValue({
-        data: { session: null },
-        error: { message: 'refresh failed' },
-      });
-
-      await apiRequest('/api/jobs');
-
-      expect(supabase.auth.signOut).toHaveBeenCalledTimes(1);
-    });
-
-    /**
-     * Test: getSession error — UNAUTHORIZED returned
-     * Reasoning: Error path must surface the same UNAUTHORIZED message as the no-session path
-     */
-    it('should return UNAUTHORIZED when getSession returns an error', async () => {
-      supabase.auth.getSession.mockResolvedValue({
-        data: { session: null },
-        error: { message: 'refresh failed' },
-      });
-
-      const { data, error } = await apiRequest('/api/jobs');
-
-      expect(data).toBeNull();
-      expect(error).toBe(ERROR_MESSAGES.UNAUTHORIZED);
-    });
-  });
-
-  // =========================================================================
-  // Retry logic (SERVICE_UNAVAILABLE)
-  // =========================================================================
-  describe('SERVICE_UNAVAILABLE retry', () => {
-    /**
-     * Test: First attempt returns SERVICE_UNAVAILABLE, second succeeds — data returned
-     * Reasoning: Redis cold-start scenario; one retry must recover cleanly
-     */
-    it('should retry on SERVICE_UNAVAILABLE and return data on success', async () => {
-      supabase.auth.getSession.mockResolvedValue({ data: { session: VALID_SESSION }, error: null });
-      global.fetch = jest.fn()
-        .mockResolvedValueOnce({
-          ok: false,
-          json: jest.fn().mockResolvedValue({ error: 'SERVICE_UNAVAILABLE' }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: jest.fn().mockResolvedValue({ jobs: [] }),
-        });
-
-      const { data, error } = await apiRequest('/api/jobs');
-
-      expect(global.fetch).toHaveBeenCalledTimes(2);
-      expect(error).toBeNull();
-      expect(data).toEqual({ jobs: [] });
-    });
-
-    /**
-     * Test: All attempts return SERVICE_UNAVAILABLE — last response data returned
-     * Reasoning: After MAX_CLIENT_RETRIES (2) exhausted, loop breaks and returns last received body
-     * Note: This test takes ~1s due to retry delays (2 × 500 ms) — intentional behaviour
-     */
-    it('should stop after max retries and return the last response', async () => {
-      supabase.auth.getSession.mockResolvedValue({ data: { session: VALID_SESSION }, error: null });
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: false,
-        json: jest.fn().mockResolvedValue({ error: 'SERVICE_UNAVAILABLE' }),
-      });
-
-      const { data } = await apiRequest('/api/jobs');
-
-      // MAX_CLIENT_RETRIES = 2 → 3 total attempts (attempt 0, 1, 2)
-      expect(global.fetch).toHaveBeenCalledTimes(3);
-      expect(data).toEqual({ error: 'SERVICE_UNAVAILABLE' });
-    });
+        // MAX_CLIENT_RETRIES = 2 → 3 total attempts (attempt 0, 1, 2)
+        expect(global.fetch).toHaveBeenCalledTimes(3);
+        expect(data).toEqual({ error: 'SERVICE_UNAVAILABLE' });
+    }, 10000);
 
     /**
      * Test: Non-SERVICE_UNAVAILABLE error — no retry
-     * Reasoning: Retries are exclusively for Redis cold-start; a 404 or 401 must not be retried
      */
-    it('should not retry on non-SERVICE_UNAVAILABLE errors', async () => {
-      supabase.auth.getSession.mockResolvedValue({ data: { session: VALID_SESSION }, error: null });
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: false,
-        json: jest.fn().mockResolvedValue({ error: 'NOT_FOUND' }),
-      });
+    it('does not retry on non-SERVICE_UNAVAILABLE errors', async () => {
+        global.fetch = jest.fn().mockResolvedValue(
+            mockFetchOnce(404, { error: 'NOT_FOUND' }, false)
+        );
 
-      await apiRequest('/api/jobs');
+        await apiRequest('/api/jobs', { method: 'GET' });
 
-      expect(global.fetch).toHaveBeenCalledTimes(1);
+        expect(global.fetch).toHaveBeenCalledTimes(1);
     });
-  });
+});
 
-  // =========================================================================
-  // Network errors
-  // =========================================================================
-  describe('network errors', () => {
+// =========================================================================
+// CSRF retry logic
+// =========================================================================
+describe('apiRequest — CSRF retry', () => {
+    beforeEach(() => {
+        jest.clearAllMocks();
+        clearCsrfCookie();
+    });
+
     /**
-     * Test: fetch throws — FETCH_FAILED returned
-     * Reasoning: Network failure (offline, DNS error) must be caught and surfaced cleanly
+     * Test: CSRF_VALIDATION_FAILED → fetch /api/auth/csrf → retry with new token
+     * The retry succeeds, so the final result is the second fetch's response.
      */
-    it('should return FETCH_FAILED when fetch throws', async () => {
-      supabase.auth.getSession.mockResolvedValue({ data: { session: VALID_SESSION }, error: null });
-      global.fetch = jest.fn().mockRejectedValue(new Error('Network error'));
+    it('refreshes CSRF token and retries once on CSRF_VALIDATION_FAILED', async () => {
+        setCsrfCookie('stale-token');
 
-      const { data, error } = await apiRequest('/api/jobs');
+        global.fetch = jest.fn()
+            // First POST → 403 CSRF_VALIDATION_FAILED
+            .mockResolvedValueOnce(mockFetchOnce(403, { error: 'CSRF_VALIDATION_FAILED' }, false))
+            // CSRF refresh → 200
+            .mockResolvedValueOnce(mockFetchOnce(200, null))
+            // Retry POST → 200
+            .mockResolvedValueOnce(mockFetchOnce(200, { ok: true }));
 
-      expect(data).toBeNull();
-      expect(error).toBe(ERROR_MESSAGES.FETCH_FAILED);
+        // After the refresh, simulate a new cookie value being set
+        global.fetch.mockImplementationOnce(async (url) => {
+            if (url === '/api/auth/csrf') {
+                setCsrfCookie('fresh-token');
+                return mockFetchOnce(200, null);
+            }
+        });
+
+        // Re-define fetch with the correct sequencing
+        global.fetch = jest.fn()
+            .mockResolvedValueOnce(mockFetchOnce(403, { error: 'CSRF_VALIDATION_FAILED' }, false))
+            .mockImplementationOnce(async (url) => {
+                // This is the CSRF refresh call
+                expect(url).toBe('/api/auth/csrf');
+                setCsrfCookie('fresh-token');
+                return { ok: true, json: jest.fn().mockResolvedValue(null) };
+            })
+            .mockResolvedValueOnce(mockFetchOnce(200, { ok: true }));
+
+        const { data } = await apiRequest('/api/jobs', { method: 'POST', body: '{}' });
+
+        expect(global.fetch).toHaveBeenCalledTimes(3);
+        // Retry must use the refreshed token
+        const retryOpts = global.fetch.mock.calls[2][1];
+        expect(retryOpts.headers['x-csrf-token']).toBe('fresh-token');
+        expect(data).toEqual({ ok: true });
     });
-  });
+
+    /**
+     * Test: CSRF refresh fails → return the original 403, not the refresh error
+     */
+    it('returns original 403 when CSRF refresh fails', async () => {
+        setCsrfCookie('bad-token');
+        const original403 = { error: 'CSRF_VALIDATION_FAILED' };
+
+        global.fetch = jest.fn()
+            .mockResolvedValueOnce(mockFetchOnce(403, original403, false))
+            .mockRejectedValueOnce(new Error('Network error during refresh'));
+
+        const { data } = await apiRequest('/api/jobs', { method: 'POST', body: '{}' });
+
+        expect(data).toEqual(original403);
+    });
+
+    /**
+     * Test: CSRF_VALIDATION_FAILED on GET is not retried (GET is exempt)
+     */
+    it('does not trigger CSRF retry for GET requests', async () => {
+        global.fetch = jest.fn().mockResolvedValue(
+            mockFetchOnce(403, { error: 'CSRF_VALIDATION_FAILED' }, false)
+        );
+
+        await apiRequest('/api/jobs', { method: 'GET' });
+
+        // Only the original request — no CSRF refresh call
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
 });
