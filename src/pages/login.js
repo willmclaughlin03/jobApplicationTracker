@@ -70,10 +70,8 @@ export default function Login() {
 
     if (signInError) {
       setError(signInError.message || 'Failed to sign in');
-      setLoading(false);
-    } else {
-      router.push('/');
     }
+    setLoading(false);
   };
 
   if (authLoading) {

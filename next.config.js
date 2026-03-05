@@ -1,0 +1,36 @@
+/** @type {import('next').NextConfig} */
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseWss = supabaseUrl.replace('https://', 'wss://');
+
+const cspDirectives = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self'",
+  "img-src 'self'",
+  "font-src 'self'",
+  `connect-src 'self' ${supabaseUrl} ${supabaseWss}`,
+  "frame-src 'none'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+].join('; ');
+
+const nextConfig = {
+  async headers() {
+    return [
+      {
+        source: '/(.*)',
+        headers: [
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+          { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+          { key: 'Content-Security-Policy-Report-Only', value: cspDirectives },
+        ],
+      },
+    ];
+  },
+};
+
+module.exports = nextConfig;
