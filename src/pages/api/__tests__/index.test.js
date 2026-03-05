@@ -236,9 +236,9 @@ describe('index API handler (/api/jobs)', () => {
 
     /**
      * Test: Multiple validation errors
-     * Expected: Returns 400 with joined error messages
+     * Expected: Returns 400 with generic message (Zod details are not exposed to clients)
      */
-    it('should return all validation errors joined', async () => {
+    it('should return 400 with generic message on validation failure', async () => {
       mockJobSchemaSafeParse.mockReturnValue({
         success: false,
         error: {
@@ -257,7 +257,7 @@ describe('index API handler (/api/jobs)', () => {
       expect(res.status).toHaveBeenCalledWith(400);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
-          message: expect.stringContaining('Company is required'),
+          message: 'Invalid request parameters.',
         })
       );
     });

@@ -15,12 +15,7 @@ async function handleGet(req, res, user) {
   const queryResult = getQuerySchema.safeParse(req.query);
 
   if (!queryResult.success) {
-    return sendError(
-      res,
-      400,
-      'VALIDATION_ERROR',
-      queryResult.error.issues.map((i) => i.message).join(', ')
-    );
+    return sendError(res, 400, 'VALIDATION_ERROR', ERROR_MESSAGES.VALIDATION_ERROR);
   }
 
   const { from, to, status } = queryResult.data;
@@ -56,12 +51,7 @@ async function handlePost(req, res, user) {
   const createResult = jobSchema.safeParse(req.body);
 
   if (!createResult.success) {
-    return sendError(
-      res,
-      400,
-      ERROR_MESSAGES.VALIDATION_ERROR || 'VALIDATION_ERROR',
-      createResult.error.issues.map((i) => i.message).join(', ')
-    );
+    return sendError(res, 400, 'VALIDATION_ERROR', ERROR_MESSAGES.VALIDATION_ERROR);
   }
 
   const finalizedData = createResult.data;

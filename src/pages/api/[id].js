@@ -56,12 +56,7 @@ async function handlePut(req, res, user, jobId) {
   const updateResult = jobUpdateSchema.safeParse(req.body);
 
   if (!updateResult.success) {
-    return sendError(
-      res,
-      400,
-      'VALIDATION_ERROR',
-      updateResult.error.issues.map((i) => i.message).join(', ')
-    );
+    return sendError(res, 400, 'VALIDATION_ERROR', ERROR_MESSAGES.VALIDATION_ERROR);
   }
 
   const updatedData = updateResult.data;
