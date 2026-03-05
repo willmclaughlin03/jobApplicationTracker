@@ -1,4 +1,3 @@
-import { supabaseAdmin } from '../../../server/lib/supabaseServer.js';
 import { createApiRouteClient } from '../../../server/lib/supabaseApiRoute.js';
 import { signInSchema, getFirstErrorMessage } from '../../../shared/validations/authSchema.js';
 import { sendSuccess, sendError } from '../../../shared/response.js';
@@ -32,7 +31,9 @@ async function handler(req, res) {
     const { email, password } = validation.data;
 
     try {
-        const { data, error } = await supabaseAdmin.auth.signInWithPassword({
+        const ssrClient = createApiRouteClient(req, res);
+
+        const { data, error } = await ssrClient.auth.signInWithPassword({
             email,
             password
         });
@@ -44,7 +45,6 @@ async function handler(req, res) {
             return sendError(res, 401, 'SIGN_IN_FAILED', ERROR_MESSAGES.SIGN_IN_FAILED);
         }
 
-        const ssrClient = createApiRouteClient(req, res);
         const { error: sessionError } = await ssrClient.auth.setSession({
             access_token: data.session.access_token,
             refresh_token: data.session.refresh_token
