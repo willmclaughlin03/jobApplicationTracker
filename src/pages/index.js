@@ -7,6 +7,7 @@ import { useJobFormModal } from '../client/hooks/useJobFormModal';
 import JobTable from '../client/components/JobTable';
 import JobForm from '../client/components/JobForm';
 import EditModal from '../client/components/EditModal';
+import DeleteModal from '../client/components/DeleteModal';
 import NextPageButton from '../client/components/NextPageButton';
 import JobStatsSidebar from '../client/components/JobStatsSidebar';
 import Spinner from '../client/components/Spinner';
@@ -41,6 +42,7 @@ export default function Dashboard() {
   } = useJobs(user?.id, statusFilter, searchQuery);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [jobToDelete, setJobToDelete] = useState(null);
 
   const {
     showForm,
@@ -80,12 +82,16 @@ export default function Dashboard() {
     }
   };
 
-  const handleDeleteJob = async (id) => {
-    if (window.confirm('Are you sure you want to delete this job application?')) {
-      const result = await deleteJob(id);
-      if (result.success) {
-        refetchStats();
-      }
+  const handleDeleteJob = (id) => {
+    const job = jobs.find(j => j.id === id);
+    if (job) setJobToDelete(job);
+  };
+
+  const confirmDeleteJob = async () => {
+    const result = await deleteJob(jobToDelete.id);
+    if (result.success) {
+      setJobToDelete(null);
+      refetchStats();
     }
   };
 
@@ -204,6 +210,13 @@ export default function Dashboard() {
             saving={saving}
           />
         )}
+
+        <DeleteModal
+          job={jobToDelete}
+          onConfirm={confirmDeleteJob}
+          onClose={() => setJobToDelete(null)}
+          deleting={deleting === jobToDelete?.id}
+        />
       </main>
     </div>
   );
