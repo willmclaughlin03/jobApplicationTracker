@@ -60,20 +60,20 @@ export async function getUserFromRequest(req, res) {
         status: error.status,
         timestamp: new Date().toISOString()
       });
-      return { user: null, error: 'Invalid or expired token' };
+      return { user: null, error: 'Invalid or expired token', supabaseClient: null };
     }
 
     if (!user) {
-      return { user: null, error: 'User not found' };
+      return { user: null, error: 'User not found', supabaseClient: null };
     }
 
-    return { user, error: null };
+    return { user, error: null, supabaseClient: supabase };
   } catch (err) {
     logger.error('Unexpected authentication error', {
       message: err.message,
       ...(process.env.NODE_ENV !== 'production' && { stack: err.stack }),
       timestamp: new Date().toISOString()
     });
-    return { user: null, error: 'Authentication service unavailable' };
+    return { user: null, error: 'Authentication service unavailable', supabaseClient: null };
   }
 }

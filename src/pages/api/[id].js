@@ -31,7 +31,7 @@ function validateUUID(id) {
  * @param {string} jobId - The job's UUID from URL path
  */
 async function handleGet(req, res, user, jobId) {
-  const { data, error } = await getJobById(jobId, user.id);
+  const { data, error } = await getJobById(jobId, user.id, req._supabaseClient);
 
   if (error || !data) {
     return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);
@@ -65,7 +65,7 @@ async function handlePut(req, res, user, jobId) {
   }
 
   const updatedData = updateResult.data;
-  const { data, error } = await updateJob(jobId, updatedData, user.id);
+  const { data, error } = await updateJob(jobId, updatedData, user.id, req._supabaseClient);
 
   if (error || !data) {
     return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);
@@ -86,7 +86,7 @@ async function handlePut(req, res, user, jobId) {
  * @param {string} jobId - The job's UUID from URL path
  */
 async function handleDelete(req, res, user, jobId) {
-  const { data, error } = await deleteJob(jobId, user.id);
+  const { data, error } = await deleteJob(jobId, user.id, req._supabaseClient);
 
   if (error || !data) {
     return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);

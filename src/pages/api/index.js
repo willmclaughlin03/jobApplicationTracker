@@ -36,7 +36,7 @@ async function handleGet(req, res, user) {
     options.status = status;
   }
 
-  const { data, count, error } = await getJobsByUserId(user.id, options);
+  const { data, count, error } = await getJobsByUserId(user.id, options, req._supabaseClient);
 
   if (error) {
     return sendError(res, 503, 'FETCH_FAILED', ERROR_MESSAGES.FETCH_FAILED);
@@ -65,7 +65,7 @@ async function handlePost(req, res, user) {
   }
 
   const finalizedData = createResult.data;
-  const { data, error } = await createJob(finalizedData, user.id);
+  const { data, error } = await createJob(finalizedData, user.id, req._supabaseClient);
 
   if (error) {
     if (error.code === 'STORAGE_LIMIT_EXCEEDED') {

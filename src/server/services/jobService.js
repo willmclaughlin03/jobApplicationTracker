@@ -3,10 +3,12 @@
  *
  * Purpose: Encapsulate all job-related database operations with error handling
  * Connects to:
- * - supabaseAdmin for database queries
+ * - supabaseAdmin for privileged operations (storage limit count — bypasses RLS)
+ * - supabaseClient (per-request SSR client) for user-scoped queries (respects RLS)
  * - logger for structured error logging
  *
- * Security: All operations validate user ownership via user_id matching
+ * Security: All operations validate user ownership via user_id matching (app layer)
+ * and are further enforced by RLS policies on the jobs table (database layer).
  */
 import { supabaseAdmin } from '../lib/supabaseServer.js';
 import { logger } from '../../shared/logger.js';
@@ -21,15 +23,16 @@ import { ERROR_MESSAGES } from '../../shared/errors.js';
  * @param {number} options.from - Start index for pagination
  * @param {number} options.to - End index for pagination
  * @param {string} options.status - Filter by job status
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Per-request SSR client (respects RLS)
  * @returns {Promise<{data: Array|null, count: number, error: Error|null}>}
  *
- * Security: Only returns jobs where user_id matches the authenticated user
+ * Security: Only returns jobs where user_id matches the authenticated user (app + RLS)
  */
-export async function getJobsByUserId(userId, options = {}) {
+export async function getJobsByUserId(userId, options = {}, supabaseClient) {
   try {
     const { from, to, status } = options;
 
-    let query = supabaseAdmin
+    let query = supabaseClient
       .from('jobs')
       .select('*', { count: 'exact' })
       .eq('user_id', userId);
@@ -78,18 +81,19 @@ export async function getJobsByUserId(userId, options = {}) {
  * Retrieves a single job by ID for a specific user
  *
  * Purpose: Fetch a specific job application by its UUID
- * Connects to: supabaseAdmin for database queries
+ * Connects to: supabaseClient for database queries (respects RLS)
  *
  * @param {string} jobId - The job's UUID
  * @param {string} userId - The user's ID
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Per-request SSR client (respects RLS)
  * @returns {Promise<{data: Object|null, error: Error|null}>}
  *
- * Security: Enforces user ownership by requiring user_id match
+ * Security: Enforces user ownership by requiring user_id match (app + RLS)
  * - Returns null if job doesn't exist OR user doesn't own it (prevents enumeration)
  */
-export async function getJobById(jobId, userId) {
+export async function getJobById(jobId, userId, supabaseClient) {
   try {
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supabaseClient
       .from('jobs')
       .select('*')
       .eq('id', jobId)
@@ -140,17 +144,19 @@ export async function getJobById(jobId, userId) {
  *
  * Purpose: Insert a new job application, enforcing the per-user storage limit
  * Connects to:
- * - supabaseAdmin for count query and insert
+ * - supabaseAdmin for count query (bypasses RLS — tamper-proof storage limit check)
+ * - supabaseClient for insert (respects RLS)
  * - getStorargeLimitForTier to retrieve the maxJobs limit for the user's tier
  *
  * @param {Object} jobData - The job data to insert (validated by jobSchema)
  * @param {string} userId - The user's ID
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Per-request SSR client (respects RLS)
  * @returns {Promise<{data: Object|null, error: Error|null}>}
  *
- * Security: Associates job with user_id to enforce ownership
+ * Security: Associates job with user_id to enforce ownership (app + RLS)
  * Storage: Rejects insert if user is at or over their tier's maxJobs limit
  */
-export async function createJob(jobData, userId) {
+export async function createJob(jobData, userId, supabaseClient) {
   try {
     // Check storage limit before inserting
     const { maxJobs } = getStorargeLimitForTier(TIERS.FREE);
@@ -173,6 +179,10 @@ export async function createJob(jobData, userId) {
     // is self-correcting — subsequent requests will see the true count and block further inserts.
     // If this ever guards a financial or security-critical limit, replace with a Supabase RPC
     // (stored procedure) that performs the count + insert atomically in a single transaction.
+    //
+    // supabaseAdmin is used here intentionally — it bypasses RLS so the count reflects the
+    // true row count regardless of the user's session state. This prevents a user from
+    // manipulating their session to circumvent the storage limit.
     const { count, error: countError } = await supabaseAdmin
       .from('jobs')
       .select('*', { count: 'exact', head: true })
@@ -201,7 +211,7 @@ export async function createJob(jobData, userId) {
       return { data: null, error: limitError };
     }
 
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supabaseClient
       .from('jobs')
       .insert({ ...jobData, user_id: userId })
       .select();
@@ -239,14 +249,15 @@ export async function createJob(jobData, userId) {
  * @param {string} jobId - The job ID to update
  * @param {Object} updateData - The fields to update (validated by jobUpdateSchema)
  * @param {string} userId - The user's ID
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Per-request SSR client (respects RLS)
  * @returns {Promise<{data: Object|null, error: Error|null}>}
  *
- * Security: Enforces user ownership by requiring user_id match
+ * Security: Enforces user ownership by requiring user_id match (app + RLS)
  * - This prevents users from updating jobs they don't own
  */
-export async function updateJob(jobId, updateData, userId) {
+export async function updateJob(jobId, updateData, userId, supabaseClient) {
   try {
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supabaseClient
       .from('jobs')
       .update(updateData)
       .eq('id', jobId)
@@ -297,14 +308,15 @@ export async function updateJob(jobId, updateData, userId) {
  *
  * @param {string} jobId - The job ID to delete
  * @param {string} userId - The user's ID
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Per-request SSR client (respects RLS)
  * @returns {Promise<{data: Object|null, error: Error|null}>}
  *
- * Security: Enforces user ownership by requiring user_id match
+ * Security: Enforces user ownership by requiring user_id match (app + RLS)
  * - This prevents users from deleting jobs they don't own
  */
-export async function deleteJob(jobId, userId) {
+export async function deleteJob(jobId, userId, supabaseClient) {
   try {
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await supabaseClient
       .from('jobs')
       .delete()
       .eq('id', jobId)
