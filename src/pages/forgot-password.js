@@ -2,15 +2,15 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import { useAuth } from '../client/contexts/AuthContext';
-import { signInSchema, getFieldErrors } from '../shared/validations/authSchema';
+import { forgotPasswordSchema, getFieldErrors } from '../shared/validations/authSchema';
 
-export default function Login() {
+export default function ForgotPassword() {
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState({});
   const [loading, setLoading] = useState(false);
-  const { signIn, user, loading: authLoading } = useAuth();
+  const [success, setSuccess] = useState(false);
+  const { user, loading: authLoading } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
@@ -19,13 +19,8 @@ export default function Login() {
     }
   }, [user, authLoading, router]);
 
-  /**
-   * Validates form data using Zod schema
-   * Returns true if valid, false otherwise
-   * Sets field-level errors for display
-   */
   const validateForm = () => {
-    const result = signInSchema.safeParse({ email, password });
+    const result = forgotPasswordSchema.safeParse({ email });
 
     if (!result.success) {
       const errors = getFieldErrors(result.error);
@@ -39,17 +34,10 @@ export default function Login() {
     return true;
   };
 
-  /**
-   * Clears field error when user starts typing
-   */
-  const handleFieldChange = (field, value, setter) => {
-    setter(value);
-    if (fieldErrors[field]) {
-      setFieldErrors((prev) => {
-        const updated = { ...prev };
-        delete updated[field];
-        return updated;
-      });
+  const handleFieldChange = (value) => {
+    setEmail(value);
+    if (fieldErrors.email) {
+      setFieldErrors({});
     }
     if (error) setError('');
   };
@@ -59,18 +47,34 @@ export default function Login() {
     setError('');
     setFieldErrors({});
 
-    // Validate form before submission
     if (!validateForm()) {
       return;
     }
 
     setLoading(true);
 
-    const { error: signInError } = await signIn(email, password);
+    try {
+      const response = await fetch('/api/auth/forgot-password', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          redirectTo: `${window.location.origin}/reset-password`,
+        }),
+      });
 
-    if (signInError) {
-      setError(signInError.message || 'Failed to sign in');
+      const result = await response.json();
+
+      if (response.ok) {
+        setSuccess(true);
+      } else {
+        setError(result.message || 'Something went wrong. Please try again.');
+      }
+    } catch {
+      setError('Network error. Please try again.');
     }
+
     setLoading(false);
   };
 
@@ -86,11 +90,27 @@ export default function Login() {
     return null;
   }
 
+  if (success) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100 p-5">
+        <div className="bg-white p-10 rounded-lg shadow-md w-full max-w-md">
+          <h1 className="text-2xl font-semibold text-gray-800 mb-4">Check your email</h1>
+          <p className="text-gray-600 mb-6">
+            If an account exists with that email, we've sent a password reset link. Please check your inbox.
+          </p>
+          <Link href="/login" className="block w-full text-center bg-blue-600 text-white py-2.5 px-4 rounded text-sm font-medium hover:bg-blue-700 transition-colors">
+            Back to Sign In
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-100 p-5">
       <div className="bg-white p-10 rounded-lg shadow-md w-full max-w-md">
-        <h1 className="text-2xl font-semibold text-gray-800 mb-2">Sign In</h1>
-        <p className="text-gray-500 mb-6">Welcome back to Job Tracker</p>
+        <h1 className="text-2xl font-semibold text-gray-800 mb-2">Reset Password</h1>
+        <p className="text-gray-500 mb-6">Enter your email to receive a password reset link</p>
 
         {error && !Object.keys(fieldErrors).length && (
           <div className="bg-red-100 text-red-800 p-3 rounded mb-4 text-sm" role="alert">
@@ -107,7 +127,7 @@ export default function Login() {
               id="email"
               type="email"
               value={email}
-              onChange={(e) => handleFieldChange('email', e.target.value, setEmail)}
+              onChange={(e) => handleFieldChange(e.target.value)}
               required
               placeholder="Enter your email"
               aria-invalid={!!fieldErrors.email}
@@ -125,51 +145,19 @@ export default function Login() {
             )}
           </div>
 
-          <div className="mb-4">
-            <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-1.5">
-              Password
-            </label>
-            <input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => handleFieldChange('password', e.target.value, setPassword)}
-              required
-              placeholder="Enter your password"
-              aria-invalid={!!fieldErrors.password}
-              aria-describedby={fieldErrors.password ? 'password-error' : undefined}
-              className={`w-full px-3 py-2.5 border rounded text-sm focus:outline-none transition-colors ${
-                fieldErrors.password
-                  ? 'border-red-500 focus:border-red-500'
-                  : 'border-gray-300 focus:border-blue-500'
-              }`}
-            />
-            {fieldErrors.password && (
-              <p id="password-error" className="text-red-600 text-xs mt-1">
-                {fieldErrors.password}
-              </p>
-            )}
-          </div>
-
           <button
             type="submit"
             className="w-full bg-blue-600 text-white py-2.5 px-4 rounded text-sm font-medium hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
             disabled={loading}
           >
-            {loading ? 'Signing in...' : 'Sign In'}
+            {loading ? 'Sending...' : 'Send Reset Link'}
           </button>
         </form>
 
-        <p className="text-center mt-4 text-sm">
-          <Link href="/forgot-password" className="text-blue-600 hover:underline">
-            Forgot your password?
-          </Link>
-        </p>
-
-        <p className="text-center mt-3 text-gray-500 text-sm">
-          Don't have an account?{' '}
-          <Link href="/signUp" className="text-blue-600 hover:underline">
-            Sign up
+        <p className="text-center mt-5 text-gray-500 text-sm">
+          Remember your password?{' '}
+          <Link href="/login" className="text-blue-600 hover:underline">
+            Sign in
           </Link>
         </p>
       </div>

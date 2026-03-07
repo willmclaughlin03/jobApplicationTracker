@@ -11,6 +11,7 @@
  * Auth requests are proxied through the server to enable IP-based rate limiting.
  */
 import { createContext, useContext, useState, useEffect } from 'react';
+import { useRouter } from 'next/router';
 import { supabase } from '../lib/supabase.js';
 import {
   signInSchema,
@@ -24,6 +25,7 @@ const AuthContext = createContext(undefined);
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const router = useRouter();
 
   useEffect(() => {
     // One-time cleanup: remove stale sb-* keys left in localStorage from the
@@ -45,7 +47,15 @@ export function AuthProvider({ children }) {
     });
 
     // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        // User landed from a password reset email link — redirect to reset page
+        // instead of treating as a normal sign-in
+        setUser(session?.user ?? null);
+        setLoading(false);
+        router.push('/reset-password');
+        return;
+      }
       setUser(session?.user ?? null);
       setLoading(false);
     });
