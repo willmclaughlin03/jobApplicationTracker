@@ -121,13 +121,7 @@ export async function checkRateLimit(identifier, tier, operation){
 
 
     }catch(error){
-        logger.error('Rate limit check failed', {
-            error: error.message,
-            ...(process.env.NODE_ENV !== 'production' && { stack: error.stack }),
-            identifierType: identifier?.split(':')[0] || 'unknown',
-            tier,
-            operation
-        });
+        logger.error({ err: error, identifierType: identifier?.split(':')[0] || 'unknown', tier, operation }, 'Rate limit check failed');
         return { success: false, unavailable : true}
     }
 }

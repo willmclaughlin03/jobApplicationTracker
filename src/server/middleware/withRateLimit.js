@@ -247,7 +247,7 @@ export function withRateLimit(handler, options = {}){
             try {
                 rateLimitResult = await checkRateLimit(identifier, tier, operation);
             } catch(initialError) {
-                logger.warn('Rate limit initial check failed', { error: initialError.message, operation });
+                logger.warn({ err: initialError, operation }, 'Rate limit initial check failed');
                 rateLimitResult = { success: false, unavailable: true };
             }
 

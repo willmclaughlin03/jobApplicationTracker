@@ -1,5 +1,5 @@
 import { Redis } from '@upstash/redis';
-import logger from '../../shared/logger.js';
+import { logger } from '../../shared/logger.js';
 
 /**
  * Upstash Redis client singleton with health monitoring
@@ -20,7 +20,7 @@ let reconnectAttempts = 0;
 
 const CONFIG = {
     healthCheckIntervalMs: 60000,   // 60 seconds between health checks
-    healthCheckTimeoutMs: 5000,     // 5 second timeout for each check
+    healthCheckTimeoutMs: 2000,     // 2 second timeout for each check
     unhealthyThreshold: 2,
     maxStateListeners: 100,
     reconnectBaseDelayMs: 1000,
@@ -32,7 +32,7 @@ const CONFIG = {
 const stateChangeListeners = [];
 let consecutiveFailures = 0;
 let healthCheckInterval = null;
-let healthCheckInProgress = false;  // Lock to prevent concurrent health checks
+let healthCheckPromise = null;  // Shared promise so concurrent callers await the same check
 
 
 /**
@@ -224,13 +224,6 @@ export function getRedisClient() {
         // Initialize monitoring
         startHealthMonitoring();
 
-        // Perform initial health check
-        performHealthCheck().catch((error) => {
-            logger.warn('Initial health check failed', {
-                error: error.message
-            });
-        });
-
         initializationInProgress = false;
         return redisClient;
     } catch (error) {
@@ -250,52 +243,56 @@ export function getRedisClient() {
  * @returns {Promise<boolean>} True if healthy
  */
 async function performHealthCheck() {
-    // Prevent concurrent health checks from corrupting state
-    if (healthCheckInProgress) {
-        return isHealthy;
+    // If a check is already in progress, all callers await the same result
+    if (healthCheckPromise) {
+        return healthCheckPromise;
     }
 
-    healthCheckInProgress = true;
+    healthCheckPromise = (async () => {
+        try {
+            const client = redisClient;
 
-    try {
-        const client = redisClient;
+            if (!client) {
+                consecutiveFailures++;
+                if (consecutiveFailures >= CONFIG.unhealthyThreshold) {
+                    setHealthState(false);
+                }
+                return false;
+            }
 
-        if (!client) {
+            // Timeout to prevent hanging
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(
+                    () => reject(new Error('Health check timeout')),
+                    CONFIG.healthCheckTimeoutMs
+                );
+            });
+
+            await Promise.race([client.ping(), timeoutPromise]);
+
+            consecutiveFailures = 0;
+            setHealthState(true);
+            return true;
+        } catch (error) {
             consecutiveFailures++;
+
+            logger.warn('Redis health check failed', {
+                error: error.message,
+                consecutiveFailures,
+                threshold: CONFIG.unhealthyThreshold
+            });
+
             if (consecutiveFailures >= CONFIG.unhealthyThreshold) {
                 setHealthState(false);
             }
             return false;
         }
+    })();
 
-        // Timeout to prevent hanging
-        const timeoutPromise = new Promise((_, reject) => {
-            setTimeout(
-                () => reject(new Error('Health check timeout')),
-                CONFIG.healthCheckTimeoutMs
-            );
-        });
-
-        await Promise.race([client.ping(), timeoutPromise]);
-
-        consecutiveFailures = 0;
-        setHealthState(true);
-        return true;
-    } catch (error) {
-        consecutiveFailures++;
-
-        logger.warn('Redis health check failed', {
-            error: error.message,
-            consecutiveFailures,
-            threshold: CONFIG.unhealthyThreshold
-        });
-
-        if (consecutiveFailures >= CONFIG.unhealthyThreshold) {
-            setHealthState(false);
-        }
-        return false;
+    try {
+        return await healthCheckPromise;
     } finally {
-        healthCheckInProgress = false;
+        healthCheckPromise = null;
     }
 }
 
@@ -389,7 +386,7 @@ export function resetRedisClient() {
     lastHealthCheck = null;
     isHealthy = false;
     consecutiveFailures = 0;
-    healthCheckInProgress = false;
+    healthCheckPromise = null;
 
     // Reset backoff state
     lastReconnectAttempt = null;
