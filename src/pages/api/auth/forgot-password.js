@@ -61,13 +61,10 @@ async function handler(req, res) {
     });
 
     if (error) {
-      logger.warn('Password reset email failed', { errorMessage: error.message });
+      logger.warn({ err: error }, 'Password reset email failed');
     }
   } catch (error) {
-    logger.error('Forgot-password service error', {
-      error: error.message,
-      ...(process.env.NODE_ENV !== 'production' && { stack: error.stack })
-    });
+    logger.error({ err: error }, 'Forgot-password service error');
   }
 
   // Enforce minimum response time to prevent timing-based email enumeration

@@ -110,11 +110,7 @@ async function handler(req, res) {
 
   // Validate UUID format FIRST (before auth to reject malformed IDs early)
   if (!id || !validateUUID(id)) {
-    logger.warn('Invalid job ID format attempted', {
-      operation: 'handler',
-      id: id || 'empty',
-      method: req.method,
-    });
+    logger.warn({ operation: 'handler', id: id || 'empty', method: req.method }, 'Invalid job ID format attempted');
     return sendError(res, 400, 'INVALID_ID', ERROR_MESSAGES.INVALID_ID);
   }
 

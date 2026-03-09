@@ -50,29 +50,15 @@ export async function getJobsByUserId(userId, options = {}, supabaseClient) {
     const { data, error, count } = await query;
 
     if (error) {
-      logger.error('Database query failed', {
-        operation: 'getJobsByUserId',
-        userId,
-        error: error.message,
-      });
+      logger.error({ err: error, operation: 'getJobsByUserId', userId }, 'Database query failed');
       return { data: null, count: 0, error };
     }
 
-    logger.debug('Jobs retrieved successfully', {
-      operation: 'getJobsByUserId',
-      userId,
-      count: data?.length || 0,
-      totalCount: count,
-    });
+    logger.debug({ operation: 'getJobsByUserId', userId, count: data?.length || 0, totalCount: count }, 'Jobs retrieved successfully');
 
     return { data, count: count || 0, error: null };
   } catch (error) {
-    logger.error('Unexpected error in getJobsByUserId', {
-      operation: 'getJobsByUserId',
-      userId,
-      error: error.message,
-      ...(process.env.NODE_ENV !== 'production' && { stack: error.stack }),
-    });
+    logger.error({ err: error, operation: 'getJobsByUserId', userId }, 'Unexpected error in getJobsByUserId');
     return { data: null, count: 0, error };
   }
 }
@@ -103,38 +89,19 @@ export async function getJobById(jobId, userId, supabaseClient) {
     if (error) {
       // PGRST116 = "No rows found" - treat as not found, not as error
       if (error.code === 'PGRST116') {
-        logger.debug('Job not found or unauthorized', {
-          operation: 'getJobById',
-          userId,
-          jobId,
-        });
+        logger.debug({ operation: 'getJobById', userId, jobId }, 'Job not found or unauthorized');
         return { data: null, error: new Error('Job not found or unauthorized') };
       }
 
-      logger.error('Database query failed', {
-        operation: 'getJobById',
-        userId,
-        jobId,
-        error: error.message,
-      });
+      logger.error({ err: error, operation: 'getJobById', userId, jobId }, 'Database query failed');
       return { data: null, error };
     }
 
-    logger.debug('Job retrieved successfully', {
-      operation: 'getJobById',
-      userId,
-      jobId,
-    });
+    logger.debug({ operation: 'getJobById', userId, jobId }, 'Job retrieved successfully');
 
     return { data, error: null };
   } catch (error) {
-    logger.error('Unexpected error in getJobById', {
-      operation: 'getJobById',
-      userId,
-      jobId,
-      error: error.message,
-      ...(process.env.NODE_ENV !== 'production' && { stack: error.stack }),
-    });
+    logger.error({ err: error, operation: 'getJobById', userId, jobId }, 'Unexpected error in getJobById');
     return { data: null, error };
   }
 }
@@ -164,11 +131,7 @@ export async function createJob(jobData, userId, supabaseClient) {
     // Fail closed: if the tier config is broken, deny the insert rather than
     // silently allowing unlimited entries ((count ?? 0) >= undefined is false)
     if (typeof maxJobs !== 'number' || maxJobs <= 0) {
-      logger.error('Storage limit configuration is invalid', {
-        operation: 'createJob',
-        userId,
-        maxJobs,
-      });
+      logger.error({ operation: 'createJob', userId, maxJobs }, 'Storage limit configuration is invalid');
       return { data: null, error: new Error('Storage limit configuration is invalid') };
     }
 
@@ -189,21 +152,12 @@ export async function createJob(jobData, userId, supabaseClient) {
       .eq('user_id', userId);
 
     if (countError) {
-      logger.error('Failed to check job count before insert', {
-        operation: 'createJob',
-        userId,
-        error: countError.message,
-      });
+      logger.error({ err: countError, operation: 'createJob', userId }, 'Failed to check job count before insert');
       return { data: null, error: countError };
     }
 
     if ((count ?? 0) >= maxJobs) {
-      logger.warn('Storage limit reached', {
-        operation: 'createJob',
-        userId,
-        count,
-        maxJobs,
-      });
+      logger.warn({ operation: 'createJob', userId, count, maxJobs }, 'Storage limit reached');
       const limitError = Object.assign(
         new Error(ERROR_MESSAGES.STORAGE_LIMIT_EXCEEDED),
         { code: 'STORAGE_LIMIT_EXCEEDED' }
@@ -217,28 +171,15 @@ export async function createJob(jobData, userId, supabaseClient) {
       .select();
 
     if (error) {
-      logger.error('Failed to create job', {
-        operation: 'createJob',
-        userId,
-        error: error.message,
-      });
+      logger.error({ err: error, operation: 'createJob', userId }, 'Failed to create job');
       return { data: null, error };
     }
 
-    logger.info('Job created successfully', {
-      operation: 'createJob',
-      userId,
-      jobId: data?.[0]?.id,
-    });
+    logger.info({ operation: 'createJob', userId, jobId: data?.[0]?.id }, 'Job created successfully');
 
     return { data, error: null };
   } catch (error) {
-    logger.error('Unexpected error in createJob', {
-      operation: 'createJob',
-      userId,
-      error: error.message,
-      ...(process.env.NODE_ENV !== 'production' && { stack: error.stack }),
-    });
+    logger.error({ err: error, operation: 'createJob', userId }, 'Unexpected error in createJob');
     return { data: null, error };
   }
 }
@@ -265,40 +206,21 @@ export async function updateJob(jobId, updateData, userId, supabaseClient) {
       .select('*');
 
     if (error) {
-      logger.error('Failed to update job', {
-        operation: 'updateJob',
-        userId,
-        jobId,
-        error: error.message,
-      });
+      logger.error({ err: error, operation: 'updateJob', userId, jobId }, 'Failed to update job');
       return { data: null, error };
     }
 
     // Check if no rows were updated (job doesn't exist or user doesn't own it)
     if (!data || data.length === 0) {
-      logger.warn('Update failed - job not found or unauthorized', {
-        operation: 'updateJob',
-        userId,
-        jobId,
-      });
+      logger.warn({ operation: 'updateJob', userId, jobId }, 'Update failed - job not found or unauthorized');
       return { data: null, error: new Error('Job not found or unauthorized') };
     }
 
-    logger.info('Job updated successfully', {
-      operation: 'updateJob',
-      userId,
-      jobId,
-    });
+    logger.info({ operation: 'updateJob', userId, jobId }, 'Job updated successfully');
 
     return { data, error: null };
   } catch (error) {
-    logger.error('Unexpected error in updateJob', {
-      operation: 'updateJob',
-      userId,
-      jobId,
-      error: error.message,
-      ...(process.env.NODE_ENV !== 'production' && { stack: error.stack }),
-    });
+    logger.error({ err: error, operation: 'updateJob', userId, jobId }, 'Unexpected error in updateJob');
     return { data: null, error };
   }
 }
@@ -324,39 +246,20 @@ export async function deleteJob(jobId, userId, supabaseClient) {
       .select();
 
     if (error) {
-      logger.error('Failed to delete job', {
-        operation: 'deleteJob',
-        userId,
-        jobId,
-        error: error.message,
-      });
+      logger.error({ err: error, operation: 'deleteJob', userId, jobId }, 'Failed to delete job');
       return { data: null, error };
     }
 
     if (!data || data.length === 0) {
-      logger.warn('Delete failed - job not found or unauthorized', {
-        operation: 'deleteJob',
-        userId,
-        jobId,
-      });
+      logger.warn({ operation: 'deleteJob', userId, jobId }, 'Delete failed - job not found or unauthorized');
       return { data: null, error: new Error('Job not found or unauthorized') };
     }
 
-    logger.info('Job deleted successfully', {
-      operation: 'deleteJob',
-      userId,
-      jobId,
-    });
+    logger.info({ operation: 'deleteJob', userId, jobId }, 'Job deleted successfully');
 
     return { data: data[0], error: null };
   } catch (error) {
-    logger.error('Unexpected error in deleteJob', {
-      operation: 'deleteJob',
-      userId,
-      jobId,
-      error: error.message,
-      ...(process.env.NODE_ENV !== 'production' && { stack: error.stack }),
-    });
+    logger.error({ err: error, operation: 'deleteJob', userId, jobId }, 'Unexpected error in deleteJob');
     return { data: null, error };
   }
 }

@@ -55,11 +55,7 @@ export async function getUserFromRequest(req, res) {
     const { data: { user }, error } = await supabase.auth.getUser();
 
     if (error) {
-      logger.error('Token validation failed', {
-        message: error.message,
-        status: error.status,
-        timestamp: new Date().toISOString()
-      });
+      logger.error({ err: error, status: error.status }, 'Token validation failed');
       return { user: null, error: 'Invalid or expired token', supabaseClient: null };
     }
 
@@ -69,11 +65,7 @@ export async function getUserFromRequest(req, res) {
 
     return { user, error: null, supabaseClient: supabase };
   } catch (err) {
-    logger.error('Unexpected authentication error', {
-      message: err.message,
-      ...(process.env.NODE_ENV !== 'production' && { stack: err.stack }),
-      timestamp: new Date().toISOString()
-    });
+    logger.error({ err }, 'Unexpected authentication error');
     return { user: null, error: 'Authentication service unavailable', supabaseClient: null };
   }
 }

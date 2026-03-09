@@ -67,10 +67,7 @@ function validateRedisUrl(url) {
         );
 
         if (!isAllowedDomain) {
-            logger.warn('Redis URL domain not in allowed list', {
-                hostname,
-                allowedDomains
-            });
+            logger.warn({ hostname, allowedDomains }, 'Redis URL domain not in allowed list');
         }
 
         return { valid: true };
@@ -94,10 +91,7 @@ export function onRedisStateChange(listener) {
     }
 
     if (stateChangeListeners.length >= CONFIG.maxStateListeners) {
-        logger.error('Max redis state listeners reached', {
-            current: stateChangeListeners.length,
-            max: CONFIG.maxStateListeners
-        });
+        logger.error({ current: stateChangeListeners.length, max: CONFIG.maxStateListeners }, 'Max redis state listeners reached');
         throw new Error(
             `Maximum listener limit (${CONFIG.maxStateListeners}) reached. ` +
             'Ensure listeners are unsubscribed correctly'
@@ -106,17 +100,13 @@ export function onRedisStateChange(listener) {
 
     stateChangeListeners.push(listener);
 
-    logger.debug('Redis state listener registered', {
-        totalListeners: stateChangeListeners.length
-    });
+    logger.debug({ totalListeners: stateChangeListeners.length }, 'Redis state listener registered');
 
     return () => {
         const index = stateChangeListeners.indexOf(listener);
         if (index > -1) {
             stateChangeListeners.splice(index, 1);
-            logger.debug('Redis state listener unregistered', {
-                totalListeners: stateChangeListeners.length
-            });
+            logger.debug({ totalListeners: stateChangeListeners.length }, 'Redis state listener unregistered');
         }
     };
 }
@@ -132,10 +122,7 @@ function notifyStateChange(newState) {
         try {
             listener(newState);
         } catch (error) {
-            logger.error('Redis state change listener error', {
-                error: error.message,
-                ...(process.env.NODE_ENV !== 'production' && { stack: error.stack })
-            });
+            logger.error({ err: error }, 'Redis state change listener error');
         }
     }
 }
@@ -151,11 +138,7 @@ function setHealthState(newState) {
     lastHealthCheck = Date.now();
 
     if (previousState !== newState) {
-        logger.info('Redis health state changed', {
-            previousState,
-            newState,
-            consecutiveFailures
-        });
+        logger.info({ previousState, newState, consecutiveFailures }, 'Redis health state changed');
         notifyStateChange(newState);
     }
 }
@@ -193,10 +176,7 @@ export function getRedisClient() {
     const token = process.env.UPSTASH_REDIS_REST_TOKEN;
 
     if (!url || !token) {
-        logger.warn('Upstash Redis not configured - rate limiting unavailable', {
-            hasUrl: !!url,
-            hasToken: !!token
-        });
+        logger.warn({ hasUrl: !!url, hasToken: !!token }, 'Upstash Redis not configured - rate limiting unavailable');
         setHealthState(false);
         initializationInProgress = false;
         return null;
@@ -205,9 +185,7 @@ export function getRedisClient() {
     // Validate URL security
     const urlValidation = validateRedisUrl(url);
     if (!urlValidation.valid) {
-        logger.error('Invalid Redis URL configuration', {
-            error: urlValidation.error
-        });
+        logger.error({ validationError: urlValidation.error }, 'Invalid Redis URL configuration');
         setHealthState(false);
         initializationInProgress = false;
         return null;
@@ -227,9 +205,7 @@ export function getRedisClient() {
         initializationInProgress = false;
         return redisClient;
     } catch (error) {
-        logger.error('Failed to initialize Redis client', {
-            error: error.message
-        });
+        logger.error({ err: error }, 'Failed to initialize Redis client');
         setHealthState(false);
         initializationInProgress = false;
         return null;
@@ -276,11 +252,7 @@ async function performHealthCheck() {
         } catch (error) {
             consecutiveFailures++;
 
-            logger.warn('Redis health check failed', {
-                error: error.message,
-                consecutiveFailures,
-                threshold: CONFIG.unhealthyThreshold
-            });
+            logger.warn({ err: error, consecutiveFailures, threshold: CONFIG.unhealthyThreshold }, 'Redis health check failed');
 
             if (consecutiveFailures >= CONFIG.unhealthyThreshold) {
                 setHealthState(false);
@@ -314,9 +286,7 @@ function startHealthMonitoring() {
         healthCheckInterval.unref();
     }
 
-    logger.debug('Redis health monitoring started', {
-        intervalMs: CONFIG.healthCheckIntervalMs
-    });
+    logger.debug({ intervalMs: CONFIG.healthCheckIntervalMs }, 'Redis health monitoring started');
 }
 
 /**
@@ -429,10 +399,7 @@ export async function reconnect(force = false) {
 
     // Check if max attempts exceeded
     if (reconnectAttempts >= CONFIG.reconnectMaxAttempts && !force) {
-        logger.error('Max reconnection attempts exceeded', {
-            attempts: reconnectAttempts,
-            maxAttempts: CONFIG.reconnectMaxAttempts
-        });
+        logger.error({ attempts: reconnectAttempts, maxAttempts: CONFIG.reconnectMaxAttempts }, 'Max reconnection attempts exceeded');
         return false;
     }
 
@@ -443,19 +410,13 @@ export async function reconnect(force = false) {
 
         if (timeSinceLastAttempt < delay) {
             const waitTime = delay - timeSinceLastAttempt;
-            logger.debug('Reconnection attempt delayed due to backoff', {
-                waitTimeMs: waitTime,
-                attempt: reconnectAttempts + 1
-            });
+            logger.debug({ waitTimeMs: waitTime, attempt: reconnectAttempts + 1 }, 'Reconnection attempt delayed due to backoff');
 
             await new Promise(resolve => setTimeout(resolve, waitTime));
         }
     }
 
-    logger.info('Attempting reconnection', {
-        attempt: reconnectAttempts + 1,
-        maxAttempts: CONFIG.reconnectMaxAttempts
-    });
+    logger.info({ attempt: reconnectAttempts + 1, maxAttempts: CONFIG.reconnectMaxAttempts }, 'Attempting reconnection');
 
     lastReconnectAttempt = Date.now();
     reconnectAttempts++;

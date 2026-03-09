@@ -88,10 +88,7 @@ function extractIpIdentifier(req){
     const ip = rawIp ? normalizeIp(rawIp) : null;
 
     if(!ip){
-        logger.warn('Rate limit: no valid IP identifier available', {
-            hasRealIp: !!req.headers['x-real-ip'],
-            hasSocketAddr: !!req.socket?.remoteAddress
-        });
+        logger.warn({ hasRealIp: !!req.headers['x-real-ip'], hasSocketAddr: !!req.socket?.remoteAddress }, 'Rate limit: no valid IP identifier available');
         return null;
     }
 
@@ -192,10 +189,7 @@ export function withRateLimit(handler, options = {}){
                 try{
                     const { user, error, supabaseClient } = await getUserFromRequest(req, res);
                     if(!user){
-                        logger.warn('Auth required but failed on protected route', {
-                            error: error || 'Unknown auth failure',
-                            method: req.method
-                        });
+                        logger.warn({ authError: error || 'Unknown auth failure', method: req.method }, 'Auth required but failed on protected route');
                         return sendError(
                             res,
                             401,
@@ -207,10 +201,7 @@ export function withRateLimit(handler, options = {}){
                     req._supabaseClient = supabaseClient;
                     identifier = `user:${user.id}`;
                 }catch(error){
-                    logger.error('Auth service error on protected route', {
-                        error: error.message,
-                        method: req.method
-                    });
+                    logger.error({ err: error, method: req.method }, 'Auth service error on protected route');
                     return sendError(
                         res,
                         401,
@@ -236,7 +227,7 @@ export function withRateLimit(handler, options = {}){
             if (shouldCsrfProtect && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
                 const userId = req._rateLimitUser?.id;
                 if (!userId || !validateCsrfToken(req, userId)) {
-                    logger.warn('CSRF validation failed', { method: req.method, hasUser: !!userId });
+                    logger.warn({ method: req.method, hasUser: !!userId }, 'CSRF validation failed');
                     return sendError(res, 403, 'CSRF_VALIDATION_FAILED', ERROR_MESSAGES.CSRF_VALIDATION_FAILED);
                 }
             }
@@ -257,13 +248,13 @@ export function withRateLimit(handler, options = {}){
                 try {
                     rateLimitResult = await checkRateLimit(identifier, tier, operation);
                 } catch(retryError) {
-                    logger.warn('Rate limit retry failed', { attempt: attempt + 1, error: retryError.message, operation });
+                    logger.warn({ err: retryError, attempt: attempt + 1, operation }, 'Rate limit retry failed');
                     rateLimitResult = { success: false, unavailable: true };
                 }
             }
         } catch(error) {
             // Safety net for unexpected errors outside checkRateLimit (e.g. auth layer)
-            logger.error('Unexpected middleware error', { error: error.message, method: req.method, operation });
+            logger.error({ err: error, method: req.method, operation }, 'Unexpected middleware error');
             return sendError(
                 res,
                 503,
@@ -274,10 +265,7 @@ export function withRateLimit(handler, options = {}){
 
         // block req on redis down after all retries exhausted
         if(rateLimitResult.unavailable){
-            logger.warn('Rate limiting unavailable after retries, req denied', {
-                operation,
-                method: req.method
-            });
+            logger.warn({ operation, method: req.method }, 'Rate limiting unavailable after retries, req denied');
             return sendError(
                 res,
                 503,
@@ -295,12 +283,7 @@ export function withRateLimit(handler, options = {}){
 
             res.setHeader('Retry-After', retryAfterSeconds);
 
-            logger.warn('Rate Limit exceeded', {
-                operation,
-                window: rateLimitResult.window,
-                limit: rateLimitResult.limit,
-                retryAfterSeconds
-            });
+            logger.warn({ operation, window: rateLimitResult.window, limit: rateLimitResult.limit, retryAfterSeconds }, 'Rate limit exceeded');
 
             return sendError(
                 res,

@@ -69,15 +69,11 @@ async function handler(req, res) {
     if (error) {
       // Session is likely already expired — the SSR client may not have fired
       // setAll to clear cookies, so do it manually.
-      logger.warn('signOut returned error, clearing cookies manually', {
-        error: error.message
-      });
+      logger.warn({ err: error }, 'signOut returned error, clearing cookies manually');
       clearAuthCookies(req, res);
     }
   } catch (err) {
-    logger.error('Unexpected error during sign-out, clearing cookies manually', {
-      error: err.message
-    });
+    logger.error({ err }, 'Unexpected error during sign-out, clearing cookies manually');
     clearAuthCookies(req, res);
   }
 

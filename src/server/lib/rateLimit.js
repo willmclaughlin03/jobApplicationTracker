@@ -58,17 +58,17 @@ function getOrCreateLimiter(tier, operation, windowType){
  */
 export async function checkRateLimit(identifier, tier, operation){
     if(!identifier || typeof identifier !== 'string'){
-        logger.error('checkRateLimit called with invalid identifier', { tier, operation });
+        logger.error({ tier, operation }, 'checkRateLimit called with invalid identifier');
         return { success: false, unavailable: true }
     }
 
     if(!Object.values(TIERS).includes(tier)){
-        logger.error('checkRateLimit called with invalid tier', { tier, operation });
+        logger.error({ tier, operation }, 'checkRateLimit called with invalid tier');
         return { success: false, unavailable: true }
     }
 
     if(!Object.values(OPERATIONS).includes(operation)){
-        logger.error('checkRateLimit called with invalid operation', { tier, operation });
+        logger.error({ tier, operation }, 'checkRateLimit called with invalid operation');
         return { success: false, unavailable: true }
     }
 
@@ -77,10 +77,7 @@ export async function checkRateLimit(identifier, tier, operation){
     try{
         // left to right check, if !redis true, never ping redis
         if (!redis || !(await isRedisHealthy())){
-            logger.warn('Rate limiting is unavailable - Redis not healthy', {
-                hasClient: !!redis,
-                operation
-            });
+            logger.warn({ hasClient: !!redis, operation }, 'Rate limiting is unavailable - Redis not healthy');
             return { success: false, unavailable: true}
         }
         const hourlyLimiter = getOrCreateLimiter(tier, operation, 'hourly');

@@ -44,16 +44,13 @@ async function handler(req, res) {
     const { error } = await ssrClient.auth.updateUser({ password });
 
     if (error) {
-      logger.warn('Password update failed', { errorMessage: error.message });
+      logger.warn({ err: error }, 'Password update failed');
       return sendError(res, 400, 'PASSWORD_UPDATE_FAILED', ERROR_MESSAGES.PASSWORD_UPDATE_FAILED);
     }
 
     return sendSuccess(res, 200, null, ERROR_MESSAGES.PASSWORD_UPDATE_SUCCESS);
   } catch (error) {
-    logger.error('Reset-password service error', {
-      error: error.message,
-      ...(process.env.NODE_ENV !== 'production' && { stack: error.stack })
-    });
+    logger.error({ err: error }, 'Reset-password service error');
     return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
   }
 }

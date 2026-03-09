@@ -115,10 +115,7 @@ export function validateCsrfToken(req, userId) {
   const headerValue = req.headers?.['x-csrf-token'];
 
   if (!cookieValue || !headerValue) {
-    logger.warn('CSRF validation failed: missing token', {
-      hasCookie: !!cookieValue,
-      hasHeader: !!headerValue,
-    });
+    logger.warn({ hasCookie: !!cookieValue, hasHeader: !!headerValue }, 'CSRF validation failed: missing token');
     return false;
   }
 
@@ -141,7 +138,7 @@ export function validateCsrfToken(req, userId) {
   // Parse token: nonce.timestamp.signature
   const parts = cookieValue.split('.');
   if (parts.length !== 3) {
-    logger.warn('CSRF validation failed: malformed token', { parts: parts.length });
+    logger.warn({ parts: parts.length }, 'CSRF validation failed: malformed token');
     return false;
   }
 
@@ -155,7 +152,7 @@ export function validateCsrfToken(req, userId) {
   }
   const ageSeconds = Math.floor(Date.now() / 1000) - parsedTimestamp;
   if (ageSeconds < 0 || ageSeconds > CSRF_MAX_AGE_SECONDS) {
-    logger.warn('CSRF validation failed: expired or future token', { ageSeconds });
+    logger.warn({ ageSeconds }, 'CSRF validation failed: expired or future token');
     return false;
   }
 

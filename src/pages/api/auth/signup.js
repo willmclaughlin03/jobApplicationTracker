@@ -38,9 +38,7 @@ async function handler(req, res) {
         });
 
         if (error) {
-            logger.warn('Sign-up failed', {
-                errorMessage: error.message
-            });
+            logger.warn({ err: error }, 'Sign-up failed');
             return sendError(res, 400, 'SIGN_UP_FAILED', ERROR_MESSAGES.SIGN_UP_FAILED);
         }
 
@@ -53,9 +51,7 @@ async function handler(req, res) {
             });
 
             if (sessionError) {
-                logger.error('Failed to set session cookies after sign-up', {
-                    error: sessionError.message
-                });
+                logger.error({ err: sessionError }, 'Failed to set session cookies after sign-up');
                 return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
             }
         }
@@ -66,10 +62,7 @@ async function handler(req, res) {
 
         return sendSuccess(res, 201, { user: data.user }, message);
     } catch (error) {
-        logger.error('Sign-up service error', {
-            error: error.message,
-            ...(process.env.NODE_ENV !== 'production' && { stack: error.stack })
-        });
+        logger.error({ err: error }, 'Sign-up service error');
         return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
     }
 }
