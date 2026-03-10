@@ -19,7 +19,7 @@ export default function JobCard({ job, onEdit, onDelete, isDeleting }) {
         <span className={isLongPosition && !expanded ? 'block truncate' : 'whitespace-normal break-words'}>{job.position}</span>
       </td>
       <td className="px-4 py-3 text-sm">
-        <span className={`inline-block px-2.5 py-1 rounded-full text-xs font-medium capitalize ${STATUS_COLORS[job.status] || 'bg-gray-100 text-gray-800'}`}>
+        <span className={`inline-block px-2.5 py-1 rounded-full border text-xs font-medium capitalize ${STATUS_COLORS[job.status] || 'bg-gray-100 text-gray-800 border-gray-300'}`}>
           {job.status}
         </span>
       </td>

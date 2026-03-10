@@ -1,4 +1,4 @@
-import { STATUS_OPTIONS } from './constants.js';
+import { STATUS_OPTIONS, STATUS_COLORS } from './constants.js';
 
 export default function JobFormFields({ formData, onChange, idPrefix = '', errors = {} }) {
   const prefix = idPrefix ? `${idPrefix}-` : '';
@@ -54,7 +54,7 @@ export default function JobFormFields({ formData, onChange, idPrefix = '', error
           name="status"
           value={formData.status}
           onChange={onChange}
-          className="w-full px-3 py-2.5 border border-gray-300 rounded text-sm focus:outline-none focus:border-blue-500 transition-colors"
+          className={`w-full px-3 py-2.5 border border-gray-300 rounded text-sm font-medium focus:outline-none focus:border-blue-500 transition-colors ${STATUS_COLORS[formData.status] || 'bg-gray-100 text-gray-800'}`}
         >
           {STATUS_OPTIONS.map(option => (
             <option key={option.value} value={option.value}>
