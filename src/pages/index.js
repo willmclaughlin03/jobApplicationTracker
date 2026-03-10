@@ -215,6 +215,9 @@ export default function Dashboard() {
           deleting={deleting === jobToDelete?.id}
         />
       </main>
+      <footer className="text-center text-xs text-gray-400 py-4">
+        <a target="_blank" rel="noopener noreferrer" href="https://icons8.com/icon/hH1yYj2eECWj/job" className="hover:text-gray-500">Icon</a> by <a target="_blank" rel="noopener noreferrer" href="https://icons8.com" className="hover:text-gray-500">Icons8</a>
+      </footer>
     </div>
   );
 }
