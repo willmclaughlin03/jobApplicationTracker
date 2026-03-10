@@ -12,6 +12,7 @@ import NextPageButton from '../client/components/NextPageButton';
 import JobStatsSidebar from '../client/components/JobStatsSidebar';
 import ProfileDropdown from '../client/components/ProfileDropdown';
 import Spinner from '../client/components/Spinner';
+import InfoTooltip from '../client/components/InfoTooltip';
 
 export default function Dashboard() {
   const { user, loading: authLoading, signOut } = useAuth();
@@ -146,13 +147,16 @@ export default function Dashboard() {
                 <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-blue-500" />
               )}
             </button>
-            <button
-              onClick={toggleAddForm}
-              className="bg-blue-600 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
-              disabled={saving}
-            >
-              {showForm ? 'Cancel' : 'Add New Job'}
-            </button>
+            <div className="flex items-center gap-3">
+              <InfoTooltip />
+              <button
+                onClick={toggleAddForm}
+                className="bg-blue-600 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+                disabled={saving}
+              >
+                {showForm ? 'Cancel' : 'Add New Job'}
+              </button>
+            </div>
           </div>
 
           {showForm && (
