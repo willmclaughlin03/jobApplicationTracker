@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { STATUS_COLORS } from './forms/constants';
 import Spinner from './Spinner.jsx';
 
-export default function JobCard({ job, onEdit, onDelete, isDeleting }) {
+export default function JobTableRow({ job, onEdit, onDelete, isDeleting }) {
   const [expanded, setExpanded] = useState(false);
   const hasNotes = Boolean(job.notes);
   const isLongNotes = hasNotes && job.notes.length > 90;
