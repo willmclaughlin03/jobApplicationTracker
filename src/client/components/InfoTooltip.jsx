@@ -1,22 +1,42 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { TIER_LIMITS, TIERS } from '../../shared/constants/tiers';
 
 const freeLimits = TIER_LIMITS[TIERS.FREE];
+const TOOLTIP_ID = 'info-tooltip-content';
 
 export default function InfoTooltip() {
   const [visible, setVisible] = useState(false);
+
+  const close = useCallback(() => setVisible(false), []);
+
+  useEffect(() => {
+    if (!visible) return;
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') close();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [visible, close]);
+
+  const handleBlurCapture = (e) => {
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+      setVisible(false);
+    }
+  };
 
   return (
     <div
       className="relative"
       onMouseEnter={() => setVisible(true)}
       onMouseLeave={() => setVisible(false)}
+      onFocusCapture={() => setVisible(true)}
+      onBlurCapture={handleBlurCapture}
     >
       <button
         type="button"
         aria-label="Application info"
-        onFocus={() => setVisible(true)}
-        onBlur={() => setVisible(false)}
+        aria-expanded={visible}
+        aria-describedby={visible ? TOOLTIP_ID : undefined}
         className="w-8 h-8 rounded-full bg-gray-200 text-gray-500 hover:bg-gray-300 hover:text-gray-700 flex items-center justify-center text-sm font-semibold transition-colors"
       >
         i
@@ -24,6 +44,7 @@ export default function InfoTooltip() {
 
       {visible && (
         <div
+          id={TOOLTIP_ID}
           role="tooltip"
           className="absolute right-0 top-full mt-2 w-72 bg-white border border-gray-200 rounded-lg shadow-lg z-50 p-4 text-sm text-gray-600"
         >
