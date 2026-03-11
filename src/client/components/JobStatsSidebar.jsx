@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { STATUS_OPTIONS, STATUS_COLORS, STATUS_DOT_COLORS } from './forms/constants';
+import StatusPieChart from './StatusPieChart';
 
 /**
  * Sidebar drawer showing job statistics, status filter buttons, and a company search input.
@@ -105,6 +106,15 @@ export default function JobStatsSidebar({
           </div>
         </div>
 
+        {/* Pie chart */}
+        <div className="px-4 py-3 border-b border-gray-100">
+          <StatusPieChart
+            statusCounts={statusCounts}
+            total={total}
+            loading={loading}
+          />
+        </div>
+
         {/* Status filters */}
         <div className="p-2">
           {STATUS_OPTIONS.map(({ value, label }) => {
@@ -148,7 +158,7 @@ export default function JobStatsSidebar({
               type="text"
               value={localSearch}
               onChange={handleSearchChange}
-              placeholder="e.g. Acme Corp..."
+              placeholder="e.g. Apple..."
               disabled={loading}
               maxLength={100}
               className="w-full px-3 py-2 text-sm border border-gray-200 rounded-md
