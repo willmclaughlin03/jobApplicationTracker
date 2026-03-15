@@ -1,8 +1,6 @@
-import { useState, useEffect, useMemo } from 'react';
-import { useRouter } from 'next/router';
+import { useState, useMemo } from 'react';
 import Link from 'next/link';
 import { useAuth } from '../client/contexts/AuthContext';
-import { supabase } from '../client/lib/supabase';
 import { api } from '../client/lib/api';
 import {
   resetPasswordSchema,
@@ -66,48 +64,12 @@ export default function ResetPassword() {
   const [fieldErrors, setFieldErrors] = useState({});
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
-  const [hashProcessing, setHashProcessing] = useState(true);
   const { user, loading: authLoading } = useAuth();
-  const router = useRouter();
 
   const passwordStrength = useMemo(
     () => getPasswordStrength(password),
     [password]
   );
-
-  /**
-   * Detect and process the #access_token hash fragment from Supabase's
-   * password reset email link. The @supabase/ssr browser client does not
-   * automatically parse hash fragments, so we extract the tokens and
-   * call setSession manually.
-   */
-  useEffect(() => {
-    const hash = window.location.hash;
-    if (!hash || !hash.includes('access_token')) {
-      setHashProcessing(false);
-      return;
-    }
-
-    const params = new URLSearchParams(hash.substring(1));
-    const accessToken = params.get('access_token');
-    const refreshToken = params.get('refresh_token');
-
-    if (accessToken && refreshToken) {
-      supabase.auth.setSession({
-        access_token: accessToken,
-        refresh_token: refreshToken,
-      }).then(() => {
-        // Clear the hash from the URL to avoid token exposure in browser history
-        window.history.replaceState(null, '', window.location.pathname);
-        setHashProcessing(false);
-      }).catch(() => {
-        setError('Failed to verify reset link. Please request a new one.');
-        setHashProcessing(false);
-      });
-    } else {
-      setHashProcessing(false);
-    }
-  }, []);
 
   const validateForm = () => {
     const result = resetPasswordSchema.safeParse({ password, confirmPassword });
@@ -164,7 +126,7 @@ export default function ResetPassword() {
     setLoading(false);
   };
 
-  if (authLoading || hashProcessing) {
+  if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center text-gray-500">
         Loading...

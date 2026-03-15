@@ -51,7 +51,7 @@ export async function middleware(req) {
               maxAge: 604800, // 7-day default; supabase may override (e.g. 0 on sign-out)
               ...options,
               // Security attributes always enforced last
-              httpOnly: false,
+              httpOnly: true,
               secure: process.env.NODE_ENV === 'production',
               sameSite: 'lax',
               path: '/'

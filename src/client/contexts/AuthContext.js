@@ -1,18 +1,23 @@
 /**
  * Authentication Context Provider
  *
- * Purpose: Manages authentication state and provides auth methods to the app
+ * Purpose: Manages authentication state and provides auth methods to the app.
+ * All session state is read from the server via /api/auth/session — the browser
+ * never has direct access to auth tokens (httpOnly cookies).
+ *
  * Connects to:
  * - /api/auth/signin and /api/auth/signup for server-side auth (rate-limited)
- * - Supabase client for session management and auth state listening
+ * - /api/auth/signout for server-side session clearing
+ * - /api/auth/session for server-side session checks
+ * - /api/auth/csrf for CSRF token management
  * - authSchema.js for input validation (security safeguard)
  *
- * Security: Validates all inputs before sending to server as a defense-in-depth measure.
- * Auth requests are proxied through the server to enable IP-based rate limiting.
+ * Security:
+ * - Auth tokens stored in httpOnly cookies (not readable by JavaScript)
+ * - Validates all inputs before sending to server as defense-in-depth
+ * - Re-checks session on tab focus (throttled to 30s) for tab sync
  */
-import { createContext, useContext, useState, useEffect } from 'react';
-import { useRouter } from 'next/router';
-import { supabase } from '../lib/supabase.js';
+import { createContext, useContext, useState, useEffect, useRef } from 'react';
 import {
   signInSchema,
   signUpSchema,
@@ -22,10 +27,27 @@ import { ERROR_MESSAGES } from '../../shared/errors.js';
 
 const AuthContext = createContext(undefined);
 
+/** Minimum ms between /api/auth/session re-fetches on tab focus */
+const SESSION_REFETCH_THROTTLE_MS = 30_000;
+
+/**
+ * Fetches the current user from the server session endpoint.
+ * Returns the user object or null.
+ */
+async function fetchSessionUser() {
+  try {
+    const res = await fetch('/api/auth/session', { credentials: 'same-origin' });
+    const result = await res.json();
+    return result.data?.user ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const router = useRouter();
+  const lastSessionCheckRef = useRef(0);
 
   useEffect(() => {
     // One-time cleanup: remove stale sb-* keys left in localStorage from the
@@ -36,40 +58,41 @@ export function AuthProvider({ children }) {
         .forEach(k => localStorage.removeItem(k));
     }
 
-    // Check active session on mount
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null);
+    // Check active session on mount via server endpoint
+    fetchSessionUser().then(sessionUser => {
+      setUser(sessionUser);
       setLoading(false);
+      lastSessionCheckRef.current = Date.now();
       // Prime the CSRF cookie so state-changing requests work immediately
-      if (session?.user) {
+      if (sessionUser) {
         fetch('/api/auth/csrf', { credentials: 'same-origin' }).catch(() => {});
       }
     });
 
-    // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'PASSWORD_RECOVERY') {
-        // User landed from a password reset email link — redirect to reset page
-        // instead of treating as a normal sign-in
-        setUser(session?.user ?? null);
-        setLoading(false);
-        router.push('/reset-password');
-        return;
-      }
-      setUser(session?.user ?? null);
-      setLoading(false);
-    });
+    // Re-check session when tab regains focus (throttled to 30s)
+    // This handles: sign-out in another tab, token expiry, session refresh
+    function handleVisibilityChange() {
+      if (document.visibilityState !== 'visible') return;
+      if (Date.now() - lastSessionCheckRef.current < SESSION_REFETCH_THROTTLE_MS) return;
 
-    return () => subscription.unsubscribe();
+      lastSessionCheckRef.current = Date.now();
+      fetchSessionUser().then(sessionUser => {
+        setUser(sessionUser);
+      });
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, []);
 
   /**
    * Signs in a user with email and password via server-side API
    *
    * Purpose: Authenticates existing users through rate-limited server route
-   * Connects to:
-   * - /api/auth/signin for server-side credential validation
-   * - supabase.auth.setSession() to sync client auth state
+   * Connects to: /api/auth/signin for server-side credential validation
    *
    * Security: Validates inputs before API call as defense-in-depth.
    * Server-side route is IP rate-limited to prevent brute force.
@@ -110,10 +133,10 @@ export function AuthProvider({ children }) {
         };
       }
 
-      // Server already wrote auth cookies in the response — read them back to
-      // sync client state immediately without waiting for onAuthStateChange.
-      const { data: { session } } = await supabase.auth.getSession();
-      setUser(session?.user ?? null);
+      // Server wrote httpOnly auth cookies — use the user from the response
+      // directly instead of making a second request to /api/auth/session.
+      setUser(result.data?.user ?? null);
+      lastSessionCheckRef.current = Date.now();
 
       // New session — fetch a fresh CSRF token bound to this user
       fetch('/api/auth/csrf', { credentials: 'same-origin' }).catch(() => {});
@@ -131,9 +154,7 @@ export function AuthProvider({ children }) {
    * Creates a new user account via server-side API
    *
    * Purpose: Registers new users through rate-limited server route
-   * Connects to:
-   * - /api/auth/signup for server-side account creation
-   * - supabase.auth.setSession() to sync client auth state
+   * Connects to: /api/auth/signup for server-side account creation
    *
    * Security: Validates inputs before API call as defense-in-depth.
    * Server-side route is IP rate-limited and enforces password strength.
@@ -179,13 +200,13 @@ export function AuthProvider({ children }) {
         };
       }
 
-      // Read cookie-based session set by the server. Will be null if email
+      // Use user from the response directly. Will be null if email
       // confirmation is required (Supabase returns session: null in that case).
-      const { data: { session } } = await supabase.auth.getSession();
-      setUser(session?.user ?? null);
+      setUser(result.data?.user ?? null);
+      lastSessionCheckRef.current = Date.now();
 
       // Fetch CSRF token if a session was created (no email confirmation required)
-      if (session?.user) {
+      if (result.data?.user) {
         fetch('/api/auth/csrf', { credentials: 'same-origin' }).catch(() => {});
       }
 
@@ -201,7 +222,8 @@ export function AuthProvider({ children }) {
   /**
    * Signs out the current user
    *
-   * Purpose: Ends user session and clears auth state
+   * Purpose: Ends user session via server-side cookie clearing
+   * Connects to: /api/auth/signout for httpOnly cookie expiration
    *
    * @returns {Promise<{error: Object|null}>} Sign out result
    */
@@ -217,9 +239,10 @@ export function AuthProvider({ children }) {
       // Network error — proceed to clear client state anyway
     }
 
-    // Clear client-side session state regardless of API result
-    const { error } = await supabase.auth.signOut();
-    return { error };
+    // Clear client-side state — server already cleared the httpOnly cookies
+    setUser(null);
+    lastSessionCheckRef.current = Date.now();
+    return { error: null };
   };
 
   const value = {

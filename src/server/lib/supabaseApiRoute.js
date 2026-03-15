@@ -61,7 +61,7 @@ export function createApiRouteClient(req, res) {
             maxAge: 604800,  // 7 days — default, supabase may override (e.g. 0 on sign-out)
             ...options,
             // Security attributes always enforced after spreading supabase options
-            httpOnly: false,
+            httpOnly: true,
             secure: process.env.NODE_ENV === 'production',
             sameSite: 'lax',
             path: '/'
