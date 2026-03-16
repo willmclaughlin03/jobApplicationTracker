@@ -42,14 +42,28 @@ async function handler(req, res) {
   try {
     const redirectTo = req.body.redirectTo;
 
-    // Validate redirectTo is same-origin to prevent open redirect
+    // Validate redirectTo is same-origin to prevent open redirect.
+    // Uses URL parsing instead of startsWith to prevent prefix attacks
+    // (e.g. https://myapp.com.evil.com would pass a startsWith check).
     if (redirectTo) {
+      if (typeof redirectTo !== 'string') {
+        return sendError(res, 400, 'VALIDATION_ERROR', ERROR_MESSAGES.VALIDATION_ERROR);
+      }
+
       const allowedOrigins = [
         process.env.NEXT_PUBLIC_SITE_URL,
         'http://localhost:3000',
       ].filter(Boolean);
 
-      const isAllowed = allowedOrigins.some(origin => redirectTo.startsWith(origin));
+      let parsedOrigin;
+      try {
+        parsedOrigin = new URL(redirectTo).origin;
+      } catch {
+        logger.warn('Rejected malformed redirect URL in forgot-password', { redirectTo });
+        return sendError(res, 400, 'VALIDATION_ERROR', ERROR_MESSAGES.VALIDATION_ERROR);
+      }
+
+      const isAllowed = allowedOrigins.some(origin => parsedOrigin === origin);
       if (!isAllowed) {
         logger.warn('Rejected redirect URL in forgot-password', { redirectTo });
         return sendError(res, 400, 'VALIDATION_ERROR', ERROR_MESSAGES.VALIDATION_ERROR);

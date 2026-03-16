@@ -92,80 +92,49 @@ const mockClientFrom = jest.fn();
 const mockSupabaseClient = { from: mockClientFrom };
 
 /**
- * Builds mock chain for the count-only query (supabaseAdmin):
- *   supabaseAdmin.from('jobs').select('*', { count: 'exact', head: true }).eq('user_id', userId)
+ * Creates a Proxy-based fake that mirrors Supabase's fluent query API.
+ *
+ * Every chained method (select, eq, order, range, insert, update, delete, …)
+ * returns the same proxy so calls can be chained in any order. Terminal
+ * methods (single, await/then) resolve with `resolvedValue`.
+ *
+ * All calls are recorded in `chain._calls` so tests can assert which
+ * methods were invoked and with what arguments, catching query-building
+ * bugs that the old hand-wired chain mocks silently ignored.
+ *
+ * @param {Object} resolvedValue - The value the query resolves to (e.g. { data, error })
+ * @returns {Proxy} A chainable, thenable fake with a `_calls` property
  */
-function makeCountChain(count, error = null) {
-  const eq = jest.fn().mockResolvedValue({ count, error });
-  const select = jest.fn().mockReturnValue({ eq });
-  return { select };
-}
+function fakeQuery(resolvedValue) {
+  const _calls = {};
 
-/**
- * Builds mock chain for insert (supabaseClient):
- *   supabaseClient.from('jobs').insert({...}).select()
- */
-function makeInsertChain(data, error = null) {
-  const select = jest.fn().mockResolvedValue({ data, error });
-  const insert = jest.fn().mockReturnValue({ select });
-  return { insert };
-}
+  const chain = new Proxy({}, {
+    get(_, prop) {
+      // Expose recorded calls for assertions
+      if (prop === '_calls') return _calls;
 
-/**
- * Builds mock chain for a select-many query (supabaseClient):
- *   supabaseClient.from('jobs').select('*', { count: 'exact' }).eq(...)[.eq(...)].order(...)[.range(...)]
- */
-function makeSelectManyChain(data, count = 0, error = null) {
-  const resolvedValue = { data, count, error };
-  // Thenable terminal — supports both direct await and .range()
-  const terminal = {
-    then: (resolve, reject) => Promise.resolve(resolvedValue).then(resolve, reject),
-    range: jest.fn().mockResolvedValue(resolvedValue),
-  };
-  // .order() returns terminal
-  const withOrder = { order: jest.fn().mockReturnValue(terminal) };
-  // second optional .eq() (status filter) returns withOrder
-  const withEqStatus = { eq: jest.fn().mockReturnValue(withOrder), ...withOrder };
-  // first .eq() returns chain with optional second eq and order
-  const eq = jest.fn().mockReturnValue(withEqStatus);
-  const select = jest.fn().mockReturnValue({ eq });
-  return { select };
-}
+      // Make the chain thenable — triggered by `await query`
+      if (prop === 'then') {
+        return (resolve, reject) =>
+          Promise.resolve(resolvedValue).then(resolve, reject);
+      }
 
-/**
- * Builds mock chain for a select-single query (supabaseClient):
- *   supabaseClient.from('jobs').select('*').eq('id', ...).eq('user_id', ...).single()
- */
-function makeSelectSingleChain(data, error = null) {
-  const single = jest.fn().mockResolvedValue({ data, error });
-  const eq2 = jest.fn().mockReturnValue({ single });
-  const eq1 = jest.fn().mockReturnValue({ eq: eq2 });
-  const select = jest.fn().mockReturnValue({ eq: eq1 });
-  return { select };
-}
+      // Every other property returns a function that records the call
+      return (...args) => {
+        _calls[prop] = _calls[prop] || [];
+        _calls[prop].push(args);
 
-/**
- * Builds mock chain for update (supabaseClient):
- *   supabaseClient.from('jobs').update({...}).eq('id',...).eq('user_id',...).select('*')
- */
-function makeUpdateChain(data, error = null) {
-  const select = jest.fn().mockResolvedValue({ data, error });
-  const eq2 = jest.fn().mockReturnValue({ select });
-  const eq1 = jest.fn().mockReturnValue({ eq: eq2 });
-  const update = jest.fn().mockReturnValue({ eq: eq1 });
-  return { update };
-}
+        // .single() is a terminal — returns a plain Promise, not the chain
+        if (prop === 'single') {
+          return Promise.resolve(resolvedValue);
+        }
 
-/**
- * Builds mock chain for delete (supabaseClient):
- *   supabaseClient.from('jobs').delete().eq('id',...).eq('user_id',...).select()
- */
-function makeDeleteChain(data, error = null) {
-  const select = jest.fn().mockResolvedValue({ data, error });
-  const eq2 = jest.fn().mockReturnValue({ select });
-  const eq1 = jest.fn().mockReturnValue({ eq: eq2 });
-  const del = jest.fn().mockReturnValue({ eq: eq1 });
-  return { delete: del };
+        return chain;
+      };
+    },
+  });
+
+  return chain;
 }
 
 const validJobData = { company: 'Acme', position: 'Engineer', status: 'applied' };
@@ -185,8 +154,10 @@ describe('createJob - storage limit enforcement', () => {
 
   describe('when user is under the limit', () => {
     it('allows insert when user has 0 existing entries', async () => {
-      mockFrom.mockReturnValueOnce(makeCountChain(0));
-      mockClientFrom.mockReturnValueOnce(makeInsertChain([mockCreatedJob]));
+      const countQ = fakeQuery({ count: 0, error: null });
+      const insertQ = fakeQuery({ data: [mockCreatedJob], error: null });
+      mockFrom.mockReturnValueOnce(countQ);
+      mockClientFrom.mockReturnValueOnce(insertQ);
 
       const result = await createJob(validJobData, userId, mockSupabaseClient);
 
@@ -194,11 +165,19 @@ describe('createJob - storage limit enforcement', () => {
       expect(result.data).toEqual([mockCreatedJob]);
       expect(mockFrom).toHaveBeenCalledTimes(1);   // supabaseAdmin count only
       expect(mockClientFrom).toHaveBeenCalledTimes(1); // client insert
+
+      // Verify the count query was built correctly
+      expect(countQ._calls.select).toEqual([['*', { count: 'exact', head: true }]]);
+      expect(countQ._calls.eq).toEqual([['user_id', userId]]);
+
+      // Verify the insert passed correct data
+      expect(insertQ._calls.insert).toEqual([[{ ...validJobData, user_id: userId }]]);
+      expect(insertQ._calls.select).toHaveLength(1);
     });
 
     it('allows insert when user has 299 existing entries', async () => {
-      mockFrom.mockReturnValueOnce(makeCountChain(299));
-      mockClientFrom.mockReturnValueOnce(makeInsertChain([mockCreatedJob]));
+      mockFrom.mockReturnValueOnce(fakeQuery({ count: 299, error: null }));
+      mockClientFrom.mockReturnValueOnce(fakeQuery({ data: [mockCreatedJob], error: null }));
 
       const result = await createJob(validJobData, userId, mockSupabaseClient);
 
@@ -211,7 +190,7 @@ describe('createJob - storage limit enforcement', () => {
 
   describe('when user is at or over the limit', () => {
     it('blocks insert and returns STORAGE_LIMIT_EXCEEDED error at exactly 300 entries', async () => {
-      mockFrom.mockReturnValueOnce(makeCountChain(300));
+      mockFrom.mockReturnValueOnce(fakeQuery({ count: 300, error: null }));
 
       const result = await createJob(validJobData, userId, mockSupabaseClient);
 
@@ -223,7 +202,7 @@ describe('createJob - storage limit enforcement', () => {
     });
 
     it('blocks insert when user has 301 entries', async () => {
-      mockFrom.mockReturnValueOnce(makeCountChain(301));
+      mockFrom.mockReturnValueOnce(fakeQuery({ count: 301, error: null }));
 
       const result = await createJob(validJobData, userId, mockSupabaseClient);
 
@@ -236,7 +215,7 @@ describe('createJob - storage limit enforcement', () => {
   describe('when the count query fails', () => {
     it('returns the count error without attempting an insert', async () => {
       const dbError = new Error('Connection timeout');
-      mockFrom.mockReturnValueOnce(makeCountChain(null, dbError));
+      mockFrom.mockReturnValueOnce(fakeQuery({ count: null, error: dbError }));
 
       const result = await createJob(validJobData, userId, mockSupabaseClient);
 
@@ -248,8 +227,8 @@ describe('createJob - storage limit enforcement', () => {
 
   describe('when the count is null (no rows in DB)', () => {
     it('treats null count as 0 and allows insert', async () => {
-      mockFrom.mockReturnValueOnce(makeCountChain(null));
-      mockClientFrom.mockReturnValueOnce(makeInsertChain([mockCreatedJob]));
+      mockFrom.mockReturnValueOnce(fakeQuery({ count: null, error: null }));
+      mockClientFrom.mockReturnValueOnce(fakeQuery({ data: [mockCreatedJob], error: null }));
 
       const result = await createJob(validJobData, userId, mockSupabaseClient);
 
@@ -261,8 +240,8 @@ describe('createJob - storage limit enforcement', () => {
   describe('when the insert query fails after passing the limit check', () => {
     it('returns the insert error and does not return data', async () => {
       const insertError = new Error('DB constraint violation');
-      mockFrom.mockReturnValueOnce(makeCountChain(0));
-      mockClientFrom.mockReturnValueOnce(makeInsertChain(null, insertError));
+      mockFrom.mockReturnValueOnce(fakeQuery({ count: 0, error: null }));
+      mockClientFrom.mockReturnValueOnce(fakeQuery({ data: null, error: insertError }));
 
       const result = await createJob(validJobData, userId, mockSupabaseClient);
 
@@ -274,7 +253,7 @@ describe('createJob - storage limit enforcement', () => {
   describe('when the tier config supplies a non-default maxJobs', () => {
     it('blocks insert at the custom limit rather than the default 300', async () => {
       mockGetStorageLimitForTier.mockReturnValueOnce({ maxJobs: 5 });
-      mockFrom.mockReturnValueOnce(makeCountChain(5));
+      mockFrom.mockReturnValueOnce(fakeQuery({ count: 5, error: null }));
 
       const result = await createJob(validJobData, userId, mockSupabaseClient);
 
@@ -285,8 +264,8 @@ describe('createJob - storage limit enforcement', () => {
 
     it('allows insert when count is below the custom limit', async () => {
       mockGetStorageLimitForTier.mockReturnValueOnce({ maxJobs: 5 });
-      mockFrom.mockReturnValueOnce(makeCountChain(4));
-      mockClientFrom.mockReturnValueOnce(makeInsertChain([mockCreatedJob]));
+      mockFrom.mockReturnValueOnce(fakeQuery({ count: 4, error: null }));
+      mockClientFrom.mockReturnValueOnce(fakeQuery({ data: [mockCreatedJob], error: null }));
 
       const result = await createJob(validJobData, userId, mockSupabaseClient);
 
@@ -336,14 +315,19 @@ describe('createJob - storage limit enforcement', () => {
 
   describe('RLS — supabaseAdmin count bypasses RLS', () => {
     it('count query uses supabaseAdmin (not the client) so RLS cannot suppress it', async () => {
-      mockFrom.mockReturnValueOnce(makeCountChain(0));
-      mockClientFrom.mockReturnValueOnce(makeInsertChain([mockCreatedJob]));
+      const countQ = fakeQuery({ count: 0, error: null });
+      const insertQ = fakeQuery({ data: [mockCreatedJob], error: null });
+      mockFrom.mockReturnValueOnce(countQ);
+      mockClientFrom.mockReturnValueOnce(insertQ);
 
       await createJob(validJobData, userId, mockSupabaseClient);
 
       // supabaseAdmin.from() called for count; client.from() called for insert
       expect(mockFrom).toHaveBeenCalledWith('jobs');
       expect(mockClientFrom).toHaveBeenCalledWith('jobs');
+
+      // Verify count query uses head: true (count-only, no row data)
+      expect(countQ._calls.select).toEqual([['*', { count: 'exact', head: true }]]);
     });
   });
 });
@@ -357,7 +341,8 @@ describe('getJobsByUserId', () => {
 
   it('returns jobs for a valid user', async () => {
     const jobs = [mockCreatedJob];
-    mockClientFrom.mockReturnValueOnce(makeSelectManyChain(jobs, 1));
+    const query = fakeQuery({ data: jobs, count: 1, error: null });
+    mockClientFrom.mockReturnValueOnce(query);
 
     const result = await getJobsByUserId(userId, {}, mockSupabaseClient);
 
@@ -365,16 +350,43 @@ describe('getJobsByUserId', () => {
     expect(result.data).toEqual(jobs);
     expect(mockClientFrom).toHaveBeenCalledWith('jobs');
     expect(mockFrom).not.toHaveBeenCalled(); // supabaseAdmin must not be used
+
+    // Verify query was built correctly
+    expect(query._calls.select).toEqual([['*', { count: 'exact' }]]);
+    expect(query._calls.eq).toEqual([['user_id', userId]]);
+    expect(query._calls.order).toEqual([['created_at', { ascending: false }]]);
   });
 
   it('returns error on DB failure', async () => {
     const dbError = new Error('DB down');
-    mockClientFrom.mockReturnValueOnce(makeSelectManyChain(null, 0, dbError));
+    mockClientFrom.mockReturnValueOnce(fakeQuery({ data: null, count: 0, error: dbError }));
 
     const result = await getJobsByUserId(userId, {}, mockSupabaseClient);
 
     expect(result.data).toBeNull();
     expect(result.error).toBe(dbError);
+  });
+
+  it('applies status filter when provided', async () => {
+    const query = fakeQuery({ data: [], count: 0, error: null });
+    mockClientFrom.mockReturnValueOnce(query);
+
+    await getJobsByUserId(userId, { status: 'applied' }, mockSupabaseClient);
+
+    // Should have two .eq() calls: user_id and status
+    expect(query._calls.eq).toEqual([
+      ['user_id', userId],
+      ['status', 'applied'],
+    ]);
+  });
+
+  it('applies pagination range when from/to are provided', async () => {
+    const query = fakeQuery({ data: [], count: 0, error: null });
+    mockClientFrom.mockReturnValueOnce(query);
+
+    await getJobsByUserId(userId, { from: 0, to: 9 }, mockSupabaseClient);
+
+    expect(query._calls.range).toEqual([[0, 9]]);
   });
 });
 
@@ -386,17 +398,25 @@ describe('getJobById', () => {
   beforeEach(() => jest.clearAllMocks());
 
   it('returns the job for a valid user+id', async () => {
-    mockClientFrom.mockReturnValueOnce(makeSelectSingleChain(mockCreatedJob));
+    const query = fakeQuery({ data: mockCreatedJob, error: null });
+    mockClientFrom.mockReturnValueOnce(query);
 
     const result = await getJobById(jobId, userId, mockSupabaseClient);
 
     expect(result.error).toBeNull();
     expect(result.data).toEqual(mockCreatedJob);
     expect(mockFrom).not.toHaveBeenCalled();
+
+    // Verify the query filters by both id and user_id, then calls .single()
+    expect(query._calls.select).toEqual([['*']]);
+    expect(query._calls.eq).toEqual([['id', jobId], ['user_id', userId]]);
+    expect(query._calls.single).toHaveLength(1);
   });
 
   it('returns not-found error for PGRST116 (no rows)', async () => {
-    mockClientFrom.mockReturnValueOnce(makeSelectSingleChain(null, { code: 'PGRST116', message: 'no rows' }));
+    mockClientFrom.mockReturnValueOnce(
+      fakeQuery({ data: null, error: { code: 'PGRST116', message: 'no rows' } })
+    );
 
     const result = await getJobById(jobId, userId, mockSupabaseClient);
 
@@ -406,7 +426,7 @@ describe('getJobById', () => {
 
   it('returns error on other DB failures', async () => {
     const dbError = { code: 'PGRST500', message: 'internal error' };
-    mockClientFrom.mockReturnValueOnce(makeSelectSingleChain(null, dbError));
+    mockClientFrom.mockReturnValueOnce(fakeQuery({ data: null, error: dbError }));
 
     const result = await getJobById(jobId, userId, mockSupabaseClient);
 
@@ -424,17 +444,23 @@ describe('updateJob', () => {
 
   it('returns updated job on success', async () => {
     const updated = { ...mockCreatedJob, status: 'interviewing' };
-    mockClientFrom.mockReturnValueOnce(makeUpdateChain([updated]));
+    const query = fakeQuery({ data: [updated], error: null });
+    mockClientFrom.mockReturnValueOnce(query);
 
     const result = await updateJob(jobId, { status: 'interviewing' }, userId, mockSupabaseClient);
 
     expect(result.error).toBeNull();
     expect(result.data).toEqual([updated]);
     expect(mockFrom).not.toHaveBeenCalled();
+
+    // Verify correct update payload and ownership filters
+    expect(query._calls.update).toEqual([[{ status: 'interviewing' }]]);
+    expect(query._calls.eq).toEqual([['id', jobId], ['user_id', userId]]);
+    expect(query._calls.select).toEqual([['*']]);
   });
 
   it('returns not-found error when no rows were affected', async () => {
-    mockClientFrom.mockReturnValueOnce(makeUpdateChain([]));
+    mockClientFrom.mockReturnValueOnce(fakeQuery({ data: [], error: null }));
 
     const result = await updateJob(jobId, { status: 'interviewing' }, userId, mockSupabaseClient);
 
@@ -451,17 +477,23 @@ describe('deleteJob', () => {
   beforeEach(() => jest.clearAllMocks());
 
   it('returns deleted job on success', async () => {
-    mockClientFrom.mockReturnValueOnce(makeDeleteChain([mockCreatedJob]));
+    const query = fakeQuery({ data: [mockCreatedJob], error: null });
+    mockClientFrom.mockReturnValueOnce(query);
 
     const result = await deleteJob(jobId, userId, mockSupabaseClient);
 
     expect(result.error).toBeNull();
     expect(result.data).toEqual(mockCreatedJob);
     expect(mockFrom).not.toHaveBeenCalled();
+
+    // Verify delete filters by both id and user_id
+    expect(query._calls.delete).toHaveLength(1);
+    expect(query._calls.eq).toEqual([['id', jobId], ['user_id', userId]]);
+    expect(query._calls.select).toHaveLength(1);
   });
 
   it('returns not-found error when no rows were affected', async () => {
-    mockClientFrom.mockReturnValueOnce(makeDeleteChain([]));
+    mockClientFrom.mockReturnValueOnce(fakeQuery({ data: [], error: null }));
 
     const result = await deleteJob(jobId, userId, mockSupabaseClient);
 
@@ -480,7 +512,7 @@ describe('RLS behaviour — unauthenticated or expired session client', () => {
   it('getJobsByUserId returns empty data (not an error) when RLS filters all rows', async () => {
     // Simulates what Supabase returns when auth.uid() does not match any row:
     // an empty result set, not an error.
-    mockClientFrom.mockReturnValueOnce(makeSelectManyChain([], 0, null));
+    mockClientFrom.mockReturnValueOnce(fakeQuery({ data: [], count: 0, error: null }));
 
     const result = await getJobsByUserId(userId, {}, mockSupabaseClient);
 
@@ -492,7 +524,7 @@ describe('RLS behaviour — unauthenticated or expired session client', () => {
   it('getJobById returns not-found error (PGRST116) when RLS filters the row', async () => {
     // RLS blocks the row → Supabase returns PGRST116 (no rows found for .single())
     mockClientFrom.mockReturnValueOnce(
-      makeSelectSingleChain(null, { code: 'PGRST116', message: 'no rows' })
+      fakeQuery({ data: null, error: { code: 'PGRST116', message: 'no rows' } })
     );
 
     const result = await getJobById(jobId, userId, mockSupabaseClient);

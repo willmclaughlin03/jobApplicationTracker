@@ -49,8 +49,10 @@ export default function AuthCallback() {
     const urlParams = new URLSearchParams(window.location.search);
     const next = urlParams.get('next') || '/reset-password';
 
-    // Validate next is a relative path to prevent open redirect
-    const safeNext = next.startsWith('/') ? next : '/reset-password';
+    // Validate next is a relative path to prevent open redirect.
+    // Block protocol-relative URLs (//evil.com) and backslash tricks (/\evil.com).
+    const isSafePath = next.startsWith('/') && !next.startsWith('//') && !next.includes('\\');
+    const safeNext = isSafePath ? next : '/reset-password';
 
     // Clear the hash immediately to avoid token exposure in browser history
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
