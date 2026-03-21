@@ -1,13 +1,21 @@
 /**
- * Next.js Edge Middleware — automatic session refresh
+ * Next.js Edge Middleware — session refresh + auth gate
  *
- * Purpose: Runs on every page navigation request to silently refresh the
- * Supabase access token when it has expired but a valid refresh token is
- * present in the cookies. Writes the updated tokens back to the response
- * so the browser always has a fresh session without requiring a sign-in.
+ * Purpose: Runs on every page navigation request to:
+ * 1. Silently refresh the Supabase access token when it has expired but a
+ *    valid refresh token is present in the cookies.
+ * 2. Redirect unauthenticated users to /login on protected routes, preventing
+ *    the page shell (layout, sidebar, labels) from reaching the browser.
+ *
+ * Public routes (/login, /signUp, /forgot-password, /reset-password,
+ * /auth/callback) bypass the redirect check.
  *
  * Uses the anon key (not service role) — middleware runs at the Edge and
  * only needs to validate/refresh the user's own session.
+ *
+ * Graceful degradation: if Supabase is unreachable, the redirect is skipped
+ * and the user keeps their existing cookies. The next API call will surface
+ * the auth error where it can be handled.
  *
  * API routes are excluded from the matcher: they verify auth independently
  * via getUserFromRequest(), so running middleware on them would double-verify
@@ -65,8 +73,19 @@ export async function middleware(req) {
   // getUser() triggers a token refresh if the access token is expired and a
   // valid refresh token exists. The refreshed tokens are written to the
   // response via the setAll callback above.
+  // If the session is invalid and the route is protected, redirect to /login.
+  const PUBLIC_PATHS = ['/login', '/signUp', '/forgot-password', '/reset-password', '/auth/callback'];
+
   try {
-    await supabase.auth.getUser();
+    const { data: { user } } = await supabase.auth.getUser();
+    const { pathname } = req.nextUrl;
+    const isPublicRoute = PUBLIC_PATHS.some(p => pathname.startsWith(p));
+
+    if (!isPublicRoute && !user) {
+      const loginUrl = req.nextUrl.clone();
+      loginUrl.pathname = '/login';
+      return NextResponse.redirect(loginUrl);
+    }
   } catch {
     // Supabase unreachable — degrade gracefully instead of 500-ing every
     // page navigation. The user keeps their existing (possibly stale) cookies
