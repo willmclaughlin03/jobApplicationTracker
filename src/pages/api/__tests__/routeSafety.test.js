@@ -21,6 +21,10 @@ const path = require('path');
  * Recursively collects all .js route files from a directory
  * Excludes __tests__ directories
  *
+ * Assumption: All API routes in this project are .js files.
+ * If .ts/.tsx routes are added in the future, extend the
+ * endsWith check below to include those extensions.
+ *
  * @param {string} dir - Directory to scan
  * @returns {string[]} Array of absolute file paths
  */

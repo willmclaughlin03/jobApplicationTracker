@@ -865,6 +865,70 @@ describe('withRateLimit middleware', () => {
     });
 
     // =========================================================================
+    // Handler throws — error propagation behavior
+    // =========================================================================
+    describe('handler error propagation', () => {
+        /**
+         * Test: When the wrapped handler throws, the error propagates
+         * Gap: handler(req, res) at line 296 is outside the try-catch block,
+         * so handler errors are NOT caught by the middleware — they propagate
+         * to the framework (Next.js) error handler.
+         */
+        it('should propagate handler errors (handler call is outside try-catch)', async () => {
+            const error = new Error('Handler exploded');
+            const handler = jest.fn().mockRejectedValue(error);
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+
+            await expect(
+                withRateLimit(handler, { allowedMethods: ['GET'] })(req, res)
+            ).rejects.toThrow('Handler exploded');
+
+            // Handler was called but its error was not caught by middleware
+            expect(handler).toHaveBeenCalledWith(req, res);
+            // Response was NOT set by middleware — error propagated to caller
+            expect(res.status).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Test: Handler errors do not leak through middleware error responses
+         * Verifies: No stack trace or internal details in rate limit error responses
+         */
+        it('should not include stack traces in middleware error responses', async () => {
+            mockCheckRateLimit.mockRejectedValue(new Error('Redis connection failed'));
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            const responseBody = res.json.mock.calls[0][0];
+            const serialized = JSON.stringify(responseBody);
+            expect(serialized).not.toContain('Redis connection failed');
+            expect(serialized).not.toContain('at ');
+            expect(serialized).not.toContain('.js:');
+        });
+
+        /**
+         * Test: Middleware errors are logged for server-side observability
+         */
+        it('should log middleware errors with context', async () => {
+            const { logger } = require('../../../shared/logger.js');
+            mockCheckRateLimit.mockRejectedValue(new Error('Redis connection failed'));
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            expect(logger.warn).toHaveBeenCalledWith(
+                expect.objectContaining({ err: expect.any(Error) }),
+                expect.any(String)
+            );
+        });
+    });
+
+    // =========================================================================
     // IP whitespace trimming
     // =========================================================================
     describe('IP normalization edge cases (requireAuth: false)', () => {

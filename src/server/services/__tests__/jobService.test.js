@@ -333,6 +333,44 @@ describe('createJob - storage limit enforcement', () => {
 });
 
 // ---------------------------------------------------------------------------
+// updateJob — empty update payload
+// ---------------------------------------------------------------------------
+
+describe('updateJob - empty update payload', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  /**
+   * Test: updateJob with an empty object {} sends an empty update to Supabase
+   * Verifies: Does not crash, returns whatever Supabase returns
+   */
+  it('sends empty update to Supabase without crashing', async () => {
+    const query = fakeQuery({ data: [mockCreatedJob], error: null });
+    mockClientFrom.mockReturnValueOnce(query);
+
+    const result = await updateJob(jobId, {}, userId, mockSupabaseClient);
+
+    expect(result.error).toBeNull();
+    expect(result.data).toEqual([mockCreatedJob]);
+
+    // Verify an empty object was passed to .update()
+    expect(query._calls.update).toEqual([[{}]]);
+    expect(query._calls.eq).toEqual([['id', jobId], ['user_id', userId]]);
+  });
+
+  /**
+   * Test: Empty update returning no rows still produces not-found error
+   */
+  it('returns not-found when empty update matches no rows', async () => {
+    mockClientFrom.mockReturnValueOnce(fakeQuery({ data: [], error: null }));
+
+    const result = await updateJob(jobId, {}, userId, mockSupabaseClient);
+
+    expect(result.data).toBeNull();
+    expect(result.error.message).toMatch(/not found/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // getJobsByUserId
 // ---------------------------------------------------------------------------
 

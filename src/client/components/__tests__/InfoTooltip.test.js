@@ -165,6 +165,27 @@ describe('InfoTooltip', () => {
     expect(getTooltip(el)).toBeNull();
   });
 
+  // --- Rapid interaction ---
+
+  it('handles rapid mouseenter/mouseleave without stale tooltip state', () => {
+    const el = render(React.createElement(InfoTooltip));
+    const btn = getButton(el);
+
+    // Rapid sequence: enter, leave, enter, leave, enter
+    mouseEnter(btn);
+    mouseLeave(btn);
+    mouseEnter(btn);
+    mouseLeave(btn);
+    mouseEnter(btn);
+
+    // After final mouseenter, tooltip should be visible
+    expect(getTooltip(el)).toBeTruthy();
+
+    mouseLeave(btn);
+    // After final mouseleave, tooltip should be hidden
+    expect(getTooltip(el)).toBeNull();
+  });
+
   // --- ARIA attributes when visible ---
 
   it('sets aria-expanded="true" and aria-describedby when visible', () => {

@@ -239,6 +239,66 @@ describe('/api/auth/forgot-password handler', () => {
   });
 
   /**
+   * Timing-safe: enforces minimum response time (MIN_RESPONSE_MS = 300)
+   */
+  it('enforces minimum response time for fast Supabase responses', async () => {
+    // Mock Date.now to control timing
+    const realDateNow = Date.now;
+    let now = 1000000;
+    Date.now = jest.fn(() => now);
+
+    // Supabase resolves instantly (simulated 0ms)
+    mockResetPasswordForEmail.mockImplementation(async () => {
+      // Simulate fast response — don't advance time
+      return { error: null };
+    });
+
+    const req = createMockReq();
+    const res = createMockRes();
+
+    // Track setTimeout calls to verify the delay
+    const realSetTimeout = global.setTimeout;
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation((fn, delay) => {
+      // Advance time by the delay amount so the handler completes
+      now += delay;
+      return realSetTimeout(fn, 0);
+    });
+
+    await handler(req, res);
+
+    // Should have called setTimeout with at least 300ms delay
+    const delayCall = setTimeoutSpy.mock.calls.find(([, delay]) => delay >= 300);
+    expect(delayCall).toBeTruthy();
+
+    setTimeoutSpy.mockRestore();
+    Date.now = realDateNow;
+  });
+
+  it('returns same response shape for existing and non-existing emails', async () => {
+    const res1 = createMockRes();
+    const res2 = createMockRes();
+
+    // Existing email — Supabase succeeds
+    mockResetPasswordForEmail.mockResolvedValueOnce({ error: null });
+    await handler(createMockReq({ email: 'exists@example.com' }), res1);
+
+    // Non-existing email — Supabase errors
+    mockResetPasswordForEmail.mockResolvedValueOnce({
+      error: { message: 'User not found' },
+    });
+    await handler(createMockReq({ email: 'doesnotexist@example.com' }), res2);
+
+    // Both should return identical status and response shape
+    expect(res1.status).toHaveBeenCalledWith(200);
+    expect(res2.status).toHaveBeenCalledWith(200);
+
+    const body1 = res1.json.mock.calls[0][0];
+    const body2 = res2.json.mock.calls[0][0];
+    expect(Object.keys(body1).sort()).toEqual(Object.keys(body2).sort());
+    expect(body1.error).toEqual(body2.error);
+  });
+
+  /**
    * Enumeration prevention: still returns 200 when Supabase errors
    */
   it('returns 200 even when Supabase returns an error', async () => {

@@ -179,6 +179,86 @@ describe('/api/auth/exchange-token handler', () => {
   });
 
   /**
+   * Input validation: tokens containing control characters (null bytes, newlines, tabs)
+   *
+   * GAP: These pass current validation (typeof string, non-empty, <8000) and reach
+   * setSession. In production, Supabase would reject them as invalid JWTs (→ 401).
+   * In tests the mock returns success, so they get 200.
+   *
+   * Potential hardening: reject tokens matching /[\x00-\x1f]/ before calling setSession.
+   */
+  it('does not crash on tokens with null bytes (passes to Supabase)', async () => {
+    const req = createMockReq({
+      access_token: 'valid-token\x00injected',
+      refresh_token: 'valid-token',
+    });
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    // Token passes string validation — reaches setSession without crashing
+    expect(res.status).toHaveBeenCalled();
+    // Response must not echo the malformed token back
+    const body = JSON.stringify(res.json.mock.calls[0]?.[0] || {});
+    expect(body).not.toContain('\x00');
+    expect(body).not.toContain('valid-token');
+  });
+
+  it('does not crash on tokens with newlines and tabs (passes to Supabase)', async () => {
+    const req = createMockReq({
+      access_token: 'token\nwith\tnewlines',
+      refresh_token: 'valid-token',
+    });
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    // Does not crash — token reaches setSession
+    expect(res.status).toHaveBeenCalled();
+    const body = JSON.stringify(res.json.mock.calls[0]?.[0] || {});
+    expect(body).not.toContain('token\n');
+  });
+
+  /**
+   * Input validation: whitespace-only tokens
+   *
+   * GAP: '   ' passes current validation (typeof string, length > 0, < 8000).
+   * Potential hardening: reject tokens where .trim().length === 0.
+   */
+  it('does not crash on whitespace-only tokens (passes to Supabase)', async () => {
+    const req = createMockReq({
+      access_token: '   ',
+      refresh_token: '   ',
+    });
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    // Does not crash — whitespace passes current validation
+    expect(res.status).toHaveBeenCalled();
+    // Response must not echo tokens
+    const body = JSON.stringify(res.json.mock.calls[0]?.[0] || {});
+    expect(body).not.toContain('   ');
+  });
+
+  /**
+   * Input validation: tokens with leading/trailing whitespace
+   * No .trim() is applied — these pass validation as-is
+   */
+  it('handles tokens with leading/trailing whitespace without crashing', async () => {
+    const req = createMockReq({
+      access_token: '  eyJhbGciOiJIUzI1NiJ9.valid  ',
+      refresh_token: '  refresh-abc  ',
+    });
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    // Tokens pass validation (string, non-empty, < 8000) — does not crash
+    expect(res.status).toHaveBeenCalled();
+  });
+
+  /**
    * setSession fails (invalid/expired tokens)
    */
   it('returns 401 when setSession fails', async () => {

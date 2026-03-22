@@ -219,6 +219,65 @@ describe('validateCsrfToken (failure paths)', () => {
 });
 
 // =========================================================================
+// generateCsrfToken — edge-case userId values
+// =========================================================================
+describe('generateCsrfToken edge-case userId', () => {
+    /**
+     * Empty string userId — generates a token but with a weaker HMAC payload
+     * (nonce..timestamp instead of nonce.userId.timestamp)
+     */
+    it('generates a token with empty string userId (no crash)', () => {
+        const token = generateCsrfToken('');
+        expect(token).toBeTruthy();
+        const parts = token.split('.');
+        expect(parts).toHaveLength(3);
+    });
+
+    /**
+     * Empty-string-generated token does not validate against a real userId
+     */
+    it('token generated with empty userId is rejected when validated with a real userId', () => {
+        const token = generateCsrfToken('');
+        const req = makeReq(token, token);
+        expect(validateCsrfToken(req, 'user-real')).toBe(false);
+    });
+
+    /**
+     * Null userId — should not crash the HMAC construction
+     */
+    it('does not crash when userId is null', () => {
+        expect(() => generateCsrfToken(null)).not.toThrow();
+        const token = generateCsrfToken(null);
+        expect(token.split('.')).toHaveLength(3);
+    });
+
+    /**
+     * Undefined userId — should not crash the HMAC construction
+     */
+    it('does not crash when userId is undefined', () => {
+        expect(() => generateCsrfToken(undefined)).not.toThrow();
+        const token = generateCsrfToken(undefined);
+        expect(token.split('.')).toHaveLength(3);
+    });
+
+    /**
+     * Tokens generated with null and undefined userId should not validate
+     * against each other or against a real userId
+     */
+    it('null-userId token is rejected when validated with a real userId', () => {
+        const token = generateCsrfToken(null);
+        const req = makeReq(token, token);
+        expect(validateCsrfToken(req, 'user-real')).toBe(false);
+    });
+
+    it('undefined-userId token is rejected when validated with a real userId', () => {
+        const token = generateCsrfToken(undefined);
+        const req = makeReq(token, token);
+        expect(validateCsrfToken(req, 'user-real')).toBe(false);
+    });
+});
+
+// =========================================================================
 // setCsrfCookie
 // =========================================================================
 describe('setCsrfCookie', () => {
