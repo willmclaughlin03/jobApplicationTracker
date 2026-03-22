@@ -13,8 +13,11 @@
 const { createClient } = require('@supabase/supabase-js');
 
 // Skip if test environment variables aren't set
-const SKIP_INTEGRATION = !process.env.NEXT_PUBLIC_SUPABASE_URL 
-  
+const SKIP_INTEGRATION = !process.env.NEXT_PUBLIC_SUPABASE_URL
+  || !process.env.SUPABASE_SERVICE_ROLE_KEY
+  || !process.env.TEST_USER_EMAIL
+  || !process.env.TEST_USER_PASSWORD;
+
 
 // Create a test client (separate from the main app client)
 const testSupabase = SKIP_INTEGRATION 
@@ -91,6 +94,9 @@ describe('supabaseServer integration tests', () => {
     });
   });
 
+  // TODO: Auth flow changed from Bearer-token headers to cookie-based SSR via
+  // createApiRouteClient. This test still uses the old header-based approach and
+  // should be reworked to pass cookies instead of Authorization headers.
   describe('full request flow simulation', () => {
     testFn('should authenticate a simulated API request', async () => {
       // Simulate what happens in your actual API routes

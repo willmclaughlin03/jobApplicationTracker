@@ -29,9 +29,13 @@ jest.mock('../../../server/services/jobService.js', () => ({
 
 // Mock jobSchema to avoid isomorphic-dompurify dependency issues
 const mockJobSchemaSafeParse = jest.fn();
+const mockGetQuerySchemaSafeParse = jest.fn();
 jest.mock('../../../shared/validations/jobSchema.js', () => ({
   jobSchema: {
     safeParse: mockJobSchemaSafeParse,
+  },
+  getQuerySchema: {
+    safeParse: mockGetQuerySchemaSafeParse,
   },
 }));
 
@@ -62,7 +66,6 @@ describe('index API handler (/api/jobs)', () => {
     method,
     query,
     body,
-    headers: { authorization: 'Bearer valid-token' },
     _rateLimitUser: mockUser,
   });
 
@@ -84,6 +87,7 @@ describe('index API handler (/api/jobs)', () => {
      * Expected: Returns 200 with jobs data and count
      */
     it('should return jobs list for authenticated user', async () => {
+      mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: {} });
       mockGetJobsByUserId.mockResolvedValue({ data: mockJobs, count: 2, error: null });
 
       const req = createMockRequest('GET');
@@ -92,7 +96,7 @@ describe('index API handler (/api/jobs)', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, {});
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, {}, undefined);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           data: { data: mockJobs, count: 2 },
@@ -105,6 +109,7 @@ describe('index API handler (/api/jobs)', () => {
      * Expected: from/to parsed as integers and forwarded to service
      */
     it('should pass pagination parameters to service', async () => {
+      mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: { from: 0, to: 10 } });
       mockGetJobsByUserId.mockResolvedValue({ data: mockJobs, count: 2, error: null });
 
       const req = createMockRequest('GET', { from: '0', to: '10' });
@@ -112,7 +117,7 @@ describe('index API handler (/api/jobs)', () => {
 
       await handler(req, res);
 
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, { from: 0, to: 10 });
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, { from: 0, to: 10 }, undefined);
     });
 
     /**
@@ -120,6 +125,7 @@ describe('index API handler (/api/jobs)', () => {
      * Expected: status forwarded to service
      */
     it('should pass status filter to service', async () => {
+      mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: { status: 'Applied' } });
       mockGetJobsByUserId.mockResolvedValue({ data: mockJobs, count: 2, error: null });
 
       const req = createMockRequest('GET', { status: 'Applied' });
@@ -127,7 +133,7 @@ describe('index API handler (/api/jobs)', () => {
 
       await handler(req, res);
 
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, { status: 'Applied' });
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, { status: 'Applied' }, undefined);
     });
 
     /**
@@ -135,6 +141,7 @@ describe('index API handler (/api/jobs)', () => {
      * Expected: All parameters forwarded correctly
      */
     it('should handle pagination with status filter', async () => {
+      mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: { from: 0, to: 5, status: 'Applied' } });
       mockGetJobsByUserId.mockResolvedValue({ data: [mockJobs[0]], count: 1, error: null });
 
       const req = createMockRequest('GET', { from: '0', to: '5', status: 'Applied' });
@@ -146,7 +153,7 @@ describe('index API handler (/api/jobs)', () => {
         from: 0,
         to: 5,
         status: 'Applied',
-      });
+      }, undefined);
     });
 
     /**
@@ -154,6 +161,7 @@ describe('index API handler (/api/jobs)', () => {
      * Expected: Returns 503
      */
     it('should return 503 when service returns error', async () => {
+      mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: {} });
       mockGetJobsByUserId.mockResolvedValue({ data: null, count: 0, error: 'DB error' });
 
       const req = createMockRequest('GET');
@@ -165,10 +173,47 @@ describe('index API handler (/api/jobs)', () => {
     });
 
     /**
+     * Test: Invalid query parameters
+     * Expected: Returns 400 without calling service
+     */
+    it('should return 400 for invalid query parameters', async () => {
+      mockGetQuerySchemaSafeParse.mockReturnValue({
+        success: false,
+        error: { issues: [{ message: 'Invalid from' }] },
+      });
+
+      const req = createMockRequest('GET', { from: 'abc' });
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(mockGetJobsByUserId).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Test: supabaseClient passed through to service layer
+     * Expected: req._supabaseClient forwarded as 3rd argument
+     */
+    it('should pass supabaseClient through to service', async () => {
+      const mockClient = { auth: { getUser: jest.fn() } };
+      mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: {} });
+      mockGetJobsByUserId.mockResolvedValue({ data: mockJobs, count: 2, error: null });
+
+      const req = { ...createMockRequest('GET'), _supabaseClient: mockClient };
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, {}, mockClient);
+    });
+
+    /**
      * Test: Empty jobs list
      * Expected: Returns 200 with empty array
      */
     it('should return 200 with empty list when user has no jobs', async () => {
+      mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: {} });
       mockGetJobsByUserId.mockResolvedValue({ data: [], count: 0, error: null });
 
       const req = createMockRequest('GET');
@@ -207,7 +252,7 @@ describe('index API handler (/api/jobs)', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(201);
-      expect(mockCreateJob).toHaveBeenCalledWith(validJobData, mockUser.id);
+      expect(mockCreateJob).toHaveBeenCalledWith(validJobData, mockUser.id, undefined);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           data: createdJob,
@@ -258,6 +303,30 @@ describe('index API handler (/api/jobs)', () => {
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           message: 'Invalid request parameters.',
+        })
+      );
+    });
+
+    /**
+     * Test: Storage limit exceeded
+     * Expected: Returns 409 with STORAGE_LIMIT_EXCEEDED error code
+     */
+    it('should return 409 when storage limit exceeded', async () => {
+      mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
+      mockCreateJob.mockResolvedValue({
+        data: null,
+        error: { code: 'STORAGE_LIMIT_EXCEEDED' },
+      });
+
+      const req = createMockRequest('POST', {}, validJobData);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(409);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: 'STORAGE_LIMIT_EXCEEDED',
         })
       );
     });

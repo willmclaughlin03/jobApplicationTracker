@@ -82,7 +82,6 @@ describe('[id] API handler', () => {
     query: { id },
     body,
     headers: {
-      authorization: 'Bearer valid-token',
       ...headers,
     },
     _rateLimitUser: mockUser,
@@ -117,7 +116,7 @@ describe('[id] API handler', () => {
       expect(res.status).toHaveBeenCalledWith(400);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
-          error: expect.stringContaining('Invalid job ID'),
+          error: 'INVALID_ID',
         })
       );
       // Should not attempt DB calls
@@ -184,7 +183,23 @@ describe('[id] API handler', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(404);
-      expect(mockGetJobById).toHaveBeenCalledWith(validUUID, mockUser.id);
+      expect(mockGetJobById).toHaveBeenCalledWith(validUUID, mockUser.id, undefined);
+    });
+
+    /**
+     * Test: supabaseClient passed through to service layer
+     * Expected: req._supabaseClient forwarded as 3rd argument
+     */
+    it('should pass supabaseClient through to service', async () => {
+      const mockClient = { auth: { getUser: jest.fn() } };
+      mockGetJobById.mockResolvedValue({ data: mockJob, error: null });
+
+      const req = { ...createMockRequest('GET', validUUID), _supabaseClient: mockClient };
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(mockGetJobById).toHaveBeenCalledWith(validUUID, mockUser.id, mockClient);
     });
 
     /**
@@ -287,7 +302,8 @@ describe('[id] API handler', () => {
       expect(mockUpdateJob).toHaveBeenCalledWith(
         validUUID,
         { status: 'Interview' },
-        mockUser.id
+        mockUser.id,
+        undefined
       );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -314,7 +330,8 @@ describe('[id] API handler', () => {
       expect(mockUpdateJob).toHaveBeenCalledWith(
         validUUID,
         { notes: 'Updated notes' },
-        mockUser.id
+        mockUser.id,
+        undefined
       );
     });
   });
@@ -336,7 +353,7 @@ describe('[id] API handler', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(404);
-      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id);
+      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, undefined);
     });
 
     /**
@@ -352,7 +369,7 @@ describe('[id] API handler', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id);
+      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, undefined);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           data: mockJob,
@@ -388,7 +405,7 @@ describe('[id] API handler', () => {
       expect(res.status).toHaveBeenCalledWith(405);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
-          error: expect.stringContaining('Method not allowed'),
+          error: 'METHOD_NOT_ALLOWED',
         })
       );
     });

@@ -76,8 +76,8 @@ describe('checkRateLimit', () => {
             expect(result.success).toBe(false);
             expect(result.unavailable).toBe(true);
             expect(mockLogger.error).toHaveBeenCalledWith(
-                'checkRateLimit called with invalid identifier',
-                expect.any(Object)
+                expect.any(Object),
+                'checkRateLimit called with invalid identifier'
             );
         });
 
@@ -111,8 +111,8 @@ describe('checkRateLimit', () => {
             expect(result.success).toBe(false);
             expect(result.unavailable).toBe(true);
             expect(mockLogger.error).toHaveBeenCalledWith(
-                'checkRateLimit called with invalid tier',
-                expect.objectContaining({ tier: 'premium' })
+                expect.objectContaining({ tier: 'premium' }),
+                'checkRateLimit called with invalid tier'
             );
         });
 
@@ -126,8 +126,8 @@ describe('checkRateLimit', () => {
             expect(result.success).toBe(false);
             expect(result.unavailable).toBe(true);
             expect(mockLogger.error).toHaveBeenCalledWith(
-                'checkRateLimit called with invalid operation',
-                expect.objectContaining({ operation: 'execute' })
+                expect.objectContaining({ operation: 'execute' }),
+                'checkRateLimit called with invalid operation'
             );
         });
 
@@ -157,15 +157,14 @@ describe('checkRateLimit', () => {
 
             const errorCalls = mockLogger.error.mock.calls;
             const rateLimitErrorCall = errorCalls.find(
-                call => call[0] === 'Rate limit check failed'
+                call => call[1] === 'Rate limit check failed'
             );
 
-            if (rateLimitErrorCall) {
-                const logData = rateLimitErrorCall[1];
-                expect(logData.identifierType).toBe('user');
-                expect(logData).not.toHaveProperty('identifier');
-                expect(JSON.stringify(logData)).not.toContain('sensitive-user-id-123');
-            }
+            expect(rateLimitErrorCall).toBeDefined();
+            const logData = rateLimitErrorCall[0];
+            expect(logData.identifierType).toBe('user');
+            expect(logData).not.toHaveProperty('identifier');
+            expect(JSON.stringify(logData)).not.toContain('sensitive-user-id-123');
         });
 
         /**
@@ -178,14 +177,13 @@ describe('checkRateLimit', () => {
 
             const errorCalls = mockLogger.error.mock.calls;
             const rateLimitErrorCall = errorCalls.find(
-                call => call[0] === 'Rate limit check failed'
+                call => call[1] === 'Rate limit check failed'
             );
 
-            if (rateLimitErrorCall) {
-                const logData = rateLimitErrorCall[1];
-                expect(logData.identifierType).toBe('ip');
-                expect(JSON.stringify(logData)).not.toContain('192.168.1.100');
-            }
+            expect(rateLimitErrorCall).toBeDefined();
+            const logData = rateLimitErrorCall[0];
+            expect(logData.identifierType).toBe('ip');
+            expect(JSON.stringify(logData)).not.toContain('192.168.1.100');
         });
     });
 

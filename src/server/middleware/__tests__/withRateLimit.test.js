@@ -68,7 +68,7 @@ describe('withRateLimit middleware', () => {
 
     beforeEach(() => {
         jest.clearAllMocks();
-        mockGetUserFromRequest.mockResolvedValue({ user: mockUser, error: null });
+        mockGetUserFromRequest.mockResolvedValue({ user: mockUser, error: null, supabaseClient: { auth: { getUser: jest.fn() } } });
         mockCheckRateLimit.mockResolvedValue({
             success: true,
             limit: 20,
@@ -238,6 +238,7 @@ describe('withRateLimit middleware', () => {
             await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(req._rateLimitUser).toEqual(mockUser);
+            expect(req._supabaseClient).toBeDefined();
         });
 
         /**
@@ -611,11 +612,11 @@ describe('withRateLimit middleware', () => {
     // =========================================================================
     describe('unmapped methods', () => {
         /**
-         * Test: OPTIONS returns 204 without rate limiting or calling handler
-         * Edge case: OPTIONS fires before the allowedMethods check, so no
-         * allowedMethods declaration is needed on the call site for preflight
+         * Test: OPTIONS returns 405 without rate limiting or calling handler
+         * Edge case: OPTIONS is not in allowedMethods, so it is rejected
+         * before any auth or rate-limit work is performed
          */
-        it('should return 204 for OPTIONS without rate limiting', async () => {
+        it('should return 405 for OPTIONS without rate limiting', async () => {
             const req = createMockRequest('OPTIONS');
             const res = createMockResponse();
             const handler = jest.fn();
@@ -623,8 +624,8 @@ describe('withRateLimit middleware', () => {
             await withRateLimit(handler)(req, res);
 
             expect(mockCheckRateLimit).not.toHaveBeenCalled();
-            expect(res.status).toHaveBeenCalledWith(204);
-            expect(res.end).toHaveBeenCalled();
+            expect(res.status).toHaveBeenCalledWith(405);
+            expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: 'METHOD_NOT_ALLOWED' }));
             expect(handler).not.toHaveBeenCalled();
         });
 
