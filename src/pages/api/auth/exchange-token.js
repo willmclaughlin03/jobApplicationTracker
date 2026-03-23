@@ -32,9 +32,14 @@ async function handler(req, res) {
 
   const { access_token, refresh_token } = req.body || {};
 
+  // JWTs are strictly base64url + dots; reject anything else early
+  const JWT_SAFE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
   if (
     typeof access_token !== 'string' || access_token.length === 0 || access_token.length > 8000 ||
-    typeof refresh_token !== 'string' || refresh_token.length === 0 || refresh_token.length > 8000
+    !JWT_SAFE.test(access_token) ||
+    typeof refresh_token !== 'string' || refresh_token.length === 0 || refresh_token.length > 8000 ||
+    !JWT_SAFE.test(refresh_token)
   ) {
     return sendError(res, 400, 'VALIDATION_ERROR', 'Invalid or missing tokens.');
   }

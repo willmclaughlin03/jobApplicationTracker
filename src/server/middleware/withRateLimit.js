@@ -293,7 +293,16 @@ export function withRateLimit(handler, options = {}){
             );
         }
 
-        return handler(req,res);
+        try {
+            return await handler(req, res);
+        } catch(handlerError) {
+            logger.error({ err: handlerError, method: req.method, operation }, 'Unhandled handler error');
+            if (res.headersSent) {
+                res.end();
+                return;
+            }
+            return sendError(res, 500, 'INTERNAL_SERVER_ERROR', ERROR_MESSAGES.INTERNAL_SERVER_ERROR);
+        }
     }
 
 }

@@ -221,59 +221,63 @@ describe('validateCsrfToken (failure paths)', () => {
 // =========================================================================
 // generateCsrfToken — edge-case userId values
 // =========================================================================
-describe('generateCsrfToken edge-case userId', () => {
+describe('generateCsrfToken userId validation', () => {
     /**
-     * Empty string userId — generates a token but with a weaker HMAC payload
-     * (nonce..timestamp instead of nonce.userId.timestamp)
+     * Empty string userId — throws TypeError (prevents weak HMAC payload)
      */
-    it('generates a token with empty string userId (no crash)', () => {
-        const token = generateCsrfToken('');
-        expect(token).toBeTruthy();
-        const parts = token.split('.');
-        expect(parts).toHaveLength(3);
+    it('throws TypeError for empty string userId', () => {
+        expect(() => generateCsrfToken('')).toThrow(TypeError);
+        expect(() => generateCsrfToken('')).toThrow('non-empty string userId');
     });
 
     /**
-     * Empty-string-generated token does not validate against a real userId
+     * Null userId — throws TypeError
      */
-    it('token generated with empty userId is rejected when validated with a real userId', () => {
-        const token = generateCsrfToken('');
+    it('throws TypeError for null userId', () => {
+        expect(() => generateCsrfToken(null)).toThrow(TypeError);
+    });
+
+    /**
+     * Undefined userId — throws TypeError
+     */
+    it('throws TypeError for undefined userId', () => {
+        expect(() => generateCsrfToken(undefined)).toThrow(TypeError);
+    });
+
+    /**
+     * Non-string userId — throws TypeError
+     */
+    it('throws TypeError for numeric userId', () => {
+        expect(() => generateCsrfToken(123)).toThrow(TypeError);
+    });
+});
+
+// =========================================================================
+// validateCsrfToken — invalid userId returns false
+// =========================================================================
+describe('validateCsrfToken userId validation', () => {
+    it('returns false for null userId', () => {
+        const token = generateCsrfToken('user-123');
         const req = makeReq(token, token);
-        expect(validateCsrfToken(req, 'user-real')).toBe(false);
+        expect(validateCsrfToken(req, null)).toBe(false);
     });
 
-    /**
-     * Null userId — should not crash the HMAC construction
-     */
-    it('does not crash when userId is null', () => {
-        expect(() => generateCsrfToken(null)).not.toThrow();
-        const token = generateCsrfToken(null);
-        expect(token.split('.')).toHaveLength(3);
-    });
-
-    /**
-     * Undefined userId — should not crash the HMAC construction
-     */
-    it('does not crash when userId is undefined', () => {
-        expect(() => generateCsrfToken(undefined)).not.toThrow();
-        const token = generateCsrfToken(undefined);
-        expect(token.split('.')).toHaveLength(3);
-    });
-
-    /**
-     * Tokens generated with null and undefined userId should not validate
-     * against each other or against a real userId
-     */
-    it('null-userId token is rejected when validated with a real userId', () => {
-        const token = generateCsrfToken(null);
+    it('returns false for undefined userId', () => {
+        const token = generateCsrfToken('user-123');
         const req = makeReq(token, token);
-        expect(validateCsrfToken(req, 'user-real')).toBe(false);
+        expect(validateCsrfToken(req, undefined)).toBe(false);
     });
 
-    it('undefined-userId token is rejected when validated with a real userId', () => {
-        const token = generateCsrfToken(undefined);
+    it('returns false for empty string userId', () => {
+        const token = generateCsrfToken('user-123');
         const req = makeReq(token, token);
-        expect(validateCsrfToken(req, 'user-real')).toBe(false);
+        expect(validateCsrfToken(req, '')).toBe(false);
+    });
+
+    it('returns false for numeric userId', () => {
+        const token = generateCsrfToken('user-123');
+        const req = makeReq(token, token);
+        expect(validateCsrfToken(req, 123)).toBe(false);
     });
 });
 

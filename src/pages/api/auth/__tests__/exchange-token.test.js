@@ -51,8 +51,8 @@ const handler = require('../exchange-token.js').default;
 
 describe('/api/auth/exchange-token handler', () => {
   const validTokens = {
-    access_token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.valid',
-    refresh_token: 'refresh-token-abc123',
+    access_token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
+    refresh_token: 'dGhpcyBpcyBhIHJlZnJlc2g.dG9rZW4gZm9yIHRlc3Rpbmc.c2lnbmF0dXJl',
   };
 
   const mockUser = {
@@ -179,15 +179,39 @@ describe('/api/auth/exchange-token handler', () => {
   });
 
   /**
-   * Input validation: tokens containing control characters (null bytes, newlines, tabs)
-   *
-   * GAP: These pass current validation (typeof string, non-empty, <8000) and reach
-   * setSession. In production, Supabase would reject them as invalid JWTs (→ 401).
-   * In tests the mock returns success, so they get 200.
-   *
-   * Potential hardening: reject tokens matching /[\x00-\x1f]/ before calling setSession.
+   * Input validation: tokens without valid 3-segment JWT structure are rejected
    */
-  it('does not crash on tokens with null bytes (passes to Supabase)', async () => {
+  it('returns 400 for dot-only tokens missing segment content', async () => {
+    const req = createMockReq({
+      access_token: '...',
+      refresh_token: 'header.payload.signature',
+    });
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mockSetSession).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for tokens with only one segment (no dots)', async () => {
+    const req = createMockReq({
+      access_token: 'nodots',
+      refresh_token: 'header.payload.signature',
+    });
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mockSetSession).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Input validation: tokens containing control characters are rejected
+   * JWT allowlist regex rejects anything outside base64url + dots
+   */
+  it('returns 400 for tokens with null bytes', async () => {
     const req = createMockReq({
       access_token: 'valid-token\x00injected',
       refresh_token: 'valid-token',
@@ -196,15 +220,11 @@ describe('/api/auth/exchange-token handler', () => {
 
     await handler(req, res);
 
-    // Token passes string validation — reaches setSession without crashing
-    expect(res.status).toHaveBeenCalled();
-    // Response must not echo the malformed token back
-    const body = JSON.stringify(res.json.mock.calls[0]?.[0] || {});
-    expect(body).not.toContain('\x00');
-    expect(body).not.toContain('valid-token');
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mockSetSession).not.toHaveBeenCalled();
   });
 
-  it('does not crash on tokens with newlines and tabs (passes to Supabase)', async () => {
+  it('returns 400 for tokens with newlines', async () => {
     const req = createMockReq({
       access_token: 'token\nwith\tnewlines',
       refresh_token: 'valid-token',
@@ -213,19 +233,14 @@ describe('/api/auth/exchange-token handler', () => {
 
     await handler(req, res);
 
-    // Does not crash — token reaches setSession
-    expect(res.status).toHaveBeenCalled();
-    const body = JSON.stringify(res.json.mock.calls[0]?.[0] || {});
-    expect(body).not.toContain('token\n');
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mockSetSession).not.toHaveBeenCalled();
   });
 
   /**
-   * Input validation: whitespace-only tokens
-   *
-   * GAP: '   ' passes current validation (typeof string, length > 0, < 8000).
-   * Potential hardening: reject tokens where .trim().length === 0.
+   * Input validation: whitespace-only tokens rejected by JWT allowlist
    */
-  it('does not crash on whitespace-only tokens (passes to Supabase)', async () => {
+  it('returns 400 for whitespace-only tokens', async () => {
     const req = createMockReq({
       access_token: '   ',
       refresh_token: '   ',
@@ -234,18 +249,15 @@ describe('/api/auth/exchange-token handler', () => {
 
     await handler(req, res);
 
-    // Does not crash — whitespace passes current validation
-    expect(res.status).toHaveBeenCalled();
-    // Response must not echo tokens
-    const body = JSON.stringify(res.json.mock.calls[0]?.[0] || {});
-    expect(body).not.toContain('   ');
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mockSetSession).not.toHaveBeenCalled();
   });
 
   /**
-   * Input validation: tokens with leading/trailing whitespace
-   * No .trim() is applied — these pass validation as-is
+   * Input validation: tokens with leading/trailing whitespace rejected
+   * JWT allowlist does not permit spaces
    */
-  it('handles tokens with leading/trailing whitespace without crashing', async () => {
+  it('returns 400 for tokens with leading/trailing whitespace', async () => {
     const req = createMockReq({
       access_token: '  eyJhbGciOiJIUzI1NiJ9.valid  ',
       refresh_token: '  refresh-abc  ',
@@ -254,8 +266,24 @@ describe('/api/auth/exchange-token handler', () => {
 
     await handler(req, res);
 
-    // Tokens pass validation (string, non-empty, < 8000) — does not crash
-    expect(res.status).toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mockSetSession).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Input validation: tokens with HTML/script tags rejected
+   */
+  it('returns 400 for tokens containing angle brackets', async () => {
+    const req = createMockReq({
+      access_token: '<script>alert(1)</script>',
+      refresh_token: 'valid-token',
+    });
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mockSetSession).not.toHaveBeenCalled();
   });
 
   /**
@@ -337,7 +365,7 @@ describe('/api/auth/exchange-token handler', () => {
     const serialized = JSON.stringify(responseBody);
 
     expect(serialized).not.toContain('eyJhbGci');
-    expect(serialized).not.toContain('refresh-token-abc123');
+    expect(serialized).not.toContain('dGhpcyBpcyBhIHJlZnJlc2g');
     expect(serialized).not.toContain('app_metadata');
   });
 });

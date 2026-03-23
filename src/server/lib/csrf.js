@@ -39,6 +39,9 @@ if (!CSRF_SECRET || CSRF_SECRET.length < 32) {
  * @returns {string} Token string: nonce.timestamp.signature (all dot-separated)
  */
 export function generateCsrfToken(userId) {
+  if (!userId || typeof userId !== 'string') {
+    throw new TypeError('generateCsrfToken requires a non-empty string userId');
+  }
   const nonce = crypto.randomBytes(32).toString('hex');
   const timestamp = Math.floor(Date.now() / 1000);
   const payload = `${nonce}.${userId}.${timestamp}`;
@@ -111,6 +114,10 @@ export function clearCsrfCookie(res) {
  * @returns {boolean} true if valid, false otherwise
  */
 export function validateCsrfToken(req, userId) {
+  if (!userId || typeof userId !== 'string') {
+    logger.warn({ userId: typeof userId }, 'CSRF validation failed: invalid userId');
+    return false;
+  }
   const cookieValue = req.cookies?.[CSRF_COOKIE_NAME];
   const headerValue = req.headers?.['x-csrf-token'];
 

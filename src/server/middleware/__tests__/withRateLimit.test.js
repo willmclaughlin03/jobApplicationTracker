@@ -869,30 +869,111 @@ describe('withRateLimit middleware', () => {
     // =========================================================================
     describe('handler error propagation', () => {
         /**
-         * Test: When the wrapped handler throws, the error propagates
-         * Gap: handler(req, res) at line 296 is outside the try-catch block,
-         * so handler errors are NOT caught by the middleware — they propagate
-         * to the framework (Next.js) error handler.
+         * Test: When the wrapped async handler rejects, middleware catches it
+         * and returns 500 INTERNAL_SERVER_ERROR (not leaked to Next.js)
          */
-        it('should propagate handler errors (handler call is outside try-catch)', async () => {
+        it('should return 500 when handler throws an Error', async () => {
             const error = new Error('Handler exploded');
             const handler = jest.fn().mockRejectedValue(error);
             const req = createMockRequest('GET');
             const res = createMockResponse();
 
-            await expect(
-                withRateLimit(handler, { allowedMethods: ['GET'] })(req, res)
-            ).rejects.toThrow('Handler exploded');
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
-            // Handler was called but its error was not caught by middleware
             expect(handler).toHaveBeenCalledWith(req, res);
-            // Response was NOT set by middleware — error propagated to caller
-            expect(res.status).not.toHaveBeenCalled();
+            expect(res.status).toHaveBeenCalledWith(500);
+            expect(res.json).toHaveBeenCalledWith(
+                expect.objectContaining({ error: 'INTERNAL_SERVER_ERROR' })
+            );
         });
 
         /**
-         * Test: Handler errors do not leak through middleware error responses
-         * Verifies: No stack trace or internal details in rate limit error responses
+         * Test: Non-Error throws (e.g. string) are also caught
+         */
+        it('should return 500 when handler throws a non-Error value', async () => {
+            const handler = jest.fn().mockRejectedValue('string error');
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(500);
+            expect(res.json).toHaveBeenCalledWith(
+                expect.objectContaining({ error: 'INTERNAL_SERVER_ERROR' })
+            );
+        });
+
+        /**
+         * Test: Handler error is logged with context for observability
+         */
+        it('should log handler errors with method and operation context', async () => {
+            const { logger } = require('../../../shared/logger.js');
+            const error = new Error('Handler exploded');
+            const handler = jest.fn().mockRejectedValue(error);
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            expect(logger.error).toHaveBeenCalledWith(
+                expect.objectContaining({ err: error, method: 'GET' }),
+                'Unhandled handler error'
+            );
+        });
+
+        /**
+         * Test: If handler partially sent response before throwing,
+         * middleware does not attempt to send again (avoids ERR_HTTP_HEADERS_SENT)
+         */
+        it('should not send error response when headers already sent', async () => {
+            const handler = jest.fn().mockRejectedValue(new Error('Mid-stream crash'));
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            res.headersSent = true;
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            // Should NOT attempt to send a response
+            expect(res.status).not.toHaveBeenCalled();
+            // Should close the connection cleanly
+            expect(res.end).toHaveBeenCalled();
+        });
+
+        /**
+         * Test: Handler rejecting with undefined is still caught and returns 500
+         */
+        it('should return 500 when handler rejects with undefined', async () => {
+            const handler = jest.fn().mockRejectedValue(undefined);
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(500);
+            expect(res.json).toHaveBeenCalledWith(
+                expect.objectContaining({ error: 'INTERNAL_SERVER_ERROR' })
+            );
+        });
+
+        /**
+         * Test: Handler error response does not leak internal details
+         */
+        it('should not include stack traces in handler error responses', async () => {
+            const handler = jest.fn().mockRejectedValue(new Error('Secret internal detail'));
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            const responseBody = res.json.mock.calls[0][0];
+            const serialized = JSON.stringify(responseBody);
+            expect(serialized).not.toContain('Secret internal detail');
+            expect(serialized).not.toContain('at ');
+            expect(serialized).not.toContain('.js:');
+        });
+
+        /**
+         * Test: Middleware-level errors (Redis) still return 503 and log correctly
          */
         it('should not include stack traces in middleware error responses', async () => {
             mockCheckRateLimit.mockRejectedValue(new Error('Redis connection failed'));
