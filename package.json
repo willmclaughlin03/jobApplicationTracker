@@ -9,6 +9,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
+    "test:integration": "jest --testPathPattern=integration --runInBand",
     "postinstall": "patch-package"
   },
   "dependencies": {

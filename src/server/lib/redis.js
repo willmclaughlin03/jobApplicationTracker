@@ -344,11 +344,12 @@ export function getRedisStatus() {
 }
 
 /**
- * Resets the Redis client (useful for testing or reconnection)
+ * Resets client connection state only (preserves backoff counters)
  *
- * Purpose: Allows re-initialization after failure or for testing
+ * Used internally by reconnect() so successive attempts still respect
+ * exponential backoff. resetRedisClient() calls this plus clears backoff.
  */
-export function resetRedisClient() {
+function resetClientConnection() {
     stopHealthMonitoring();
     redisClient = null;
     initializationAttempted = false;
@@ -357,6 +358,15 @@ export function resetRedisClient() {
     isHealthy = false;
     consecutiveFailures = 0;
     healthCheckPromise = null;
+}
+
+/**
+ * Resets the Redis client (useful for testing or reconnection)
+ *
+ * Purpose: Allows re-initialization after failure or for testing
+ */
+export function resetRedisClient() {
+    resetClientConnection();
 
     // Reset backoff state
     lastReconnectAttempt = null;
@@ -421,7 +431,7 @@ export async function reconnect(force = false) {
     lastReconnectAttempt = Date.now();
     reconnectAttempts++;
 
-    resetRedisClient();
+    resetClientConnection();
 
     const client = getRedisClient();
     if (!client) {
