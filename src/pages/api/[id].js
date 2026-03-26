@@ -2,7 +2,7 @@ import { ERROR_MESSAGES } from '../../shared/errors.js';
 import { jobUpdateSchema, uuidSchema } from '../../shared/validations/jobSchema.js';
 import { sendSuccess, sendError } from '../../shared/response.js';
 import { getJobById, updateJob, deleteJob } from '../../server/services/jobService.js';
-import { logger } from '../../shared/logger.js';
+
 import { withRateLimit } from '../../server/middleware/withRateLimit.js';
 
 /**
@@ -110,7 +110,7 @@ async function handler(req, res) {
 
   // Validate UUID format FIRST (before auth to reject malformed IDs early)
   if (!id || !validateUUID(id)) {
-    logger.warn({ operation: 'handler', id: id || 'empty', method: req.method }, 'Invalid job ID format attempted');
+    req.log.warn({ operation: 'handler', id: id || 'empty', method: req.method }, 'Invalid job ID format attempted');
     return sendError(res, 400, 'INVALID_ID', ERROR_MESSAGES.INVALID_ID);
   }
 

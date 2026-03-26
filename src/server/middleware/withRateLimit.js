@@ -4,7 +4,7 @@ import { validateCsrfToken } from '../lib/csrf.js';
 import { METHOD_TO_OPERATIONS, TIERS } from '../../shared/constants/tiers.js';
 import { ERROR_MESSAGES } from '../../shared/errors.js';
 import { sendError } from '../../shared/response.js';
-import { logger } from '../../shared/logger.js';
+import { logger, attachRequestLogger } from '../../shared/logger.js';
 
 
 
@@ -88,7 +88,7 @@ function extractIpIdentifier(req){
     const ip = rawIp ? normalizeIp(rawIp) : null;
 
     if(!ip){
-        logger.warn({ hasRealIp: !!req.headers['x-real-ip'], hasSocketAddr: !!req.socket?.remoteAddress }, 'Rate limit: no valid IP identifier available');
+        (req.log || logger).warn({ hasRealIp: !!req.headers['x-real-ip'], hasSocketAddr: !!req.socket?.remoteAddress }, 'Rate limit: no valid IP identifier available');
         return null;
     }
 
@@ -161,6 +161,10 @@ export function withRateLimit(handler, options = {}){
     const shouldCsrfProtect = csrfProtect !== undefined ? csrfProtect : requireAuth;
 
     return async(req, res) => {
+        // Attach a child logger with requestId for request-scoped correlation
+        const requestId = attachRequestLogger(req);
+        res.setHeader('x-request-id', requestId);
+
         // Same-origin app — no CORS headers are served, so OPTIONS has no purpose.
         // Reject with 405 rather than silently succeeding with an empty 204.
         if(req.method === 'OPTIONS'){
@@ -189,7 +193,7 @@ export function withRateLimit(handler, options = {}){
                 try{
                     const { user, error, supabaseClient } = await getUserFromRequest(req, res);
                     if(!user){
-                        logger.warn({ authError: error || 'Unknown auth failure', method: req.method }, 'Auth required but failed on protected route');
+                        req.log.warn({ authError: error || 'Unknown auth failure', method: req.method }, 'Auth required but failed on protected route');
                         return sendError(
                             res,
                             401,
@@ -201,7 +205,7 @@ export function withRateLimit(handler, options = {}){
                     req._supabaseClient = supabaseClient;
                     identifier = `user:${user.id}`;
                 }catch(error){
-                    logger.error({ err: error, method: req.method }, 'Auth service error on protected route');
+                    req.log.error({ err: error, method: req.method }, 'Auth service error on protected route');
                     return sendError(
                         res,
                         401,
@@ -227,7 +231,7 @@ export function withRateLimit(handler, options = {}){
             if (shouldCsrfProtect && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
                 const userId = req._rateLimitUser?.id;
                 if (!userId || !validateCsrfToken(req, userId)) {
-                    logger.warn({ method: req.method, hasUser: !!userId }, 'CSRF validation failed');
+                    req.log.warn({ method: req.method, hasUser: !!userId }, 'CSRF validation failed');
                     return sendError(res, 403, 'CSRF_VALIDATION_FAILED', ERROR_MESSAGES.CSRF_VALIDATION_FAILED);
                 }
             }
@@ -238,7 +242,7 @@ export function withRateLimit(handler, options = {}){
             try {
                 rateLimitResult = await checkRateLimit(identifier, tier, operation);
             } catch(initialError) {
-                logger.warn({ err: initialError, operation }, 'Rate limit initial check failed');
+                req.log.warn({ err: initialError, operation }, 'Rate limit initial check failed');
                 rateLimitResult = { success: false, unavailable: true };
             }
 
@@ -248,13 +252,13 @@ export function withRateLimit(handler, options = {}){
                 try {
                     rateLimitResult = await checkRateLimit(identifier, tier, operation);
                 } catch(retryError) {
-                    logger.warn({ err: retryError, attempt: attempt + 1, operation }, 'Rate limit retry failed');
+                    req.log.warn({ err: retryError, attempt: attempt + 1, operation }, 'Rate limit retry failed');
                     rateLimitResult = { success: false, unavailable: true };
                 }
             }
         } catch(error) {
             // Safety net for unexpected errors outside checkRateLimit (e.g. auth layer)
-            logger.error({ err: error, method: req.method, operation }, 'Unexpected middleware error');
+            req.log.error({ err: error, method: req.method, operation }, 'Unexpected middleware error');
             return sendError(
                 res,
                 503,
@@ -265,7 +269,7 @@ export function withRateLimit(handler, options = {}){
 
         // block req on redis down after all retries exhausted
         if(rateLimitResult.unavailable){
-            logger.warn({ operation, method: req.method }, 'Rate limiting unavailable after retries, req denied');
+            req.log.warn({ operation, method: req.method }, 'Rate limiting unavailable after retries, req denied');
             return sendError(
                 res,
                 503,
@@ -283,7 +287,7 @@ export function withRateLimit(handler, options = {}){
 
             res.setHeader('Retry-After', retryAfterSeconds);
 
-            logger.warn({ operation, window: rateLimitResult.window, limit: rateLimitResult.limit, retryAfterSeconds }, 'Rate limit exceeded');
+            req.log.warn({ operation, window: rateLimitResult.window, limit: rateLimitResult.limit, retryAfterSeconds }, 'Rate limit exceeded');
 
             return sendError(
                 res,
@@ -296,7 +300,7 @@ export function withRateLimit(handler, options = {}){
         try {
             return await handler(req, res);
         } catch(handlerError) {
-            logger.error({ err: handlerError, method: req.method, operation }, 'Unhandled handler error');
+            req.log.error({ err: handlerError, method: req.method, operation }, 'Unhandled handler error');
             if (res.headersSent) {
                 res.end();
                 return;

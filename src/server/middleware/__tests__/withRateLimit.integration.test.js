@@ -44,13 +44,19 @@ jest.mock('../../lib/rateLimit.js', () => ({
     checkRateLimit: mockCheckRateLimit,
 }));
 
+const mockLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
 jest.mock('../../../shared/logger.js', () => ({
     logger: {
         info: jest.fn(),
         error: jest.fn(),
         warn: jest.fn(),
         debug: jest.fn(),
+        child: jest.fn(() => mockLog),
     },
+    attachRequestLogger: jest.fn((req) => {
+        req.log = mockLog;
+        return 'test-request-id';
+    }),
 }));
 
 // ---------------------------------------------------------------------------

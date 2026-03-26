@@ -21,7 +21,7 @@
 import { createApiRouteClient } from '../../../server/lib/supabaseApiRoute.js';
 import { sendSuccess, sendError } from '../../../shared/response.js';
 import { ERROR_MESSAGES } from '../../../shared/errors.js';
-import { logger } from '../../../shared/logger.js';
+
 import { withRateLimit } from '../../../server/middleware/withRateLimit.js';
 import { OPERATIONS } from '../../../shared/constants/tiers.js';
 
@@ -53,7 +53,7 @@ async function handler(req, res) {
     });
 
     if (sessionError) {
-      logger.warn({ err: sessionError }, 'Token exchange failed: setSession error');
+      req.log.warn({ err: sessionError }, 'Token exchange failed: setSession error');
       return sendError(res, 401, 'TOKEN_EXCHANGE_FAILED', 'Invalid or expired token. Please request a new link.');
     }
 
@@ -61,13 +61,13 @@ async function handler(req, res) {
     const { data: { user }, error: userError } = await supabase.auth.getUser();
 
     if (userError || !user) {
-      logger.warn({ err: userError }, 'Token exchange failed: getUser verification failed');
+      req.log.warn({ err: userError }, 'Token exchange failed: getUser verification failed');
       return sendError(res, 401, 'TOKEN_EXCHANGE_FAILED', 'Invalid or expired token. Please request a new link.');
     }
 
     return sendSuccess(res, 200, { user: { id: user.id, email: user.email } }, 'Session established');
   } catch (err) {
-    logger.error({ err }, 'Token exchange service error');
+    req.log.error({ err }, 'Token exchange service error');
     return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
   }
 }

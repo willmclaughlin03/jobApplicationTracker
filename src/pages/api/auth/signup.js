@@ -3,7 +3,7 @@ import { createApiRouteClient } from '../../../server/lib/supabaseApiRoute.js';
 import { signUpServerSchema, getFirstErrorMessage } from '../../../shared/validations/authSchema.js';
 import { sendSuccess, sendError } from '../../../shared/response.js';
 import { ERROR_MESSAGES } from '../../../shared/errors.js';
-import { logger } from '../../../shared/logger.js';
+
 import { withRateLimit } from '../../../server/middleware/withRateLimit.js';
 import { OPERATIONS } from '../../../shared/constants/tiers.js';
 
@@ -38,7 +38,7 @@ async function handler(req, res) {
         });
 
         if (error) {
-            logger.warn({ err: error }, 'Sign-up failed');
+            req.log.warn({ err: error }, 'Sign-up failed');
             return sendError(res, 400, 'SIGN_UP_FAILED', ERROR_MESSAGES.SIGN_UP_FAILED);
         }
 
@@ -51,7 +51,7 @@ async function handler(req, res) {
             });
 
             if (sessionError) {
-                logger.error({ err: sessionError }, 'Failed to set session cookies after sign-up');
+                req.log.error({ err: sessionError }, 'Failed to set session cookies after sign-up');
                 return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
             }
         }
@@ -62,7 +62,7 @@ async function handler(req, res) {
 
         return sendSuccess(res, 201, { user: data.user }, message);
     } catch (error) {
-        logger.error({ err: error }, 'Sign-up service error');
+        req.log.error({ err: error }, 'Sign-up service error');
         return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
     }
 }

@@ -77,6 +77,8 @@ describe('[id] API handler', () => {
    * Helper to create mock request with _rateLimitUser pre-set
    * Simulates what withRateLimit provides after successful auth
    */
+  const noopLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+
   const createMockRequest = (method, id, body = {}, headers = {}) => ({
     method,
     query: { id },
@@ -85,6 +87,7 @@ describe('[id] API handler', () => {
       ...headers,
     },
     _rateLimitUser: mockUser,
+    log: noopLog,
   });
 
   // Helper to create mock response

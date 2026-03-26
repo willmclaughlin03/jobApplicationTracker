@@ -65,12 +65,14 @@ jest.mock('../../../../shared/validations/authSchema.js', () => {
 const handler = require('../reset-password.js').default;
 
 describe('/api/auth/reset-password handler', () => {
+  const noopLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+
   const mockUser = { id: 'user-reset-123', email: 'test@example.com' };
   // Meets all password strength requirements
   const strongPassword = 'MyStr0ng!Pass#2024';
 
   function createMockReq(body = { password: strongPassword }, method = 'POST') {
-    return { method, body, cookies: {} };
+    return { method, body, cookies: {}, log: noopLog };
   }
 
   function createMockRes() {

@@ -62,11 +62,14 @@ describe('index API handler (/api/jobs)', () => {
    * Helper to create mock request with _rateLimitUser pre-set
    * Simulates what withRateLimit provides after successful auth
    */
+  const noopLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+
   const createMockRequest = (method, query = {}, body = {}) => ({
     method,
     query,
     body,
     _rateLimitUser: mockUser,
+    log: noopLog,
   });
 
   const createMockResponse = () => {

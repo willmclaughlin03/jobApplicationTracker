@@ -18,7 +18,7 @@
  */
 import { createApiRouteClient } from '../../../server/lib/supabaseApiRoute.js';
 import { sendSuccess } from '../../../shared/response.js';
-import { logger } from '../../../shared/logger.js';
+
 import { withRateLimit } from '../../../server/middleware/withRateLimit.js';
 import { OPERATIONS } from '../../../shared/constants/tiers.js';
 import { serialize } from 'cookie';
@@ -69,11 +69,11 @@ async function handler(req, res) {
     if (error) {
       // Session is likely already expired — the SSR client may not have fired
       // setAll to clear cookies, so do it manually.
-      logger.warn({ err: error }, 'signOut returned error, clearing cookies manually');
+      req.log.warn({ err: error }, 'signOut returned error, clearing cookies manually');
       clearAuthCookies(req, res);
     }
   } catch (err) {
-    logger.error({ err }, 'Unexpected error during sign-out, clearing cookies manually');
+    req.log.error({ err }, 'Unexpected error during sign-out, clearing cookies manually');
     clearAuthCookies(req, res);
   }
 

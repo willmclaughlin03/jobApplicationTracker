@@ -71,8 +71,10 @@ afterAll(() => {
 const handler = require('../forgot-password.js').default;
 
 describe('/api/auth/forgot-password handler', () => {
+  const noopLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+
   function createMockReq(body = { email: 'user@example.com' }, method = 'POST') {
-    return { method, body };
+    return { method, body, log: noopLog };
   }
 
   function createMockRes() {

@@ -39,12 +39,14 @@ jest.mock('../../../../shared/logger.js', () => ({
 const handler = require('../csrf.js').default;
 
 describe('/api/auth/csrf handler', () => {
+    const noopLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
     const mockUser = { id: 'user-csrf-123', email: 'test@example.com' };
 
     function createMockReq(user) {
         return {
             method: 'GET',
             _rateLimitUser: user,
+            log: noopLog,
         };
     }
 

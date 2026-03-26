@@ -17,7 +17,7 @@
 import { createApiRouteClient } from '../../../server/lib/supabaseApiRoute.js';
 import { sendSuccess, sendError } from '../../../shared/response.js';
 import { ERROR_MESSAGES } from '../../../shared/errors.js';
-import { logger } from '../../../shared/logger.js';
+
 import { withRateLimit } from '../../../server/middleware/withRateLimit.js';
 import { OPERATIONS } from '../../../shared/constants/tiers.js';
 
@@ -36,7 +36,7 @@ async function handler(req, res) {
       user: { id: user.id, email: user.email }
     });
   } catch (err) {
-    logger.error({ err }, 'Session check failed');
+    req.log.error({ err }, 'Session check failed');
     return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
   }
 }

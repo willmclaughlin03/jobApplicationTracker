@@ -30,13 +30,19 @@ jest.mock('../../lib/csrf.js', () => ({
     validateCsrfToken: jest.fn().mockReturnValue(true),
 }));
 
+const mockLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
 jest.mock('../../../shared/logger.js', () => ({
     logger: {
         info: jest.fn(),
         error: jest.fn(),
         warn: jest.fn(),
         debug: jest.fn(),
+        child: jest.fn(() => mockLog),
     },
+    attachRequestLogger: jest.fn((req) => {
+        req.log = mockLog;
+        return 'test-request-id';
+    }),
 }));
 
 const { withRateLimit } = require('../withRateLimit.js');
@@ -907,7 +913,6 @@ describe('withRateLimit middleware', () => {
          * Test: Handler error is logged with context for observability
          */
         it('should log handler errors with method and operation context', async () => {
-            const { logger } = require('../../../shared/logger.js');
             const error = new Error('Handler exploded');
             const handler = jest.fn().mockRejectedValue(error);
             const req = createMockRequest('GET');
@@ -915,7 +920,7 @@ describe('withRateLimit middleware', () => {
 
             await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
-            expect(logger.error).toHaveBeenCalledWith(
+            expect(mockLog.error).toHaveBeenCalledWith(
                 expect.objectContaining({ err: error, method: 'GET' }),
                 'Unhandled handler error'
             );
@@ -994,7 +999,6 @@ describe('withRateLimit middleware', () => {
          * Test: Middleware errors are logged for server-side observability
          */
         it('should log middleware errors with context', async () => {
-            const { logger } = require('../../../shared/logger.js');
             mockCheckRateLimit.mockRejectedValue(new Error('Redis connection failed'));
             const req = createMockRequest('GET');
             const res = createMockResponse();
@@ -1002,7 +1006,7 @@ describe('withRateLimit middleware', () => {
 
             await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
-            expect(logger.warn).toHaveBeenCalledWith(
+            expect(mockLog.warn).toHaveBeenCalledWith(
                 expect.objectContaining({ err: expect.any(Error) }),
                 expect.any(String)
             );

@@ -2,7 +2,7 @@ import { createApiRouteClient } from '../../../server/lib/supabaseApiRoute.js';
 import { resetPasswordServerSchema, getFirstErrorMessage } from '../../../shared/validations/authSchema.js';
 import { sendSuccess, sendError } from '../../../shared/response.js';
 import { ERROR_MESSAGES } from '../../../shared/errors.js';
-import { logger } from '../../../shared/logger.js';
+
 import { withRateLimit } from '../../../server/middleware/withRateLimit.js';
 import { OPERATIONS } from '../../../shared/constants/tiers.js';
 
@@ -44,13 +44,13 @@ async function handler(req, res) {
     const { error } = await ssrClient.auth.updateUser({ password });
 
     if (error) {
-      logger.warn({ err: error }, 'Password update failed');
+      req.log.warn({ err: error }, 'Password update failed');
       return sendError(res, 400, 'PASSWORD_UPDATE_FAILED', ERROR_MESSAGES.PASSWORD_UPDATE_FAILED);
     }
 
     return sendSuccess(res, 200, null, ERROR_MESSAGES.PASSWORD_UPDATE_SUCCESS);
   } catch (error) {
-    logger.error({ err: error }, 'Reset-password service error');
+    req.log.error({ err: error }, 'Reset-password service error');
     return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
   }
 }

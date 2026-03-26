@@ -41,6 +41,8 @@ jest.mock('../../../../shared/logger.js', () => ({
 const handler = require('../session.js').default;
 
 describe('/api/auth/session handler', () => {
+  const noopLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+
   const mockUser = {
     id: 'user-session-123',
     email: 'test@example.com',
@@ -51,7 +53,7 @@ describe('/api/auth/session handler', () => {
   };
 
   function createMockReq() {
-    return { method: 'GET', cookies: {} };
+    return { method: 'GET', cookies: {}, log: noopLog };
   }
 
   function createMockRes() {

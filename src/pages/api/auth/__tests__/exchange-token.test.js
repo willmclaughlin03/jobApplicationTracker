@@ -50,6 +50,8 @@ jest.mock('../../../../shared/logger.js', () => ({
 const handler = require('../exchange-token.js').default;
 
 describe('/api/auth/exchange-token handler', () => {
+  const noopLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+
   const validTokens = {
     access_token: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
     refresh_token: 'dGhpcyBpcyBhIHJlZnJlc2g.dG9rZW4gZm9yIHRlc3Rpbmc.c2lnbmF0dXJl',
@@ -62,7 +64,7 @@ describe('/api/auth/exchange-token handler', () => {
   };
 
   function createMockReq(body = validTokens, method = 'POST') {
-    return { method, body, cookies: {} };
+    return { method, body, cookies: {}, log: noopLog };
   }
 
   function createMockRes() {
