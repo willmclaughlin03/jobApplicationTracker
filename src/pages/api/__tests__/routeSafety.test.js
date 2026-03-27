@@ -17,6 +17,9 @@
 const fs = require('fs');
 const path = require('path');
 
+// Routes that intentionally skip withRateLimit (e.g. health checks for uptime monitors)
+const EXCLUDED_ROUTES = ['health.js'];
+
 /**
  * Recursively collects all .js route files from a directory
  * Excludes __tests__ directories
@@ -33,6 +36,7 @@ function getRouteFiles(dir) {
 
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     if (entry.name === '__tests__') continue;
+    if (EXCLUDED_ROUTES.includes(entry.name)) continue;
 
     const fullPath = path.join(dir, entry.name);
 
