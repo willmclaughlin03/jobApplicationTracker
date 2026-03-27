@@ -65,9 +65,16 @@ export default function InfoTooltip() {
             </ul>
           </div>
 
-          <div>
+          <div className="pb-3 mb-3 border-b border-gray-100">
             <p className="font-medium text-gray-800 mb-1">Change Password</p>
             <p>Click your profile icon in the top-right corner and select "Reset Password".</p>
+          </div>
+
+          <div>
+            <p className="font-medium text-gray-800 mb-1">Support</p>
+            <p>Found a bug or having an issue? Reach out at{' '}
+              <a href="mailto:support@example.com" className="text-blue-600 hover:underline">support@example.com</a>.
+            </p>
           </div>
         </div>
       )}
