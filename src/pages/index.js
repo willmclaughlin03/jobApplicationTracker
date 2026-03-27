@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { useRouter } from 'next/router';
 import { useAuth } from '../client/contexts/AuthContext';
 import { useJobs } from '../client/hooks/useJobs';
-import { useJobStats } from '../client/hooks/useJobStats';
 import { useJobFormModal } from '../client/hooks/useJobFormModal';
 import JobTable from '../client/components/JobTable';
 import JobForm from '../client/components/JobForm';
@@ -21,13 +20,6 @@ export default function Dashboard() {
   const [searchQuery, setSearchQuery] = useState('');
 
   const {
-    statusCounts,
-    total: totalJobs,
-    loading: statsLoading,
-    refetch: refetchStats,
-  } = useJobStats(user?.id);
-
-  const {
     jobs,
     loading,
     saving,
@@ -39,6 +31,8 @@ export default function Dashboard() {
     deleteJob,
     currentPage,
     totalCount,
+    totalJobs,
+    statusCounts,
     pageSize,
     goToPage,
   } = useJobs(user?.id, statusFilter, searchQuery);
@@ -70,18 +64,12 @@ export default function Dashboard() {
 
   const handleAddJob = async (jobData) => {
     const result = await addJob(jobData);
-    if (result.success) {
-      closeAddForm();
-      refetchStats();
-    }
+    if (result.success) closeAddForm();
   };
 
   const handleUpdateJob = async (id, updates) => {
     const result = await updateJob(id, updates);
-    if (result.success) {
-      closeEditForm();
-      refetchStats();
-    }
+    if (result.success) closeEditForm();
   };
 
   const handleDeleteJob = (id) => {
@@ -91,10 +79,7 @@ export default function Dashboard() {
 
   const confirmDeleteJob = async () => {
     const result = await deleteJob(jobToDelete.id);
-    if (result.success) {
-      setJobToDelete(null);
-      refetchStats();
-    }
+    if (result.success) setJobToDelete(null);
   };
 
   const handleSignOut = async () => {
@@ -126,7 +111,7 @@ export default function Dashboard() {
           onClose={() => setSidebarOpen(false)}
           statusCounts={statusCounts}
           total={totalJobs}
-          loading={statsLoading}
+          loading={loading}
           activeFilter={statusFilter}
           onFilterChange={setStatusFilter}
           searchQuery={searchQuery}

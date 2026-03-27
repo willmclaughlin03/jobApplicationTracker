@@ -4,6 +4,7 @@ import { useJobsQuery, useAddJob, useUpdateJob, useDeleteJob } from './jobs/inde
 import { filterJobs } from '../lib/filterJobs.js';
 
 const PAGE_SIZE = 10;
+const EMPTY_COUNTS = { applied: 0, interviewing: 0, offered: 0, rejected: 0, accepted: 0 };
 
 /**
  * Composes all job state and operations for the job list UI.
@@ -71,6 +72,17 @@ export function useJobs(userId, statusFilter = null, searchQuery = '') {
     del.clearError();
   }, [query.clearError, add.clearError, update.clearError, del.clearError]);
 
+  // Derive status counts from the in-memory job list (no extra API call)
+  const statusCounts = useMemo(() => {
+    const counts = { ...EMPTY_COUNTS };
+    for (const job of allJobs) {
+      if (Object.prototype.hasOwnProperty.call(counts, job.status)) {
+        counts[job.status]++;
+      }
+    }
+    return counts;
+  }, [allJobs]);
+
   // The inner hooks already return stable useCallback references, so no wrapper needed
   const addJob = add.addJob;
   const updateJob = update.updateJob;
@@ -89,6 +101,8 @@ export function useJobs(userId, statusFilter = null, searchQuery = '') {
     refetch: fetchJobs,
     currentPage,
     totalCount: filteredJobs.length,
+    totalJobs: allJobs.length,
+    statusCounts,
     pageSize: PAGE_SIZE,
     goToPage,
   };
