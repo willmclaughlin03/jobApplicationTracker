@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { STATUS_COLORS } from './forms/constants';
 import Spinner from './Spinner.jsx';
+import { formatSalary } from '../lib/formatSalary.js';
 
 export default function JobTableRow({ job, onEdit, onDelete, isDeleting }) {
   const [expanded, setExpanded] = useState(false);
@@ -22,6 +23,14 @@ export default function JobTableRow({ job, onEdit, onDelete, isDeleting }) {
         <span className={`inline-block px-2.5 py-1 rounded-full border text-xs font-medium capitalize ${STATUS_COLORS[job.status] || 'bg-gray-100 text-gray-800 border-gray-300'}`}>
           {job.status}
         </span>
+        {job.status_date && (
+          <span className="block text-xs text-gray-400 mt-1">
+            {new Date(job.status_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+          </span>
+        )}
+      </td>
+      <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
+        {formatSalary(job.salary_min, job.salary_max)}
       </td>
       <td
         className="px-4 py-3 text-sm text-gray-600 max-w-xs"

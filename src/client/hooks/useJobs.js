@@ -22,7 +22,7 @@ const EMPTY_COUNTS = { applied: 0, interviewing: 0, offered: 0, rejected: 0, acc
  * @param {string|null} statusFilter - Filters jobs by status (client-side, no API call)
  * @param {string} searchQuery - Case-insensitive company name search (client-side, no API call)
  */
-export function useJobs(userId, statusFilter = null, searchQuery = '') {
+export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin = null, salaryMax = null) {
   const { currentPage, setCurrentPage, setTotalCount, goToPage } = usePagination(PAGE_SIZE);
 
   const query = useJobsQuery();
@@ -35,8 +35,8 @@ export function useJobs(userId, statusFilter = null, searchQuery = '') {
 
   // Client-side filter: status + case-insensitive company name search
   const filteredJobs = useMemo(
-    () => filterJobs(allJobs, statusFilter, searchQuery),
-    [allJobs, statusFilter, searchQuery]
+    () => filterJobs(allJobs, statusFilter, searchQuery, salaryMin, salaryMax),
+    [allJobs, statusFilter, searchQuery, salaryMin, salaryMax]
   );
 
   // Keep usePagination's internal totalPages correct so goToPage can clamp properly
@@ -49,7 +49,7 @@ export function useJobs(userId, statusFilter = null, searchQuery = '') {
   // whenever totalPages updates after setTotalCount.
   useEffect(() => {
     setCurrentPage(1);
-  }, [statusFilter, searchQuery, setCurrentPage]);
+  }, [statusFilter, searchQuery, salaryMin, salaryMax, setCurrentPage]);
 
   // Slice the filtered list for the current page
   const pageStart = (currentPage - 1) * PAGE_SIZE;
@@ -90,6 +90,7 @@ export function useJobs(userId, statusFilter = null, searchQuery = '') {
 
   return {
     jobs,
+    allJobs,
     loading,
     saving: add.saving || update.saving,
     deleting: del.deleting,

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { STATUS_COLORS } from './forms/constants';
 import Spinner from './Spinner.jsx';
+import { formatSalary } from '../lib/formatSalary.js';
 
 /**
  * Mobile card layout for a single job application
@@ -32,6 +33,16 @@ export default function JobCardMobile({ job, onEdit, onDelete, isDeleting }) {
 
       {/* Position */}
       <p className="text-sm text-gray-600 break-words">{job.position}</p>
+
+      {/* Salary + Status Date */}
+      <div className="flex items-center gap-3 text-xs text-gray-500">
+        {(job.salary_min != null || job.salary_max != null) && (
+          <span>{formatSalary(job.salary_min, job.salary_max)}</span>
+        )}
+        {job.status_date && (
+          <span>Since {new Date(job.status_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+        )}
+      </div>
 
       {/* Notes (only shown when present) */}
       {hasNotes && (

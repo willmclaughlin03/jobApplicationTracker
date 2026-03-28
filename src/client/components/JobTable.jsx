@@ -12,6 +12,7 @@ export default function JobTable({ jobs, onEdit, onDelete, deleting }) {
               <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Company</th>
               <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Position</th>
               <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Status</th>
+              <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Salary</th>
               <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Notes</th>
               <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Actions</th>
             </tr>

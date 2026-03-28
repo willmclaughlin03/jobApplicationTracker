@@ -18,9 +18,12 @@ export default function Dashboard() {
   const router = useRouter();
   const [statusFilter, setStatusFilter] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [salaryFilterMin, setSalaryFilterMin] = useState(null);
+  const [salaryFilterMax, setSalaryFilterMax] = useState(null);
 
   const {
     jobs,
+    allJobs,
     loading,
     saving,
     deleting,
@@ -35,7 +38,7 @@ export default function Dashboard() {
     statusCounts,
     pageSize,
     goToPage,
-  } = useJobs(user?.id, statusFilter, searchQuery);
+  } = useJobs(user?.id, statusFilter, searchQuery, salaryFilterMin, salaryFilterMax);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [jobToDelete, setJobToDelete] = useState(null);
@@ -116,6 +119,11 @@ export default function Dashboard() {
           onFilterChange={setStatusFilter}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
+          jobs={allJobs}
+          salaryFilterMin={salaryFilterMin}
+          salaryFilterMax={salaryFilterMax}
+          onSalaryFilterMinChange={setSalaryFilterMin}
+          onSalaryFilterMaxChange={setSalaryFilterMax}
         />
 
         <div>
@@ -128,7 +136,7 @@ export default function Dashboard() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4h18M7 8h10M10 12h4" />
               </svg>
               Filters
-              {(statusFilter || searchQuery) && (
+              {(statusFilter || searchQuery || salaryFilterMin != null || salaryFilterMax != null) && (
                 <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-blue-500" />
               )}
             </button>

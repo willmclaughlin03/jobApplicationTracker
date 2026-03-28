@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { JobFormFields, INITIAL_FORM_DATA } from './forms/index.js';
 import Spinner from './Spinner.jsx';
-import { COMPANY_MAX_LENGTH, POSITION_MAX_LENGTH, NOTES_MAX_LENGTH } from '../../shared/validations/jobSchema.js';
+import { COMPANY_MAX_LENGTH, POSITION_MAX_LENGTH, NOTES_MAX_LENGTH, SALARY_MAX_VALUE } from '../../shared/validations/jobSchema.js';
 
 export default function EditModal({ job, onSave, onClose, saving }) {
   const [formData, setFormData] = useState(INITIAL_FORM_DATA);
@@ -14,6 +14,8 @@ export default function EditModal({ job, onSave, onClose, saving }) {
         position: job.position || '',
         status: job.status || 'applied',
         notes: job.notes || '',
+        salary_min: job.salary_min ?? '',
+        salary_max: job.salary_max ?? '',
       });
       setFieldErrors({});
     }
@@ -36,11 +38,24 @@ export default function EditModal({ job, onSave, onClose, saving }) {
       newErrors.position = `Position must be ${POSITION_MAX_LENGTH} characters or fewer (${formData.position.length}/${POSITION_MAX_LENGTH})`;
     if (formData.notes && formData.notes.length > NOTES_MAX_LENGTH)
       newErrors.notes = `Notes must be ${NOTES_MAX_LENGTH} characters or fewer (${formData.notes.length}/${NOTES_MAX_LENGTH})`;
+    const minVal = formData.salary_min !== '' ? Number(formData.salary_min) : null;
+    const maxVal = formData.salary_max !== '' ? Number(formData.salary_max) : null;
+    if (minVal != null && (minVal < 0 || minVal > SALARY_MAX_VALUE || !Number.isInteger(minVal)))
+      newErrors.salary_min = 'Must be a whole number between 0 and 10,000,000';
+    if (maxVal != null && (maxVal < 0 || maxVal > SALARY_MAX_VALUE || !Number.isInteger(maxVal)))
+      newErrors.salary_max = 'Must be a whole number between 0 and 10,000,000';
+    if (minVal != null && maxVal != null && maxVal < minVal)
+      newErrors.salary_max = 'Max salary must be greater than or equal to min salary';
     if (Object.keys(newErrors).length) {
       setFieldErrors(newErrors);
       return;
     }
-    onSave(job.id, formData);
+    const submitData = {
+      ...formData,
+      salary_min: minVal,
+      salary_max: maxVal,
+    };
+    onSave(job.id, submitData);
   };
 
   const handleOverlayClick = (e) => {
@@ -61,6 +76,12 @@ export default function EditModal({ job, onSave, onClose, saving }) {
             &times;
           </button>
         </div>
+
+        {job?.status_date && (
+          <p className="text-xs text-gray-500 mb-4">
+            Status since: {new Date(job.status_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+          </p>
+        )}
 
         <form onSubmit={handleSubmit}>
           <JobFormFields formData={formData} onChange={handleChange} idPrefix="edit" errors={fieldErrors} />

@@ -60,6 +60,32 @@ async function handlePut(req, res, user, jobId) {
   }
 
   const updatedData = updateResult.data;
+
+  // Server-side only: auto-set status_date when status is being changed.
+  // status_date is never accepted from the client — it's injected here to
+  // ensure timestamp integrity.
+  if (updatedData.status !== undefined) {
+    updatedData.status_date = new Date().toISOString();
+  }
+
+  // Cross-field salary validation on partial updates:
+  // When only one salary field is sent, fetch the current job to validate
+  // the range against the stored counterpart. DB CHECK constraint is the
+  // final safety net, but we fail early here with a clear error message.
+  const hasMin = updatedData.salary_min != null;
+  const hasMax = updatedData.salary_max != null;
+  if (hasMin !== hasMax) {
+    const { data: currentJob, error: fetchError } = await getJobById(jobId, user.id, req._supabaseClient);
+    if (fetchError || !currentJob) {
+      return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);
+    }
+    const effectiveMin = hasMin ? updatedData.salary_min : currentJob.salary_min;
+    const effectiveMax = hasMax ? updatedData.salary_max : currentJob.salary_max;
+    if (effectiveMin != null && effectiveMax != null && effectiveMax < effectiveMin) {
+      return sendError(res, 400, 'VALIDATION_ERROR', 'Max salary must be greater than or equal to min salary');
+    }
+  }
+
   const { data, error } = await updateJob(jobId, updatedData, user.id, req._supabaseClient);
 
   if (error || !data) {

@@ -1,6 +1,9 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { STATUS_OPTIONS, STATUS_COLORS, STATUS_DOT_COLORS } from './forms/constants';
 import StatusPieChart from './StatusPieChart';
+import { formatSalary, formatSalarySingle } from '../lib/formatSalary.js';
+import DOMPurify from 'isomorphic-dompurify';
+import { SALARY_MAX_VALUE } from '../../shared/validations/jobSchema.js';
 
 /**
  * Sidebar drawer showing job statistics, status filter buttons, and a company search input.
@@ -31,29 +34,94 @@ export default function JobStatsSidebar({
   onFilterChange,
   searchQuery,
   onSearchChange,
+  jobs = [],
+  salaryFilterMin,
+  salaryFilterMax,
+  onSalaryFilterMinChange,
+  onSalaryFilterMaxChange,
 }) {
   const [localSearch, setLocalSearch] = useState(searchQuery || '');
+  const [localSalaryMin, setLocalSalaryMin] = useState('');
+  const [localSalaryMax, setLocalSalaryMax] = useState('');
   const debounceTimerRef = useRef(null);
+  const salaryMinTimerRef = useRef(null);
+  const salaryMaxTimerRef = useRef(null);
 
-  // Sync local input if parent resets searchQuery (e.g. a future "clear all" action)
+  const salaryStats = useMemo(() => {
+    const withSalary = jobs.filter(j => j.salary_min != null || j.salary_max != null);
+    if (withSalary.length === 0) return null;
+    const mins = withSalary.map(j => j.salary_min).filter(v => v != null);
+    const maxes = withSalary.map(j => j.salary_max).filter(v => v != null);
+    const overallMin = mins.length ? Math.min(...mins) : null;
+    const overallMax = maxes.length ? Math.max(...maxes) : null;
+    const midpoints = withSalary
+      .filter(j => j.salary_min != null && j.salary_max != null)
+      .map(j => (j.salary_min + j.salary_max) / 2);
+    const avgMidpoint = midpoints.length
+      ? Math.round(midpoints.reduce((a, b) => a + b, 0) / midpoints.length)
+      : null;
+    return { overallMin, overallMax, avgMidpoint, count: withSalary.length, total: jobs.length };
+  }, [jobs]);
+
+  const latestStatusDate = useMemo(() => {
+    const withDate = jobs.filter(j => j.status_date != null);
+    if (withDate.length === 0) return null;
+    return withDate.reduce((latest, j) =>
+      new Date(j.status_date) > new Date(latest.status_date) ? j : latest
+    );
+  }, [jobs]);
+
+  // Sync local inputs if parent resets values (e.g. "clear all" action)
   useEffect(() => {
     setLocalSearch(searchQuery || '');
   }, [searchQuery]);
+  useEffect(() => {
+    setLocalSalaryMin(salaryFilterMin != null ? String(salaryFilterMin) : '');
+  }, [salaryFilterMin]);
+  useEffect(() => {
+    setLocalSalaryMax(salaryFilterMax != null ? String(salaryFilterMax) : '');
+  }, [salaryFilterMax]);
 
-  // Cleanup debounce timer on unmount to prevent state updates on unmounted component
-  useEffect(() => () => clearTimeout(debounceTimerRef.current), []);
+  // Cleanup debounce timers on unmount to prevent state updates on unmounted component
+  useEffect(() => () => {
+    clearTimeout(debounceTimerRef.current);
+    clearTimeout(salaryMinTimerRef.current);
+    clearTimeout(salaryMaxTimerRef.current);
+  }, []);
 
   const handleSearchChange = (e) => {
     const value = e.target.value;
     setLocalSearch(value);
     clearTimeout(debounceTimerRef.current);
-    debounceTimerRef.current = setTimeout(() => onSearchChange(value), 300);
+    debounceTimerRef.current = setTimeout(() => onSearchChange(DOMPurify.sanitize(value, { ALLOWED_TAGS: [] })), 300);
   };
 
   const handleClearSearch = () => {
     setLocalSearch('');
     clearTimeout(debounceTimerRef.current);
     onSearchChange('');
+  };
+
+  const handleSalaryMinChange = (e) => {
+    const value = e.target.value;
+    setLocalSalaryMin(value);
+    clearTimeout(salaryMinTimerRef.current);
+    salaryMinTimerRef.current = setTimeout(() => {
+      if (value === '') return onSalaryFilterMinChange(null);
+      const clamped = Math.max(0, Math.min(Math.round(Number(value)), SALARY_MAX_VALUE));
+      onSalaryFilterMinChange(clamped);
+    }, 300);
+  };
+
+  const handleSalaryMaxChange = (e) => {
+    const value = e.target.value;
+    setLocalSalaryMax(value);
+    clearTimeout(salaryMaxTimerRef.current);
+    salaryMaxTimerRef.current = setTimeout(() => {
+      if (value === '') return onSalaryFilterMaxChange(null);
+      const clamped = Math.max(0, Math.min(Math.round(Number(value)), SALARY_MAX_VALUE));
+      onSalaryFilterMaxChange(clamped);
+    }, 300);
   };
 
   const handleStatusClick = (status) => {
@@ -144,6 +212,82 @@ export default function JobStatsSidebar({
           })}
         </div>
 
+        {/* Salary summary */}
+        {!loading && salaryStats && (
+          <div className="px-4 py-3 border-t border-gray-100 space-y-1.5">
+            <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">Salary Range</h3>
+            <p className="text-sm text-gray-800 font-medium">
+              {formatSalary(salaryStats.overallMin, salaryStats.overallMax)}
+            </p>
+            {salaryStats.avgMidpoint != null && (
+              <p className="text-xs text-gray-500">
+                Avg midpoint: {formatSalarySingle(salaryStats.avgMidpoint)}
+              </p>
+            )}
+            <p className="text-xs text-gray-400">
+              {salaryStats.count} of {salaryStats.total} jobs with salary data
+            </p>
+          </div>
+        )}
+
+        {/* Latest status change */}
+        {!loading && latestStatusDate && (
+          <div className="px-4 py-3 border-t border-gray-100 space-y-1.5">
+            <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">Latest Status Change</h3>
+            <p className="text-sm text-gray-800">
+              <span className="font-medium">{latestStatusDate.company}</span>
+              {' \u2192 '}
+              <span className="capitalize">{latestStatusDate.status}</span>
+            </p>
+            <p className="text-xs text-gray-500">
+              {new Date(latestStatusDate.status_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+            </p>
+          </div>
+        )}
+
+        {/* Salary filter */}
+        <div className="px-4 py-3 border-t border-gray-100">
+          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Filter by Salary</h3>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label htmlFor="salary-filter-min" className="block text-xs text-gray-500 mb-1">Min</label>
+              <input
+                id="salary-filter-min"
+                type="number"
+                value={localSalaryMin}
+                onChange={handleSalaryMinChange}
+                placeholder="e.g. 60000"
+                min="0"
+                max={SALARY_MAX_VALUE}
+                step="1000"
+                disabled={loading}
+                className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded-md
+                           placeholder-gray-400 focus:outline-none focus:ring-2
+                           focus:ring-blue-500 focus:border-transparent
+                           disabled:opacity-50 disabled:cursor-not-allowed"
+              />
+            </div>
+            <div>
+              <label htmlFor="salary-filter-max" className="block text-xs text-gray-500 mb-1">Max</label>
+              <input
+                id="salary-filter-max"
+                type="number"
+                value={localSalaryMax}
+                onChange={handleSalaryMaxChange}
+                placeholder="e.g. 120000"
+                min="0"
+                max={SALARY_MAX_VALUE}
+                step="1000"
+                disabled={loading}
+                className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded-md
+                           placeholder-gray-400 focus:outline-none focus:ring-2
+                           focus:ring-blue-500 focus:border-transparent
+                           disabled:opacity-50 disabled:cursor-not-allowed"
+              />
+            </div>
+          </div>
+        </div>
+
         {/* Company search */}
         <div className="px-4 pb-3 border-t border-gray-100 pt-3">
           <label
@@ -179,13 +323,24 @@ export default function JobStatsSidebar({
           </div>
         </div>
 
-        {activeFilter && (
+        {(activeFilter || salaryFilterMin != null || salaryFilterMax != null || searchQuery) && (
           <div className="px-4 pb-3">
             <button
-              onClick={() => onFilterChange(null)}
+              onClick={() => {
+                onFilterChange(null);
+                onSalaryFilterMinChange(null);
+                onSalaryFilterMaxChange(null);
+                setLocalSalaryMin('');
+                setLocalSalaryMax('');
+                clearTimeout(salaryMinTimerRef.current);
+                clearTimeout(salaryMaxTimerRef.current);
+                onSearchChange('');
+                setLocalSearch('');
+                clearTimeout(debounceTimerRef.current);
+              }}
               className="w-full py-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-200 rounded-md hover:bg-gray-50 transition-colors"
             >
-              Clear Filter
+              Clear All Filters
             </button>
           </div>
         )}

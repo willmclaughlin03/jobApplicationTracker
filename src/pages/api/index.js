@@ -55,6 +55,7 @@ async function handlePost(req, res, user) {
   }
 
   const finalizedData = createResult.data;
+  finalizedData.status_date = new Date().toISOString();
   const { data, error } = await createJob(finalizedData, user.id, req._supabaseClient);
 
   if (error) {
