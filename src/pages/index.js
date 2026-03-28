@@ -12,6 +12,7 @@ import JobStatsSidebar from '../client/components/JobStatsSidebar';
 import ProfileDropdown from '../client/components/ProfileDropdown';
 import Spinner from '../client/components/Spinner';
 import InfoTooltip from '../client/components/InfoTooltip';
+import ActivityDrawer from '../client/components/ActivityDrawer';
 
 export default function Dashboard() {
   const { user, loading: authLoading, signOut } = useAuth();
@@ -41,6 +42,7 @@ export default function Dashboard() {
   } = useJobs(user?.id, statusFilter, searchQuery, salaryFilterMin, salaryFilterMax);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
   const [jobToDelete, setJobToDelete] = useState(null);
 
   const {
@@ -128,18 +130,29 @@ export default function Dashboard() {
 
         <div>
           <div className="flex items-center justify-between mb-6">
-            <button
-              onClick={() => setSidebarOpen(true)}
-              className="relative flex items-center gap-2 bg-white border border-gray-300 text-gray-700 px-4 py-2.5 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4h18M7 8h10M10 12h4" />
-              </svg>
-              Filters
-              {(statusFilter || searchQuery || salaryFilterMin != null || salaryFilterMax != null) && (
-                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-blue-500" />
-              )}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="relative flex items-center gap-2 bg-white border border-gray-300 text-gray-700 px-4 py-2.5 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4h18M7 8h10M10 12h4" />
+                </svg>
+                Filters
+                {(statusFilter || searchQuery || salaryFilterMin != null || salaryFilterMax != null) && (
+                  <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-blue-500" />
+                )}
+              </button>
+              <button
+                onClick={() => setActivityOpen(true)}
+                className="flex items-center gap-2 bg-white border border-gray-300 text-gray-700 px-4 py-2.5 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                Activity
+              </button>
+            </div>
             <div className="flex items-center gap-3">
               <InfoTooltip />
               <button
@@ -192,6 +205,12 @@ export default function Dashboard() {
           )}
         </div>
 
+        {/* Activity calendar — desktop: inline bottom-left, mobile: drawer */}
+        <ActivityDrawer
+          isOpen={activityOpen}
+          onClose={() => setActivityOpen(false)}
+          jobs={allJobs}
+        />
         {editingJob && (
           <EditModal
             job={editingJob}
