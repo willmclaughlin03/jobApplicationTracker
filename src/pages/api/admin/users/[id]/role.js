@@ -40,8 +40,46 @@ async function handlePut(req, res) {
 
     if (!preventSelfAction(actorId, targetId, res)) return;
 
+    // Read current app_metadata before writing.
+    //
+    // Why: supabaseAdmin.auth.admin.updateUserById performs a *shallow merge*
+    // into app_metadata — it does NOT replace the object. Passing only { role }
+    // preserves all existing keys (e.g. Supabase-managed `provider`, `providers`).
+    // Reading first lets us explicitly reconstruct the full object, making the
+    // intent clear and protecting against future developers adding fields who may
+    // not realise the merge behaviour.
+    //
+    // Tradeoff: this adds one round-trip and a narrow TOCTOU window — if another
+    // concurrent admin action updates app_metadata between our fetch and write,
+    // we could overwrite it. Acceptable for this app's admin volume; a Postgres
+    // function would be needed for true atomicity.
+    const { data: currentUserData, error: fetchError } = await supabaseAdmin.auth.admin.getUserById(targetId);
+
+    if (fetchError) {
+        req.log.error({ err: fetchError, targetId }, 'Admin: failed to fetch user before role update');
+        logAdminAction(req, {
+            action: 'set_role',
+            targetUserId: targetId,
+            result: 'error',
+            meta: { role, reason: 'fetch_failed_before_update' },
+        });
+
+        if (fetchError.status === 404) {
+            return sendError(res, 404, 'ADMIN_USER_NOT_FOUND', ERROR_MESSAGES.ADMIN_USER_NOT_FOUND);
+        }
+        return sendError(res, 503, 'ADMIN_ROLE_UPDATE_FAILED', ERROR_MESSAGES.ADMIN_ROLE_UPDATE_FAILED);
+    }
+
+    // Preserve all existing app_metadata fields (provider, providers, etc.)
+    // and override only `role`. This makes the write explicit rather than
+    // relying on Supabase's implicit merge.
+    const updatedMetadata = {
+        ...currentUserData.user.app_metadata,
+        role,
+    };
+
     const { error } = await supabaseAdmin.auth.admin.updateUserById(targetId, {
-        app_metadata: { role },
+        app_metadata: updatedMetadata,
     });
 
     if (error) {
