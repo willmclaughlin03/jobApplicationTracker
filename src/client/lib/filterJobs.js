@@ -13,9 +13,10 @@
  * @param {string} searchQuery - Case-insensitive company name substring search; '' means no filter
  * @param {number|null} salaryMin - Minimum salary filter; null means no lower bound
  * @param {number|null} salaryMax - Maximum salary filter; null means no upper bound
+ * @param {Set<string>|null} selectedDates - Set of "YYYY-MM-DD" strings; null/empty means no date filter
  * @returns {Object[]} Filtered job list (new array reference, original not mutated)
  */
-export function filterJobs(jobs, statusFilter, searchQuery, salaryMin = null, salaryMax = null) {
+export function filterJobs(jobs, statusFilter, searchQuery, salaryMin = null, salaryMax = null, selectedDates = null) {
   let result = jobs;
 
   if (statusFilter) {
@@ -35,6 +36,17 @@ export function filterJobs(jobs, statusFilter, searchQuery, salaryMin = null, sa
       if (salaryMax != null && jobMin > salaryMax) return false;
       if (salaryMin != null && jobMax < salaryMin) return false;
       return true;
+    });
+  }
+
+  if (selectedDates != null && selectedDates.size > 0) {
+    result = result.filter(j => {
+      if (!j.created_at) return false;
+      // Use local date components (matching getActivityCounts) so the filter
+      // agrees with the calendar heatmap for users in non-UTC timezones.
+      const d = new Date(j.created_at);
+      const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      return selectedDates.has(dateStr);
     });
   }
 

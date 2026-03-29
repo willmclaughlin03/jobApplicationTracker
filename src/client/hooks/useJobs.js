@@ -21,8 +21,14 @@ const EMPTY_COUNTS = { applied: 0, interviewing: 0, offered: 0, rejected: 0, acc
  * @param {string} userId - Authenticated user ID; triggers initial fetch on mount
  * @param {string|null} statusFilter - Filters jobs by status (client-side, no API call)
  * @param {string} searchQuery - Case-insensitive company name search (client-side, no API call)
+ * @param {number|null} salaryMin - Minimum salary filter (client-side, no API call)
+ * @param {number|null} salaryMax - Maximum salary filter (client-side, no API call)
+ * @param {Set<string>|null} selectedDates - Set of "YYYY-MM-DD" strings to filter by applied date
+ *
+ * Note: allJobs (unfiltered) is intentionally returned for the activity calendar so its heatmap
+ * always reflects the user's full history, regardless of any active status/search/salary filters.
  */
-export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin = null, salaryMax = null) {
+export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin = null, salaryMax = null, selectedDates = null) {
   const { currentPage, setCurrentPage, setTotalCount, goToPage } = usePagination(PAGE_SIZE);
 
   const query = useJobsQuery();
@@ -33,10 +39,10 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
     if (userId) fetchJobs();
   }, [userId, fetchJobs]);
 
-  // Client-side filter: status + case-insensitive company name search
+  // Full filter including selected dates: drives the job table and pagination
   const filteredJobs = useMemo(
-    () => filterJobs(allJobs, statusFilter, searchQuery, salaryMin, salaryMax),
-    [allJobs, statusFilter, searchQuery, salaryMin, salaryMax]
+    () => filterJobs(allJobs, statusFilter, searchQuery, salaryMin, salaryMax, selectedDates),
+    [allJobs, statusFilter, searchQuery, salaryMin, salaryMax, selectedDates]
   );
 
   // Keep usePagination's internal totalPages correct so goToPage can clamp properly
@@ -49,7 +55,7 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
   // whenever totalPages updates after setTotalCount.
   useEffect(() => {
     setCurrentPage(1);
-  }, [statusFilter, searchQuery, salaryMin, salaryMax, setCurrentPage]);
+  }, [statusFilter, searchQuery, salaryMin, salaryMax, selectedDates, setCurrentPage]);
 
   // Slice the filtered list for the current page
   const pageStart = (currentPage - 1) * PAGE_SIZE;

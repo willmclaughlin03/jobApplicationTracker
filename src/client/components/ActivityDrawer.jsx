@@ -10,8 +10,11 @@ import { useOverlayAccessibility } from '../hooks/useOverlayAccessibility';
  * @param {boolean} isOpen - Whether the drawer is visible
  * @param {Function} onClose - Callback to close the drawer
  * @param {Array} jobs - Job array to display activity for (filtered or full)
+ * @param {Set<string>} selectedDates - Set of "YYYY-MM-DD" strings currently selected
+ * @param {Function} onDateToggle - Called with a "YYYY-MM-DD" string to toggle date selection
+ * @param {Function} onClearDates - Clears all selected dates
  */
-export default function ActivityDrawer({ isOpen, onClose, jobs }) {
+export default function ActivityDrawer({ isOpen, onClose, jobs, selectedDates = new Set(), onDateToggle = () => {}, onClearDates = () => {} }) {
   const { containerRef } = useOverlayAccessibility(isOpen, onClose);
 
   return (
@@ -49,9 +52,44 @@ export default function ActivityDrawer({ isOpen, onClose, jobs }) {
           </button>
         </div>
 
+        {/* Selected dates list */}
+        {selectedDates.size > 0 && (
+          <div className="px-4 py-3 border-b border-gray-200">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                Selected Dates ({selectedDates.size}/7)
+              </h3>
+              <button
+                onClick={onClearDates}
+                className="text-xs text-blue-500 hover:text-blue-700 transition-colors"
+              >
+                Clear all
+              </button>
+            </div>
+            <ul className="space-y-1">
+              {Array.from(selectedDates).sort().map(dateStr => {
+                const [y, m, d] = dateStr.split('-').map(Number);
+                const label = new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                return (
+                  <li key={dateStr} className="flex items-center justify-between text-sm text-gray-700">
+                    <span>{label}</span>
+                    <button
+                      onClick={() => onDateToggle(dateStr)}
+                      aria-label={`Remove ${label}`}
+                      className="text-gray-400 hover:text-gray-600 transition-colors ml-2"
+                    >
+                      ✕
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+
         {/* Calendar content */}
         <div className="p-3 overflow-x-auto">
-          <ActivityCalendar jobs={jobs} />
+          <ActivityCalendar jobs={jobs} selectedDates={selectedDates} onDateToggle={onDateToggle} />
         </div>
       </div>
     </>

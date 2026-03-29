@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { getActivityCounts, getIntensityLevel, INTENSITY_COLORS } from '../lib/getActivityCounts';
 
+const MAX_SELECTED_DATES = 7;
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -45,8 +46,10 @@ function buildMonthGrid(year, month) {
  * Connects to: getActivityCounts utility for data aggregation
  *
  * @param {Array} jobs - Filtered jobs array passed from the parent
+ * @param {Set<string>} selectedDates - Set of "YYYY-MM-DD" strings currently selected
+ * @param {Function} onDateToggle - Called with a "YYYY-MM-DD" string when a day cell is clicked
  */
-export default function ActivityCalendar({ jobs }) {
+export default function ActivityCalendar({ jobs, selectedDates = new Set(), onDateToggle = () => {} }) {
   const today = new Date();
   const [viewYear, setViewYear] = useState(today.getFullYear());
   const [viewMonth, setViewMonth] = useState(today.getMonth());
@@ -164,18 +167,30 @@ export default function ActivityCalendar({ jobs }) {
             cell.day === today.getDate() &&
             viewMonth === today.getMonth() &&
             viewYear === today.getFullYear();
+          const isSelected = selectedDates.has(cell.key);
+          const atMax = selectedDates.size >= MAX_SELECTED_DATES;
+          const canSelect = isSelected || !atMax;
+
+          let title = `${MONTH_NAMES[viewMonth]} ${cell.day}: ${count} application${count !== 1 ? 's' : ''}`;
+          if (isSelected) title += ' (selected — click to remove)';
+          else if (atMax) title = `Max ${MAX_SELECTED_DATES} dates selected`;
 
           return (
-            <div
+            <button
               key={i}
-              className={`aspect-square rounded-sm ${color} flex items-center justify-center cursor-default
-                ${isToday ? 'ring-1 ring-gray-400' : ''}`}
-              title={`${MONTH_NAMES[viewMonth]} ${cell.day}: ${count} application${count !== 1 ? 's' : ''}`}
+              type="button"
+              onClick={() => onDateToggle(cell.key)}
+              disabled={!canSelect}
+              aria-label={title}
+              className={`aspect-square rounded-sm ${color} flex items-center justify-center w-full
+                cursor-pointer disabled:cursor-not-allowed disabled:opacity-50
+                ${isSelected ? 'ring-2 ring-blue-500' : isToday ? 'ring-1 ring-gray-400' : ''}`}
+              title={title}
             >
               <span className={`text-xs leading-none ${level >= 3 ? 'text-white/80' : 'text-gray-500'}`}>
                 {cell.day}
               </span>
-            </div>
+            </button>
           );
         })}
       </div>

@@ -21,11 +21,25 @@ export default function Dashboard() {
   const [searchQuery, setSearchQuery] = useState('');
   const [salaryFilterMin, setSalaryFilterMin] = useState(null);
   const [salaryFilterMax, setSalaryFilterMax] = useState(null);
+  const [selectedDates, setSelectedDates] = useState(new Set());
+
+  const handleDateToggle = (dateStr) => {
+    setSelectedDates(prev => {
+      const next = new Set(prev);
+      if (next.has(dateStr)) {
+        next.delete(dateStr);
+      } else if (next.size < 7) {
+        next.add(dateStr);
+      }
+      return next;
+    });
+  };
+
+  const clearSelectedDates = () => setSelectedDates(new Set());
 
   const {
     jobs,
     allJobs,
-    filteredJobs,
     loading,
     saving,
     deleting,
@@ -40,7 +54,7 @@ export default function Dashboard() {
     statusCounts,
     pageSize,
     goToPage,
-  } = useJobs(user?.id, statusFilter, searchQuery, salaryFilterMin, salaryFilterMax);
+  } = useJobs(user?.id, statusFilter, searchQuery, salaryFilterMin, salaryFilterMax, selectedDates);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
@@ -146,12 +160,15 @@ export default function Dashboard() {
               </button>
               <button
                 onClick={() => setActivityOpen(true)}
-                className="flex items-center gap-2 bg-white border border-gray-300 text-gray-700 px-4 py-2.5 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors"
+                className="relative flex items-center gap-2 bg-white border border-gray-300 text-gray-700 px-4 py-2.5 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                 </svg>
                 Activity
+                {selectedDates.size > 0 && (
+                  <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-blue-500" />
+                )}
               </button>
             </div>
             <div className="flex items-center gap-3">
@@ -180,13 +197,21 @@ export default function Dashboard() {
             </div>
           ) : jobs.length === 0 ? (
             <div className="text-center py-16 px-5 text-gray-500 bg-white rounded-lg">
-              <p>
-                {searchQuery
-                  ? `No jobs matching "${searchQuery}"${statusFilter ? ` with status "${statusFilter}"` : ''}.`
-                  : statusFilter
-                  ? `No jobs with status "${statusFilter}".`
-                  : 'No job applications yet. Click "Add New Job" to get started!'}
-              </p>
+              {searchQuery || statusFilter || selectedDates.size > 0 ? (
+                <ul className="space-y-1">
+                  {searchQuery && (
+                    <li>No jobs matching &ldquo;{searchQuery}&rdquo;.</li>
+                  )}
+                  {statusFilter && (
+                    <li>No jobs with status &ldquo;{statusFilter}&rdquo;.</li>
+                  )}
+                  {selectedDates.size > 0 && (
+                    <li>No jobs found for the selected dates.</li>
+                  )}
+                </ul>
+              ) : (
+                <p>No job applications yet. Click &ldquo;Add New Job&rdquo; to get started!</p>
+              )}
             </div>
           ) : (
             <>
@@ -210,7 +235,10 @@ export default function Dashboard() {
         <ActivityDrawer
           isOpen={activityOpen}
           onClose={() => setActivityOpen(false)}
-          jobs={filteredJobs}
+          jobs={allJobs}
+          selectedDates={selectedDates}
+          onDateToggle={handleDateToggle}
+          onClearDates={clearSelectedDates}
         />
         {editingJob && (
           <EditModal
