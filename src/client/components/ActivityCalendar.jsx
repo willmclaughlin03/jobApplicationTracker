@@ -44,7 +44,7 @@ function buildMonthGrid(year, month) {
  * Purpose: Visualizes daily job application activity for one month at a time
  * Connects to: getActivityCounts utility for data aggregation
  *
- * @param {Array} jobs - The full allJobs array from useJobs
+ * @param {Array} jobs - Filtered jobs array passed from the parent
  */
 export default function ActivityCalendar({ jobs }) {
   const today = new Date();
@@ -53,6 +53,17 @@ export default function ActivityCalendar({ jobs }) {
 
   const counts = useMemo(() => getActivityCounts(jobs), [jobs]);
   const weeks = useMemo(() => buildMonthGrid(viewYear, viewMonth), [viewYear, viewMonth]);
+
+  // Earliest job date — used to floor backward navigation
+  const earliestDate = useMemo(() => {
+    let earliest = null;
+    for (const job of jobs) {
+      if (!job.created_at) continue;
+      const d = new Date(job.created_at);
+      if (!earliest || d < earliest) earliest = d;
+    }
+    return earliest;
+  }, [jobs]);
 
   // Total applications for the displayed month
   const monthTotal = useMemo(() => {
@@ -65,7 +76,14 @@ export default function ActivityCalendar({ jobs }) {
     return total;
   }, [weeks, counts]);
 
+  // Fall back to today when there are no jobs — prevents infinite backward navigation
+  const floorDate = earliestDate ?? today;
+  const isEarliestMonth =
+    viewYear === floorDate.getFullYear() &&
+    viewMonth === floorDate.getMonth();
+
   const goToPrevMonth = () => {
+    if (isEarliestMonth) return;
     if (viewMonth === 0) {
       setViewMonth(11);
       setViewYear(y => y - 1);
@@ -94,7 +112,10 @@ export default function ActivityCalendar({ jobs }) {
       <div className="flex items-center justify-between mb-3">
         <button
           onClick={goToPrevMonth}
-          className="p-1 text-gray-400 hover:text-gray-600 transition-colors"
+          disabled={isEarliestMonth}
+          className={`p-1 transition-colors ${
+            isEarliestMonth ? 'text-gray-200 cursor-not-allowed' : 'text-gray-400 hover:text-gray-600'
+          }`}
           aria-label="Previous month"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

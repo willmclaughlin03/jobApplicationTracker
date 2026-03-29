@@ -25,6 +25,7 @@ export default function Dashboard() {
   const {
     jobs,
     allJobs,
+    filteredJobs,
     loading,
     saving,
     deleting,
@@ -209,7 +210,7 @@ export default function Dashboard() {
         <ActivityDrawer
           isOpen={activityOpen}
           onClose={() => setActivityOpen(false)}
-          jobs={allJobs}
+          jobs={filteredJobs}
         />
         {editingJob && (
           <EditModal

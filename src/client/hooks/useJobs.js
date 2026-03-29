@@ -91,6 +91,7 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
   return {
     jobs,
     allJobs,
+    filteredJobs,
     loading,
     saving: add.saving || update.saving,
     deleting: del.deleting,

@@ -4,6 +4,7 @@ import StatusPieChart from './StatusPieChart';
 import { formatSalary, formatSalarySingle } from '../lib/formatSalary.js';
 import DOMPurify from 'isomorphic-dompurify';
 import { SALARY_MAX_VALUE } from '../../shared/validations/jobSchema.js';
+import { useOverlayAccessibility } from '../hooks/useOverlayAccessibility';
 
 /**
  * Sidebar drawer showing job statistics, status filter buttons, and a company search input.
@@ -40,6 +41,7 @@ export default function JobStatsSidebar({
   onSalaryFilterMinChange,
   onSalaryFilterMaxChange,
 }) {
+  const { containerRef } = useOverlayAccessibility(isOpen, onClose);
   const [localSearch, setLocalSearch] = useState(searchQuery || '');
   const [localSalaryMin, setLocalSalaryMin] = useState('');
   const [localSalaryMax, setLocalSalaryMax] = useState('');
@@ -145,10 +147,13 @@ export default function JobStatsSidebar({
 
       {/* Drawer panel */}
       <div
+        ref={containerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Filters sidebar"
         className={`fixed inset-y-0 left-0 z-40 w-72 bg-white shadow-xl flex flex-col overflow-y-auto
           transition-transform duration-200
           ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}
-        aria-label="Filters sidebar"
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
