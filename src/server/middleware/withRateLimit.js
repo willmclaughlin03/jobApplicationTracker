@@ -1,7 +1,7 @@
 import { getUserFromRequest } from '../lib/supabaseServer.js';
 import { checkRateLimit } from '../lib/rateLimit.js';
 import { validateCsrfToken } from '../lib/csrf.js';
-import { METHOD_TO_OPERATIONS, TIERS } from '../../shared/constants/tiers.js';
+import { METHOD_TO_OPERATIONS, OPERATIONS, TIERS } from '../../shared/constants/tiers.js';
 import { ERROR_MESSAGES } from '../../shared/errors.js';
 import { sendError } from '../../shared/response.js';
 import { logger, attachRequestLogger } from '../../shared/logger.js';
@@ -236,7 +236,10 @@ export function withRateLimit(handler, options = {}){
                 }
             }
 
-            const tier = TIERS.FREE;
+            const isAdminOperation = operation === OPERATIONS.ADMIN_READ || operation === OPERATIONS.ADMIN_WRITE;
+            const tier = (req._rateLimitUser?.app_metadata?.role === 'admin' && isAdminOperation)
+                ? TIERS.ADMIN
+                : TIERS.FREE;
 
             // Initial attempt — convert thrown exceptions into unavailable state
             try {
