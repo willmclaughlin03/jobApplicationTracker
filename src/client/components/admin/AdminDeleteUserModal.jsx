@@ -19,7 +19,9 @@ export default function AdminDeleteUserModal({ user, onConfirm, onClose, deletin
 
   if (!user) return null;
 
-  const confirmed = confirmation === user.email;
+  // Normalize both sides — emails are case-insensitive and Supabase stores them
+  // lowercase, so an admin typing mixed case should still be able to confirm.
+  const confirmed = confirmation.trim().toLowerCase() === user.email.toLowerCase();
 
   const handleOverlayClick = (e) => {
     if (e.target === e.currentTarget && !deleting) onClose();

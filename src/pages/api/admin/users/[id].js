@@ -49,6 +49,10 @@ async function handleGet(req, res, targetId) {
         }
     }
 
+    if (jobsResult.error) {
+        req.log.error({ err: jobsResult.error, targetId }, 'Admin: failed to fetch job activity for user');
+    }
+
     logAdminAction(req, { action: 'get_user', targetUserId: targetId, result: 'success' });
 
     return sendSuccess(res, 200, {
@@ -61,7 +65,8 @@ async function handleGet(req, res, targetId) {
             email_confirmed_at,
         },
         activity: {
-            totalJobs: jobsResult.data?.length ?? 0,
+            available: !jobsResult.error,
+            totalJobs: jobsResult.error ? 0 : (jobsResult.data?.length ?? 0),
             byStatus: activityByStatus,
         },
     }, 'User retrieved successfully');
@@ -136,11 +141,11 @@ async function handler(req, res) {
     }
 }
 
-// ADMIN_WRITE limits apply to the whole route (GET + DELETE).
-// Single-user lookups are low-volume; the tighter write limit
-// (20/hr, 50/day) is appropriate here.
 export default withRateLimit(handler, {
     requireAuth: true,
     allowedMethods: ['GET', 'DELETE'],
-    operation: OPERATIONS.ADMIN_WRITE,
+    operationByMethod: {
+        GET: OPERATIONS.ADMIN_READ,
+        DELETE: OPERATIONS.ADMIN_WRITE,
+    },
 });

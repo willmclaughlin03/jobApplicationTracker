@@ -15,6 +15,15 @@ import { STATUS_CONFIG } from '../../../shared/constants/statuses.js';
 export default function AdminActivitySummary({ activity }) {
   if (!activity) return null;
 
+  if (!activity.available) {
+    return (
+      <div className="bg-white rounded-lg border border-gray-200 p-4">
+        <h3 className="text-sm font-semibold text-gray-700 mb-1">Job Activity</h3>
+        <p className="text-sm text-amber-600">Activity data could not be loaded.</p>
+      </div>
+    );
+  }
+
   const statusEntries = Object.entries(STATUS_CONFIG);
 
   return (

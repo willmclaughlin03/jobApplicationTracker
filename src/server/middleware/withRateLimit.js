@@ -152,6 +152,7 @@ export function withRateLimit(handler, options = {}){
     const {
         requireAuth = true,
         operation: operationOverride = null,
+        operationByMethod = null,
         allowedMethods = null,
         csrfProtect,
     } = options;
@@ -177,7 +178,7 @@ export function withRateLimit(handler, options = {}){
             return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
         }
 
-        const operation = operationOverride || METHOD_TO_OPERATIONS[req.method];
+        const operation = operationByMethod?.[req.method] ?? operationOverride ?? METHOD_TO_OPERATIONS[req.method];
 
         // Safety net: allowed method with no operation mapping and no override
         if(!operation){
@@ -242,7 +243,7 @@ export function withRateLimit(handler, options = {}){
             const tier = (isAdminUser && isAdminOperation) ? TIERS.ADMIN : TIERS.FREE;
 
             // Non-admin probing an admin route: fall back to AUTH quota so repeated probing
-            // is throttled (FREE tier has no admin_read/admin_write limits configured).
+            // is throttled (FREE tier has no admin_read/admin_write limits).
             // The 403 from requireAdmin() still blocks access — this adds rate-limit teeth.
             const effectiveOperation = (isAdminOperation && !isAdminUser) ? OPERATIONS.AUTH : operation;
 
@@ -258,7 +259,7 @@ export function withRateLimit(handler, options = {}){
             for (let attempt = 0; attempt < MAX_RETRIES && rateLimitResult.unavailable; attempt++) {
                 await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
                 try {
-                    rateLimitResult = await checkRateLimit(identifier, tier, operation);
+                    rateLimitResult = await checkRateLimit(identifier, tier, effectiveOperation);
                 } catch(retryError) {
                     req.log.warn({ err: retryError, attempt: attempt + 1, operation }, 'Rate limit retry failed');
                     rateLimitResult = { success: false, unavailable: true };
