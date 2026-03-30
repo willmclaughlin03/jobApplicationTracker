@@ -237,13 +237,18 @@ export function withRateLimit(handler, options = {}){
             }
 
             const isAdminOperation = operation === OPERATIONS.ADMIN_READ || operation === OPERATIONS.ADMIN_WRITE;
-            const tier = (req._rateLimitUser?.app_metadata?.role === 'admin' && isAdminOperation)
-                ? TIERS.ADMIN
-                : TIERS.FREE;
+            const isAdminUser = req._rateLimitUser?.app_metadata?.role === 'admin';
+
+            const tier = (isAdminUser && isAdminOperation) ? TIERS.ADMIN : TIERS.FREE;
+
+            // Non-admin probing an admin route: fall back to AUTH quota so repeated probing
+            // is throttled (FREE tier has no admin_read/admin_write limits configured).
+            // The 403 from requireAdmin() still blocks access — this adds rate-limit teeth.
+            const effectiveOperation = (isAdminOperation && !isAdminUser) ? OPERATIONS.AUTH : operation;
 
             // Initial attempt — convert thrown exceptions into unavailable state
             try {
-                rateLimitResult = await checkRateLimit(identifier, tier, operation);
+                rateLimitResult = await checkRateLimit(identifier, tier, effectiveOperation);
             } catch(initialError) {
                 req.log.warn({ err: initialError, operation }, 'Rate limit initial check failed');
                 rateLimitResult = { success: false, unavailable: true };

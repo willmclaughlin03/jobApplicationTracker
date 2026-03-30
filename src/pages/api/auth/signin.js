@@ -53,7 +53,9 @@ async function handler(req, res) {
             return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
         }
 
-        return sendSuccess(res, 200, { user: data.user }, 'Signed in successfully');
+        return sendSuccess(res, 200, {
+            user: { id: data.user.id, email: data.user.email, role: data.user.app_metadata?.role ?? 'user' }
+        }, 'Signed in successfully');
     } catch (error) {
         req.log.error({ err: error }, 'Sign-in service error');
         return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);

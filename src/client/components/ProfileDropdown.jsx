@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import Link from 'next/link';
 
 /**
  * ProfileDropdown component
@@ -84,6 +85,16 @@ export default function ProfileDropdown({ user, onSignOut }) {
           </div>
 
           <div className="p-2">
+            {user?.role === 'admin' && (
+              <Link
+                href="/admin/users"
+                onClick={() => setOpen(false)}
+                className="block px-3 py-2 text-sm text-orange-600 hover:bg-orange-50 rounded-md transition-colors"
+              >
+                Admin
+              </Link>
+            )}
+
             <button
               onClick={handleResetPassword}
               disabled={resetLoading}

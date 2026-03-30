@@ -33,7 +33,7 @@ async function handler(req, res) {
     }
 
     return sendSuccess(res, 200, {
-      user: { id: user.id, email: user.email }
+      user: { id: user.id, email: user.email, role: user.app_metadata?.role ?? 'user' }
     });
   } catch (err) {
     req.log.error({ err }, 'Session check failed');

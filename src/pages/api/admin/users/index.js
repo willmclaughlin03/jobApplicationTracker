@@ -47,7 +47,7 @@ async function handleGet(req, res) {
 
     logAdminAction(req, { action: 'list_users', result: 'success', meta: { count: users.length, page } });
 
-    return sendSuccess(res, 200, { users, page, pageSize }, 'Users retrieved successfully');
+    return sendSuccess(res, 200, { users, total: data.total, page, pageSize }, 'Users retrieved successfully');
 }
 
 async function handler(req, res) {
