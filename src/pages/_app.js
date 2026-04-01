@@ -6,7 +6,7 @@ export default function App({ Component, pageProps }) {
   return (
     <>
       <Head>
-        <title>Job Application Tracker</title>
+        <title>Track The App</title>
         <link rel="icon" type="image/png" href="/favicon.png" />
       </Head>
       <AuthProvider>

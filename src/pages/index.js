@@ -111,7 +111,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-100">
       <header className="bg-white shadow-sm py-4 px-6">
         <div className="max-w-5xl mx-auto flex items-center justify-between">
-          <h1 className="text-xl font-semibold text-gray-800">Job Application Tracker</h1>
+          <h1 className="text-xl font-semibold text-gray-800">Track The App</h1>
           <ProfileDropdown user={user} onSignOut={handleSignOut} />
         </div>
       </header>
