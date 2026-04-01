@@ -14,7 +14,7 @@
  *
  * Requires: UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN,
  *           NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
- *           TEST_USER_EMAIL, TEST_USER_PASSWORD, CSRF_SECRET env vars
+ *           CSRF_SECRET env vars
  * Run with: npm run test:integration
  *
  * Mock boundary (external HTTP only):
@@ -82,9 +82,7 @@ const SKIP_INTEGRATION =
     !process.env.UPSTASH_REDIS_REST_URL ||
     !process.env.UPSTASH_REDIS_REST_TOKEN ||
     !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    !process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    !process.env.TEST_USER_EMAIL ||
-    !process.env.TEST_USER_PASSWORD;
+    !process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const describeIntegration = SKIP_INTEGRATION ? describe.skip : describe;
 
@@ -100,11 +98,12 @@ describeIntegration('withRateLimit — full pipeline integration (real Upstash)'
             process.env.NEXT_PUBLIC_SUPABASE_URL,
             process.env.SUPABASE_SERVICE_ROLE_KEY
         );
-        const { data, error } = await supabase.auth.signInWithPassword({
-            email: process.env.TEST_USER_EMAIL,
-            password: process.env.TEST_USER_PASSWORD,
+        const testEmail = `pipeline-test-${Date.now()}@integration-test.local`;
+        const { data, error } = await supabase.auth.admin.createUser({
+            email: testEmail,
+            email_confirm: true,
         });
-        if (error) throw new Error(`Test auth failed: ${error.message}`);
+        if (error) throw new Error(`Test user creation failed: ${error.message}`);
         testUserId = data.user.id;
         testRunSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     });
@@ -159,12 +158,19 @@ describeIntegration('withRateLimit — full pipeline integration (real Upstash)'
 
         mockSupabaseClient = createMockSupabaseClient({
             id: testUserId,
-            email: process.env.TEST_USER_EMAIL,
+            email: 'test@integration-test.local',
         });
         mockCreateApiRouteClient.mockReturnValue(mockSupabaseClient);
     });
 
-    afterAll(() => {
+    afterAll(async () => {
+        if (!SKIP_INTEGRATION && testUserId) {
+            const supabase = createClient(
+                process.env.NEXT_PUBLIC_SUPABASE_URL,
+                process.env.SUPABASE_SERVICE_ROLE_KEY
+            );
+            await supabase.auth.admin.deleteUser(testUserId);
+        }
         redis.resetRedisClient();
     });
 

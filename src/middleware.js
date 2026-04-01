@@ -7,8 +7,7 @@
  * 2. Redirect unauthenticated users to /login on protected routes, preventing
  *    the page shell (layout, sidebar, labels) from reaching the browser.
  *
- * Public routes (/login, /signUp, /forgot-password, /reset-password,
- * /auth/callback) bypass the redirect check.
+ * Public routes (/login, /auth/callback) bypass the redirect check.
  *
  * Uses the anon key (not service role) — middleware runs at the Edge and
  * only needs to validate/refresh the user's own session.
@@ -74,7 +73,7 @@ export async function middleware(req) {
   // valid refresh token exists. The refreshed tokens are written to the
   // response via the setAll callback above.
   // If the session is invalid and the route is protected, redirect to /login.
-  const PUBLIC_PATHS = ['/login', '/signUp', '/forgot-password', '/reset-password', '/auth/callback'];
+  const PUBLIC_PATHS = ['/login', '/auth/callback'];
 
   try {
     const { data: { user } } = await supabase.auth.getUser();

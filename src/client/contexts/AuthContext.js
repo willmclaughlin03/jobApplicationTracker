@@ -6,24 +6,18 @@
  * never has direct access to auth tokens (httpOnly cookies).
  *
  * Connects to:
- * - /api/auth/signin and /api/auth/signup for server-side auth (rate-limited)
  * - /api/auth/signout for server-side session clearing
  * - /api/auth/session for server-side session checks
  * - /api/auth/csrf for CSRF token management
- * - authSchema.js for input validation (security safeguard)
+ * - supabaseBrowser for initiating Google OAuth redirect (PKCE flow)
  *
  * Security:
  * - Auth tokens stored in httpOnly cookies (not readable by JavaScript)
- * - Validates all inputs before sending to server as defense-in-depth
  * - Re-checks session on tab focus (throttled to 30s) for tab sync
+ * - CSRF token primed on mount whenever a session is detected
  */
 import { createContext, useContext, useState, useEffect, useRef } from 'react';
-import {
-  signInSchema,
-  signUpSchema,
-  getFirstErrorMessage,
-} from '../../shared/validations/authSchema.js';
-import { ERROR_MESSAGES } from '../../shared/errors.js';
+import { supabaseBrowser } from '../lib/supabaseBrowser.js';
 
 const AuthContext = createContext(undefined);
 
@@ -78,6 +72,9 @@ export function AuthProvider({ children }) {
       lastSessionCheckRef.current = Date.now();
       fetchSessionUser().then(sessionUser => {
         setUser(sessionUser);
+        if (sessionUser) {
+          fetch('/api/auth/csrf', { credentials: 'same-origin' }).catch(() => {});
+        }
       });
     }
 
@@ -89,134 +86,39 @@ export function AuthProvider({ children }) {
   }, []);
 
   /**
-   * Signs in a user with email and password via server-side API
+   * Initiates Google OAuth sign-in via browser redirect
    *
-   * Purpose: Authenticates existing users through rate-limited server route
-   * Connects to: /api/auth/signin for server-side credential validation
+   * Purpose: Triggers the Supabase PKCE OAuth flow. Generates a code challenge,
+   * stores the verifier in a cookie, and redirects the browser to Google.
+   * The browser returns to /auth/callback?code=... after Google authenticates.
    *
-   * Security: Validates inputs before API call as defense-in-depth.
-   * Server-side route is IP rate-limited to prevent brute force.
+   * Connects to:
+   * - supabaseBrowser for PKCE challenge generation and redirect
+   * - /auth/callback page which receives the code and POSTs to the server
    *
-   * @param {string} email - User's email address
-   * @param {string} password - User's password
-   * @returns {Promise<{data: Object|null, error: Object|null}>} Auth result
+   * Security: No credentials or tokens are handled here. Supabase manages the
+   * OAuth state parameter (CSRF protection on the redirect) and PKCE challenge
+   * internally. redirectTo must be absolute — Supabase's server issues the
+   * final redirect to your app.
+   *
+   * @param {string} provider - OAuth provider name (e.g. 'google')
+   * @returns {Promise<{error: Object|null}>} Only returns if redirect fails
    */
-  const signIn = async (email, password) => {
-    const validationResult = signInSchema.safeParse({ email, password });
-
-    if (!validationResult.success) {
-      return {
-        data: null,
-        error: { message: getFirstErrorMessage(validationResult.error) },
-      };
-    }
-
-    try {
-      // Raw fetch (not apiRequest) — signIn is a pre-auth endpoint with
-      // csrfProtect: false, so no x-csrf-token header or CSRF retry needed.
-      const response = await fetch('/api/auth/signin', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: validationResult.data.email,
-          password: validationResult.data.password
-        })
-      });
-
-      const result = await response.json();
-
-      if (!response.ok || result.error) {
-        return {
-          data: null,
-          error: { message: result.message || ERROR_MESSAGES.SIGN_IN_FAILED }
-        };
-      }
-
-      // Server wrote httpOnly auth cookies — use the user from the response
-      // directly instead of making a second request to /api/auth/session.
-      setUser(result.data?.user ?? null);
-      lastSessionCheckRef.current = Date.now();
-
-      // New session — fetch a fresh CSRF token bound to this user
-      fetch('/api/auth/csrf', { credentials: 'same-origin' }).catch(() => {});
-
-      return { data: result.data, error: null };
-    } catch (error) {
-      return {
-        data: null,
-        error: { message: 'Network error. Please try again.' }
-      };
-    }
-  };
-
-  /**
-   * Creates a new user account via server-side API
-   *
-   * Purpose: Registers new users through rate-limited server route
-   * Connects to: /api/auth/signup for server-side account creation
-   *
-   * Security: Validates inputs before API call as defense-in-depth.
-   * Server-side route is IP rate-limited and enforces password strength.
-   *
-   * @param {string} email - User's email address
-   * @param {string} password - User's password (must meet complexity requirements)
-   * @param {string} confirmPassword - Password confirmation (must match password)
-   * @returns {Promise<{data: Object|null, error: Object|null}>} Auth result
-   */
-  const signUp = async (email, password, confirmPassword) => {
-    const validationResult = signUpSchema.safeParse({
-      email,
-      password,
-      confirmPassword,
+  const signInWithOAuth = async (provider) => {
+    const { error } = await supabaseBrowser.auth.signInWithOAuth({
+      provider,
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback?next=/`,
+      },
     });
 
-    if (!validationResult.success) {
-      return {
-        data: null,
-        error: { message: getFirstErrorMessage(validationResult.error) },
-      };
+    if (error) {
+      return { error: { message: error.message || 'Failed to initiate sign in.' } };
     }
 
-    try {
-      // Raw fetch (not apiRequest) — signUp is a pre-auth endpoint with
-      // csrfProtect: false, so no x-csrf-token header or CSRF retry needed.
-      const response = await fetch('/api/auth/signup', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: validationResult.data.email,
-          password: validationResult.data.password
-        })
-      });
-
-      const result = await response.json();
-
-      if (!response.ok || result.error) {
-        return {
-          data: null,
-          error: { message: result.message || ERROR_MESSAGES.SIGN_UP_FAILED }
-        };
-      }
-
-      // Use user from the response directly. Will be null if email
-      // confirmation is required (Supabase returns session: null in that case).
-      setUser(result.data?.user ?? null);
-      lastSessionCheckRef.current = Date.now();
-
-      // Fetch CSRF token if a session was created (no email confirmation required)
-      if (result.data?.user) {
-        fetch('/api/auth/csrf', { credentials: 'same-origin' }).catch(() => {});
-      }
-
-      return { data: result.data, error: null };
-    } catch (error) {
-      return {
-        data: null,
-        error: { message: 'Network error. Please try again.' }
-      };
-    }
+    // In normal operation the browser navigates away before this returns.
+    // This line is only reached if Supabase throws before the redirect fires.
+    return { error: null };
   };
 
   /**
@@ -248,8 +150,7 @@ export function AuthProvider({ children }) {
   const value = {
     user,
     loading,
-    signIn,
-    signUp,
+    signInWithOAuth,
     signOut,
   };
 
@@ -266,7 +167,7 @@ export function AuthProvider({ children }) {
  * Purpose: Provides type-safe access to auth state and methods
  * Throws: Error if used outside AuthProvider
  *
- * @returns {Object} Auth context value (user, loading, signIn, signUp, signOut)
+ * @returns {Object} Auth context value (user, loading, signInWithOAuth, signOut)
  */
 export function useAuth() {
   const context = useContext(AuthContext);

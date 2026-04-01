@@ -8,8 +8,7 @@
  * Connects to: src/server/lib/csrf.js, src/shared/constants/csrf.js
  *
  * Requires: CSRF_SECRET env var (loaded from .env via jest.setup.js),
- *           NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
- *           TEST_USER_EMAIL, TEST_USER_PASSWORD env vars
+ *           NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY env vars
  * Run with: npm run test:integration
  *
  * Test coverage:
@@ -55,9 +54,7 @@ const {
 
 const SKIP_INTEGRATION =
     !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    !process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    !process.env.TEST_USER_EMAIL ||
-    !process.env.TEST_USER_PASSWORD;
+    !process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const describeIntegration = SKIP_INTEGRATION ? describe.skip : describe;
 
@@ -71,12 +68,23 @@ describeIntegration('csrf.js — integration (real crypto, real user)', () => {
             process.env.NEXT_PUBLIC_SUPABASE_URL,
             process.env.SUPABASE_SERVICE_ROLE_KEY
         );
-        const { data, error } = await supabase.auth.signInWithPassword({
-            email: process.env.TEST_USER_EMAIL,
-            password: process.env.TEST_USER_PASSWORD,
+        const testEmail = `csrf-test-${Date.now()}@integration-test.local`;
+        const { data, error } = await supabase.auth.admin.createUser({
+            email: testEmail,
+            email_confirm: true,
         });
-        if (error) throw new Error(`Test auth failed: ${error.message}`);
+        if (error) throw new Error(`Test user creation failed: ${error.message}`);
         testUserId = data.user.id;
+    });
+
+    afterAll(async () => {
+        if (!SKIP_INTEGRATION && testUserId) {
+            const supabase = createClient(
+                process.env.NEXT_PUBLIC_SUPABASE_URL,
+                process.env.SUPABASE_SERVICE_ROLE_KEY
+            );
+            await supabase.auth.admin.deleteUser(testUserId);
+        }
     });
 
     // -- Helpers ----------------------------------------------------------
