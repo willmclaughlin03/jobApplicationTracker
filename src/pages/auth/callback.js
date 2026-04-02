@@ -1,104 +1,97 @@
 /**
- * /auth/callback — OAuth PKCE code exchange page
+ * /auth/callback — OAuth PKCE code exchange via getServerSideProps
  *
- * Purpose: Client-side bridge that receives the OAuth authorization code from
- * Google via query string, forwards it to the server-side exchange route, then
- * redirects the user to their intended destination (or /) on success.
- *
- * This page exists because OAuth providers redirect the browser here with
- * ?code= in the query string. A client-side page is the minimal bridge to
- * forward the code to the server — the server cannot receive the initial
- * OAuth redirect directly when using Supabase PKCE flow.
+ * Purpose: Exchanges the OAuth authorization code for a Supabase session
+ * entirely server-side, before any client JavaScript runs. This prevents the
+ * browser Supabase client (which always has detectSessionInUrl: true) from
+ * racing to consume the code and setting non-httpOnly session cookies.
  *
  * Flow:
- * 1. Read ?code= from query string; abort with error if absent
- * 2. Read and validate ?next= against open-redirect rules
- * 3. POST { code, next } to /api/auth/oauth-callback with credentials
- * 4. On success → window.location.href = data.next (full navigation so
- *    Next.js middleware picks up the new session cookies)
- * 5. On error → show error card with link back to /login
+ * 1. Google redirects to Supabase Auth, which redirects here with ?code=
+ * 2. getServerSideProps exchanges the code via createApiRouteClient (httpOnly cookies)
+ * 3. On success → server redirect to validated next path (default /)
+ * 4. On error → server redirect to /login?error=sign_in_failed
+ *
+ * The page component only renders as a brief flash during the server redirect.
  *
  * Connects to:
- * - /api/auth/oauth-callback for server-side PKCE exchange
+ * - createApiRouteClient for cookie-based PKCE exchange and session management
+ * - generateCsrfToken / setCsrfCookie from server/lib/csrf.js
  */
-import { useState, useEffect } from 'react';
-import Link from 'next/link';
 import Spinner from '../../client/components/Spinner';
+import { createApiRouteClient } from '../../server/lib/supabaseApiRoute.js';
+import { generateCsrfToken, setCsrfCookie } from '../../server/lib/csrf.js';
+import { logger } from '../../shared/logger.js';
 
-export default function AuthCallback() {
-  const [error, setError] = useState('');
-  const [processing, setProcessing] = useState(true);
+export async function getServerSideProps({ req, res, query }) {
+  const { code, next: rawNext } = query;
 
-  useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const code = urlParams.get('code');
-
-    if (!code) {
-      setError('No authorisation code found. Please try signing in again.');
-      setProcessing(false);
-      return;
-    }
-
-    const rawNext = urlParams.get('next');
-    const isSafePath =
-      typeof rawNext === 'string' &&
-      rawNext.startsWith('/') &&
-      !rawNext.startsWith('//') &&
-      !rawNext.includes('\\');
-    const safeNext = isSafePath ? rawNext : '/';
-
-    fetch('/api/auth/oauth-callback', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, next: safeNext }),
-    })
-      .then(res => {
-        if (!res.ok && res.headers.get('content-type')?.includes('application/json') === false) {
-          throw new Error(`Server error: ${res.status}`);
-        }
-        return res.json();
-      })
-      .then(result => {
-        if (result.error) {
-          setError(result.message || 'Sign in failed. Please try again.');
-          setProcessing(false);
-        } else {
-          // Use window.location.href (not router.push) to force a full page
-          // navigation so Next.js middleware runs and picks up the new session cookies.
-          // safeNext is used directly — it was validated client-side and is already in
-          // scope; trusting result.data.next would be an unnecessary network trust dependency.
-          window.location.href = safeNext;
-        }
-      })
-      .catch(() => {
-        setError('Sign in failed. Please try again.');
-        setProcessing(false);
-      });
-  }, []);
-
-  if (processing) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-gray-500">
-        <Spinner size="lg" className="text-blue-600" />
-      </div>
-    );
+  if (!code || typeof code !== 'string' || code.trim() === '') {
+    logger.warn('OAuth callback hit without a valid code param');
+    return {
+      redirect: { destination: '/login?error=sign_in_failed', permanent: false },
+    };
   }
 
+  if (code.length > 2048) {
+    logger.warn({ codeLength: code.length }, 'OAuth callback code exceeded max length');
+    return {
+      redirect: { destination: '/login?error=sign_in_failed', permanent: false },
+    };
+  }
+
+  // Validate next against open-redirect rules (decode first to catch %5c, %2f%2f, etc.)
+  let validatedNext = '/';
+  if (typeof rawNext === 'string') {
+    let decoded;
+    try {
+      decoded = decodeURIComponent(rawNext);
+    } catch {
+      decoded = null;
+    }
+    if (
+      decoded &&
+      decoded.startsWith('/') &&
+      !decoded.startsWith('//') &&
+      !decoded.includes('\\')
+    ) {
+      validatedNext = decoded;
+    }
+  }
+
+  const supabase = createApiRouteClient(req, res);
+
+  try {
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+
+    if (error || !data?.user) {
+      logger.error({ err: error }, 'OAuth code exchange failed in callback');
+      return {
+        redirect: { destination: '/login?error=sign_in_failed', permanent: false },
+      };
+    }
+
+    // Issue CSRF token so the first authenticated request succeeds
+    const token = generateCsrfToken(data.user.id);
+    setCsrfCookie(res, token);
+
+    return {
+      redirect: { destination: validatedNext, permanent: false },
+    };
+  } catch (err) {
+    logger.error({ err }, 'Unexpected error during OAuth code exchange in callback');
+    return {
+      redirect: { destination: '/login?error=sign_in_failed', permanent: false },
+    };
+  }
+}
+
+export default function AuthCallback() {
+  // This component only renders as a brief flash while the server redirect
+  // is processed. In practice, getServerSideProps always redirects.
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100 p-5">
-      <div className="bg-white p-10 rounded-lg shadow-md w-full max-w-md">
-        <h1 className="text-2xl font-semibold text-gray-800 mb-4">
-          Sign In Failed
-        </h1>
-        <p className="text-gray-600 mb-6">{error}</p>
-        <Link
-          href="/login"
-          className="block w-full text-center bg-blue-600 text-white py-2.5 px-4 rounded text-sm font-medium hover:bg-blue-700 transition-colors"
-        >
-          Try Again
-        </Link>
-      </div>
+    <div className="min-h-screen flex items-center justify-center text-gray-500">
+      <Spinner size="lg" className="text-blue-600" />
     </div>
   );
 }

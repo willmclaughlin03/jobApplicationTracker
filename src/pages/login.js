@@ -14,6 +14,13 @@ export default function Login() {
     }
   }, [user, authLoading, router]);
 
+  // Surface OAuth callback errors via query param
+  useEffect(() => {
+    if (router.query.error === 'sign_in_failed') {
+      setError('Sign in failed. Please try again.');
+    }
+  }, [router.query.error]);
+
   const handleSignIn = async () => {
     setError('');
     setLoading(true);
