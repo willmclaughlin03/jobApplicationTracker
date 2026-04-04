@@ -1,6 +1,6 @@
 import { attachRequestLogger } from '../../shared/logger.js';
 import { sendError } from '../../shared/response.js';
-import { isRedisUp } from '../../server/lib/redis.js';
+import { getRedisClient } from '../../server/lib/redis.js';
 import { supabaseAdmin } from '../../server/lib/supabaseServer.js';
 
 const HEALTH_CHECK_TIMEOUT_MS = 3000;
@@ -13,6 +13,9 @@ const HEALTH_CHECK_TIMEOUT_MS = 3000;
  *
  * Intentionally excludes withRateLimit — uptime monitors must not be throttled.
  * Uses attachRequestLogger directly for request-id correlation.
+ *
+ * This is the only place that pings Redis directly — rate-limit traffic
+ * determines health everywhere else.
  *
  * @param {import('next').NextApiRequest} req
  * @param {import('next').NextApiResponse} res
@@ -34,7 +37,14 @@ async function handler(req, res) {
     ]);
 
   const [redisResult, supabaseResult] = await Promise.allSettled([
-    withTimeout(isRedisUp(), 'Redis'),
+    withTimeout(
+      (async () => {
+        const client = getRedisClient();
+        if (!client) return false;
+        return (await client.ping()) === 'PONG';
+      })(),
+      'Redis'
+    ),
     withTimeout(
       supabaseAdmin.from('jobs').select('id', { count: 'exact', head: true }).limit(0),
       'Supabase'

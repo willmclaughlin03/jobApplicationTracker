@@ -1,11 +1,14 @@
 import { Ratelimit } from '@upstash/ratelimit'
 import { Redis } from '@upstash/redis'
 import { OPERATIONS, TIER_LIMITS, TIERS } from '../../shared/constants/tiers';
-import { getRedisClient, isRedisHealthy } from './redis';
+import { getRedisClient, logRedisDownOnce, setLastCallStatus } from './redis';
 import { logger } from '../../shared/logger';
 
 
-
+// Throttle: at most one logger.warn per 60s for repeated failures,
+// so distinct error types surface without flooding Axiom.
+let lastWarnTime = 0;
+const WARN_THROTTLE_MS = 60_000;
 
 
 /** @type {Map<string, {limiter: Ratelimit, redis: Redis}>} Cached limiter instances keyed by tier:operation:window */
@@ -44,7 +47,7 @@ function getOrCreateLimiter(tier, operation, windowType){
 /**
  * Checks rate limit for a given identifier, tier, and operation
  *
- * Validates inputs, checks Redis health, then evaluates both hourly
+ * Validates inputs, checks Redis availability, then evaluates both hourly
  * and daily windows. Returns the most restrictive result.
  *
  * Connects to:
@@ -74,16 +77,18 @@ export async function checkRateLimit(identifier, tier, operation){
 
     const redis = getRedisClient()
 
+    if (!redis) {
+        logRedisDownOnce({ reason: 'no_client' });
+        setLastCallStatus(false);
+        return { success: false, unavailable: true }
+    }
+
     try{
-        // left to right check, if !redis true, never ping redis
-        if (!redis || !(await isRedisHealthy())){
-            logger.warn({ hasClient: !!redis, operation }, 'Rate limiting is unavailable - Redis not healthy');
-            return { success: false, unavailable: true}
-        }
         const hourlyLimiter = getOrCreateLimiter(tier, operation, 'hourly');
         const dailyLimiter = getOrCreateLimiter(tier, operation, 'daily');
 
         if (!hourlyLimiter && !dailyLimiter){
+            setLastCallStatus(true);
             return { success : true, limit : null, remaining : null, reset : null, window: null}
         }
 
@@ -93,6 +98,7 @@ export async function checkRateLimit(identifier, tier, operation){
         if (dailyLimiter) {
             const daily = await dailyLimiter.limit(identifier);
             if (!daily.success) {
+                setLastCallStatus(true);
                 return { success: false, limit: daily.limit, remaining: 0, reset: daily.reset, window: 'daily' };
         }
             mostRestrictive = { ...daily, window: 'daily' };
@@ -101,6 +107,7 @@ export async function checkRateLimit(identifier, tier, operation){
         if (hourlyLimiter) {
             const hourly = await hourlyLimiter.limit(identifier);
             if (!hourly.success) {
+                setLastCallStatus(true);
                 return { success: false, limit: hourly.limit, remaining: 0, reset: hourly.reset, window: 'hourly' };
         }
             if (!mostRestrictive || hourly.remaining <= mostRestrictive.remaining) {
@@ -108,6 +115,7 @@ export async function checkRateLimit(identifier, tier, operation){
         }
     }
 
+        setLastCallStatus(true);
         return {
             success: true,
             limit: mostRestrictive.limit,
@@ -118,7 +126,15 @@ export async function checkRateLimit(identifier, tier, operation){
 
 
     }catch(error){
-        logger.error({ err: error, identifierType: identifier?.split(':')[0] || 'unknown', tier, operation }, 'Rate limit check failed');
+        logRedisDownOnce({ reason: 'call_failed' });
+        setLastCallStatus(false);
+
+        const now = Date.now();
+        if (now - lastWarnTime >= WARN_THROTTLE_MS) {
+            logger.warn({ err: error, identifierType: identifier?.split(':')[0] || 'unknown', tier, operation }, 'Rate limit check failed');
+            lastWarnTime = now;
+        }
+
         return { success: false, unavailable : true}
     }
 }

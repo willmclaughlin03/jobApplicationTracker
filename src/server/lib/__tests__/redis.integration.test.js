@@ -1,8 +1,8 @@
 /**
  * Integration tests for redis.js against real Upstash instance
  *
- * Purpose: Verify Redis singleton lifecycle, health monitoring, reconnection,
- * state listeners, and URL validation against a live Upstash Redis.
+ * Purpose: Verify Redis singleton lifecycle, one-time logging,
+ * call status tracking, and URL validation against a live Upstash Redis.
  *
  * Connects to: src/server/lib/redis.js
  *
@@ -11,13 +11,9 @@
  *
  * Test coverage:
  * - getRedisClient() initializes with real credentials
- * - isRedisHealthy() / isRedisUp() return true against live Redis
  * - resetRedisClient() clears state and allows re-initialization
- * - reconnect() works after reset, force bypasses max attempts
- * - Backoff delay increases on successive reconnect attempts
- * - Concurrent isRedisUp() calls coalesce into a single health check
- * - State listeners fire on health transitions
- * - Max state listener cap (100) enforced
+ * - logRedisDownOnce() logs once per outage window, silences subsequent calls
+ * - setLastCallStatus(true) clears one-time flag and logs recovery
  * - getRedisStatus() returns correct shape and types
  * - URL validation: HTTPS required (rejects HTTP), non-Upstash domain warns but initializes
  * - Malicious inputs: garbage URLs, missing tokens, SQL-injection-style keys
@@ -72,77 +68,6 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
     });
 
     // ===================================================================
-    // Health checks
-    // ===================================================================
-
-    describe('isRedisUp() / isRedisHealthy()', () => {
-        it('isRedisUp() returns true against live Upstash', async () => {
-            redis.getRedisClient();
-            const healthy = await redis.isRedisUp();
-            expect(healthy).toBe(true);
-        });
-
-        it('isRedisHealthy() returns true after a successful check', async () => {
-            redis.getRedisClient();
-            // Prime the cache
-            await redis.isRedisUp();
-            const cached = await redis.isRedisHealthy();
-            expect(cached).toBe(true);
-        });
-
-        it('isRedisHealthy() uses cached state within the check interval', async () => {
-            redis.getRedisClient();
-            await redis.isRedisUp();
-
-            // Second call should return cached true without a new ping
-            // We verify by checking it returns synchronously-fast (cached path)
-            const start = Date.now();
-            const result = await redis.isRedisHealthy();
-            const elapsed = Date.now() - start;
-
-            expect(result).toBe(true);
-            // Cached check should be near-instant (< 50ms vs network ping)
-            expect(elapsed).toBeLessThan(50);
-        });
-    });
-
-    // ===================================================================
-    // Concurrent health check coalescing
-    // ===================================================================
-
-    describe('concurrent health check coalescing', () => {
-        it('concurrent isRedisUp() calls share a single ping', async () => {
-            redis.getRedisClient();
-
-            // Spy on global.fetch since @upstash/redis uses HTTP REST under the hood.
-            // The client's ping method is a bound class field that can't be overridden
-            // via property assignment or Object.defineProperty.
-            const originalFetch = global.fetch;
-            let fetchCount = 0;
-            global.fetch = jest.fn(async (...args) => {
-                fetchCount++;
-                return originalFetch(...args);
-            });
-
-            // Fire 5 concurrent health checks
-            const results = await Promise.all([
-                redis.isRedisUp(),
-                redis.isRedisUp(),
-                redis.isRedisUp(),
-                redis.isRedisUp(),
-                redis.isRedisUp(),
-            ]);
-
-            global.fetch = originalFetch;
-
-            // All should succeed
-            expect(results.every(r => r === true)).toBe(true);
-            // Coalesced: only one fetch (ping) should have been issued
-            expect(fetchCount).toBe(1);
-        });
-    });
-
-    // ===================================================================
     // resetRedisClient()
     // ===================================================================
 
@@ -166,115 +91,102 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
             const status = redis.getRedisStatus();
             expect(status.initialized).toBe(false);
             expect(status.connected).toBe(false);
-            expect(status.healthy).toBe(false);
-            expect(status.lastHealthCheck).toBeNull();
-            expect(status.consecutiveFailures).toBe(0);
-            expect(status.reconnectAttempts).toBe(0);
+            expect(status.lastCallSucceeded).toBeNull();
+            expect(status.lastCallTime).toBeNull();
+        });
+
+        it('resets the one-time log flag so next outage logs again', () => {
+            const mockLogger = require('../../../shared/logger.js').logger;
+
+            redis.logRedisDownOnce({ reason: 'test' });
+            expect(mockLogger.error).toHaveBeenCalledTimes(1);
+
+            // Silenced on second call
+            redis.logRedisDownOnce({ reason: 'test' });
+            expect(mockLogger.error).toHaveBeenCalledTimes(1);
+
+            // Reset clears the flag
+            redis.resetRedisClient();
+            redis.logRedisDownOnce({ reason: 'test_after_reset' });
+            expect(mockLogger.error).toHaveBeenCalledTimes(2);
         });
     });
 
     // ===================================================================
-    // reconnect()
+    // logRedisDownOnce()
     // ===================================================================
 
-    describe('reconnect()', () => {
-        it('reconnects successfully after reset', async () => {
-            redis.getRedisClient();
-            redis.resetRedisClient();
+    describe('logRedisDownOnce()', () => {
+        it('logs once then silences subsequent calls', () => {
+            const mockLogger = require('../../../shared/logger.js').logger;
 
-            const success = await redis.reconnect();
-            expect(success).toBe(true);
+            redis.logRedisDownOnce({ reason: 'no_client' });
+            redis.logRedisDownOnce({ reason: 'no_client' });
+            redis.logRedisDownOnce({ reason: 'call_failed' });
+
+            expect(mockLogger.error).toHaveBeenCalledTimes(1);
+            expect(mockLogger.error).toHaveBeenCalledWith(
+                { reason: 'no_client' },
+                'Redis is unavailable — requests will be denied (fail-closed)'
+            );
+        });
+
+        it('passes context object to the log entry', () => {
+            const mockLogger = require('../../../shared/logger.js').logger;
+
+            redis.logRedisDownOnce({ reason: 'call_failed', extra: 'data' });
+
+            expect(mockLogger.error).toHaveBeenCalledWith(
+                { reason: 'call_failed', extra: 'data' },
+                expect.any(String)
+            );
+        });
+    });
+
+    // ===================================================================
+    // setLastCallStatus()
+    // ===================================================================
+
+    describe('setLastCallStatus()', () => {
+        it('records success status in getRedisStatus()', () => {
+            redis.setLastCallStatus(true);
 
             const status = redis.getRedisStatus();
-            expect(status.connected).toBe(true);
-            expect(status.healthy).toBe(true);
+            expect(status.lastCallSucceeded).toBe(true);
+            expect(status.lastCallTime).not.toBeNull();
+            expect(() => new Date(status.lastCallTime)).not.toThrow();
         });
 
-        it('force=true bypasses max attempts check', async () => {
-            redis.getRedisClient();
+        it('records failure status in getRedisStatus()', () => {
+            redis.setLastCallStatus(false);
 
-            // Exhaust all normal attempts by calling reconnect many times
-            // Force a state where reconnectAttempts >= max
-            for (let i = 0; i < 10; i++) {
-                await redis.reconnect(true);
-            }
-
-            // Without force, should fail due to max attempts
-            // But we reset first to test the force bypass cleanly
-            const result = await redis.reconnect(true);
-            expect(result).toBe(true);
-        });
-    });
-
-    // ===================================================================
-    // Backoff behavior
-    // ===================================================================
-
-    describe('exponential backoff', () => {
-        it('second reconnect includes backoff delay', async () => {
-            redis.getRedisClient();
-
-            // First reconnect — no backoff (lastReconnectAttempt is null)
-            await redis.reconnect();
-
-            // Second reconnect — backoff applies (base 1s * 2^0 = ~1s)
-            const start = Date.now();
-            await redis.reconnect();
-            const elapsed = Date.now() - start;
-
-            // Should include ~1000ms backoff + network time
-            expect(elapsed).toBeGreaterThanOrEqual(800);
-        }, 10000);
-    });
-
-    // ===================================================================
-    // State listeners
-    // ===================================================================
-
-    describe('onRedisStateChange()', () => {
-        it('listener fires when health state changes', async () => {
-            const listener = jest.fn();
-            const unsubscribe = redis.onRedisStateChange(listener);
-
-            redis.getRedisClient();
-            await redis.isRedisUp();
-
-            // Should have been called with true (healthy)
-            expect(listener).toHaveBeenCalledWith(true);
-
-            unsubscribe();
+            const status = redis.getRedisStatus();
+            expect(status.lastCallSucceeded).toBe(false);
+            expect(status.lastCallTime).not.toBeNull();
         });
 
-        it('unsubscribe prevents future notifications', async () => {
-            const listener = jest.fn();
-            const unsubscribe = redis.onRedisStateChange(listener);
-            unsubscribe();
+        it('clears the one-time log flag on success after an outage', () => {
+            const mockLogger = require('../../../shared/logger.js').logger;
 
-            redis.getRedisClient();
-            await redis.isRedisUp();
+            // Simulate outage
+            redis.logRedisDownOnce({ reason: 'call_failed' });
+            expect(mockLogger.error).toHaveBeenCalledTimes(1);
 
-            expect(listener).not.toHaveBeenCalled();
+            // Recovery
+            redis.setLastCallStatus(true);
+            expect(mockLogger.info).toHaveBeenCalledWith('Redis connectivity restored');
+
+            // Next outage should log again (flag was cleared)
+            redis.logRedisDownOnce({ reason: 'call_failed_again' });
+            expect(mockLogger.error).toHaveBeenCalledTimes(2);
         });
 
-        it('throws on non-function listener', () => {
-            expect(() => redis.onRedisStateChange('not-a-function')).toThrow(
-                'Listener must be a function'
-            );
-        });
+        it('does not log recovery when no prior outage was logged', () => {
+            const mockLogger = require('../../../shared/logger.js').logger;
 
-        it('enforces max listener cap (100)', () => {
-            const unsubscribers = [];
-            for (let i = 0; i < 100; i++) {
-                unsubscribers.push(redis.onRedisStateChange(() => {}));
-            }
+            redis.setLastCallStatus(true);
 
-            // 101st should throw
-            expect(() => redis.onRedisStateChange(() => {})).toThrow(
-                /Maximum listener limit/
-            );
-
-            // Cleanup
-            unsubscribers.forEach(unsub => unsub());
+            expect(mockLogger.info).not.toHaveBeenCalledWith('Redis connectivity restored');
         });
     });
 
@@ -283,9 +195,9 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
     // ===================================================================
 
     describe('getRedisStatus()', () => {
-        it('returns correct shape and types after initialization', async () => {
+        it('returns correct shape and types after initialization', () => {
             redis.getRedisClient();
-            await redis.isRedisUp();
+            redis.setLastCallStatus(true);
 
             const status = redis.getRedisStatus();
 
@@ -293,19 +205,16 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
             expect(status.initialized).toBe(true);
             expect(typeof status.connected).toBe('boolean');
             expect(status.connected).toBe(true);
-            expect(typeof status.healthy).toBe('boolean');
-            expect(status.healthy).toBe(true);
-            expect(typeof status.lastHealthCheck).toBe('string'); // ISO string
-            expect(() => new Date(status.lastHealthCheck)).not.toThrow();
-            expect(typeof status.consecutiveFailures).toBe('number');
-            expect(status.consecutiveFailures).toBe(0);
-            expect(typeof status.reconnectAttempts).toBe('number');
-            expect(status.reconnectAttempts).toBe(0);
+            expect(typeof status.lastCallSucceeded).toBe('boolean');
+            expect(status.lastCallSucceeded).toBe(true);
+            expect(typeof status.lastCallTime).toBe('string');
+            expect(() => new Date(status.lastCallTime)).not.toThrow();
         });
 
-        it('returns null lastHealthCheck before any checks', () => {
+        it('returns null lastCallSucceeded and lastCallTime before any calls', () => {
             const status = redis.getRedisStatus();
-            expect(status.lastHealthCheck).toBeNull();
+            expect(status.lastCallSucceeded).toBeNull();
+            expect(status.lastCallTime).toBeNull();
         });
     });
 

@@ -16,9 +16,6 @@ const IPV4_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
 const IPV6_REGEX = /^[0-9a-fA-F:]{2,45}$/;
 const MAX_IP_LENGTH = 45;
 
-const MAX_RETRIES = 2;
-const RETRY_DELAY_MS = 300;
-
 /**
  * Formats a human-readable retry message from a seconds-until-reset value
  * @param {number} seconds - Seconds until the rate limit window resets
@@ -247,23 +244,10 @@ export function withRateLimit(handler, options = {}){
             // The 403 from requireAdmin() still blocks access — this adds rate-limit teeth.
             const effectiveOperation = (isAdminOperation && !isAdminUser) ? OPERATIONS.AUTH : operation;
 
-            // Initial attempt — convert thrown exceptions into unavailable state
             try {
                 rateLimitResult = await checkRateLimit(identifier, tier, effectiveOperation);
-            } catch(initialError) {
-                req.log.warn({ err: initialError, operation }, 'Rate limit initial check failed');
+            } catch(error) {
                 rateLimitResult = { success: false, unavailable: true };
-            }
-
-            // Retry up to 2 times if Redis unavailable (handles cold start / Upstash resume latency)
-            for (let attempt = 0; attempt < MAX_RETRIES && rateLimitResult.unavailable; attempt++) {
-                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-                try {
-                    rateLimitResult = await checkRateLimit(identifier, tier, effectiveOperation);
-                } catch(retryError) {
-                    req.log.warn({ err: retryError, attempt: attempt + 1, operation }, 'Rate limit retry failed');
-                    rateLimitResult = { success: false, unavailable: true };
-                }
             }
         } catch(error) {
             // Safety net for unexpected errors outside checkRateLimit (e.g. auth layer)
@@ -276,9 +260,8 @@ export function withRateLimit(handler, options = {}){
             );
         }
 
-        // block req on redis down after all retries exhausted
+        // block req on redis down — one-time log already fired in redis.js
         if(rateLimitResult.unavailable){
-            req.log.warn({ operation, method: req.method }, 'Rate limiting unavailable after retries, req denied');
             return sendError(
                 res,
                 503,

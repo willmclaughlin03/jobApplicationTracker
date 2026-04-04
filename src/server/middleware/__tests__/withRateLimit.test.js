@@ -996,9 +996,10 @@ describe('withRateLimit middleware', () => {
         });
 
         /**
-         * Test: Middleware errors are logged for server-side observability
+         * Test: checkRateLimit throw is caught and results in 503 (fail-closed)
+         * One-time logging happens in redis.js, not in the middleware.
          */
-        it('should log middleware errors with context', async () => {
+        it('should return 503 when checkRateLimit throws', async () => {
             mockCheckRateLimit.mockRejectedValue(new Error('Redis connection failed'));
             const req = createMockRequest('GET');
             const res = createMockResponse();
@@ -1006,10 +1007,8 @@ describe('withRateLimit middleware', () => {
 
             await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
-            expect(mockLog.warn).toHaveBeenCalledWith(
-                expect.objectContaining({ err: expect.any(Error) }),
-                expect.any(String)
-            );
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(handler).not.toHaveBeenCalled();
         });
     });
 

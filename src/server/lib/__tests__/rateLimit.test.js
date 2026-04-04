@@ -2,15 +2,15 @@
  * Tests for rateLimit.js
  *
  * Purpose: Verify rate limit checking with input validation,
- * limiter caching, PII redaction, and Redis health handling
+ * limiter caching, PII redaction, and Redis availability handling
  *
  * Connects to: server/lib/rateLimit.js
  *
  * Test coverage:
- * - Input validation: invalid identifier, tier, operation (finding d)
- * - Limiter cache: wrapper object pattern, stale Redis detection (findings g, h)
- * - PII redaction: identifier not logged in error cases (finding k)
- * - Redis health: unavailable returns, error handling
+ * - Input validation: invalid identifier, tier, operation
+ * - Limiter cache: wrapper object pattern, stale Redis detection
+ * - PII redaction: identifier not logged in error cases
+ * - Redis availability: null client, call failures, status tracking
  */
 
 const mockLimit = jest.fn();
@@ -27,11 +27,13 @@ const { Ratelimit } = require('@upstash/ratelimit');
 Ratelimit.fixedWindow = mockFixedWindow;
 
 const mockGetRedisClient = jest.fn();
-const mockIsRedisHealthy = jest.fn();
+const mockLogRedisDownOnce = jest.fn();
+const mockSetLastCallStatus = jest.fn();
 
 jest.mock('../redis', () => ({
     getRedisClient: mockGetRedisClient,
-    isRedisHealthy: mockIsRedisHealthy,
+    logRedisDownOnce: mockLogRedisDownOnce,
+    setLastCallStatus: mockSetLastCallStatus,
 }));
 
 const mockLogger = {
@@ -53,7 +55,6 @@ describe('checkRateLimit', () => {
     beforeEach(() => {
         jest.clearAllMocks();
         mockGetRedisClient.mockReturnValue(mockRedisClient);
-        mockIsRedisHealthy.mockResolvedValue(true);
         mockLimit.mockResolvedValue({
             success: true,
             limit: 20,
@@ -151,17 +152,17 @@ describe('checkRateLimit', () => {
          * GDPR: Only the identifier type (user/ip) should appear in logs
          */
         it('should log only identifier type, not full value, on error', async () => {
-            mockIsRedisHealthy.mockRejectedValue(new Error('Connection refused'));
+            mockLimit.mockRejectedValue(new Error('Connection refused'));
 
             await checkRateLimit('user:sensitive-user-id-123', 'free', 'read');
 
-            const errorCalls = mockLogger.error.mock.calls;
-            const rateLimitErrorCall = errorCalls.find(
+            const warnCalls = mockLogger.warn.mock.calls;
+            const rateLimitWarnCall = warnCalls.find(
                 call => call[1] === 'Rate limit check failed'
             );
 
-            expect(rateLimitErrorCall).toBeDefined();
-            const logData = rateLimitErrorCall[0];
+            expect(rateLimitWarnCall).toBeDefined();
+            const logData = rateLimitWarnCall[0];
             expect(logData.identifierType).toBe('user');
             expect(logData).not.toHaveProperty('identifier');
             expect(JSON.stringify(logData)).not.toContain('sensitive-user-id-123');
@@ -171,28 +172,34 @@ describe('checkRateLimit', () => {
          * Test: IP-based identifier type is logged correctly
          */
         it('should log ip as identifier type for IP-based identifiers', async () => {
-            mockIsRedisHealthy.mockRejectedValue(new Error('Timeout'));
+            mockLimit.mockRejectedValue(new Error('Timeout'));
+
+            // Advance past the 60s warn throttle so this test's warn fires
+            const realNow = Date.now;
+            Date.now = () => realNow() + 120_000;
 
             await checkRateLimit('ip:192.168.1.100', 'free', 'read');
 
-            const errorCalls = mockLogger.error.mock.calls;
-            const rateLimitErrorCall = errorCalls.find(
+            Date.now = realNow;
+
+            const warnCalls = mockLogger.warn.mock.calls;
+            const rateLimitWarnCall = warnCalls.find(
                 call => call[1] === 'Rate limit check failed'
             );
 
-            expect(rateLimitErrorCall).toBeDefined();
-            const logData = rateLimitErrorCall[0];
+            expect(rateLimitWarnCall).toBeDefined();
+            const logData = rateLimitWarnCall[0];
             expect(logData.identifierType).toBe('ip');
             expect(JSON.stringify(logData)).not.toContain('192.168.1.100');
         });
     });
 
     // =========================================================================
-    // Redis health handling
+    // Redis availability handling
     // =========================================================================
-    describe('Redis health', () => {
+    describe('Redis availability', () => {
         /**
-         * Test: Returns unavailable when Redis client is null
+         * Test: Returns unavailable and logs once when Redis client is null
          */
         it('should return unavailable when no Redis client', async () => {
             mockGetRedisClient.mockReturnValue(null);
@@ -201,18 +208,51 @@ describe('checkRateLimit', () => {
 
             expect(result.success).toBe(false);
             expect(result.unavailable).toBe(true);
+            expect(mockLogRedisDownOnce).toHaveBeenCalledWith({ reason: 'no_client' });
+            expect(mockSetLastCallStatus).toHaveBeenCalledWith(false);
         });
 
         /**
-         * Test: Returns unavailable when Redis is unhealthy
+         * Test: Returns unavailable and logs once when limiter call throws
          */
-        it('should return unavailable when Redis is unhealthy', async () => {
-            mockIsRedisHealthy.mockResolvedValue(false);
+        it('should return unavailable when limiter call throws', async () => {
+            mockLimit.mockRejectedValue(new Error('Network error'));
 
             const result = await checkRateLimit('user:abc', 'free', 'read');
 
             expect(result.success).toBe(false);
             expect(result.unavailable).toBe(true);
+            expect(mockLogRedisDownOnce).toHaveBeenCalledWith({ reason: 'call_failed' });
+            expect(mockSetLastCallStatus).toHaveBeenCalledWith(false);
+        });
+
+        /**
+         * Test: Successful check calls setLastCallStatus(true)
+         */
+        it('should record success status on successful check', async () => {
+            const result = await checkRateLimit('user:abc', 'free', 'read');
+
+            expect(result.success).toBe(true);
+            expect(mockSetLastCallStatus).toHaveBeenCalledWith(true);
+            expect(mockLogRedisDownOnce).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Test: Rate limit exceeded still records success status (Redis itself worked)
+         */
+        it('should record success status even when rate limit exceeded', async () => {
+            mockLimit.mockResolvedValue({
+                success: false,
+                limit: 20,
+                remaining: 0,
+                reset: Date.now() + 1000,
+            });
+
+            const result = await checkRateLimit('user:abc', 'free', 'read');
+
+            expect(result.success).toBe(false);
+            expect(mockSetLastCallStatus).toHaveBeenCalledWith(true);
+            expect(mockLogRedisDownOnce).not.toHaveBeenCalled();
         });
     });
 
@@ -431,7 +471,8 @@ describe('checkRateLimit', () => {
 
             jest.doMock('../redis', () => ({
                 getRedisClient: jest.fn(),
-                isRedisHealthy: jest.fn().mockResolvedValue(true),
+                logRedisDownOnce: jest.fn(),
+                setLastCallStatus: jest.fn(),
             }));
 
             jest.doMock('../../../shared/logger', () => ({

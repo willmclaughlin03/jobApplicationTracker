@@ -26,13 +26,13 @@
  * - getUserFromRequest — real destructuring, req assignment
  * - generateCsrfToken / validateCsrfToken — real HMAC-SHA256
  * - checkRateLimit — real Upstash Redis
- * - getRedisClient / isRedisHealthy — real Upstash Redis
+ * - getRedisClient / logRedisDownOnce / setLastCallStatus — real Upstash Redis
  *
  * Test coverage:
  * - Full pipeline: auth → CSRF → real rate limit → handler (happy path)
  * - Rate limit headers on real response (X-RateLimit-*)
  * - 429 + Retry-After after exhausting real rate limit
- * - Rate limit retry logic (Redis unavailable → retry → recover)
+ * - 503 fail-closed when Redis unavailable (no retry)
  * - IP extraction for public routes (IPv4, IPv6, ::ffff: strip, 45-char max)
  * - GET skips CSRF but still rate limits
  */
@@ -293,67 +293,6 @@ describeIntegration('withRateLimit — full pipeline integration (real Upstash)'
             expect(retryAfterCall).toBeDefined();
             expect(retryAfterCall[1]).toBeGreaterThanOrEqual(0);
         });
-    });
-
-    // ===================================================================
-    // Rate limit retry logic
-    // ===================================================================
-
-    describe('retry logic on transient Redis unavailability', () => {
-        it('returns 503 when Redis is fully unavailable after retries', async () => {
-            // Reset Redis to simulate unavailability
-            redis.resetRedisClient();
-
-            // Clear env vars so fresh module can't auto-reconnect
-            const origUrl = process.env.UPSTASH_REDIS_REST_URL;
-            const origToken = process.env.UPSTASH_REDIS_REST_TOKEN;
-            process.env.UPSTASH_REDIS_REST_URL = '';
-            process.env.UPSTASH_REDIS_REST_TOKEN = '';
-
-            // Re-require modules to get fresh state
-            jest.resetModules();
-            jest.clearAllMocks();
-
-            // Re-mock after resetModules
-            jest.mock('../../lib/supabaseApiRoute.js', () => ({
-                createApiRouteClient: jest.fn().mockReturnValue({
-                    auth: {
-                        getUser: jest.fn().mockResolvedValue({
-                            data: { user: { id: 'test-user', email: 'test@test.com' } },
-                            error: null,
-                        }),
-                    },
-                }),
-            }));
-            jest.mock('../../../shared/logger.js', () => ({
-                logger: { info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn(), child: jest.fn(() => mockLog) },
-                attachRequestLogger: jest.fn((req) => { req.log = mockLog; return 'test-request-id'; }),
-            }));
-
-            if (!process.env.CSRF_SECRET || process.env.CSRF_SECRET.length < 32) {
-                process.env.CSRF_SECRET = 'integration-test-secret-that-is-at-least-32-chars-long!!';
-            }
-
-            const freshWithRateLimit = require('../withRateLimit.js').withRateLimit;
-
-            const req = createMockRequest('GET');
-            const res = createMockResponse();
-            const handler = jest.fn();
-
-            await freshWithRateLimit(handler, {
-                requireAuth: true,
-                allowedMethods: ['GET'],
-            })(req, res);
-
-            expect(res.status).toHaveBeenCalledWith(503);
-            expect(handler).not.toHaveBeenCalled();
-
-            // Restore env vars and Redis for subsequent tests
-            process.env.UPSTASH_REDIS_REST_URL = origUrl;
-            process.env.UPSTASH_REDIS_REST_TOKEN = origToken;
-            const freshRedis = require('../../lib/redis.js');
-            freshRedis.resetRedisClient();
-        }, 15000); // Extended timeout for retry delays (2 retries × 300ms + network)
     });
 
     // ===================================================================

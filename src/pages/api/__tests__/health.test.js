@@ -23,9 +23,9 @@ jest.mock('../../../shared/logger.js', () => ({
   logger: { child: jest.fn(() => mockLog) },
 }));
 
-const mockIsRedisUp = jest.fn();
+const mockGetRedisClient = jest.fn();
 jest.mock('../../../server/lib/redis.js', () => ({
-  isRedisUp: mockIsRedisUp,
+  getRedisClient: mockGetRedisClient,
 }));
 
 const mockSelect = jest.fn();
@@ -51,7 +51,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockSelect.mockReturnValue({ limit: mockLimit });
   mockLimit.mockResolvedValue({ error: null });
-  mockIsRedisUp.mockResolvedValue(true);
+  mockGetRedisClient.mockReturnValue({ ping: jest.fn().mockResolvedValue('PONG') });
 });
 
 describe('/api/health', () => {
@@ -72,7 +72,7 @@ describe('/api/health', () => {
   });
 
   it('returns 503 with status degraded when Redis is down', async () => {
-    mockIsRedisUp.mockResolvedValue(false);
+    mockGetRedisClient.mockReturnValue(null);
     const req = { method: 'GET', headers: {} };
     const res = createMockRes();
 
@@ -105,7 +105,7 @@ describe('/api/health', () => {
   });
 
   it('returns 503 with status degraded when both services are down', async () => {
-    mockIsRedisUp.mockResolvedValue(false);
+    mockGetRedisClient.mockReturnValue(null);
     mockLimit.mockResolvedValue({ error: { message: 'connection refused' } });
     const req = { method: 'GET', headers: {} };
     const res = createMockRes();
