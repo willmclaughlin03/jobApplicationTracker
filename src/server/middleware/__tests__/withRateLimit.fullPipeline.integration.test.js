@@ -256,7 +256,7 @@ describeIntegration('withRateLimit — full pipeline integration (real Upstash)'
 
     describe('429 after rate limit exhaustion', () => {
         it('returns 429 with Retry-After after exceeding auth operation limit', async () => {
-            // free:auth:hourly = 10 — use auth operation for fast exhaustion
+            // free:auth:hourly = 15 — use auth operation for fast exhaustion
             // Each test run uses a unique user ID suffix to avoid cross-test pollution
             const uniqueUserId = `${testUserId}:pipeline-exhaust-${testRunSuffix}`;
 
@@ -266,8 +266,8 @@ describeIntegration('withRateLimit — full pipeline integration (real Upstash)'
             });
 
             let lastRes;
-            // 11 calls to exhaust (10 limit + 1 over)
-            for (let i = 0; i <= 10; i++) {
+            // 16 calls to exhaust (15 limit + 1 over)
+            for (let i = 0; i <= 15; i++) {
                 mockCreateApiRouteClient.mockReturnValue(exhaustClient);
                 const req = createMockRequest('POST');
                 lastRes = createMockResponse();

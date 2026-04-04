@@ -164,15 +164,15 @@ describeIntegration('rateLimit.js — integration (real Upstash)', () => {
 
     describe('rate limit exceeded', () => {
         it('returns success=false after exceeding the limit', async () => {
-            // free:auth:hourly = 10 (smallest window for fast exhaustion)
+            // free:auth:hourly = 15 (smallest window for fast exhaustion)
             const id = testId('exhaust');
 
             let lastResult;
-            for (let i = 0; i <= 10; i++) {
+            for (let i = 0; i <= 15; i++) {
                 lastResult = await checkRateLimit(id, 'free', 'auth');
             }
 
-            // 11th call should fail (10 limit + 1 over)
+            // 16th call should fail (15 limit + 1 over)
             expect(lastResult.success).toBe(false);
             expect(lastResult.remaining).toBe(0);
             expect(lastResult.reset).toBeDefined();

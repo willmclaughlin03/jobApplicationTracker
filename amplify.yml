@@ -1,0 +1,22 @@
+# AWS Amplify build specification
+# Node version: Amplify defaults to Node 18. To pin a specific version,
+# go to Amplify Console > Build settings > Build image settings and set
+# the Node.js version explicitly (e.g. 18.x). Pinning prevents unexpected
+# breakage if Amplify updates their default runtime.
+version: 1
+frontend:
+  phases:
+    preBuild:
+      commands:
+        - npm ci
+    build:
+      commands:
+        - npm run build
+  artifacts:
+    baseDirectory: .next
+    files:
+      - '**/*'
+  cache:
+    paths:
+      - node_modules/**/*
+      - .next/cache/**/*
