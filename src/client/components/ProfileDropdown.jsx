@@ -6,7 +6,6 @@ import Link from 'next/link';
  *
  * Purpose: Displays user email with a dropdown menu for profile actions
  * Connects to:
- * - /api/auth/forgot-password for server-side, rate-limited password reset emails
  * - Parent component (index.js) for user data and sign-out handler
  *
  * @param {Object} props
@@ -15,8 +14,6 @@ import Link from 'next/link';
  */
 export default function ProfileDropdown({ user, onSignOut }) {
   const [open, setOpen] = useState(false);
-  const [resetStatus, setResetStatus] = useState(null);
-  const [resetLoading, setResetLoading] = useState(false);
   const dropdownRef = useRef(null);
 
   useEffect(() => {
@@ -33,39 +30,10 @@ export default function ProfileDropdown({ user, onSignOut }) {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [open]);
 
-  const handleResetPassword = async () => {
-    setResetLoading(true);
-    setResetStatus(null);
-
-    try {
-      const response = await fetch('/api/auth/forgot-password', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: user.email,
-          redirectTo: `${window.location.origin}/auth/callback?next=/reset-password`,
-        }),
-      });
-
-      const result = await response.json();
-
-      if (response.ok) {
-        setResetStatus({ type: 'success', message: 'Password reset link sent to your email.' });
-      } else {
-        setResetStatus({ type: 'error', message: result.message || 'Failed to send reset email. Please try again.' });
-      }
-    } catch {
-      setResetStatus({ type: 'error', message: 'Something went wrong. Please try again.' });
-    }
-
-    setResetLoading(false);
-  };
-
   return (
     <div className="relative" ref={dropdownRef}>
       <button
-        onClick={() => { setOpen(!open); setResetStatus(null); }}
+        onClick={() => setOpen(!open)}
         className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-800 transition-colors px-3 py-2 rounded-md hover:bg-gray-100"
       >
         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -93,20 +61,6 @@ export default function ProfileDropdown({ user, onSignOut }) {
               >
                 Admin
               </Link>
-            )}
-
-            <button
-              onClick={handleResetPassword}
-              disabled={resetLoading}
-              className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-md transition-colors disabled:text-gray-400 disabled:cursor-not-allowed"
-            >
-              {resetLoading ? 'Sending...' : 'Reset Password'}
-            </button>
-
-            {resetStatus && (
-              <p className={`px-3 py-1.5 text-xs ${resetStatus.type === 'success' ? 'text-green-600' : 'text-red-600'}`}>
-                {resetStatus.message}
-              </p>
             )}
 
             <button
