@@ -73,7 +73,7 @@ export default function InfoTooltip() {
           <div>
             <p className="font-medium text-gray-800 mb-1">Support</p>
             <p>Found a bug or having an issue? Reach out at{' '}
-              <a href="mailto:support@example.com" className="text-blue-600 hover:underline">support@example.com</a>.
+              <a href="mailto:tracktheapp.support@gmail.com" className="text-blue-600 hover:underline">tracktheapp.support@gmail.com</a>.
             </p>
           </div>
         </div>
