@@ -1126,4 +1126,185 @@ describe('withRateLimit middleware', () => {
             expect(mockCheckRateLimit).toHaveBeenCalledTimes(1);
         });
     });
+
+    // =========================================================================
+    // Admin tier selection + non-admin probing fallback
+    // =========================================================================
+    describe('admin tier selection', () => {
+        /**
+         * Test: Admin user + admin operation → uses ADMIN tier
+         * Why: Admin quotas must apply only when both the user role and the
+         *      requested operation are admin-scoped.
+         */
+        it('should use admin tier when admin user calls an admin operation', async () => {
+            mockGetUserFromRequest.mockResolvedValue({
+                user: { id: 'admin-1', app_metadata: { role: 'admin' } },
+                error: null,
+                supabaseClient: { auth: { getUser: jest.fn() } },
+            });
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                allowedMethods: ['GET'],
+                operation: 'admin_read',
+            })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'user:admin-1',
+                'admin',
+                'admin_read'
+            );
+        });
+
+        /**
+         * Test: Admin user + non-admin operation → still uses FREE tier
+         * Prevents: Admins implicitly getting inflated quotas on normal CRUD
+         */
+        it('should use free tier when admin user calls a non-admin operation', async () => {
+            mockGetUserFromRequest.mockResolvedValue({
+                user: { id: 'admin-2', app_metadata: { role: 'admin' } },
+                error: null,
+                supabaseClient: { auth: { getUser: jest.fn() } },
+            });
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'user:admin-2',
+                'free',
+                'read'
+            );
+        });
+
+        /**
+         * Test: Non-admin user + admin operation → falls back to AUTH quota
+         * Security: Repeated probing of admin endpoints by non-admins is throttled
+         *           under the FREE:auth bucket. The route-level 403 still blocks
+         *           access; rate limiting prevents enumeration abuse.
+         */
+        it('should fall back to free:auth when non-admin probes an admin operation', async () => {
+            mockGetUserFromRequest.mockResolvedValue({
+                user: { id: 'user-1', app_metadata: { role: 'user' } },
+                error: null,
+                supabaseClient: { auth: { getUser: jest.fn() } },
+            });
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                allowedMethods: ['GET'],
+                operation: 'admin_write',
+            })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'user:user-1',
+                'free',
+                'auth'
+            );
+        });
+
+        /**
+         * Test: User with no app_metadata.role is treated as non-admin
+         * Edge case: Missing/undefined metadata must not leak admin access
+         */
+        it('should treat user with no role metadata as non-admin when probing admin op', async () => {
+            mockGetUserFromRequest.mockResolvedValue({
+                user: { id: 'user-2' }, // no app_metadata
+                error: null,
+                supabaseClient: { auth: { getUser: jest.fn() } },
+            });
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                allowedMethods: ['GET'],
+                operation: 'admin_read',
+            })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'user:user-2',
+                'free',
+                'auth'
+            );
+        });
+    });
+
+    // =========================================================================
+    // operationByMethod per-method mapping
+    // =========================================================================
+    describe('operationByMethod mapping', () => {
+        /**
+         * Test: operationByMethod overrides the derived METHOD_TO_OPERATIONS
+         * Use case: A route that accepts both GET and POST but wants both treated
+         *           as a single operation category (e.g. 'auth').
+         */
+        it('should use operationByMethod entry for the request method', async () => {
+            const req = createMockRequest('POST');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                allowedMethods: ['GET', 'POST'],
+                operationByMethod: { GET: 'read', POST: 'auth' },
+            })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                expect.any(String),
+                'free',
+                'auth'
+            );
+        });
+
+        /**
+         * Test: operationByMethod takes precedence over operation override
+         * Verifies the precedence chain:
+         *   operationByMethod > operationOverride > METHOD_TO_OPERATIONS
+         */
+        it('should prefer operationByMethod over operation override', async () => {
+            const req = createMockRequest('POST');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                allowedMethods: ['POST'],
+                operation: 'insert',
+                operationByMethod: { POST: 'auth' },
+            })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                expect.any(String),
+                'free',
+                'auth'
+            );
+        });
+
+        /**
+         * Test: operationByMethod miss falls through to operation override
+         * Edge case: A partial operationByMethod map does not clobber fallbacks
+         */
+        it('should fall through to operation override when method not in operationByMethod', async () => {
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                allowedMethods: ['GET', 'POST'],
+                operation: 'auth',
+                operationByMethod: { POST: 'insert' },
+            })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                expect.any(String),
+                'free',
+                'auth'
+            );
+        });
+    });
 });

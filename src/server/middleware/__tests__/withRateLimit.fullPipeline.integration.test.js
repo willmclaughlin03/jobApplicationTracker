@@ -412,6 +412,51 @@ describeIntegration('withRateLimit — full pipeline integration (real Upstash)'
     });
 
     // ===================================================================
+    // Redis unavailable → 503 fail-closed (real modules)
+    // ===================================================================
+
+    describe('Redis unavailable fail-closed', () => {
+        /**
+         * Test: Full real pipeline — when Redis REST credentials are wiped
+         * and the singleton is reset, the middleware must return 503 instead
+         * of falling back to no-limit passthrough.
+         *
+         * This catches the regression where the retry loop was removed: if
+         * anyone re-introduces a silent failure path, this test will catch it.
+         */
+        it('returns 503 SERVICE_UNAVAILABLE when Redis client is unavailable', async () => {
+            const origUrl = process.env.UPSTASH_REDIS_REST_URL;
+            const origToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+            // Wipe creds and reset the singleton so the next getRedisClient() returns null
+            redis.resetRedisClient();
+            process.env.UPSTASH_REDIS_REST_URL = '';
+            process.env.UPSTASH_REDIS_REST_TOKEN = '';
+
+            try {
+                const req = createMockRequest('GET');
+                const res = createMockResponse();
+                const handler = jest.fn();
+
+                await withRateLimit(handler, {
+                    requireAuth: true,
+                    allowedMethods: ['GET'],
+                })(req, res);
+
+                expect(res.status).toHaveBeenCalledWith(503);
+                expect(res.json).toHaveBeenCalledWith(
+                    expect.objectContaining({ error: 'SERVICE_UNAVAILABLE' })
+                );
+                expect(handler).not.toHaveBeenCalled();
+            } finally {
+                process.env.UPSTASH_REDIS_REST_URL = origUrl;
+                process.env.UPSTASH_REDIS_REST_TOKEN = origToken;
+                redis.resetRedisClient();
+            }
+        });
+    });
+
+    // ===================================================================
     // Method validation
     // ===================================================================
 
