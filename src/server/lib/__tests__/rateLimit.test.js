@@ -520,4 +520,95 @@ describe('checkRateLimit', () => {
             expect(callsAfterSecond).toBeGreaterThan(callsAfterFirst);
         });
     });
+
+    // =========================================================================
+    // Both-limiters-null path
+    // =========================================================================
+    describe('both limiters null', () => {
+        /**
+         * Test: tier/operation combo with no configured limits returns pass-through
+         *
+         * Why: FREE tier has no admin_read / admin_write entries in TIER_LIMITS.
+         * When both hourly and daily limits resolve to undefined, checkRateLimit
+         * must short-circuit to a successful no-op result rather than crash on
+         * an undefined limiter. This is the defensive path that keeps the
+         * service available if a future operation is added without limits.
+         */
+        it('should return success with null fields when both limiters are absent', async () => {
+            const result = await checkRateLimit('user:abc', 'free', 'admin_read');
+
+            expect(result.success).toBe(true);
+            expect(result.limit).toBeNull();
+            expect(result.remaining).toBeNull();
+            expect(result.reset).toBeNull();
+            expect(result.window).toBeNull();
+            expect(mockSetLastCallStatus).toHaveBeenCalledWith(true);
+            // No Ratelimit.limit() should have been invoked
+            expect(mockLimit).not.toHaveBeenCalled();
+        });
+    });
+
+    // =========================================================================
+    // Warn log throttling
+    // =========================================================================
+    describe('warn throttling on repeated failures', () => {
+        /**
+         * Test: Two failures within the 60s window produce exactly one warn
+         *
+         * Why: Axiom would be flooded if every failing request emitted a warn.
+         * error() fires only once per outage via logRedisDownOnce; warn()
+         * emits throttled details (identifierType, tier, operation) so distinct
+         * error *types* surface without per-request spam.
+         *
+         * NOTE: module-level throttle state persists across tests. This test
+         * uses jest.resetModules() to guarantee a fresh state and fake timers
+         * to control the 60s window deterministically.
+         */
+        it('emits one warn for rapid successive failures, then another after the window', async () => {
+            jest.resetModules();
+
+            jest.doMock('@upstash/ratelimit', () => {
+                const limitFn = jest.fn().mockRejectedValue(new Error('upstream down'));
+                const RatelimitClass = jest.fn().mockImplementation(() => ({
+                    limit: limitFn,
+                }));
+                RatelimitClass.fixedWindow = jest.fn().mockReturnValue('fixedWindowConfig');
+                return { Ratelimit: RatelimitClass };
+            });
+
+            const throttleLogger = {
+                info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn(),
+            };
+            jest.doMock('../../../shared/logger', () => ({ logger: throttleLogger }));
+
+            jest.doMock('../redis', () => ({
+                getRedisClient: jest.fn().mockReturnValue({ id: 'stub-client' }),
+                logRedisDownOnce: jest.fn(),
+                setLastCallStatus: jest.fn(),
+            }));
+
+            const { checkRateLimit: throttledCheck } = require('../rateLimit');
+
+            jest.useFakeTimers();
+            try {
+                jest.setSystemTime(new Date('2026-04-07T00:00:00Z'));
+
+                // First failure → should warn
+                await throttledCheck('user:abc', 'free', 'read');
+                expect(throttleLogger.warn).toHaveBeenCalledTimes(1);
+
+                // Second failure 30s later → still within window, must be throttled
+                jest.setSystemTime(new Date('2026-04-07T00:00:30Z'));
+                await throttledCheck('user:abc', 'free', 'read');
+                expect(throttleLogger.warn).toHaveBeenCalledTimes(1);
+
+                // Third failure past 60s → window elapsed, warn again
+                jest.setSystemTime(new Date('2026-04-07T00:01:05Z'));
+                await throttledCheck('user:abc', 'free', 'read');
+                expect(throttleLogger.warn).toHaveBeenCalledTimes(2);
+            } finally {
+                jest.useRealTimers();
+            }
+        });
+    });
 });

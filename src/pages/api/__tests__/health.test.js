@@ -165,4 +165,82 @@ describe('/api/health', () => {
     expect(body.timestamp).toBeDefined();
     expect(new Date(body.timestamp).getTime()).not.toBeNaN();
   });
+
+  /**
+   * Test: Redis client exists but ping() rejects
+   * Why it matters: This is the most likely real failure mode — the client
+   * initialized on cold start, then a transient network blip or Upstash
+   * outage causes ping() to throw. The previous coverage only exercised
+   * the null-client branch.
+   */
+  it('returns 503 degraded when Redis ping() throws', async () => {
+    mockGetRedisClient.mockReturnValue({
+      ping: jest.fn().mockRejectedValue(new Error('ECONNRESET')),
+    });
+    const req = { method: 'GET', headers: {} };
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'degraded',
+        checks: { redis: 'fail', supabase: 'ok' },
+      })
+    );
+    expect(mockLog.warn).toHaveBeenCalled();
+  });
+
+  /**
+   * Test: Redis returns non-PONG response
+   * Edge case: Upstash responding with an unexpected payload (e.g. corrupted
+   * response) must be treated as unhealthy rather than falsely reported ok.
+   */
+  it('returns 503 degraded when Redis ping() returns non-PONG', async () => {
+    mockGetRedisClient.mockReturnValue({
+      ping: jest.fn().mockResolvedValue('NOT_PONG'),
+    });
+    const req = { method: 'GET', headers: {} };
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checks: { redis: 'fail', supabase: 'ok' },
+      })
+    );
+  });
+
+  /**
+   * Test: Redis ping never resolves → handler enforces HEALTH_CHECK_TIMEOUT_MS
+   * Prevents: Hanging uptime probes if Upstash becomes non-responsive.
+   * Uses fake timers so we don't actually wait 3 seconds.
+   */
+  it('returns 503 degraded when Redis ping exceeds the health check timeout', async () => {
+    jest.useFakeTimers();
+    try {
+      mockGetRedisClient.mockReturnValue({
+        ping: jest.fn(() => new Promise(() => { /* never resolves */ })),
+      });
+      const req = { method: 'GET', headers: {} };
+      const res = createMockRes();
+
+      const handlerPromise = handler(req, res);
+      // Advance past HEALTH_CHECK_TIMEOUT_MS (3000ms)
+      await jest.advanceTimersByTimeAsync(3100);
+      await handlerPromise;
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          checks: { redis: 'fail', supabase: 'ok' },
+        })
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
