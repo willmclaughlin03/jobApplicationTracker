@@ -99,7 +99,7 @@ describe('index API handler (/api/jobs)', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, {}, undefined);
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, {}, undefined, noopLog);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           data: { data: mockJobs, count: 2 },
@@ -120,7 +120,7 @@ describe('index API handler (/api/jobs)', () => {
 
       await handler(req, res);
 
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, { from: 0, to: 10 }, undefined);
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, { from: 0, to: 10 }, undefined, noopLog);
     });
 
     /**
@@ -136,7 +136,7 @@ describe('index API handler (/api/jobs)', () => {
 
       await handler(req, res);
 
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, { status: 'Applied' }, undefined);
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, { status: 'Applied' }, undefined, noopLog);
     });
 
     /**
@@ -156,7 +156,7 @@ describe('index API handler (/api/jobs)', () => {
         from: 0,
         to: 5,
         status: 'Applied',
-      }, undefined);
+      }, undefined, noopLog);
     });
 
     /**
@@ -208,7 +208,7 @@ describe('index API handler (/api/jobs)', () => {
 
       await handler(req, res);
 
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, {}, mockClient);
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, {}, mockClient, noopLog);
     });
 
     /**
@@ -255,7 +255,7 @@ describe('index API handler (/api/jobs)', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(201);
-      expect(mockCreateJob).toHaveBeenCalledWith(validJobData, mockUser.id, undefined);
+      expect(mockCreateJob).toHaveBeenCalledWith(validJobData, mockUser.id, undefined, noopLog);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           data: createdJob,
