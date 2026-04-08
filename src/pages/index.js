@@ -11,6 +11,7 @@ import NextPageButton from '../client/components/NextPageButton';
 import JobStatsSidebar from '../client/components/JobStatsSidebar';
 import ProfileDropdown from '../client/components/ProfileDropdown';
 import Spinner from '../client/components/Spinner';
+import DashboardSkeleton from '../client/components/skeletons/DashboardSkeleton';
 import InfoTooltip from '../client/components/InfoTooltip';
 import ActivityDrawer from '../client/components/ActivityDrawer';
 
@@ -75,11 +76,7 @@ export default function Dashboard() {
   }
 
   if (authLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Spinner size="lg" className="text-gray-400" />
-      </div>
-    );
+    return <DashboardSkeleton />;
   }
 
   const handleAddJob = async (jobData) => {
