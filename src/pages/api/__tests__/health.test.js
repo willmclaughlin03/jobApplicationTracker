@@ -68,7 +68,7 @@ describe('/api/health', () => {
         checks: { redis: 'ok', supabase: 'ok' },
       })
     );
-    expect(mockLog.info).not.toHaveBeenCalled();
+    expect(mockLog.info).toHaveBeenCalledWith({ status: 'ok' }, 'Health check passed');
   });
 
   it('returns 503 with status degraded when Redis is down', async () => {

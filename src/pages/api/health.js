@@ -65,7 +65,9 @@ async function handler(req, res) {
     timestamp: new Date().toISOString(),
   };
 
-  if (status !== 'ok') {
+  if (status === 'ok') {
+    req.log.info({ status }, 'Health check passed');
+  } else {
     req.log.warn({ status, checks: body.checks }, 'Health check degraded');
   }
 
