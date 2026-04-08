@@ -117,7 +117,7 @@ export function getRedisClient() {
             token
         });
 
-        logger.debug('Upstash Redis client initialized');
+        logger.info('Upstash Redis client initialized');
 
         initializationInProgress = false;
         return redisClient;
