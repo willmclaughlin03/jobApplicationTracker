@@ -33,7 +33,7 @@ const LOW_VALUE_ACTIONS = new Set(['list_users', 'get_user']);
 
 export function logAdminAction(req, { action, targetUserId, result, meta = {} }) {
     const actor = req._rateLimitUser?.id;
-    const level = LOW_VALUE_ACTIONS.has(action) ? 'debug' : 'info';
+    const level = LOW_VALUE_ACTIONS.has(action) && result === 'success' ? 'debug' : 'info';
 
     req.log[level]({
         type: 'admin_audit',
