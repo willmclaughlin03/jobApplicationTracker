@@ -54,8 +54,6 @@ export async function getJobsByUserId(userId, options = {}, supabaseClient) {
       return { data: null, count: 0, error };
     }
 
-    logger.debug({ operation: 'getJobsByUserId', userId, count: data?.length || 0, totalCount: count }, 'Jobs retrieved successfully');
-
     return { data, count: count || 0, error: null };
   } catch (error) {
     logger.error({ err: error, operation: 'getJobsByUserId', userId }, 'Unexpected error in getJobsByUserId');
@@ -89,15 +87,12 @@ export async function getJobById(jobId, userId, supabaseClient) {
     if (error) {
       // PGRST116 = "No rows found" - treat as not found, not as error
       if (error.code === 'PGRST116') {
-        logger.debug({ operation: 'getJobById', userId, jobId }, 'Job not found or unauthorized');
         return { data: null, error: new Error('Job not found or unauthorized') };
       }
 
       logger.error({ err: error, operation: 'getJobById', userId, jobId }, 'Database query failed');
       return { data: null, error };
     }
-
-    logger.debug({ operation: 'getJobById', userId, jobId }, 'Job retrieved successfully');
 
     return { data, error: null };
   } catch (error) {
@@ -216,8 +211,6 @@ export async function updateJob(jobId, updateData, userId, supabaseClient) {
       return { data: null, error: new Error('Job not found or unauthorized') };
     }
 
-    logger.info({ operation: 'updateJob', userId, jobId }, 'Job updated successfully');
-
     return { data, error: null };
   } catch (error) {
     logger.error({ err: error, operation: 'updateJob', userId, jobId }, 'Unexpected error in updateJob');
@@ -254,8 +247,6 @@ export async function deleteJob(jobId, userId, supabaseClient) {
       logger.warn({ operation: 'deleteJob', userId, jobId }, 'Delete failed - job not found or unauthorized');
       return { data: null, error: new Error('Job not found or unauthorized') };
     }
-
-    logger.info({ operation: 'deleteJob', userId, jobId }, 'Job deleted successfully');
 
     return { data: data[0], error: null };
   } catch (error) {

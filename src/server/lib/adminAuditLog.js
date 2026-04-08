@@ -26,10 +26,16 @@
  * @param {'success'|'error'} params.result - Outcome of the action
  * @param {object} [params.meta] - Additional context (e.g. new role value, error reason)
  */
+// Read-only audit actions are demoted to debug: they fire on every admin page
+// view and are not compliance-critical. Mutations stay at info so they ship to
+// Axiom and remain investigable for privilege/deletion incidents.
+const LOW_VALUE_ACTIONS = new Set(['list_users', 'get_user']);
+
 export function logAdminAction(req, { action, targetUserId, result, meta = {} }) {
     const actor = req._rateLimitUser?.id;
+    const level = LOW_VALUE_ACTIONS.has(action) ? 'debug' : 'info';
 
-    req.log.info({
+    req.log[level]({
         type: 'admin_audit',
         actor,
         action,
