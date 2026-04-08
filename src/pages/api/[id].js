@@ -31,7 +31,7 @@ function validateUUID(id) {
  * @param {string} jobId - The job's UUID from URL path
  */
 async function handleGet(req, res, user, jobId) {
-  const { data, error } = await getJobById(jobId, user.id, req._supabaseClient);
+  const { data, error } = await getJobById(jobId, user.id, req._supabaseClient, req.log);
 
   if (error || !data) {
     return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);
@@ -75,7 +75,7 @@ async function handlePut(req, res, user, jobId) {
   const hasMin = updatedData.salary_min != null;
   const hasMax = updatedData.salary_max != null;
   if (hasMin !== hasMax) {
-    const { data: currentJob, error: fetchError } = await getJobById(jobId, user.id, req._supabaseClient);
+    const { data: currentJob, error: fetchError } = await getJobById(jobId, user.id, req._supabaseClient, req.log);
     if (fetchError || !currentJob) {
       return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);
     }
@@ -86,7 +86,7 @@ async function handlePut(req, res, user, jobId) {
     }
   }
 
-  const { data, error } = await updateJob(jobId, updatedData, user.id, req._supabaseClient);
+  const { data, error } = await updateJob(jobId, updatedData, user.id, req._supabaseClient, req.log);
 
   if (error || !data) {
     return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);
@@ -107,7 +107,7 @@ async function handlePut(req, res, user, jobId) {
  * @param {string} jobId - The job's UUID from URL path
  */
 async function handleDelete(req, res, user, jobId) {
-  const { data, error } = await deleteJob(jobId, user.id, req._supabaseClient);
+  const { data, error } = await deleteJob(jobId, user.id, req._supabaseClient, req.log);
 
   if (error || !data) {
     return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);

@@ -5,13 +5,14 @@
  * Connects to:
  * - supabaseAdmin for privileged operations (storage limit count — bypasses RLS)
  * - supabaseClient (per-request SSR client) for user-scoped queries (respects RLS)
- * - logger for structured error logging
+ * - Per-request logger (req.log) for structured error logging with requestId correlation;
+ *   falls back to module-level logger singleton if callers omit the log argument
  *
  * Security: All operations validate user ownership via user_id matching (app layer)
  * and are further enforced by RLS policies on the jobs table (database layer).
  */
 import { supabaseAdmin } from '../lib/supabaseServer.js';
-import { logger } from '../../shared/logger.js';
+import { logger as defaultLogger } from '../../shared/logger.js';
 import { getStorargeLimitForTier, TIERS } from '../../shared/constants/tiers.js';
 import { ERROR_MESSAGES } from '../../shared/errors.js';
 
@@ -28,7 +29,7 @@ import { ERROR_MESSAGES } from '../../shared/errors.js';
  *
  * Security: Only returns jobs where user_id matches the authenticated user (app + RLS)
  */
-export async function getJobsByUserId(userId, options = {}, supabaseClient) {
+export async function getJobsByUserId(userId, options = {}, supabaseClient, log = defaultLogger) {
   try {
     const { from, to, status } = options;
 
@@ -50,13 +51,13 @@ export async function getJobsByUserId(userId, options = {}, supabaseClient) {
     const { data, error, count } = await query;
 
     if (error) {
-      logger.error({ err: error, operation: 'getJobsByUserId', userId }, 'Database query failed');
+      log.error({ err: error, operation: 'getJobsByUserId', userId }, 'Database query failed');
       return { data: null, count: 0, error };
     }
 
     return { data, count: count || 0, error: null };
   } catch (error) {
-    logger.error({ err: error, operation: 'getJobsByUserId', userId }, 'Unexpected error in getJobsByUserId');
+    log.error({ err: error, operation: 'getJobsByUserId', userId }, 'Unexpected error in getJobsByUserId');
     return { data: null, count: 0, error };
   }
 }
@@ -75,7 +76,7 @@ export async function getJobsByUserId(userId, options = {}, supabaseClient) {
  * Security: Enforces user ownership by requiring user_id match (app + RLS)
  * - Returns null if job doesn't exist OR user doesn't own it (prevents enumeration)
  */
-export async function getJobById(jobId, userId, supabaseClient) {
+export async function getJobById(jobId, userId, supabaseClient, log = defaultLogger) {
   try {
     const { data, error } = await supabaseClient
       .from('jobs')
@@ -90,13 +91,13 @@ export async function getJobById(jobId, userId, supabaseClient) {
         return { data: null, error: new Error('Job not found or unauthorized') };
       }
 
-      logger.error({ err: error, operation: 'getJobById', userId, jobId }, 'Database query failed');
+      log.error({ err: error, operation: 'getJobById', userId, jobId }, 'Database query failed');
       return { data: null, error };
     }
 
     return { data, error: null };
   } catch (error) {
-    logger.error({ err: error, operation: 'getJobById', userId, jobId }, 'Unexpected error in getJobById');
+    log.error({ err: error, operation: 'getJobById', userId, jobId }, 'Unexpected error in getJobById');
     return { data: null, error };
   }
 }
@@ -118,7 +119,7 @@ export async function getJobById(jobId, userId, supabaseClient) {
  * Security: Associates job with user_id to enforce ownership (app + RLS)
  * Storage: Rejects insert if user is at or over their tier's maxJobs limit
  */
-export async function createJob(jobData, userId, supabaseClient) {
+export async function createJob(jobData, userId, supabaseClient, log = defaultLogger) {
   try {
     // Check storage limit before inserting
     const { maxJobs } = getStorargeLimitForTier(TIERS.FREE);
@@ -126,7 +127,7 @@ export async function createJob(jobData, userId, supabaseClient) {
     // Fail closed: if the tier config is broken, deny the insert rather than
     // silently allowing unlimited entries ((count ?? 0) >= undefined is false)
     if (typeof maxJobs !== 'number' || maxJobs <= 0) {
-      logger.error({ operation: 'createJob', userId, maxJobs }, 'Storage limit configuration is invalid');
+      log.error({ operation: 'createJob', userId, maxJobs }, 'Storage limit configuration is invalid');
       return { data: null, error: new Error('Storage limit configuration is invalid') };
     }
 
@@ -147,12 +148,12 @@ export async function createJob(jobData, userId, supabaseClient) {
       .eq('user_id', userId);
 
     if (countError) {
-      logger.error({ err: countError, operation: 'createJob', userId }, 'Failed to check job count before insert');
+      log.error({ err: countError, operation: 'createJob', userId }, 'Failed to check job count before insert');
       return { data: null, error: countError };
     }
 
     if ((count ?? 0) >= maxJobs) {
-      logger.warn({ operation: 'createJob', userId, count, maxJobs }, 'Storage limit reached');
+      log.warn({ operation: 'createJob', userId, count, maxJobs }, 'Storage limit reached');
       const limitError = Object.assign(
         new Error(ERROR_MESSAGES.STORAGE_LIMIT_EXCEEDED),
         { code: 'STORAGE_LIMIT_EXCEEDED' }
@@ -166,15 +167,15 @@ export async function createJob(jobData, userId, supabaseClient) {
       .select();
 
     if (error) {
-      logger.error({ err: error, operation: 'createJob', userId }, 'Failed to create job');
+      log.error({ err: error, operation: 'createJob', userId }, 'Failed to create job');
       return { data: null, error };
     }
 
-    logger.info({ operation: 'createJob', userId, jobId: data?.[0]?.id }, 'Job created successfully');
+    log.info({ operation: 'createJob', userId, jobId: data?.[0]?.id }, 'Job created successfully');
 
     return { data, error: null };
   } catch (error) {
-    logger.error({ err: error, operation: 'createJob', userId }, 'Unexpected error in createJob');
+    log.error({ err: error, operation: 'createJob', userId }, 'Unexpected error in createJob');
     return { data: null, error };
   }
 }
@@ -191,7 +192,7 @@ export async function createJob(jobData, userId, supabaseClient) {
  * Security: Enforces user ownership by requiring user_id match (app + RLS)
  * - This prevents users from updating jobs they don't own
  */
-export async function updateJob(jobId, updateData, userId, supabaseClient) {
+export async function updateJob(jobId, updateData, userId, supabaseClient, log = defaultLogger) {
   try {
     const { data, error } = await supabaseClient
       .from('jobs')
@@ -201,19 +202,19 @@ export async function updateJob(jobId, updateData, userId, supabaseClient) {
       .select('*');
 
     if (error) {
-      logger.error({ err: error, operation: 'updateJob', userId, jobId }, 'Failed to update job');
+      log.error({ err: error, operation: 'updateJob', userId, jobId }, 'Failed to update job');
       return { data: null, error };
     }
 
     // Check if no rows were updated (job doesn't exist or user doesn't own it)
     if (!data || data.length === 0) {
-      logger.warn({ operation: 'updateJob', userId, jobId }, 'Update failed - job not found or unauthorized');
+      log.warn({ operation: 'updateJob', userId, jobId }, 'Update failed - job not found or unauthorized');
       return { data: null, error: new Error('Job not found or unauthorized') };
     }
 
     return { data, error: null };
   } catch (error) {
-    logger.error({ err: error, operation: 'updateJob', userId, jobId }, 'Unexpected error in updateJob');
+    log.error({ err: error, operation: 'updateJob', userId, jobId }, 'Unexpected error in updateJob');
     return { data: null, error };
   }
 }
@@ -229,7 +230,7 @@ export async function updateJob(jobId, updateData, userId, supabaseClient) {
  * Security: Enforces user ownership by requiring user_id match (app + RLS)
  * - This prevents users from deleting jobs they don't own
  */
-export async function deleteJob(jobId, userId, supabaseClient) {
+export async function deleteJob(jobId, userId, supabaseClient, log = defaultLogger) {
   try {
     const { data, error } = await supabaseClient
       .from('jobs')
@@ -239,18 +240,18 @@ export async function deleteJob(jobId, userId, supabaseClient) {
       .select();
 
     if (error) {
-      logger.error({ err: error, operation: 'deleteJob', userId, jobId }, 'Failed to delete job');
+      log.error({ err: error, operation: 'deleteJob', userId, jobId }, 'Failed to delete job');
       return { data: null, error };
     }
 
     if (!data || data.length === 0) {
-      logger.warn({ operation: 'deleteJob', userId, jobId }, 'Delete failed - job not found or unauthorized');
+      log.warn({ operation: 'deleteJob', userId, jobId }, 'Delete failed - job not found or unauthorized');
       return { data: null, error: new Error('Job not found or unauthorized') };
     }
 
     return { data: data[0], error: null };
   } catch (error) {
-    logger.error({ err: error, operation: 'deleteJob', userId, jobId }, 'Unexpected error in deleteJob');
+    log.error({ err: error, operation: 'deleteJob', userId, jobId }, 'Unexpected error in deleteJob');
     return { data: null, error };
   }
 }
