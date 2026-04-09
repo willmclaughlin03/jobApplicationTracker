@@ -105,7 +105,7 @@ Bullets must communicate **contribution and outcome**, not duties. Apply these r
 
 5. **Rewrite duty-style bullets as contribution-style.** Take phrases like "Responsible for X" or "Helped with Y" and recast them around what the candidate *did* and what *changed because of it*, drawing only on scope and outcomes the profile supports. Do not fabricate scope.
 
-6. **Surface unmet quantitative asks via `keywordMatch.missing`.** When the JD calls for a quantitative qualification the profile cannot back up — P&L ownership, team size, revenue scale, user counts — add a short note to `keywordMatch.missing` describing the gap. Example entry: *"P&L ownership — no financial scope found in profile"*. This is the correct place to flag missing scope; never paper over it inside a bullet.
+6. **Surface unmet quantitative asks via `keywordMatch.missing`.** When the JD calls for a quantitative qualification the profile cannot back up — P&L ownership, team size, revenue scale, user counts — add a short gap note to `keywordMatch.missing`. **Each entry MUST be 40 characters or fewer** (hard schema limit). Use a short tag plus a brief reason in the format `"<gap> — <short reason>"`, and abbreviate or truncate aggressively to fit. Examples: *"P&L ownership — none in profile"* (31 chars), *"team size — not stated"* (22 chars), *"revenue scale — no $ figures"* (28 chars). Never write a full sentence here; if it does not fit in 40 chars, shorten it. This is the correct place to flag missing scope; never paper over it inside a bullet.
 
 ## Calibration examples
 
