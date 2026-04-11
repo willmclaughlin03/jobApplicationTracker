@@ -7,9 +7,9 @@
 | `AXIOM_DATASET` | For production logging | Axiom dataset name to send logs to |
 | `AXIOM_TOKEN` | For production logging | Axiom API token with ingest permission |
 
-Set these in **Vercel Project Settings → Environment Variables** for the Production (and optionally Preview) environments.
+Set these in **AWS Amplify Console → Environment Variables** for the Production (and optionally Preview) environments.
 
-When both variables are present, the Pino logger ships structured JSON logs to Axiom via the `@axiomhq/pino` transport. When either is missing, logs go to JSON stdout (picked up by Vercel's default log drain).
+When both variables are present, the Pino logger ships structured JSON logs to Axiom via the `@axiomhq/pino` transport. When either is missing, logs go to JSON stdout (picked up by CloudWatch in Amplify SSR).
 
 ## Axiom Setup
 
@@ -23,7 +23,7 @@ When both variables are present, the Pino logger ships structured JSON logs to A
 
 1. Go to **Settings → API Tokens**
 2. Click **New Token**
-3. Name it (e.g., `vercel-ingest`)
+3. Name it (e.g., `amplify-ingest`)
 4. Grant **Ingest** permission scoped to your dataset
 5. Copy the token — this is your `AXIOM_TOKEN` value
 
@@ -56,7 +56,7 @@ When both variables are present, the Pino logger ships structured JSON logs to A
 }
 ```
 
-This endpoint is intentionally **not rate-limited** so uptime monitors can poll it freely.
+This endpoint is rate-limited at **60 requests/hour per IP** (`OPERATIONS.HEALTH`). This assumes uptime monitors poll every 60 seconds — more aggressive polling may receive `429 Too Many Requests`. When Redis is unavailable, the `withRateLimit` middleware returns a generic `503` before the health handler runs (different response body shape, same HTTP status).
 
 ## Axiom Alerts
 
@@ -78,15 +78,17 @@ This endpoint is intentionally **not rate-limited** so uptime monitors can poll 
 1. **Query:** filter by `msg` containing `"rate limit"` and `level == "warn"`, count over 5-minute window
 2. **Threshold:** alert when count > 50 (adjust based on traffic)
 3. **Notify:** Slack channel or email
+4. **Note:** `/api/health` 429s are logged at `debug`, not `warn`, to avoid noisy ingest from aggressive uptime polling. This alert is for non-health rate-limit exhaustion.
 
 ## Uptime Monitoring
 
 Configure an external uptime monitor to poll the health endpoint:
 
-- **URL:** `https://your-domain.vercel.app/api/health`
+- **URL:** `https://your-domain.amplifyapp.com/api/health`
 - **Method:** `GET`
-- **Interval:** 60 seconds
+- **Interval:** 60 seconds (must not exceed 60 req/hour to avoid 429)
 - **Alert on:** HTTP status ≠ 200 or no response within 10 seconds
+- **Note:** 429 responses indicate the monitor is polling too aggressively
 
 Options for uptime monitoring:
 - **Axiom Monitors** — built-in, no extra service needed

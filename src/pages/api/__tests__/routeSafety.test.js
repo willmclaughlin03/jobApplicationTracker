@@ -17,8 +17,9 @@
 const fs = require('fs');
 const path = require('path');
 
-// Routes that intentionally skip withRateLimit (e.g. health checks for uptime monitors)
-const EXCLUDED_ROUTES = ['health.js'];
+// Routes that intentionally skip withRateLimit — currently none.
+// health.js was moved behind withRateLimit with OPERATIONS.HEALTH (60 req/hour per IP).
+const EXCLUDED_ROUTES = [];
 
 /**
  * Recursively collects all .js route files from a directory

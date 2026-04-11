@@ -33,6 +33,10 @@ export const TIER_LIMITS = {
             hourly: 15,
             daily: 30
         },
+        health: {
+            hourly: 60,
+            daily: null
+        },
         storage: {
             maxJobs: 300,
             // Potential autoDelete
@@ -97,6 +101,7 @@ export const OPERATIONS = {
     READ: 'read',
     DELETE: 'delete',
     AUTH: 'auth',
+    HEALTH: 'health',
     ADMIN_READ: 'admin_read',
     ADMIN_WRITE: 'admin_write',
 };

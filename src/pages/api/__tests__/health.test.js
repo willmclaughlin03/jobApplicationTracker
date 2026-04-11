@@ -4,7 +4,9 @@
  * Purpose: Verify health check endpoint returns correct status for Redis and Supabase
  * Connects to: pages/api/health.js
  *
- * Note: This endpoint intentionally skips withRateLimit for uptime monitor access.
+ * The endpoint is wrapped with withRateLimit (OPERATIONS.HEALTH, 60 req/hour per IP).
+ * withRateLimit is mocked here to pass through to the handler so tests focus on
+ * health-check logic. Middleware behavior is tested separately.
  */
 
 const mockLog = {
@@ -15,12 +17,13 @@ const mockLog = {
   child: jest.fn(),
 };
 
-jest.mock('../../../shared/logger.js', () => ({
-  attachRequestLogger: jest.fn((req) => {
+// Mock withRateLimit to pass through — attaches req.log like the real middleware does
+jest.mock('../../../server/middleware/withRateLimit.js', () => ({
+  withRateLimit: (handler) => async (req, res) => {
     req.log = mockLog;
-    return 'test-request-id';
-  }),
-  logger: { child: jest.fn(() => mockLog) },
+    res.setHeader('x-request-id', 'test-request-id');
+    return handler(req, res);
+  },
 }));
 
 const mockGetRedisClient = jest.fn();
@@ -28,8 +31,9 @@ jest.mock('../../../server/lib/redis.js', () => ({
   getRedisClient: mockGetRedisClient,
 }));
 
-const mockSelect = jest.fn();
-const mockLimit = jest.fn();
+const mockMaybeSingle = jest.fn();
+const mockLimit = jest.fn(() => ({ maybeSingle: mockMaybeSingle }));
+const mockSelect = jest.fn(() => ({ limit: mockLimit }));
 const mockFrom = jest.fn(() => ({ select: mockSelect }));
 
 jest.mock('../../../server/lib/supabaseServer.js', () => ({
@@ -49,8 +53,7 @@ function createMockRes() {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockSelect.mockReturnValue({ limit: mockLimit });
-  mockLimit.mockResolvedValue({ error: null });
+  mockMaybeSingle.mockResolvedValue({ error: null });
   mockGetRedisClient.mockReturnValue({ ping: jest.fn().mockResolvedValue('PONG') });
 });
 
@@ -71,6 +74,18 @@ describe('/api/health', () => {
     expect(mockLog.info).not.toHaveBeenCalled();
   });
 
+  it('queries Supabase with select/limit/maybeSingle (not count: exact)', async () => {
+    const req = { method: 'GET', headers: {} };
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockFrom).toHaveBeenCalledWith('jobs');
+    expect(mockSelect).toHaveBeenCalledWith('id');
+    expect(mockLimit).toHaveBeenCalledWith(1);
+    expect(mockMaybeSingle).toHaveBeenCalled();
+  });
+
   it('returns 503 with status degraded when Redis is down', async () => {
     mockGetRedisClient.mockReturnValue(null);
     const req = { method: 'GET', headers: {} };
@@ -89,7 +104,7 @@ describe('/api/health', () => {
   });
 
   it('returns 503 with status degraded when Supabase is down', async () => {
-    mockLimit.mockResolvedValue({ error: { message: 'connection refused' } });
+    mockMaybeSingle.mockResolvedValue({ error: { message: 'connection refused' } });
     const req = { method: 'GET', headers: {} };
     const res = createMockRes();
 
@@ -106,7 +121,7 @@ describe('/api/health', () => {
 
   it('returns 503 with status degraded when both services are down', async () => {
     mockGetRedisClient.mockReturnValue(null);
-    mockLimit.mockResolvedValue({ error: { message: 'connection refused' } });
+    mockMaybeSingle.mockResolvedValue({ error: { message: 'connection refused' } });
     const req = { method: 'GET', headers: {} };
     const res = createMockRes();
 
@@ -121,26 +136,8 @@ describe('/api/health', () => {
     );
   });
 
-  it('returns 405 for non-GET methods', async () => {
-    const req = { method: 'POST', headers: {} };
-    const res = createMockRes();
-
-    await handler(req, res);
-
-    expect(res.status).toHaveBeenCalledWith(405);
-  });
-
-  it('sets x-request-id header on response', async () => {
-    const req = { method: 'GET', headers: {} };
-    const res = createMockRes();
-
-    await handler(req, res);
-
-    expect(res.setHeader).toHaveBeenCalledWith('x-request-id', 'test-request-id');
-  });
-
   it('returns degraded when Supabase times out', async () => {
-    mockLimit.mockRejectedValue(new Error('Supabase health check timeout'));
+    mockMaybeSingle.mockRejectedValue(new Error('Supabase health check timeout'));
     const req = { method: 'GET', headers: {} };
     const res = createMockRes();
 
@@ -168,10 +165,8 @@ describe('/api/health', () => {
 
   /**
    * Test: Redis client exists but ping() rejects
-   * Why it matters: This is the most likely real failure mode — the client
-   * initialized on cold start, then a transient network blip or Upstash
-   * outage causes ping() to throw. The previous coverage only exercised
-   * the null-client branch.
+   * Why it matters: Most likely real failure mode — client initialized on
+   * cold start, then transient network blip causes ping() to throw.
    */
   it('returns 503 degraded when Redis ping() throws', async () => {
     mockGetRedisClient.mockReturnValue({
@@ -194,8 +189,7 @@ describe('/api/health', () => {
 
   /**
    * Test: Redis returns non-PONG response
-   * Edge case: Upstash responding with an unexpected payload (e.g. corrupted
-   * response) must be treated as unhealthy rather than falsely reported ok.
+   * Edge case: Unexpected payload must be treated as unhealthy.
    */
   it('returns 503 degraded when Redis ping() returns non-PONG', async () => {
     mockGetRedisClient.mockReturnValue({
@@ -215,9 +209,8 @@ describe('/api/health', () => {
   });
 
   /**
-   * Test: Redis ping never resolves → handler enforces HEALTH_CHECK_TIMEOUT_MS
-   * Prevents: Hanging uptime probes if Upstash becomes non-responsive.
-   * Uses fake timers so we don't actually wait 3 seconds.
+   * Test: Redis ping never resolves — handler enforces HEALTH_CHECK_TIMEOUT_MS
+   * Prevents hanging uptime probes if Upstash becomes non-responsive.
    */
   it('returns 503 degraded when Redis ping exceeds the health check timeout', async () => {
     jest.useFakeTimers();
@@ -229,7 +222,6 @@ describe('/api/health', () => {
       const res = createMockRes();
 
       const handlerPromise = handler(req, res);
-      // Advance past HEALTH_CHECK_TIMEOUT_MS (3000ms)
       await jest.advanceTimersByTimeAsync(3100);
       await handlerPromise;
 

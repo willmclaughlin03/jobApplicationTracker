@@ -2,6 +2,14 @@ import { getUserFromRequest } from '../lib/supabaseServer.js';
 import { checkRateLimit } from '../lib/rateLimit.js';
 import { validateCsrfToken } from '../lib/csrf.js';
 import { METHOD_TO_OPERATIONS, OPERATIONS, TIERS } from '../../shared/constants/tiers.js';
+
+/**
+ * Operations where 429 responses are logged at debug instead of warn.
+ * Health checks are polled frequently by uptime monitors — warn-level
+ * 429 logs would create noise and inflate Axiom ingest costs without
+ * actionable signal.
+ */
+const QUIET_429_OPERATIONS = new Set([OPERATIONS.HEALTH]);
 import { ERROR_MESSAGES } from '../../shared/errors.js';
 import { sendError } from '../../shared/response.js';
 import { logger, attachRequestLogger } from '../../shared/logger.js';
@@ -15,6 +23,35 @@ import { logger, attachRequestLogger } from '../../shared/logger.js';
 const IPV4_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
 const IPV6_REGEX = /^[0-9a-fA-F:]{2,45}$/;
 const MAX_IP_LENGTH = 45;
+
+/**
+ * Normalizes a header expected to have a single string value.
+ *
+ * Returns null for arrays so malformed/repeated trusted headers fail closed
+ * instead of throwing or silently choosing an arbitrary entry.
+ *
+ * @param {string | string[] | undefined} value
+ * @returns {string|null}
+ */
+function getSingleHeaderValue(value) {
+    return typeof value === 'string' ? value : null;
+}
+
+/**
+ * Normalizes X-Forwarded-For into a single comma-separated string.
+ *
+ * Multiple header lines are semantically equivalent to one comma-joined value.
+ *
+ * @param {string | string[] | undefined} value
+ * @returns {string|null}
+ */
+function getForwardedForHeaderValue(value) {
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value) && value.length > 0) {
+        return value.join(',');
+    }
+    return null;
+}
 
 /**
  * Formats a human-readable retry message from a seconds-until-reset value
@@ -63,29 +100,58 @@ function normalizeIp(ip){
  * Purpose: Provides IP identifier for public/unauthenticated routes
  * Connects to: normalizeIp() for IP validation
  *
- * Security: On deployed Vercel (production/preview), only x-real-ip is trusted.
- * socket.remoteAddress on Vercel is always the internal load balancer IP, not
- * the client — falling back to it would bucket all traffic under one key,
- * defeating per-client rate limiting. Returns null (→ 403) when x-real-ip is
- * absent so misconfiguration is visible rather than silently bypassed.
+ * Deployed on AWS Amplify behind CloudFront:
+ * 1. CloudFront-Viewer-Address — set by CloudFront, cannot be spoofed by clients.
+ *    Contains "ip:port", so the port suffix is stripped before use.
+ * 2. x-forwarded-for — CloudFront appends the viewer IP as the rightmost entry.
+ *    Earlier entries may be spoofed by the client, so only the last is trusted.
+ * 3. req.socket.remoteAddress — only meaningful in local dev where no proxy exists.
  *
- * In local Vercel dev (VERCEL_ENV=development), socket.remoteAddress is
- * the real client, so the fallback is safe.
+ * Returns null (→ 403) when no valid IP can be extracted, so misconfiguration
+ * is visible rather than silently bypassed.
  *
  * @param {import('next').NextApiRequest} req - Next.js API request
  * @returns {string|null} 'ip:{address}' or null if no valid IP
  */
 function extractIpIdentifier(req){
-    const IS_VERCEL_DEPLOYED = process.env.VERCEL && process.env.VERCEL_ENV !== 'development';
+    const IS_DEPLOYED = !!process.env.AWS_LAMBDA_FUNCTION_NAME;
 
-    const rawIp = IS_VERCEL_DEPLOYED
-        ? req.headers['x-real-ip'] ?? null
-        : req.socket?.remoteAddress;
+    let rawIp = null;
+
+    if(IS_DEPLOYED){
+        // Prefer CloudFront-Viewer-Address (trusted, set by CloudFront)
+        const viewerAddr = getSingleHeaderValue(req.headers['cloudfront-viewer-address']);
+        if(viewerAddr){
+            // Format is "ip:port". For IPv4: "1.2.3.4:54321"
+            // For IPv6: "2001:db8::1:54321" — port is always the last colon-segment
+            // when the address contains multiple colons (IPv6), split on last colon
+            // only if the part after it is purely numeric (the port).
+            const lastColon = viewerAddr.lastIndexOf(':');
+            const afterColon = viewerAddr.slice(lastColon + 1);
+            if(lastColon > 0 && /^\d+$/.test(afterColon)){
+                rawIp = viewerAddr.slice(0, lastColon);
+            }else{
+                rawIp = viewerAddr;
+            }
+        }
+
+        // Fallback: rightmost x-forwarded-for entry (appended by CloudFront)
+        if(!rawIp){
+            const xff = getForwardedForHeaderValue(req.headers['x-forwarded-for']);
+            if(xff){
+                const parts = xff.split(',');
+                rawIp = parts[parts.length - 1].trim();
+            }
+        }
+    }else{
+        // Local dev — no proxy, socket address is the real client
+        rawIp = req.socket?.remoteAddress;
+    }
 
     const ip = rawIp ? normalizeIp(rawIp) : null;
 
     if(!ip){
-        (req.log || logger).warn({ hasRealIp: !!req.headers['x-real-ip'], hasSocketAddr: !!req.socket?.remoteAddress }, 'Rate limit: no valid IP identifier available');
+        (req.log || logger).warn({ hasViewerAddr: !!req.headers['cloudfront-viewer-address'], hasXff: !!req.headers['x-forwarded-for'], hasSocketAddr: !!req.socket?.remoteAddress }, 'Rate limit: no valid IP identifier available');
         return null;
     }
 
@@ -279,7 +345,12 @@ export function withRateLimit(handler, options = {}){
 
             res.setHeader('Retry-After', retryAfterSeconds);
 
-            req.log.warn({ operation, window: rateLimitResult.window, limit: rateLimitResult.limit, retryAfterSeconds }, 'Rate limit exceeded');
+            const rateLimitLogData = { operation, window: rateLimitResult.window, limit: rateLimitResult.limit, retryAfterSeconds };
+            if (QUIET_429_OPERATIONS.has(operation)) {
+                req.log.debug(rateLimitLogData, 'Rate limit exceeded (quiet operation)');
+            } else {
+                req.log.warn(rateLimitLogData, 'Rate limit exceeded');
+            }
 
             return sendError(
                 res,
