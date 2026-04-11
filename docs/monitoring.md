@@ -23,7 +23,7 @@ When both variables are present, the Pino logger ships structured JSON logs to A
 
 1. Go to **Settings → API Tokens**
 2. Click **New Token**
-3. Name it (e.g., `vercel-ingest`)
+3. Name it (e.g., `amplify-ingest`)
 4. Grant **Ingest** permission scoped to your dataset
 5. Copy the token — this is your `AXIOM_TOKEN` value
 
