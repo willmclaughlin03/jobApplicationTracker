@@ -1,6 +1,18 @@
 const { TIERS, TIER_LIMITS, OPERATIONS } = require('../tiers.js');
 
 describe('billing tier invariants', () => {
+  it('defines explicit baseline paid limits for existing app operations', () => {
+    expect(TIER_LIMITS[TIERS.PAID]).toMatchObject({
+      [OPERATIONS.INSERT]: { hourly: null, daily: 1000 },
+      [OPERATIONS.UPDATE]: { hourly: null, daily: 10000 },
+      [OPERATIONS.READ]: { hourly: null, daily: 50000 },
+      [OPERATIONS.DELETE]: { hourly: null, daily: null },
+      [OPERATIONS.AUTH]: { hourly: 15, daily: 30 },
+      [OPERATIONS.HEALTH]: { hourly: 60, daily: null },
+      storage: { maxJobs: 3000, autoDeleteOldest: false },
+    });
+  });
+
   it('defines paid billing_read limits that are at least as permissive as free billing_read limits', () => {
     expect(TIER_LIMITS[TIERS.PAID]).toHaveProperty(OPERATIONS.BILLING_READ);
     expect(TIER_LIMITS[TIERS.FREE]).toHaveProperty(OPERATIONS.BILLING_READ);
@@ -28,5 +40,11 @@ describe('billing tier invariants', () => {
       expect(TIER_LIMITS[tier]).toHaveProperty(OPERATIONS.BILLING_READ);
       expect(TIER_LIMITS[tier]).toHaveProperty(OPERATIONS.BILLING_WRITE);
     }
+  });
+
+  it('keeps paid storage limits above free storage limits', () => {
+    expect(TIER_LIMITS[TIERS.PAID].storage.maxJobs).toBeGreaterThan(
+      TIER_LIMITS[TIERS.FREE].storage.maxJobs
+    );
   });
 });

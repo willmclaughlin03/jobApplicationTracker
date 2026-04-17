@@ -64,6 +64,34 @@ export const TIER_LIMITS = {
     },
 
     [TIERS.PAID]: {
+        insert: {
+            hourly: null,
+            daily: 1000
+        },
+        update : {
+            hourly: null,
+            daily: 10000
+        },
+        read: {
+            hourly: null,
+            daily: 50000
+        },
+        delete: {
+            hourly: null,
+            daily: null
+        },
+        // Keep auth limits explicit so selecting PAID cannot silently disable
+        // throttling on account/session routes.
+        auth : {
+            hourly: 15,
+            daily: 30
+        },
+        // Health is public/IP-based today, but keeping it explicit prevents an
+        // accidental paid-tier selection from becoming unmetered.
+        health: {
+            hourly: 60,
+            daily: null
+        },
         tailor: {
             hourly: null,
             daily: 30
@@ -80,31 +108,11 @@ export const TIER_LIMITS = {
             hourly: 20,
             daily: 60
         },
+        storage: {
+            maxJobs: 3000,
+            autoDeleteOldest: false,
+        },
     },
-
-    // [TIERS.PAID] : {
-    //     insert: {
-    //         hourly: null,
-    //         daily: 1000
-    //     },
-    //     update : {
-    //         hourly: null,
-    //         daily: 10000
-    //     },
-    //     read: {
-    //         hourly: null,
-    //         daily: 50000
-    //     },
-    //     delete: {
-    //         hourly: null,
-    //         daily: null
-    //     },
-    //     storage: {
-    //         maxJobs: 3000,
-            
-    //         autoDeleteOldest: false,
-    //     },
-    // },
 
 }
 
