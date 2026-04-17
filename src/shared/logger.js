@@ -15,6 +15,8 @@ export const REDACT_CONFIG = {
   paths: [
     'req.headers.authorization',
     'req.headers.cookie',
+    'req.headers["stripe-signature"]',
+    'headers["stripe-signature"]',
     'password',
     'access_token',
     'refresh_token',

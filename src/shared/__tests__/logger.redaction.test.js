@@ -13,6 +13,8 @@
  * - refresh_token field is redacted
  * - req.headers.authorization is redacted
  * - req.headers.cookie is redacted
+ * - req.headers["stripe-signature"] is redacted
+ * - headers["stripe-signature"] is redacted
  * - err.config.headers.authorization is redacted
  * - err.config.headers.cookie is redacted
  * - Non-sensitive sibling fields are preserved
@@ -81,6 +83,18 @@ describe('Logger redaction config', () => {
     expect(output.req.headers.cookie).toBe('[REDACTED]');
   });
 
+  it('should redact req.headers["stripe-signature"]', () => {
+    logger.info({ req: { headers: { 'stripe-signature': 't=1,v1=signature' } } }, 'test');
+    const output = getOutput();
+    expect(output.req.headers['stripe-signature']).toBe('[REDACTED]');
+  });
+
+  it('should redact top-level headers["stripe-signature"]', () => {
+    logger.info({ headers: { 'stripe-signature': 't=1,v1=signature' } }, 'test');
+    const output = getOutput();
+    expect(output.headers['stripe-signature']).toBe('[REDACTED]');
+  });
+
   it('should redact err.config.headers.authorization', () => {
     logger.info({
       err: { config: { headers: { authorization: 'Bearer leaked-token' } } },
@@ -101,12 +115,25 @@ describe('Logger redaction config', () => {
     logger.info({
       password: 'secret',
       username: 'testuser',
-      req: { headers: { authorization: 'Bearer x', 'content-type': 'application/json' } },
+      req: {
+        headers: {
+          authorization: 'Bearer x',
+          'stripe-signature': 't=1,v1=signature',
+          'content-type': 'application/json',
+        },
+      },
+      headers: {
+        'stripe-signature': 't=1,v1=signature',
+        'content-length': '123',
+      },
     }, 'test');
     const output = getOutput();
     expect(output.password).toBe('[REDACTED]');
     expect(output.username).toBe('testuser');
     expect(output.req.headers.authorization).toBe('[REDACTED]');
+    expect(output.req.headers['stripe-signature']).toBe('[REDACTED]');
     expect(output.req.headers['content-type']).toBe('application/json');
+    expect(output.headers['stripe-signature']).toBe('[REDACTED]');
+    expect(output.headers['content-length']).toBe('123');
   });
 });
