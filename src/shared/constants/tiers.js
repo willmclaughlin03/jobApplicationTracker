@@ -7,8 +7,8 @@
 
 export const TIERS = {
     FREE: 'free',
+    PAID: 'paid',
     ADMIN: 'admin',
-    // PAID: 'paid'
 };
 
 export const TIER_LIMITS = {
@@ -33,6 +33,18 @@ export const TIER_LIMITS = {
             hourly: 15,
             daily: 30
         },
+        health: {
+            hourly: 60,
+            daily: null
+        },
+        billing_read: {
+            hourly: 240,
+            daily: 500
+        },
+        billing_write: {
+            hourly: 20,
+            daily: 60
+        },
         storage: {
             maxJobs: 300,
             // Potential autoDelete
@@ -51,29 +63,56 @@ export const TIER_LIMITS = {
         },
     },
 
-    // [TIERS.PAID] : {
-    //     insert: {
-    //         hourly: null,
-    //         daily: 1000
-    //     },
-    //     update : {
-    //         hourly: null,
-    //         daily: 10000
-    //     },
-    //     read: {
-    //         hourly: null,
-    //         daily: 50000
-    //     },
-    //     delete: {
-    //         hourly: null,
-    //         daily: null
-    //     },
-    //     storage: {
-    //         maxJobs: 3000,
-            
-    //         autoDeleteOldest: false,
-    //     },
-    // },
+    [TIERS.PAID]: {
+        insert: {
+            hourly: null,
+            daily: 1000
+        },
+        update : {
+            hourly: null,
+            daily: 10000
+        },
+        read: {
+            hourly: null,
+            daily: 50000
+        },
+        delete: {
+            hourly: null,
+            daily: null
+        },
+        // Keep auth limits explicit so selecting PAID cannot silently disable
+        // throttling on account/session routes.
+        auth : {
+            hourly: 15,
+            daily: 30
+        },
+        // Health is public/IP-based today, but keeping it explicit prevents an
+        // accidental paid-tier selection from becoming unmetered.
+        health: {
+            hourly: 60,
+            daily: null
+        },
+        tailor: {
+            hourly: null,
+            daily: 30
+        },
+        // Intentionally mirrors FREE billing limits so an accidental paid-tier
+        // assignment cannot create an unmetered billing route.
+        billing_read: {
+            hourly: 240,
+            daily: 500
+        },
+        // Intentionally mirrors FREE billing limits so an accidental paid-tier
+        // assignment cannot create an unmetered billing route.
+        billing_write: {
+            hourly: 20,
+            daily: 60
+        },
+        storage: {
+            maxJobs: 3000,
+            autoDeleteOldest: false,
+        },
+    },
 
 }
 
@@ -97,6 +136,10 @@ export const OPERATIONS = {
     READ: 'read',
     DELETE: 'delete',
     AUTH: 'auth',
+    HEALTH: 'health',
+    TAILOR: 'tailor',
+    BILLING_READ: 'billing_read',
+    BILLING_WRITE: 'billing_write',
     ADMIN_READ: 'admin_read',
     ADMIN_WRITE: 'admin_write',
 };

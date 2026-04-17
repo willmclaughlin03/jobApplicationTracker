@@ -45,4 +45,13 @@ export const ERROR_MESSAGES = {
   ADMIN_ROLE_UPDATE_FAILED: 'Failed to update user role.',
   ADMIN_FETCH_FAILED: 'Failed to retrieve user data.',
   ADMIN_SELF_ACTION: 'You cannot perform this action on your own account.',
+  SUBSCRIPTION_REQUIRED: 'An active subscription is required to access this feature.',
+  PAYMENT_METHOD_UPDATE_REQUIRED: 'Your billing information needs attention before access can continue.',
+  BILLING_SYNC_PENDING: 'Billing status is still updating. Please try again shortly.',
+  WEBHOOK_SIGNATURE_INVALID: 'Webhook verification failed.',
+  CHECKOUT_SESSION_INVALID: 'Checkout session could not be verified.',
+  CHECKOUT_SESSION_OWNERSHIP_INVALID: 'Checkout session could not be verified.',
+  BILLING_MISCONFIGURED: 'Billing is temporarily unavailable.',
+  CHECKOUT_SESSION_FAILED: 'Unable to start checkout right now. Please try again later.',
+  PORTAL_SESSION_FAILED: 'Unable to open the billing portal right now. Please try again later.',
 };
