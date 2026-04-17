@@ -15,6 +15,10 @@
  * - req.headers.cookie is redacted
  * - req.headers["stripe-signature"] is redacted
  * - headers["stripe-signature"] is redacted
+ * - err.headers["stripe-signature"] is redacted
+ * - err.request.headers["stripe-signature"] is redacted
+ * - err.body is redacted
+ * - err.rawBody is redacted
  * - err.config.headers.authorization is redacted
  * - err.config.headers.cookie is redacted
  * - Non-sensitive sibling fields are preserved
@@ -95,6 +99,40 @@ describe('Logger redaction config', () => {
     expect(output.headers['stripe-signature']).toBe('[REDACTED]');
   });
 
+  it('should redact err.headers["stripe-signature"]', () => {
+    logger.info({
+      err: { headers: { 'stripe-signature': 't=1,v1=signature' } },
+    }, 'test');
+    const output = getOutput();
+    expect(output.err.headers['stripe-signature']).toBe('[REDACTED]');
+  });
+
+  it('should redact err.request.headers["stripe-signature"]', () => {
+    logger.info({
+      err: { request: { headers: { 'stripe-signature': 't=1,v1=signature' } } },
+    }, 'test');
+    const output = getOutput();
+    expect(output.err.request.headers['stripe-signature']).toBe('[REDACTED]');
+  });
+
+  it('should redact err.body', () => {
+    logger.info({
+      err: { body: '{"id":"evt_123"}', type: 'StripeSignatureVerificationError' },
+    }, 'test');
+    const output = getOutput();
+    expect(output.err.body).toBe('[REDACTED]');
+    expect(output.err.type).toBe('StripeSignatureVerificationError');
+  });
+
+  it('should redact err.rawBody', () => {
+    logger.info({
+      err: { rawBody: '{"id":"evt_123"}', type: 'StripeSignatureVerificationError' },
+    }, 'test');
+    const output = getOutput();
+    expect(output.err.rawBody).toBe('[REDACTED]');
+    expect(output.err.type).toBe('StripeSignatureVerificationError');
+  });
+
   it('should redact err.config.headers.authorization', () => {
     logger.info({
       err: { config: { headers: { authorization: 'Bearer leaked-token' } } },
@@ -126,6 +164,13 @@ describe('Logger redaction config', () => {
         'stripe-signature': 't=1,v1=signature',
         'content-length': '123',
       },
+      err: {
+        headers: { 'stripe-signature': 't=1,v1=signature', 'content-type': 'application/json' },
+        request: { headers: { 'stripe-signature': 't=1,v1=signature', accept: 'application/json' } },
+        body: '{"id":"evt_123"}',
+        rawBody: '{"id":"evt_123"}',
+        type: 'StripeSignatureVerificationError',
+      },
     }, 'test');
     const output = getOutput();
     expect(output.password).toBe('[REDACTED]');
@@ -135,5 +180,12 @@ describe('Logger redaction config', () => {
     expect(output.req.headers['content-type']).toBe('application/json');
     expect(output.headers['stripe-signature']).toBe('[REDACTED]');
     expect(output.headers['content-length']).toBe('123');
+    expect(output.err.headers['stripe-signature']).toBe('[REDACTED]');
+    expect(output.err.headers['content-type']).toBe('application/json');
+    expect(output.err.request.headers['stripe-signature']).toBe('[REDACTED]');
+    expect(output.err.request.headers.accept).toBe('application/json');
+    expect(output.err.body).toBe('[REDACTED]');
+    expect(output.err.rawBody).toBe('[REDACTED]');
+    expect(output.err.type).toBe('StripeSignatureVerificationError');
   });
 });

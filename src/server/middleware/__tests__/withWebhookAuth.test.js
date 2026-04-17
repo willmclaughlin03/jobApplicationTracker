@@ -14,13 +14,16 @@ jest.mock('../../lib/csrf.js', () => ({
 }));
 
 const mockLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+const mockRootLogger = { error: jest.fn(), warn: jest.fn(), info: jest.fn(), debug: jest.fn() };
 jest.mock('../../../shared/logger.js', () => ({
+  logger: mockRootLogger,
   attachRequestLogger: jest.fn((req) => {
     req.log = mockLog;
     return 'webhook-request-id';
   }),
 }));
 
+const { attachRequestLogger } = require('../../../shared/logger.js');
 const { withWebhookAuth } = require('../withWebhookAuth.js');
 
 describe('withWebhookAuth middleware', () => {
@@ -121,6 +124,41 @@ describe('withWebhookAuth middleware', () => {
       expect.objectContaining({ method: 'POST' }),
       'Unhandled webhook handler error'
     );
+  });
+
+  it('falls back to the root logger when req.log is unavailable', async () => {
+    attachRequestLogger.mockImplementationOnce(() => 'webhook-request-id');
+
+    const req = createMockRequest('POST');
+    const res = createMockResponse();
+    const handler = jest.fn().mockRejectedValue(new Error('boom'));
+
+    await withWebhookAuth(handler, { allowedMethods: ['POST'] })(req, res);
+
+    expect(mockRootLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'POST' }),
+      'Unhandled webhook handler error'
+    );
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  it('returns 500 if attachRequestLogger throws', async () => {
+    attachRequestLogger.mockImplementationOnce(() => {
+      throw new Error('logger init failed');
+    });
+
+    const req = createMockRequest('POST');
+    const res = createMockResponse();
+    const handler = jest.fn();
+
+    await withWebhookAuth(handler, { allowedMethods: ['POST'] })(req, res);
+
+    expect(mockRootLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'POST' }),
+      'Unhandled webhook handler error'
+    );
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(handler).not.toHaveBeenCalled();
   });
 
   it('ends cleanly when headers were already sent before a handler error', async () => {

@@ -1,6 +1,6 @@
 import { ERROR_MESSAGES } from '../../shared/errors.js';
 import { sendError } from '../../shared/response.js';
-import { attachRequestLogger } from '../../shared/logger.js';
+import { logger, attachRequestLogger } from '../../shared/logger.js';
 
 /**
  * Webhook middleware wrapper for Next.js API handlers.
@@ -24,24 +24,27 @@ export function withWebhookAuth(handler, options = {}) {
   const { allowedMethods = null } = options;
 
   return async (req, res) => {
-    const requestId = attachRequestLogger(req);
-    res.setHeader('x-request-id', requestId);
-
-    // Same-origin app only. Reject preflight-style requests instead of
-    // silently succeeding and bypassing the route's explicit method contract.
-    if (req.method === 'OPTIONS') {
-      return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
-    }
-
-    if (!allowedMethods || !allowedMethods.includes(req.method)) {
-      return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
-    }
-
     try {
+      const requestId = attachRequestLogger(req);
+      res.setHeader('x-request-id', requestId);
+
+      // Same-origin app only. Reject preflight-style requests instead of
+      // silently succeeding and bypassing the route's explicit method contract.
+      if (req.method === 'OPTIONS') {
+        return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
+      }
+
+      if (!allowedMethods || !allowedMethods.includes(req.method)) {
+        return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
+      }
+
       // WARNING: webhook routes must never log req.body or the raw request body.
       return await handler(req, res);
     } catch (handlerError) {
-      req.log.error({ err: handlerError, method: req.method }, 'Unhandled webhook handler error');
+      (req.log || logger).error(
+        { err: handlerError, method: req.method },
+        'Unhandled webhook handler error'
+      );
 
       if (res.headersSent) {
         res.end();
