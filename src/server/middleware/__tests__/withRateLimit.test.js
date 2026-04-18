@@ -1211,6 +1211,33 @@ describe('withRateLimit middleware', () => {
             );
         });
 
+        it('should use paid tier when a subscribed admin user calls billing_write', async () => {
+            mockGetUserFromRequest.mockResolvedValue({
+                user: {
+                    id: 'admin-3',
+                    app_metadata: { role: 'admin' },
+                    billing: { subscribed: true },
+                },
+                error: null,
+                supabaseClient: { auth: { getUser: jest.fn() } },
+            });
+            const req = createMockRequest('POST');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                allowedMethods: ['POST'],
+                operation: 'billing_write',
+                csrfProtect: false,
+            })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'user:admin-3',
+                'paid',
+                'billing_write'
+            );
+        });
+
         /**
          * Test: Admin users do not bypass billing_write into admin tier logic
          * Billing routes must stay on the explicit billing quotas unless the
