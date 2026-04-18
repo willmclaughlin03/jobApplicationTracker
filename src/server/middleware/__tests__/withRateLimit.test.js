@@ -1211,6 +1211,61 @@ describe('withRateLimit middleware', () => {
             );
         });
 
+        it('should use paid tier when a subscribed admin user calls billing_write', async () => {
+            mockGetUserFromRequest.mockResolvedValue({
+                user: {
+                    id: 'admin-3',
+                    app_metadata: { role: 'admin' },
+                    billing: { subscribed: true },
+                },
+                error: null,
+                supabaseClient: { auth: { getUser: jest.fn() } },
+            });
+            const req = createMockRequest('POST');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                allowedMethods: ['POST'],
+                operation: 'billing_write',
+                csrfProtect: false,
+            })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'user:admin-3',
+                'paid',
+                'billing_write'
+            );
+        });
+
+        /**
+         * Test: Admin users do not bypass billing_write into admin tier logic
+         * Billing routes must stay on the explicit billing quotas unless the
+         * operation is admin_read or admin_write.
+         */
+        it('should keep admin users on free tier behavior for billing_write operations', async () => {
+            mockGetUserFromRequest.mockResolvedValue({
+                user: { id: 'admin-3', app_metadata: { role: 'admin' } },
+                error: null,
+                supabaseClient: { auth: { getUser: jest.fn() } },
+            });
+            const req = createMockRequest('POST');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                allowedMethods: ['POST'],
+                operation: 'billing_write',
+                csrfProtect: false,
+            })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'user:admin-3',
+                'free',
+                'billing_write'
+            );
+        });
+
         /**
          * Test: Non-admin user + admin operation → falls back to AUTH quota
          * Security: Repeated probing of admin endpoints by non-admins is throttled

@@ -13,7 +13,7 @@
  */
 import { supabaseAdmin } from '../lib/supabaseServer.js';
 import { logger as defaultLogger } from '../../shared/logger.js';
-import { getStorargeLimitForTier, TIERS } from '../../shared/constants/tiers.js';
+import { getStorageLimitForTier, TIERS } from '../../shared/constants/tiers.js';
 import { ERROR_MESSAGES } from '../../shared/errors.js';
 
 /**
@@ -109,25 +109,27 @@ export async function getJobById(jobId, userId, supabaseClient, log = defaultLog
  * Connects to:
  * - supabaseAdmin for count query (bypasses RLS — tamper-proof storage limit check)
  * - supabaseClient for insert (respects RLS)
- * - getStorargeLimitForTier to retrieve the maxJobs limit for the user's tier
+ * - getStorageLimitForTier to retrieve the maxJobs limit for the user's tier
  *
  * @param {Object} jobData - The job data to insert (validated by jobSchema)
  * @param {string} userId - The user's ID
  * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Per-request SSR client (respects RLS)
+ * @param {object} log - Request-scoped logger
+ * @param {string} effectiveTier - Resolved storage tier for the authenticated user
  * @returns {Promise<{data: Object|null, error: Error|null}>}
  *
  * Security: Associates job with user_id to enforce ownership (app + RLS)
  * Storage: Rejects insert if user is at or over their tier's maxJobs limit
  */
-export async function createJob(jobData, userId, supabaseClient, log = defaultLogger) {
+export async function createJob(jobData, userId, supabaseClient, log = defaultLogger, effectiveTier = TIERS.FREE) {
   try {
     // Check storage limit before inserting
-    const { maxJobs } = getStorargeLimitForTier(TIERS.FREE);
+    const { maxJobs } = getStorageLimitForTier(effectiveTier) || {};
 
     // Fail closed: if the tier config is broken, deny the insert rather than
     // silently allowing unlimited entries ((count ?? 0) >= undefined is false)
     if (typeof maxJobs !== 'number' || maxJobs <= 0) {
-      log.error({ operation: 'createJob', userId, maxJobs }, 'Storage limit configuration is invalid');
+      log.error({ operation: 'createJob', userId, effectiveTier, maxJobs }, 'Storage limit configuration is invalid');
       return { data: null, error: new Error('Storage limit configuration is invalid') };
     }
 
@@ -153,7 +155,7 @@ export async function createJob(jobData, userId, supabaseClient, log = defaultLo
     }
 
     if ((count ?? 0) >= maxJobs) {
-      log.warn({ operation: 'createJob', userId, count, maxJobs }, 'Storage limit reached');
+      log.warn({ operation: 'createJob', userId, effectiveTier, count, maxJobs }, 'Storage limit reached');
       const limitError = Object.assign(
         new Error(ERROR_MESSAGES.STORAGE_LIMIT_EXCEEDED),
         { code: 'STORAGE_LIMIT_EXCEEDED' }

@@ -22,7 +22,7 @@
  * - Returns insert error when DB insert fails after limit check passes (edge case 1)
  * - Enforces limit dynamically from tier config, not a hardcoded value (edge case 2)
  * - Fails closed when maxJobs is undefined or null (edge case 3)
- * - Catches unexpected throw from getStorargeLimitForTier (edge case 4)
+ * - Catches unexpected throw from getStorageLimitForTier (edge case 4)
  * - supabaseAdmin count query works regardless of user session (bypasses RLS)
  *
  * getJobsByUserId:
@@ -68,8 +68,8 @@ jest.mock('../../../shared/logger.js', () => ({
 }));
 
 jest.mock('../../../shared/constants/tiers.js', () => ({
-  getStorargeLimitForTier: jest.fn().mockReturnValue({ maxJobs: 300 }),
-  TIERS: { FREE: 'free' },
+  getStorageLimitForTier: jest.fn().mockReturnValue({ maxJobs: 300 }),
+  TIERS: { FREE: 'free', PAID: 'paid' },
 }));
 
 const {
@@ -80,7 +80,7 @@ const {
   deleteJob,
 } = require('../jobService.js');
 
-const { getStorargeLimitForTier: mockGetStorageLimitForTier } = require('../../../shared/constants/tiers.js');
+const { getStorageLimitForTier: mockGetStorageLimitForTier } = require('../../../shared/constants/tiers.js');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -163,6 +163,7 @@ describe('createJob - storage limit enforcement', () => {
 
       expect(result.error).toBeNull();
       expect(result.data).toEqual([mockCreatedJob]);
+      expect(mockGetStorageLimitForTier).toHaveBeenCalledWith('free');
       expect(mockFrom).toHaveBeenCalledTimes(1);   // supabaseAdmin count only
       expect(mockClientFrom).toHaveBeenCalledTimes(1); // client insert
 
@@ -183,6 +184,7 @@ describe('createJob - storage limit enforcement', () => {
 
       expect(result.error).toBeNull();
       expect(result.data).toEqual([mockCreatedJob]);
+      expect(mockGetStorageLimitForTier).toHaveBeenCalledWith('free');
       expect(mockFrom).toHaveBeenCalledTimes(1);
       expect(mockClientFrom).toHaveBeenCalledTimes(1);
     });
@@ -272,6 +274,18 @@ describe('createJob - storage limit enforcement', () => {
       expect(result.error).toBeNull();
       expect(result.data).toEqual([mockCreatedJob]);
     });
+
+    it('uses the provided paid tier when resolving the storage limit', async () => {
+      mockGetStorageLimitForTier.mockReturnValueOnce({ maxJobs: 3000 });
+      mockFrom.mockReturnValueOnce(fakeQuery({ count: 2999, error: null }));
+      mockClientFrom.mockReturnValueOnce(fakeQuery({ data: [mockCreatedJob], error: null }));
+
+      const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, 'paid');
+
+      expect(result.error).toBeNull();
+      expect(result.data).toEqual([mockCreatedJob]);
+      expect(mockGetStorageLimitForTier).toHaveBeenCalledWith('paid');
+    });
   });
 
   describe('when the tier config returns an invalid maxJobs (fail-closed)', () => {
@@ -298,7 +312,7 @@ describe('createJob - storage limit enforcement', () => {
     });
   });
 
-  describe('when getStorargeLimitForTier throws unexpectedly', () => {
+  describe('when getStorageLimitForTier throws unexpectedly', () => {
     it('catches the exception and returns an error without calling the database', async () => {
       mockGetStorageLimitForTier.mockImplementationOnce(() => {
         throw new Error('Config module failure');

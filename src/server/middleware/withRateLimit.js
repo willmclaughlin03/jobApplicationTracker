@@ -1,7 +1,8 @@
 import { getUserFromRequest } from '../lib/supabaseServer.js';
 import { checkRateLimit } from '../lib/rateLimit.js';
 import { validateCsrfToken } from '../lib/csrf.js';
-import { METHOD_TO_OPERATIONS, OPERATIONS, TIERS } from '../../shared/constants/tiers.js';
+import { METHOD_TO_OPERATIONS, OPERATIONS } from '../../shared/constants/tiers.js';
+import { resolveRateLimitTier } from '../lib/userTier.js';
 
 /**
  * Operations where 429 responses are logged at debug instead of warn.
@@ -302,8 +303,7 @@ export function withRateLimit(handler, options = {}){
 
             const isAdminOperation = operation === OPERATIONS.ADMIN_READ || operation === OPERATIONS.ADMIN_WRITE;
             const isAdminUser = req._rateLimitUser?.app_metadata?.role === 'admin';
-
-            const tier = (isAdminUser && isAdminOperation) ? TIERS.ADMIN : TIERS.FREE;
+            const tier = resolveRateLimitTier(req._rateLimitUser, operation);
 
             // Non-admin probing an admin route: fall back to AUTH quota so repeated probing
             // is throttled (FREE tier has no admin_read/admin_write limits).

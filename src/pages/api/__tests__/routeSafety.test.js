@@ -1,16 +1,16 @@
 /**
- * Safety net test: Ensures all API route files use withRateLimit wrapper
+ * Safety net test: Ensures all API route files use approved wrapper entrypoints
  *
- * Purpose: Prevent new routes from being added without rate limiting and
- * centralized auth. If this test fails, a developer has added a route
- * that bypasses the withRateLimit middleware.
+ * Purpose: Prevent new routes from being added without one of the approved
+ * centralized wrappers. If this test fails, a developer has added a route
+ * that bypasses the supported middleware entrypoints.
  *
  * Connects to: All files in src/pages/api/ (excluding __tests__/)
  *
  * How it works:
  * - Recursively scans src/pages/api/ for .js route files
  * - Reads each file's source code
- * - Asserts that each file contains "export default withRateLimit("
+ * - Asserts that each file contains an approved wrapper export
  * - Fails CI with a clear message listing unwrapped routes
  */
 
@@ -52,11 +52,20 @@ function getRouteFiles(dir) {
 }
 
 describe('API Route Safety', () => {
+  const APPROVED_WRAPPER_EXPORTS = [
+    'export default withRateLimit(',
+  ];
+  const WEBHOOK_WRAPPER_EXPORT = 'export default withWebhookAuth(';
+
+  function isWebhookRoute(relativePath) {
+    return /(^|[\\/])webhooks?(?:controller|route)?\.(js|ts)$|(^|[\\/])webhooks?(?:[\\/]|$)/i.test(relativePath);
+  }
+
   /**
-   * Test: All route files must use withRateLimit
+   * Test: All route files must use one of the approved wrappers
    *
    * Scans every .js file in src/pages/api/ (excluding __tests__/) and
-   * verifies it contains "export default withRateLimit(" in its source.
+   * verifies it contains an approved wrapper export in its source.
    * This catches any new route that was added without the middleware wrapper.
    *
    * If this test fails, wrap your new route handler with:
@@ -64,8 +73,11 @@ describe('API Route Safety', () => {
    *
    * For public routes (no auth required), use:
    *   export default withRateLimit(handler, { requireAuth: false, operation: OPERATIONS.AUTH })
+   *
+   * Webhook-named routes may use:
+   *   export default withWebhookAuth(handler, { allowedMethods: ['POST'] })
    */
-  it('all API routes should be wrapped with withRateLimit', () => {
+  it('all API routes should be wrapped with an approved middleware wrapper', () => {
     const apiDir = path.resolve(__dirname, '..');
     const routeFiles = getRouteFiles(apiDir);
 
@@ -77,18 +89,28 @@ describe('API Route Safety', () => {
     for (const filePath of routeFiles) {
       const content = fs.readFileSync(filePath, 'utf-8');
       const relativePath = path.relative(path.resolve(__dirname, '../../..'), filePath);
+      const approvedWrappers = isWebhookRoute(relativePath)
+        ? [...APPROVED_WRAPPER_EXPORTS, WEBHOOK_WRAPPER_EXPORT]
+        : APPROVED_WRAPPER_EXPORTS;
 
-      if (!content.includes('export default withRateLimit(')) {
+      const hasApprovedWrapper = approvedWrappers.some((wrapperExport) =>
+        content.includes(wrapperExport)
+      );
+
+      if (!hasApprovedWrapper) {
         unwrappedRoutes.push(relativePath);
       }
     }
 
     if (unwrappedRoutes.length > 0) {
       throw new Error(
-        `The following API routes are NOT wrapped with withRateLimit:\n` +
+        `The following API routes are NOT wrapped with an approved middleware wrapper:\n` +
         unwrappedRoutes.map((r) => `  - ${r}`).join('\n') +
-        `\n\nAll routes must use: export default withRateLimit(handler, { ... })\n` +
-        `See src/server/middleware/withRateLimit.js for usage.`
+        `\n\nNon-webhook routes must use:\n` +
+        APPROVED_WRAPPER_EXPORTS.map((wrapperExport) => `  - ${wrapperExport}...`).join('\n') +
+        `\nWebhook-named routes may also use:\n` +
+        `  - ${WEBHOOK_WRAPPER_EXPORT}...` +
+        `\nSee src/server/middleware/withRateLimit.js and src/server/middleware/withWebhookAuth.js for usage.`
       );
     }
   });
