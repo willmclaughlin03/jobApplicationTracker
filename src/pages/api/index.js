@@ -3,6 +3,7 @@ import { jobSchema, getQuerySchema } from '../../shared/validations/jobSchema.js
 import { sendSuccess, sendError } from '../../shared/response.js';
 import { getJobsByUserId, createJob } from '../../server/services/jobService.js';
 import { withRateLimit } from '../../server/middleware/withRateLimit.js';
+import { resolveStorageTier } from '../../server/lib/userTier.js';
 
 /**
  * Handles GET requests - retrieves jobs for authenticated user
@@ -56,7 +57,8 @@ async function handlePost(req, res, user) {
 
   const finalizedData = createResult.data;
   finalizedData.status_date = new Date().toISOString();
-  const { data, error } = await createJob(finalizedData, user.id, req._supabaseClient, req.log);
+  const effectiveTier = resolveStorageTier(user);
+  const { data, error } = await createJob(finalizedData, user.id, req._supabaseClient, req.log, effectiveTier);
 
   if (error) {
     if (error.code === 'STORAGE_LIMIT_EXCEEDED') {

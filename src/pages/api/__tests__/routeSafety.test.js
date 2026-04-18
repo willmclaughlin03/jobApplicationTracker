@@ -54,22 +54,28 @@ function getRouteFiles(dir) {
 describe('API Route Safety', () => {
   const APPROVED_WRAPPER_EXPORTS = [
     'export default withRateLimit(',
-    'export default withWebhookAuth(',
   ];
+  const WEBHOOK_WRAPPER_EXPORT = 'export default withWebhookAuth(';
+
+  function isWebhookRoute(relativePath) {
+    return /(^|[\\/])webhooks?(?:controller|route)?\.(js|ts)$|(^|[\\/])webhooks?(?:[\\/]|$)/i.test(relativePath);
+  }
 
   /**
    * Test: All route files must use one of the approved wrappers
    *
    * Scans every .js file in src/pages/api/ (excluding __tests__/) and
-   * verifies it contains one of the approved wrapper exports in its source.
+   * verifies it contains an approved wrapper export in its source.
    * This catches any new route that was added without the middleware wrapper.
    *
-   * If this test fails, wrap your new route handler with one of:
+   * If this test fails, wrap your new route handler with:
    *   export default withRateLimit(handler, { requireAuth: true })
-   *   export default withWebhookAuth(handler, { allowedMethods: ['POST'] })
    *
    * For public routes (no auth required), use:
    *   export default withRateLimit(handler, { requireAuth: false, operation: OPERATIONS.AUTH })
+   *
+   * Webhook-named routes may use:
+   *   export default withWebhookAuth(handler, { allowedMethods: ['POST'] })
    */
   it('all API routes should be wrapped with an approved middleware wrapper', () => {
     const apiDir = path.resolve(__dirname, '..');
@@ -83,8 +89,11 @@ describe('API Route Safety', () => {
     for (const filePath of routeFiles) {
       const content = fs.readFileSync(filePath, 'utf-8');
       const relativePath = path.relative(path.resolve(__dirname, '../../..'), filePath);
+      const approvedWrappers = isWebhookRoute(relativePath)
+        ? [...APPROVED_WRAPPER_EXPORTS, WEBHOOK_WRAPPER_EXPORT]
+        : APPROVED_WRAPPER_EXPORTS;
 
-      const hasApprovedWrapper = APPROVED_WRAPPER_EXPORTS.some((wrapperExport) =>
+      const hasApprovedWrapper = approvedWrappers.some((wrapperExport) =>
         content.includes(wrapperExport)
       );
 
@@ -97,8 +106,10 @@ describe('API Route Safety', () => {
       throw new Error(
         `The following API routes are NOT wrapped with an approved middleware wrapper:\n` +
         unwrappedRoutes.map((r) => `  - ${r}`).join('\n') +
-        `\n\nAll routes must use exactly one approved wrapper export:\n` +
+        `\n\nNon-webhook routes must use:\n` +
         APPROVED_WRAPPER_EXPORTS.map((wrapperExport) => `  - ${wrapperExport}...`).join('\n') +
+        `\nWebhook-named routes may also use:\n` +
+        `  - ${WEBHOOK_WRAPPER_EXPORT}...` +
         `\nSee src/server/middleware/withRateLimit.js and src/server/middleware/withWebhookAuth.js for usage.`
       );
     }

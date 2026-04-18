@@ -6,7 +6,7 @@
 - Reuse existing utilities; analyze codebase before creating new files
 
 ## 2. Security
-- **NEVER read `.env` files directly** — assume `process.env` availability
+- **NEVER read or Bash `.env` files directly** — assume `process.env` availability, always ask for permission
 - **NEVER log environment variables or secrets**
 - Use parameterized queries (no string concatenation for SQL)
 - Sanitize all user input; validate and escape output

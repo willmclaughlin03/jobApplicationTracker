@@ -64,11 +64,11 @@ describe('index API handler (/api/jobs)', () => {
    */
   const noopLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
 
-  const createMockRequest = (method, query = {}, body = {}) => ({
+  const createMockRequest = (method, query = {}, body = {}, user = mockUser) => ({
     method,
     query,
     body,
-    _rateLimitUser: mockUser,
+    _rateLimitUser: user,
     log: noopLog,
   });
 
@@ -255,12 +255,25 @@ describe('index API handler (/api/jobs)', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(201);
-      expect(mockCreateJob).toHaveBeenCalledWith(validJobData, mockUser.id, undefined, noopLog);
+      expect(mockCreateJob).toHaveBeenCalledWith(validJobData, mockUser.id, undefined, noopLog, 'free');
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           data: createdJob,
         })
       );
+    });
+
+    it('should pass the paid storage tier for subscribed users', async () => {
+      const paidUser = { ...mockUser, billing: { subscribed: true } };
+      mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
+      mockCreateJob.mockResolvedValue({ data: { id: 'new-job-2', ...validJobData, user_id: paidUser.id }, error: null });
+
+      const req = createMockRequest('POST', {}, validJobData, paidUser);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(mockCreateJob).toHaveBeenCalledWith(validJobData, paidUser.id, undefined, noopLog, 'paid');
     });
 
     /**

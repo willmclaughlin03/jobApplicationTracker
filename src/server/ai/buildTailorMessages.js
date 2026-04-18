@@ -25,13 +25,15 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = dirname(__filename);
+// Local names (not __filename/__dirname) to avoid shadowing Node's CJS globals,
+// which causes a TDZ collision under babel-jest + babel-plugin-transform-import-meta.
+const MODULE_FILE = fileURLToPath(import.meta.url);
+const MODULE_DIR  = dirname(MODULE_FILE);
 
 // Load once at module init. In Next.js serverless, this runs once per cold
 // start (per container), not per request — intentional for performance.
 const SYSTEM_PROMPT = readFileSync(
-  join(__dirname, 'prompts', 'resume_tailor.system.md'),
+  join(MODULE_DIR, 'prompts', 'resume_tailor.system.md'),
   'utf8'
 );
 

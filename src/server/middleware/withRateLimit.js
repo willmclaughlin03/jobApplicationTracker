@@ -1,8 +1,8 @@
 import { getUserFromRequest } from '../lib/supabaseServer.js';
 import { checkRateLimit } from '../lib/rateLimit.js';
 import { validateCsrfToken } from '../lib/csrf.js';
-import { METHOD_TO_OPERATIONS, OPERATIONS, TIERS } from '../../shared/constants/tiers.js';
-import { ENTITLED_BILLING_STATUSES } from '../../shared/constants/billing.js';
+import { METHOD_TO_OPERATIONS, OPERATIONS } from '../../shared/constants/tiers.js';
+import { resolveRateLimitTier } from '../lib/userTier.js';
 
 /**
  * Operations where 429 responses are logged at debug instead of warn.
@@ -24,7 +24,6 @@ import { logger, attachRequestLogger } from '../../shared/logger.js';
 const IPV4_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
 const IPV6_REGEX = /^[0-9a-fA-F:]{2,45}$/;
 const MAX_IP_LENGTH = 45;
-const BILLING_OPERATIONS = new Set([OPERATIONS.BILLING_READ, OPERATIONS.BILLING_WRITE]);
 
 /**
  * Normalizes a header expected to have a single string value.
@@ -65,47 +64,6 @@ function formatRateLimitMessage(seconds) {
     if (seconds < 60) return `Rate limit exceeded. Try again in ${seconds} second${seconds === 1 ? '' : 's'}.`;
     const minutes = Math.ceil(seconds / 60);
     return `Rate limit exceeded. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`;
-}
-
-function getFirstDefinedValue(values) {
-    for (const value of values) {
-        if (value !== undefined && value !== null) {
-            return value;
-        }
-    }
-
-    return null;
-}
-
-/**
- * Billing routes may receive subscription state from different auth sources.
- * Accept a small set of explicit flags/status fields and fail closed otherwise.
- *
- * @param {object | null | undefined} user
- * @returns {boolean}
- */
-function hasBillingEntitlement(user) {
-    const subscribedFlag = getFirstDefinedValue([
-        user?.subscribed,
-        user?.billing?.subscribed,
-        user?.app_metadata?.billing?.subscribed,
-    ]);
-
-    if (typeof subscribedFlag === 'boolean') {
-        return subscribedFlag;
-    }
-
-    const subscriptionStatus = getFirstDefinedValue([
-        user?.subscription_status,
-        user?.subscriptionStatus,
-        user?.billing?.subscription_status,
-        user?.billing?.subscriptionStatus,
-        user?.app_metadata?.billing?.subscription_status,
-        user?.app_metadata?.billing?.subscriptionStatus,
-    ]);
-
-    return typeof subscriptionStatus === 'string'
-        && ENTITLED_BILLING_STATUSES.includes(subscriptionStatus);
 }
 
 /**
@@ -345,15 +303,7 @@ export function withRateLimit(handler, options = {}){
 
             const isAdminOperation = operation === OPERATIONS.ADMIN_READ || operation === OPERATIONS.ADMIN_WRITE;
             const isAdminUser = req._rateLimitUser?.app_metadata?.role === 'admin';
-            const isBillingOperation = BILLING_OPERATIONS.has(operation);
-            const isPaidBillingUser = isBillingOperation && hasBillingEntitlement(req._rateLimitUser);
-
-            let tier = TIERS.FREE;
-            if (isAdminUser && isAdminOperation) {
-                tier = TIERS.ADMIN;
-            } else if (isPaidBillingUser) {
-                tier = TIERS.PAID;
-            }
+            const tier = resolveRateLimitTier(req._rateLimitUser, operation);
 
             // Non-admin probing an admin route: fall back to AUTH quota so repeated probing
             // is throttled (FREE tier has no admin_read/admin_write limits).
