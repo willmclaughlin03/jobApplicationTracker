@@ -150,6 +150,21 @@ describe('withWebhookAuth middleware', () => {
     expect(mockValidateCsrfToken).not.toHaveBeenCalled();
   });
 
+  it('rejects requests with an oversized content-length before verification', async () => {
+    const req = createMockRequest('POST', { 'content-length': String(256 * 1024 + 1) });
+    const res = createMockResponse();
+    const handler = jest.fn().mockResolvedValue(undefined);
+
+    await withWebhookAuth(handler, { allowedMethods: ['POST'] })(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(413);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: 'PAYLOAD_TOO_LARGE' })
+    );
+    expect(handler).not.toHaveBeenCalled();
+    expect(mockVerifyWebhookSignature).not.toHaveBeenCalled();
+  });
+
   it('rejects requests with a stale or replayed timestamp', async () => {
     const replayError = new Error('Webhook timestamp outside tolerance');
     replayError.code = 'WEBHOOK_REPLAY_DETECTED';
@@ -185,6 +200,26 @@ describe('withWebhookAuth middleware', () => {
     expect(res.status).toHaveBeenCalledWith(503);
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({ error: 'SERVICE_UNAVAILABLE' })
+    );
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('returns 413 when raw body buffering exceeds the configured cap', async () => {
+    const oversizedBodyError = new Error('Webhook payload exceeded 262144 bytes');
+    oversizedBodyError.code = 'RAW_BODY_TOO_LARGE';
+    oversizedBodyError.maxBytes = 256 * 1024;
+    oversizedBodyError.receivedBytes = 256 * 1024 + 1;
+    mockVerifyWebhookSignature.mockRejectedValueOnce(oversizedBodyError);
+
+    const req = createMockRequest('POST');
+    const res = createMockResponse();
+    const handler = jest.fn().mockResolvedValue(undefined);
+
+    await withWebhookAuth(handler, { allowedMethods: ['POST'] })(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(413);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: 'PAYLOAD_TOO_LARGE' })
     );
     expect(handler).not.toHaveBeenCalled();
   });

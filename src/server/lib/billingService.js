@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { logger as defaultLogger } from '../../shared/logger.js';
 import {
   BILLING_PLAN_PRICE_ENV_VARS,
@@ -7,6 +8,14 @@ import { TIERS } from '../../shared/constants/tiers.js';
 
 function normalizePriceId(priceId) {
   return typeof priceId === 'string' ? priceId.trim() : '';
+}
+
+function hashUserId(userId) {
+  if (typeof userId !== 'string' || userId.length === 0) {
+    return null;
+  }
+
+  return crypto.createHash('sha256').update(userId).digest('hex');
 }
 
 /**
@@ -75,6 +84,8 @@ export async function resolveStorageEntitlement(userId, supabaseClient, log = de
     return TIERS.FREE;
   }
 
+  const userIdHash = hashUserId(userId);
+
   try {
     const { data, error } = await supabaseClient
       .from('billing_subscriptions')
@@ -84,7 +95,7 @@ export async function resolveStorageEntitlement(userId, supabaseClient, log = de
 
     if (error) {
       log.error(
-        { err: error, operation: 'resolveStorageEntitlement', userId },
+        { err: error, operation: 'resolveStorageEntitlement', userIdHash },
         'Failed to load local billing subscription'
       );
       return TIERS.FREE;
@@ -93,7 +104,7 @@ export async function resolveStorageEntitlement(userId, supabaseClient, log = de
     return hasCanonicalBillingEntitlement(data) ? TIERS.PAID : TIERS.FREE;
   } catch (error) {
     log.error(
-      { err: error, operation: 'resolveStorageEntitlement', userId },
+      { err: error, operation: 'resolveStorageEntitlement', userIdHash },
       'Unexpected error resolving storage entitlement'
     );
     return TIERS.FREE;

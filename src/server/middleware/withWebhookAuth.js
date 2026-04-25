@@ -2,9 +2,24 @@ import { ERROR_MESSAGES } from '../../shared/errors.js';
 import { sendError } from '../../shared/response.js';
 import { logger, attachRequestLogger } from '../../shared/logger.js';
 import { verifyWebhookSignature } from '../lib/webhookSignature.js';
+import { MAX_WEBHOOK_RAW_BODY_BYTES } from '../lib/readRawBody.js';
 
 function getSingleHeaderValue(value) {
   return typeof value === 'string' ? value : null;
+}
+
+function getContentLength(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmedValue = value.trim();
+
+  if (!/^\d+$/.test(trimmedValue)) {
+    return null;
+  }
+
+  return Number(trimmedValue);
 }
 
 /**
@@ -16,7 +31,6 @@ function getSingleHeaderValue(value) {
  *
  * WARNING:
  * - Consuming routes must set `export const config = { api: { bodyParser: false } }`.
- * - Consuming routes must reject oversized `Content-Length` values.
  * - Consuming routes must enforce a hard raw-body read cap while buffering.
  * - Webhook routes must never log `req.body` or any raw body buffer.
  *
@@ -25,6 +39,7 @@ function getSingleHeaderValue(value) {
  * @param {string[] | null} [options.allowedMethods=null] - Explicitly allowed methods.
  * @param {string} [options.signatureHeader='stripe-signature'] - Header carrying the provider signature.
  * @param {Function} [options.verifySignature=verifyWebhookSignature] - Signature verification function.
+ * @param {number} [options.maxBodyBytes=MAX_WEBHOOK_RAW_BODY_BYTES] - Hard raw-body cap.
  * @returns {Function} Wrapped handler
  */
 export function withWebhookAuth(handler, options = {}) {
@@ -32,6 +47,7 @@ export function withWebhookAuth(handler, options = {}) {
     allowedMethods = null,
     signatureHeader = 'stripe-signature',
     verifySignature = verifyWebhookSignature,
+    maxBodyBytes = MAX_WEBHOOK_RAW_BODY_BYTES,
   } = options;
 
   return async (req, res) => {
@@ -63,6 +79,15 @@ export function withWebhookAuth(handler, options = {}) {
         );
       }
 
+      const contentLength = getContentLength(getSingleHeaderValue(req.headers?.['content-length']));
+      if (contentLength !== null && contentLength > maxBodyBytes) {
+        (req.log || logger).warn(
+          { method: req.method, contentLength, maxBodyBytes },
+          'Webhook request exceeded the maximum allowed size'
+        );
+        return sendError(res, 413, 'PAYLOAD_TOO_LARGE', 'Webhook payload too large.');
+      }
+
       try {
         req.webhookEvent = await verifySignature(req, { signature, signatureHeader });
       } catch (verificationError) {
@@ -84,6 +109,18 @@ export function withWebhookAuth(handler, options = {}) {
             'SERVICE_UNAVAILABLE',
             ERROR_MESSAGES.SERVICE_UNAVAILABLE
           );
+        }
+
+        if (verificationError?.code === 'RAW_BODY_TOO_LARGE') {
+          (req.log || logger).warn(
+            {
+              method: req.method,
+              maxBytes: verificationError?.maxBytes,
+              receivedBytes: verificationError?.receivedBytes,
+            },
+            'Webhook request exceeded the maximum allowed size while buffering'
+          );
+          return sendError(res, 413, 'PAYLOAD_TOO_LARGE', 'Webhook payload too large.');
         }
 
         (req.log || logger).warn(verificationLog, 'Webhook signature verification failed');

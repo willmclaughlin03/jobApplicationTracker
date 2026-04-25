@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { TIERS } = require('../../../shared/constants/tiers.js');
 
 const {
@@ -87,24 +88,27 @@ describe('billingService', () => {
   });
 
   describe('resolveStorageEntitlement', () => {
+    const userId = 'user-123';
+    const expectedUserIdHash = crypto.createHash('sha256').update(userId).digest('hex');
+
     it('returns paid for an allowlisted active subscription', async () => {
       const supabaseClient = createSupabaseClient({
         data: { price_id: 'price_tailor_monthly', status: 'active' },
         error: null,
       });
 
-      const tier = await resolveStorageEntitlement('user-123', supabaseClient, mockLog);
+      const tier = await resolveStorageEntitlement(userId, supabaseClient, mockLog);
 
       expect(tier).toBe(TIERS.PAID);
       expect(supabaseClient.from).toHaveBeenCalledWith('billing_subscriptions');
       expect(supabaseClient.query.select).toHaveBeenCalledWith('price_id, status');
-      expect(supabaseClient.query.eq).toHaveBeenCalledWith('user_id', 'user-123');
+      expect(supabaseClient.query.eq).toHaveBeenCalledWith('user_id', userId);
     });
 
     it('returns free when no local billing subscription exists', async () => {
       const supabaseClient = createSupabaseClient({ data: null, error: null });
 
-      const tier = await resolveStorageEntitlement('user-123', supabaseClient, mockLog);
+      const tier = await resolveStorageEntitlement(userId, supabaseClient, mockLog);
 
       expect(tier).toBe(TIERS.FREE);
     });
@@ -115,7 +119,7 @@ describe('billingService', () => {
         error: null,
       });
 
-      const tier = await resolveStorageEntitlement('user-123', supabaseClient, mockLog);
+      const tier = await resolveStorageEntitlement(userId, supabaseClient, mockLog);
 
       expect(tier).toBe(TIERS.FREE);
     });
@@ -134,7 +138,7 @@ describe('billingService', () => {
         error: null,
       });
 
-      const tier = await resolveStorageEntitlement('user-123', supabaseClient, mockLog);
+      const tier = await resolveStorageEntitlement(userId, supabaseClient, mockLog);
 
       expect(tier).toBe(TIERS.FREE);
     });
@@ -143,14 +147,44 @@ describe('billingService', () => {
       const dbError = new Error('billing read failed');
       const supabaseClient = createSupabaseClient({ data: null, error: dbError });
 
-      const tier = await resolveStorageEntitlement('user-123', supabaseClient, mockLog);
+      const tier = await resolveStorageEntitlement(userId, supabaseClient, mockLog);
 
       expect(tier).toBe(TIERS.FREE);
-      expect(mockLog.error).toHaveBeenCalled();
+      expect(mockLog.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          err: dbError,
+          operation: 'resolveStorageEntitlement',
+          userIdHash: expectedUserIdHash,
+        }),
+        'Failed to load local billing subscription'
+      );
+      const logData = mockLog.error.mock.calls[0][0];
+      expect(logData).not.toHaveProperty('userId');
+      expect(JSON.stringify(logData)).not.toContain(userId);
+    });
+
+    it('fails closed to free when the billing query throws unexpectedly', async () => {
+      const queryError = new Error('billing query threw');
+      const supabaseClient = createSupabaseClient(queryError);
+
+      const tier = await resolveStorageEntitlement(userId, supabaseClient, mockLog);
+
+      expect(tier).toBe(TIERS.FREE);
+      expect(mockLog.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          err: queryError,
+          operation: 'resolveStorageEntitlement',
+          userIdHash: expectedUserIdHash,
+        }),
+        'Unexpected error resolving storage entitlement'
+      );
+      const logData = mockLog.error.mock.calls[0][0];
+      expect(logData).not.toHaveProperty('userId');
+      expect(JSON.stringify(logData)).not.toContain(userId);
     });
 
     it('fails closed to free when the resolver is misconfigured', async () => {
-      const tier = await resolveStorageEntitlement('user-123', null, mockLog);
+      const tier = await resolveStorageEntitlement(userId, null, mockLog);
 
       expect(tier).toBe(TIERS.FREE);
       expect(mockLog.error).toHaveBeenCalled();

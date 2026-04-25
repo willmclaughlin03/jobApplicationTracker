@@ -87,6 +87,8 @@ These rules apply in every chunk below:
 - local billing state, not redirect success pages, decides premium access
 - stale Stripe events must be ignored using `last_stripe_event_created`
 - test and live webhook traffic must be separated using livemode checks
+- the canonical Stripe event ingress for this plan is a Stripe webhook
+  endpoint, not Amazon EventBridge
 - webhook routes must use raw-body verification and must never log raw bodies or
   webhook signatures
 
@@ -534,11 +536,46 @@ events occur. It must be public, but it cannot be permissive.
 - dedupe through `stripe_event_receipts`
 - handle these events as sync triggers:
 - `checkout.session.completed`
+  - checkout completed signal only; never grants entitlement by itself
 - `customer.subscription.created`
+  - initial subscription creation sync trigger
 - `customer.subscription.updated`
+  - plan changes, `cancel_at_period_end` scheduling, and other subscription
+    state changes that do not yet mean the subscription has ended
 - `customer.subscription.deleted`
+  - actual terminal subscription end; this is the cancellation-complete event,
+    not the cancellation-scheduled event
 - `invoice.paid`
+  - successful initial subscription fee or renewal charge
 - `invoice.payment_failed`
+  - failed initial subscription fee or renewal charge
+
+### Stripe Dashboard Destination For This Plan
+
+This rollout assumes Stripe sends billing events to a webhook endpoint, not to
+Amazon EventBridge, for the canonical billing path.
+
+For the planned OpenNext + SST deployment on AWS Lambda:
+
+- Stripe should send events to the app's public site domain behind CloudFront
+- the production endpoint shape is
+  `https://<public-site-domain>/api/billing/webhook`
+- the staging endpoint shape is
+  `https://<staging-site-domain>/api/billing/webhook`
+- Stripe must not target a Lambda Function URL, private origin URL, or any
+  internal AWS endpoint directly
+- local development may use Stripe CLI forwarding to
+  `http://localhost:3000/api/billing/webhook`, but that is a development-only
+  convenience and not a deployment destination
+
+Stripe dashboard registration requirements:
+
+- create separate test and live webhook endpoints or secrets
+- register the exact event set listed above for the canonical billing sync path
+- use the endpoint signing secret associated with that webhook endpoint
+- if EventBridge is introduced later for analytics or side effects, it must not
+  replace the canonical webhook path for this plan unless the plan is revised
+  intentionally
 
 ### Canonical route behavior
 
@@ -604,9 +641,14 @@ availability, and operational checks.
 ### Required operational checks
 
 - confirm `Stripe-Signature` is forwarded by CloudFront to the origin
+- confirm Stripe is configured to call the public site webhook endpoint
+  (`/api/billing/webhook`) on the CloudFront-fronted app domain
+- confirm Stripe is not pointed at a Lambda Function URL or private origin URL
 - confirm webhook secrets are configured separately for test and live traffic
 - confirm price id environment variables match the allowlist in `stripe.js`
 - confirm `NEXT_PUBLIC_APP_URL` is correct for checkout and portal return URLs
+- confirm the canonical billing destination remains a Stripe webhook endpoint
+  unless the plan is explicitly revised for EventBridge
 - decide whether WAF IP allowlisting ships in v1 or immediately after
 
 ### Backfill requirement
