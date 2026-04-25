@@ -8,13 +8,20 @@ export const BILLING_PLANS = {
   RESUME_TAILOR_MONTHLY: 'resume_tailor_monthly',
 };
 
+/**
+ * Stripe price ids stay server-configured. The env var mapping is shared so
+ * entitlement checks and Stripe runtime setup reference the same allowlist.
+ */
+export const BILLING_PLAN_PRICE_ENV_VARS = {
+  [BILLING_PLANS.RESUME_TAILOR_MONTHLY]: 'STRIPE_PRICE_RESUME_TAILOR_MONTHLY',
+};
+
 export const BILLING_ENTITLEMENTS = {
   AI_TAILOR: 'ai_tailor',
 };
 
 export const BILLING_SUBSCRIPTION_STATUSES = {
   ACTIVE: 'active',
-  TRIALING: 'trialing',
   PAST_DUE: 'past_due',
   UNPAID: 'unpaid',
   CANCELED: 'canceled',
@@ -25,7 +32,6 @@ export const BILLING_SUBSCRIPTION_STATUSES = {
 
 export const ENTITLED_BILLING_STATUSES = [
   BILLING_SUBSCRIPTION_STATUSES.ACTIVE,
-  BILLING_SUBSCRIPTION_STATUSES.TRIALING,
 ];
 
 export const PAYMENT_RECOVERY_BILLING_STATUSES = [

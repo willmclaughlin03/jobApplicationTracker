@@ -27,6 +27,11 @@ jest.mock('../../../server/services/jobService.js', () => ({
   createJob: mockCreateJob,
 }));
 
+const mockResolveStorageEntitlement = jest.fn();
+jest.mock('../../../server/lib/billingService.js', () => ({
+  resolveStorageEntitlement: mockResolveStorageEntitlement,
+}));
+
 // Mock jobSchema to avoid isomorphic-dompurify dependency issues
 const mockJobSchemaSafeParse = jest.fn();
 const mockGetQuerySchemaSafeParse = jest.fn();
@@ -82,6 +87,7 @@ describe('index API handler (/api/jobs)', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockResolveStorageEntitlement.mockResolvedValue('free');
   });
 
   describe('GET /api/jobs', () => {
@@ -248,14 +254,16 @@ describe('index API handler (/api/jobs)', () => {
       const createdJob = { id: 'new-job-1', ...validJobData, user_id: mockUser.id };
       mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
       mockCreateJob.mockResolvedValue({ data: createdJob, error: null });
+      const mockClient = { from: jest.fn() };
 
-      const req = createMockRequest('POST', {}, validJobData);
+      const req = { ...createMockRequest('POST', {}, validJobData), _supabaseClient: mockClient };
       const res = createMockResponse();
 
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(201);
-      expect(mockCreateJob).toHaveBeenCalledWith(validJobData, mockUser.id, undefined, noopLog, 'free');
+      expect(mockResolveStorageEntitlement).toHaveBeenCalledWith(mockUser.id, mockClient, noopLog);
+      expect(mockCreateJob).toHaveBeenCalledWith(validJobData, mockUser.id, mockClient, noopLog, 'free');
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           data: createdJob,
@@ -263,17 +271,17 @@ describe('index API handler (/api/jobs)', () => {
       );
     });
 
-    it('should pass the paid storage tier for subscribed users', async () => {
-      const paidUser = { ...mockUser, billing: { subscribed: true } };
+    it('should use the paid storage tier when local billing entitlement resolves paid', async () => {
+      mockResolveStorageEntitlement.mockResolvedValueOnce('paid');
       mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
-      mockCreateJob.mockResolvedValue({ data: { id: 'new-job-2', ...validJobData, user_id: paidUser.id }, error: null });
+      mockCreateJob.mockResolvedValue({ data: { id: 'new-job-2', ...validJobData, user_id: mockUser.id }, error: null });
 
-      const req = createMockRequest('POST', {}, validJobData, paidUser);
+      const req = createMockRequest('POST', {}, validJobData);
       const res = createMockResponse();
 
       await handler(req, res);
 
-      expect(mockCreateJob).toHaveBeenCalledWith(validJobData, paidUser.id, undefined, noopLog, 'paid');
+      expect(mockCreateJob).toHaveBeenCalledWith(validJobData, mockUser.id, undefined, noopLog, 'paid');
     });
 
     /**
@@ -293,6 +301,7 @@ describe('index API handler (/api/jobs)', () => {
 
       expect(res.status).toHaveBeenCalledWith(400);
       expect(mockCreateJob).not.toHaveBeenCalled();
+      expect(mockResolveStorageEntitlement).not.toHaveBeenCalled();
     });
 
     /**
@@ -331,7 +340,10 @@ describe('index API handler (/api/jobs)', () => {
       mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
       mockCreateJob.mockResolvedValue({
         data: null,
-        error: { code: 'STORAGE_LIMIT_EXCEEDED' },
+        error: {
+          code: 'STORAGE_LIMIT_EXCEEDED',
+          message: 'You have reached the maximum of 3000 job entries. Please delete some entries to add more.',
+        },
       });
 
       const req = createMockRequest('POST', {}, validJobData);
@@ -343,6 +355,7 @@ describe('index API handler (/api/jobs)', () => {
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           error: 'STORAGE_LIMIT_EXCEEDED',
+          message: 'You have reached the maximum of 3000 job entries. Please delete some entries to add more.',
         })
       );
     });

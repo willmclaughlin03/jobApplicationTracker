@@ -14,7 +14,13 @@
 import { supabaseAdmin } from '../lib/supabaseServer.js';
 import { logger as defaultLogger } from '../../shared/logger.js';
 import { getStorageLimitForTier, TIERS } from '../../shared/constants/tiers.js';
-import { ERROR_MESSAGES } from '../../shared/errors.js';
+
+function createStorageLimitExceededError(maxJobs) {
+  return Object.assign(
+    new Error(`You have reached the maximum of ${maxJobs} job entries. Please delete some entries to add more.`),
+    { code: 'STORAGE_LIMIT_EXCEEDED' }
+  );
+}
 
 /**
  * Retrieves jobs for a specific user with optional pagination and filtering
@@ -156,10 +162,7 @@ export async function createJob(jobData, userId, supabaseClient, log = defaultLo
 
     if ((count ?? 0) >= maxJobs) {
       log.warn({ operation: 'createJob', userId, effectiveTier, count, maxJobs }, 'Storage limit reached');
-      const limitError = Object.assign(
-        new Error(ERROR_MESSAGES.STORAGE_LIMIT_EXCEEDED),
-        { code: 'STORAGE_LIMIT_EXCEEDED' }
-      );
+      const limitError = createStorageLimitExceededError(maxJobs);
       return { data: null, error: limitError };
     }
 

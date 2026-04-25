@@ -261,6 +261,7 @@ describe('createJob - storage limit enforcement', () => {
 
       expect(result.data).toBeNull();
       expect(result.error.code).toBe('STORAGE_LIMIT_EXCEEDED');
+      expect(result.error.message).toContain('5');
       expect(mockClientFrom).not.toHaveBeenCalled();
     });
 
@@ -285,6 +286,18 @@ describe('createJob - storage limit enforcement', () => {
       expect(result.error).toBeNull();
       expect(result.data).toEqual([mockCreatedJob]);
       expect(mockGetStorageLimitForTier).toHaveBeenCalledWith('paid');
+    });
+
+    it('includes the premium storage limit in the error message when paid users hit the cap', async () => {
+      mockGetStorageLimitForTier.mockReturnValueOnce({ maxJobs: 3000 });
+      mockFrom.mockReturnValueOnce(fakeQuery({ count: 3000, error: null }));
+
+      const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, 'paid');
+
+      expect(result.data).toBeNull();
+      expect(result.error.code).toBe('STORAGE_LIMIT_EXCEEDED');
+      expect(result.error.message).toContain('3000');
+      expect(mockClientFrom).not.toHaveBeenCalled();
     });
   });
 
