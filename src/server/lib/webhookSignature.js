@@ -1,12 +1,42 @@
+import { stripe, getActiveStripeWebhookSecret } from './stripe.js';
+import { readRawBody } from './readRawBody.js';
+
+function normalizeSignature(signature) {
+  return typeof signature === 'string' ? signature.trim() : '';
+}
+
+class WebhookSignatureError extends Error {
+  constructor(message, code, statusCode) {
+    super(message);
+    this.name = 'WebhookSignatureError';
+    this.code = code;
+    this.statusCode = statusCode;
+  }
+}
+
 /**
- * Provider-specific webhook verification must be wired in by the consuming
- * route or replaced in tests. This default fails closed so unsigned webhook
- * traffic is never accepted by mistake.
+ * Verify a Stripe webhook request against the raw request body.
  *
- * @returns {Promise<never>}
+ * Purpose: centralize fail-closed signature verification so webhook routes
+ * never accidentally verify against parsed JSON or partial payloads.
+ *
+ * @param {import('http').IncomingMessage & { rawBody?: Buffer | string }} req
+ * @param {{ signature?: string }} [options]
+ * @returns {Promise<import('stripe').Stripe.Event>}
  */
-export async function verifyWebhookSignature() {
-  const error = new Error('Webhook signature verifier is not configured');
-  error.code = 'WEBHOOK_VERIFIER_NOT_CONFIGURED';
-  throw error;
+export async function verifyWebhookSignature(req, options = {}) {
+  const signature = normalizeSignature(options.signature);
+
+  if (!signature) {
+    throw new WebhookSignatureError(
+      'Stripe signature header missing',
+      'WEBHOOK_SIGNATURE_INVALID',
+      400
+    );
+  }
+
+  const webhookSecret = getActiveStripeWebhookSecret();
+  const rawBody = await readRawBody(req);
+
+  return stripe.webhooks.constructEvent(rawBody, signature, webhookSecret);
 }

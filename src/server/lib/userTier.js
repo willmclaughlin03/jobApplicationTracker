@@ -15,7 +15,9 @@ function getFirstDefinedValue(values) {
 
 /**
  * Billing entitlements may come from multiple auth payload shapes.
- * Fail closed unless one of the explicit paid signals is present.
+ * This auth-payload check is only for request-time hints like rate limiting.
+ * Canonical storage and billing authorization must come from local billing
+ * state on the server.
  *
  * @param {object | null | undefined} user
  * @returns {boolean}
@@ -67,7 +69,8 @@ export function resolveRateLimitTier(user, operation) {
 }
 
 /**
- * Resolve the storage tier for job-cap enforcement.
+ * @deprecated Storage entitlement must be resolved from canonical local
+ * billing state via billingService.resolveStorageEntitlement().
  *
  * @param {object | null | undefined} user
  * @returns {string}

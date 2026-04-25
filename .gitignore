@@ -9,5 +9,3 @@ node_modules/
 src/server/ai/__tests__/
 src/server/db/__tests__/
 src/shared/schemas/__tests__/
-
-
