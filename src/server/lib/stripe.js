@@ -14,6 +14,7 @@ const STRIPE_SECRET_KEY_ENV_VAR = 'STRIPE_SECRET_KEY';
 const STRIPE_SECRET_KEY_PREFIXES = ['sk_test_', 'sk_live_'];
 const STRIPE_PRICE_ID_PREFIX = 'price_';
 const STRIPE_WEBHOOK_SECRET_PREFIX = 'whsec_';
+const MAX_PLAN_ERROR_LENGTH = 80;
 
 function createStripeConfigError(message) {
   const error = new Error(message);
@@ -29,6 +30,24 @@ function createWebhookConfigError(message) {
 
 function normalizeEnvValue(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function sanitizePlanForError(plan) {
+  let rawPlan;
+
+  try {
+    rawPlan = typeof plan === 'string' ? plan : String(plan);
+  } catch {
+    return '[unprintable]';
+  }
+
+  const sanitizedPlan = rawPlan
+    .trim()
+    .replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .slice(0, MAX_PLAN_ERROR_LENGTH);
+
+  return sanitizedPlan || '[empty]';
 }
 
 function hasAnyPrefix(value, prefixes) {
@@ -101,7 +120,8 @@ export function getPriceIdForPlan(plan) {
     return priceId;
   }
 
-  const error = new Error(`Unsupported billing plan: ${plan}`);
+  const sanitizedPlan = sanitizePlanForError(plan);
+  const error = new Error(`Unsupported billing plan: ${sanitizedPlan}`);
   error.code = 'STRIPE_PLAN_INVALID';
   throw error;
 }

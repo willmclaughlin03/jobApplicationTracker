@@ -70,6 +70,27 @@ describe('stripe runtime foundation', () => {
     expect(() => getPriceIdForPlan('unknown_plan')).toThrow(/unsupported billing plan/i);
   });
 
+  it('sanitizes unsupported billing plans before embedding them in an error message', () => {
+    setValidTestEnv();
+
+    const { getPriceIdForPlan } = loadStripeModule();
+    const unsafePlan = `  unknown_plan\r\n\t${'x'.repeat(120)}  `;
+
+    try {
+      getPriceIdForPlan(unsafePlan);
+      throw new Error('Expected getPriceIdForPlan to reject an unsupported plan');
+    } catch (error) {
+      expect(error.code).toBe('STRIPE_PLAN_INVALID');
+      expect(error.message).toContain('Unsupported billing plan: unknown_plan');
+      expect(error.message).not.toContain('\r');
+      expect(error.message).not.toContain('\n');
+      expect(error.message).not.toContain('\t');
+      expect(error.message.length).toBeLessThanOrEqual(
+        'Unsupported billing plan: '.length + 80
+      );
+    }
+  });
+
   it('fails fast when STRIPE_SECRET_KEY is missing', () => {
     process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
 

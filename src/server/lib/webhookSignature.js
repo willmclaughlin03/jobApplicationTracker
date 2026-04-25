@@ -5,6 +5,15 @@ function normalizeSignature(signature) {
   return typeof signature === 'string' ? signature.trim() : '';
 }
 
+class WebhookSignatureError extends Error {
+  constructor(message, code, statusCode) {
+    super(message);
+    this.name = 'WebhookSignatureError';
+    this.code = code;
+    this.statusCode = statusCode;
+  }
+}
+
 /**
  * Verify a Stripe webhook request against the raw request body.
  *
@@ -19,9 +28,11 @@ export async function verifyWebhookSignature(req, options = {}) {
   const signature = normalizeSignature(options.signature);
 
   if (!signature) {
-    const error = new Error('Stripe signature header missing');
-    error.code = 'WEBHOOK_SIGNATURE_INVALID';
-    throw error;
+    throw new WebhookSignatureError(
+      'Stripe signature header missing',
+      'WEBHOOK_SIGNATURE_INVALID',
+      400
+    );
   }
 
   const webhookSecret = getActiveStripeWebhookSecret();

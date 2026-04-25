@@ -15,18 +15,25 @@ import { supabaseAdmin } from '../lib/supabaseServer.js';
 import { logger as defaultLogger } from '../../shared/logger.js';
 import { getStorageLimitForTier, TIERS } from '../../shared/constants/tiers.js';
 
+export class StorageLimitExceededError extends Error {
+  constructor(maxJobs) {
+    const message = `You have reached the maximum of ${maxJobs} job entries. Please delete some entries to add more.`;
+    super(message);
+    this.name = 'StorageLimitExceededError';
+    this.code = 'STORAGE_LIMIT_EXCEEDED';
+    this.statusCode = 409;
+  }
+}
+
 /**
  * createStorageLimitExceededError constructs a user-facing Error for callers
  * when a user reaches the configured job storage limit.
  *
  * @param {number} maxJobs - Maximum number of job entries the user may store.
- * @returns {Error} Error with code 'STORAGE_LIMIT_EXCEEDED' for API-level handling.
+ * @returns {StorageLimitExceededError} Error for API-level handling.
  */
 function createStorageLimitExceededError(maxJobs) {
-  return Object.assign(
-    new Error(`You have reached the maximum of ${maxJobs} job entries. Please delete some entries to add more.`),
-    { code: 'STORAGE_LIMIT_EXCEEDED' }
-  );
+  return new StorageLimitExceededError(maxJobs);
 }
 
 /**

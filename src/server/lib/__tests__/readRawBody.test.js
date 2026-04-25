@@ -50,6 +50,17 @@ describe('readRawBody', () => {
     });
   });
 
+  it('accepts payloads equal to maxBytes', async () => {
+    const maxBytes = 5;
+    const expectedBody = Buffer.alloc(maxBytes, 'a');
+    const req = createRequest([expectedBody]);
+
+    const rawBody = await readRawBody(req, { maxBytes });
+
+    expect(rawBody).toEqual(expectedBody);
+    expect(req.rawBody).toEqual(expectedBody);
+  });
+
   it('uses the documented default body cap when no override is provided', () => {
     expect(MAX_WEBHOOK_RAW_BODY_BYTES).toBe(256 * 1024);
   });

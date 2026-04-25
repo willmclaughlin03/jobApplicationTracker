@@ -78,6 +78,7 @@ const {
   getJobById,
   updateJob,
   deleteJob,
+  StorageLimitExceededError,
 } = require('../jobService.js');
 
 const { getStorageLimitForTier: mockGetStorageLimitForTier } = require('../../../shared/constants/tiers.js');
@@ -197,7 +198,10 @@ describe('createJob - storage limit enforcement', () => {
       const result = await createJob(validJobData, userId, mockSupabaseClient);
 
       expect(result.data).toBeNull();
+      expect(result.error).toBeInstanceOf(StorageLimitExceededError);
+      expect(result.error.name).toBe('StorageLimitExceededError');
       expect(result.error.code).toBe('STORAGE_LIMIT_EXCEEDED');
+      expect(result.error.statusCode).toBe(409);
       expect(result.error.message).toContain('300');
       expect(mockFrom).toHaveBeenCalledTimes(1);
       expect(mockClientFrom).not.toHaveBeenCalled(); // insert must NOT run

@@ -129,6 +129,7 @@ describe('verifyWebhookSignature', () => {
       verifyWebhookSignature(createBufferedRequest(payload), { signature: '' })
     ).rejects.toMatchObject({
       code: 'WEBHOOK_SIGNATURE_INVALID',
+      statusCode: 400,
     });
   });
 
