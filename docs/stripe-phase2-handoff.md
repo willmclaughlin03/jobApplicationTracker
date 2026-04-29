@@ -11,8 +11,8 @@ Phase 2 covers the database layer only:
 Repository baseline note:
 
 - the Phase 2 billing SQL lives in the repo-root tracked `migrations/` folder
-- this repo currently includes the billing migrations `005` through `010`
-- this covers `005` through `010`, not a full replayable project migration chain
+- this repo currently includes the billing migrations `005` through `011`
+- this covers `005` through `011`, not a full replayable project migration chain
 - earlier migrations `001` through `004` were applied outside repo history, so repo-only fresh-schema replay remains unavailable
 
 No API routes, Stripe SDK client code, webhook handling, or entitlement logic were added in this phase.
@@ -51,6 +51,38 @@ No API routes, Stripe SDK client code, webhook handling, or entitlement logic we
 - `public.touch_billing_updated_at()` is billing-scoped
 - the function pins `search_path` to `pg_catalog, public`
 - the function uses `SECURITY INVOKER`
+
+## Additive Billing Hardening Follow-up
+
+An additive follow-up migration, `011_billing_concurrency_guards.sql`, now
+extends the billing schema with service-role-only RPCs:
+
+- `upsert_billing_subscription_if_newer_or_equal(payload jsonb)`
+- `upsert_billing_subscription_authoritative(payload jsonb)`
+- `merge_stripe_event_receipt(...)`
+
+Why these RPCs exist:
+
+- stale-event protection and receipt merging are race-sensitive write paths
+- moving those decisions into Postgres removes the JS read-check-write window
+- the RPCs return explicit JSON outcomes plus the final/current row so JS does
+  not need race-sensitive follow-up `SELECT`s
+
+Current service-layer conventions built around those RPCs:
+
+- request-scoped billing reads require an explicit Supabase client
+- intentional RLS bypasses go through explicitly named `*Privileged` wrappers
+- `trialing` remains forbidden everywhere and must not be reintroduced to local
+  constants, DB status checks, or checkout configuration
+- unsupported Stripe statuses intentionally log and skip the write as
+  `unsupported_status_ignored`
+
+Operational rollout note:
+
+- rollback is the JS/application deploy only; migration `011` is additive and
+  may remain in place when no app code calls the functions
+- deploy ordering must ensure migration `011` exists before any app code that
+  calls the billing RPCs becomes live
 
 ## Key Decisions
 
@@ -161,6 +193,10 @@ The billing integration suite now verifies:
 
 ## Validation Result
 
+This section records the original Phase 2 schema-only validation baseline. The
+current billing hardening follow-up adds additional RPC integration coverage on
+top of that baseline.
+
 Command run:
 
 ```powershell
@@ -198,13 +234,13 @@ Phase 2 does not prove:
 - subscription reconciliation logic
 - entitlement resolution
 - route-level authorization around billing actions
-- full project migration replay from repo state (`001` through `010`)
+- full project migration replay from repo state (`001` through `011`)
 
 Those belong to later phases.
 
 ## Phase 3 Starting Point
 
-In environments where local/session migrations `005` through `010` have already
+In environments where local/session migrations `005` through `011` have already
 been applied, Phase 3 can assume:
 
 - billing tables exist and are hardened

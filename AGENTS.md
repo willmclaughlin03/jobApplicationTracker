@@ -1,5 +1,11 @@
 # Claude Development Guidelines
 
+## Environment Notes
+- Current environment is pre-production only.
+- There are currently no paid users in this environment.
+- Current fail-closed local billing entitlement behavior does not create a live paid-user access or premium-storage regression in this environment.
+- Remaining Stripe work for Chunks 3, 4, 5, and repo-facing Chunk 6 is still required before any production rollout that serves paid users.
+
 ## 1. Code Organization
 - Small, focused modules with single responsibilities
 - Follow existing project structure, patterns, and naming conventions
