@@ -291,15 +291,50 @@ Security difference vs next-phase plan:
 
 - the helper and middleware foundation already enforce raw-body verification,
   method gating, missing-signature rejection, and body-cap rejection
-- the billing service layer now has the canonical customer-mapping, stale-event,
-  receipt, and Stripe-fetch reconciliation helpers the route will call
+- the billing service layer now has the canonical customer-mapping,
+  livemode-mismatch rejection, stale-event, receipt, and Stripe-fetch
+  reconciliation helpers the route will call
 - the route-level protections the plan depends on are not live yet because the
   public webhook route does not exist on this branch
-- that means livemode mismatch rejection and the actual public event ingress are
-  still absent from runtime behavior even though the downstream service helpers
-  now exist
+- that means the actual public event ingress is still absent from runtime
+  behavior even though the downstream service helpers now exist
 - this is primarily a missing-protection gap rather than an implemented
   contradiction, because the public webhook surface itself is not yet exposed
+
+## Current Billing Hardening
+
+The current billing service layer now relies on two explicit architectural
+boundaries:
+
+- race-sensitive subscription writes and Stripe receipt merges happen through
+  Postgres RPCs, not JS read-check-write sequences
+- ordinary entitlement reads must use a request-scoped Supabase client, while
+  intentional RLS bypasses go through explicitly named `*Privileged` wrappers
+
+Key consequences:
+
+- `syncSubscriptionFromStripe(..., { mode: "event" })` uses the
+  event-ordering RPC and requires a non-null `eventCreated`
+- `syncSubscriptionFromStripe(..., { mode: "authoritative" })` uses the
+  authoritative RPC and preserves `last_stripe_event_created` when no new
+  staleness key is supplied
+- `recordStripeEventReceipt(...)` still validates Stripe-shaped input in JS
+  before calling the receipt-merge RPC
+- unsupported Stripe statuses are rejected and monitored as
+  `billing_unsupported_status`; they do not widen the local status allowlist
+- test/live traffic mismatches are rejected and monitored as
+  `billing_livemode_mismatch`
+- trials remain forbidden everywhere; checkout reviewers must not enable Stripe
+  trials or reintroduce `trialing` to local status handling
+
+Residual gaps that remain by design:
+
+- same-timestamp collisions across distinct Stripe events are still
+  last-write-wins
+- concurrent event-mode and authoritative reconciles can still resolve
+  last-write-wins on business fields
+- `unsupported_status_ignored` is intentional and can temporarily preserve stale
+  entitlement until a later supported sync or manual intervention
 
 ## Why Raw Body Verification Exists
 
@@ -346,6 +381,9 @@ Security difference vs next-phase plan:
 
 - this flow already follows the plan's core security rule that local billing
   state, not auth metadata, decides premium storage behavior
+- the active `/api` path already passes `req._supabaseClient` into
+  `resolveStorageEntitlement(...)`, so the current job-creation route stays
+  request-scoped instead of silently reading through `supabaseAdmin`
 - however, the plan's rollout section assumes this entitlement switch should not
   become authoritative in production until paid-user billing rows are backfilled
   or webhook/reconcile coverage is live

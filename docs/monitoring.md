@@ -6,6 +6,8 @@
 |----------|----------|-------------|
 | `AXIOM_DATASET` | For production logging | Axiom dataset name to send logs to |
 | `AXIOM_TOKEN` | For production logging | Axiom API token with ingest permission |
+| `BILLING_LOG_HASH_SECRET` | For billing log hashing | HMAC secret used to hash user ids in billing logs without exposing a reusable plain digest |
+| `LOG_FULL_BILLING_IDS` | Optional, keep unset/false in live by default | When `true` in live mode, only `error` and `debug` billing logs may emit full Stripe ids instead of redacted ids |
 
 Set these in **AWS Amplify Console → Environment Variables** for the Production (and optionally Preview) environments.
 
@@ -79,6 +81,20 @@ This endpoint is rate-limited at **60 requests/hour per IP** (`OPERATIONS.HEALTH
 2. **Threshold:** alert when count > 50 (adjust based on traffic)
 3. **Notify:** Slack channel or email
 4. **Note:** `/api/health` 429s are logged at `debug`, not `warn`, to avoid noisy ingest from aggressive uptime polling. This alert is for non-health rate-limit exhaustion.
+
+### Billing Unsupported Status
+
+1. **Query:** filter by `event == "billing_unsupported_status"`
+2. **Threshold:** alert when count > 0 over 5 minutes
+3. **Notify:** email `tracktheapp.support@gmail.com`
+4. **Why:** this is a deliberate fail-closed path. The write is skipped, which can temporarily preserve stale entitlement until a later supported sync or manual intervention.
+
+### Billing Livemode Mismatch
+
+1. **Query:** filter by `event == "billing_livemode_mismatch"`
+2. **Threshold:** alert when count > 0 over 5 minutes
+3. **Notify:** email `tracktheapp.support@gmail.com`
+4. **Why:** test/live Stripe traffic must stay separated. A mismatch is an operational integrity problem, not just a noisy warning.
 
 ## Uptime Monitoring
 
