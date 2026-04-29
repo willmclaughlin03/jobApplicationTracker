@@ -4,6 +4,7 @@ const { ERROR_MESSAGES } = require('../../../shared/errors.js');
 const { BILLING_ENTITLEMENTS } = require('../../../shared/constants/billing.js');
 
 const TEST_BILLING_LOG_HASH_SECRET = 'billing-log-secret-test';
+const originalBillingLogHashSecret = process.env.BILLING_LOG_HASH_SECRET;
 process.env.BILLING_LOG_HASH_SECRET = TEST_BILLING_LOG_HASH_SECRET;
 
 let mockStripeMode = 'test';
@@ -205,6 +206,10 @@ describe('billingService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockStripe.customers.create.mockReset();
+    mockStripe.subscriptions.retrieve.mockReset();
+    mockSupabaseAdmin.from.mockReset();
+    mockSupabaseAdmin.rpc.mockReset();
     mockStripeMode = 'test';
     delete process.env.LOG_FULL_BILLING_IDS;
     process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
@@ -215,6 +220,12 @@ describe('billingService', () => {
       delete process.env.LOG_FULL_BILLING_IDS;
     } else {
       process.env.LOG_FULL_BILLING_IDS = originalLogFullBillingIds;
+    }
+
+    if (originalBillingLogHashSecret === undefined) {
+      delete process.env.BILLING_LOG_HASH_SECRET;
+    } else {
+      process.env.BILLING_LOG_HASH_SECRET = originalBillingLogHashSecret;
     }
   });
 
@@ -799,6 +810,34 @@ describe('billingService', () => {
       });
     });
 
+    it('rejects a supplied invalid eventCreated timestamp before Stripe work in authoritative mode', async () => {
+      await expect(
+        syncSubscriptionFromStripe(
+          'sub_sync_123',
+          { mode: BILLING_SYNC_MODES.AUTHORITATIVE, eventCreated: 'not-a-timestamp' },
+          mockLog
+        )
+      ).rejects.toMatchObject({ code: 'BILLING_INVALID_INPUT', message: 'Invalid eventCreated timestamp' });
+
+      expect(mockStripe.subscriptions.retrieve).not.toHaveBeenCalled();
+      expect(mockSupabaseAdmin.from).not.toHaveBeenCalled();
+      expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
+    });
+
+    it('rejects a supplied invalid eventCreated timestamp before Stripe work in event mode', async () => {
+      await expect(
+        syncSubscriptionFromStripe(
+          'sub_sync_123',
+          { mode: BILLING_SYNC_MODES.EVENT, eventCreated: 'not-a-timestamp' },
+          mockLog
+        )
+      ).rejects.toMatchObject({ code: 'BILLING_INVALID_INPUT', message: 'Invalid eventCreated timestamp' });
+
+      expect(mockStripe.subscriptions.retrieve).not.toHaveBeenCalled();
+      expect(mockSupabaseAdmin.from).not.toHaveBeenCalled();
+      expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
+    });
+
     it('keeps the JS stale-event check as a fast-path optimization', async () => {
       useAdminClient(createSupabaseClient({
         billing_customers: {
@@ -1159,7 +1198,12 @@ describe('billingService', () => {
     afterEach(() => {
       jest.resetModules();
       jest.clearAllMocks();
-      process.env.BILLING_LOG_HASH_SECRET = originalSecret;
+
+      if (originalSecret === undefined) {
+        delete process.env.BILLING_LOG_HASH_SECRET;
+      } else {
+        process.env.BILLING_LOG_HASH_SECRET = originalSecret;
+      }
     });
 
     it('warns once at module init, returns null log hashes, and keeps downstream logging working', async () => {

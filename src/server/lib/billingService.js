@@ -367,8 +367,12 @@ function parseSyncSubscriptionOptions(options) {
     throw createBillingError('Invalid Stripe subscription sync mode');
   }
 
-  const eventCreated =
-    options?.eventCreated === undefined ? undefined : toIsoTimestamp(options.eventCreated);
+  const hasEventCreated = options?.eventCreated !== undefined;
+  const eventCreated = hasEventCreated ? toIsoTimestamp(options.eventCreated) : undefined;
+
+  if (hasEventCreated && !eventCreated) {
+    throw createBillingError('Invalid eventCreated timestamp');
+  }
 
   if (parsedMode.data === BILLING_SYNC_MODES.EVENT && !eventCreated) {
     throw createBillingError('Event-driven subscription sync requires eventCreated');

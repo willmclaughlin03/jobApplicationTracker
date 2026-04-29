@@ -298,6 +298,20 @@ BEGIN
   WHERE event_id = p_event_id
   FOR UPDATE;
 
+  IF p_event_type IS DISTINCT FROM existing_receipt.event_type
+    OR p_livemode IS DISTINCT FROM existing_receipt.livemode
+    OR p_stripe_event_created IS DISTINCT FROM existing_receipt.stripe_event_created THEN
+    RAISE EXCEPTION
+      'stripe_event_receipts envelope mismatch for %, existing=(%, %, %), incoming=(%, %, %)',
+      p_event_id,
+      existing_receipt.event_type,
+      existing_receipt.livemode,
+      existing_receipt.stripe_event_created,
+      p_event_type,
+      p_livemode,
+      p_stripe_event_created;
+  END IF;
+
   IF existing_receipt.result = 'processed' AND p_result <> 'processed' THEN
     outcome := 'preserved_existing';
     final_receipt := existing_receipt;
@@ -307,9 +321,6 @@ BEGIN
   ELSE
     UPDATE public.stripe_event_receipts
     SET
-      event_type = p_event_type,
-      livemode = p_livemode,
-      stripe_event_created = p_stripe_event_created,
       result = p_result,
       processed_at = CASE
         WHEN existing_receipt.result <> 'processed' AND p_result = 'processed'
