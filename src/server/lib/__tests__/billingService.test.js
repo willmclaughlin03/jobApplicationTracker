@@ -12,6 +12,7 @@ let mockStripeMode = 'test';
 const mockStripe = {
   customers: {
     create: jest.fn(),
+    update: jest.fn(),
   },
   subscriptions: {
     retrieve: jest.fn(),
@@ -197,22 +198,30 @@ function buildExpectedLogHash(userId) {
 
 describe('billingService', () => {
   const originalLogFullBillingIds = process.env.LOG_FULL_BILLING_IDS;
+  const testNowMs = new Date('2029-11-14T00:00:00.000Z').getTime();
   const mockLog = {
     info: jest.fn(),
     warn: jest.fn(),
     error: jest.fn(),
     debug: jest.fn(),
   };
+  let dateNowSpy;
 
   beforeEach(() => {
+    dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(testNowMs);
     jest.clearAllMocks();
     mockStripe.customers.create.mockReset();
+    mockStripe.customers.update.mockReset();
     mockStripe.subscriptions.retrieve.mockReset();
     mockSupabaseAdmin.from.mockReset();
     mockSupabaseAdmin.rpc.mockReset();
     mockStripeMode = 'test';
     delete process.env.LOG_FULL_BILLING_IDS;
     process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+  });
+
+  afterEach(() => {
+    dateNowSpy.mockRestore();
   });
 
   afterAll(() => {
@@ -606,7 +615,31 @@ describe('billingService', () => {
   describe('getOrCreateStripeCustomer', () => {
     const userId = 'user-create-customer';
 
-    it('uses the canonical local customer mapping before any Stripe call', async () => {
+    it('uses the canonical local customer mapping before any Stripe write when no email is supplied', async () => {
+      useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: { user_id: userId, stripe_customer_id: 'cus_existing_123' },
+            error: null,
+          },
+        },
+      }));
+
+      const result = await getOrCreateStripeCustomer(userId, null, mockLog);
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          userId,
+          stripeCustomerId: 'cus_existing_123',
+          createdInStripe: false,
+          createdPlaceholder: false,
+        })
+      );
+      expect(mockStripe.customers.create).not.toHaveBeenCalled();
+      expect(mockStripe.customers.update).not.toHaveBeenCalled();
+    });
+
+    it('best-effort syncs email for an existing local Stripe customer mapping without recreating the customer', async () => {
       useAdminClient(createSupabaseClient({
         billing_customers: {
           maybeSingle: {
@@ -623,10 +656,12 @@ describe('billingService', () => {
           userId,
           stripeCustomerId: 'cus_existing_123',
           createdInStripe: false,
-          createdPlaceholder: false,
         })
       );
       expect(mockStripe.customers.create).not.toHaveBeenCalled();
+      expect(mockStripe.customers.update).toHaveBeenCalledWith('cus_existing_123', {
+        email: 'test@example.com',
+      });
     });
 
     it('creates a placeholder row before persisting a new Stripe customer id and uses deterministic idempotency hashing', async () => {
@@ -659,17 +694,51 @@ describe('billingService', () => {
         })
       );
       expect(mockStripe.customers.create).toHaveBeenCalledWith(
-        { email: 'test@example.com' },
+        {},
         {
           idempotencyKey: `billing_customer_${hashUserIdForIdempotency(userId).slice(0, 24)}`,
         }
       );
+      expect(mockStripe.customers.update).toHaveBeenCalledWith('cus_new_123', {
+        email: 'test@example.com',
+      });
       expect(adminClient.buildersByTable.billing_customers[1].state.upsertPayload).toEqual({
         user_id: userId,
       });
       expect(adminClient.buildersByTable.billing_customers[2].state.updatePayload).toEqual({
         stripe_customer_id: 'cus_new_123',
       });
+    });
+
+    it('logs and continues when Stripe customer email sync fails', async () => {
+      useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: { user_id: userId, stripe_customer_id: 'cus_existing_123' },
+            error: null,
+          },
+        },
+      }));
+      mockStripe.customers.update.mockRejectedValue(new Error('stripe update failed'));
+
+      const result = await getOrCreateStripeCustomer(userId, 'test@example.com', mockLog);
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          userId,
+          stripeCustomerId: 'cus_existing_123',
+          createdInStripe: false,
+        })
+      );
+      expect(mockLog.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'billing_customer_email_sync_failed',
+          operation: 'getOrCreateStripeCustomer',
+          userIdHash: buildExpectedLogHash(userId),
+          stripeCustomerId: formatStripeIdForLog('cus_existing_123', 'warn'),
+        }),
+        'Failed to sync Stripe customer email after resolving the local mapping'
+      );
     });
   });
 
@@ -838,6 +907,25 @@ describe('billingService', () => {
       expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
     });
 
+    it('rejects a supplied future eventCreated timestamp before Stripe work', async () => {
+      const futureEventCreated = new Date(Date.now() + (10 * 60 * 1000)).toISOString();
+
+      await expect(
+        syncSubscriptionFromStripe(
+          'sub_sync_123',
+          { mode: BILLING_SYNC_MODES.EVENT, eventCreated: futureEventCreated },
+          mockLog
+        )
+      ).rejects.toMatchObject({
+        code: 'BILLING_EVENT_TIMESTAMP_IN_FUTURE',
+        message: 'eventCreated timestamp is too far in the future',
+      });
+
+      expect(mockStripe.subscriptions.retrieve).not.toHaveBeenCalled();
+      expect(mockSupabaseAdmin.from).not.toHaveBeenCalled();
+      expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
+    });
+
     it('keeps the JS stale-event check as a fast-path optimization', async () => {
       useAdminClient(createSupabaseClient({
         billing_customers: {
@@ -879,7 +967,7 @@ describe('billingService', () => {
         mockLog
       );
 
-      expect(result.outcome).toBe(STRIPE_EVENT_RECEIPT_RESULTS.STALE_IGNORED);
+      expect(result.outcome).toBe(BILLING_WRITE_OUTCOMES.STALE_IGNORED);
       expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
       expect(mockLog.info).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -956,6 +1044,7 @@ describe('billingService', () => {
 
       expect(mockSupabaseAdmin.from).not.toHaveBeenCalled();
       expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
+      expect(mockLog.error).toHaveBeenCalledTimes(1);
       expect(mockLog.error).toHaveBeenCalledWith(
         expect.objectContaining({
           event: 'billing_livemode_mismatch',
@@ -1052,6 +1141,7 @@ describe('billingService', () => {
       ).rejects.toMatchObject({ code: 'BILLING_LIVEMODE_MISMATCH' });
 
       expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
+      expect(mockLog.error).toHaveBeenCalledTimes(1);
       expect(mockLog.error).toHaveBeenCalledWith(
         expect.objectContaining({
           event: 'billing_livemode_mismatch',
@@ -1059,6 +1149,28 @@ describe('billingService', () => {
         }),
         'Rejected Stripe billing work for the wrong livemode'
       );
+    });
+
+    it('rejects receipt timestamps that are too far in the future before the RPC', async () => {
+      const futureCreated = new Date(Date.now() + (10 * 60 * 1000)).toISOString();
+
+      await expect(
+        recordStripeEventReceipt(
+          {
+            id: 'evt_future_123',
+            type: 'invoice.paid',
+            livemode: false,
+            created: futureCreated,
+          },
+          STRIPE_EVENT_RECEIPT_RESULTS.PROCESSED,
+          mockLog
+        )
+      ).rejects.toMatchObject({
+        code: 'BILLING_EVENT_TIMESTAMP_IN_FUTURE',
+        message: 'Stripe event receipt timestamp is too far in the future',
+      });
+
+      expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
     });
 
     it('keeps zod validation in JS before the RPC', async () => {
@@ -1077,7 +1189,7 @@ describe('billingService', () => {
   describe('markSubscriptionDeletedFromEvent', () => {
     const userId = 'user-delete';
 
-    it('preserves a safe local terminal snapshot through the event RPC', async () => {
+    it('writes the delete snapshot from event data only and warns when the event omits optional snapshot fields', async () => {
       const adminClient = useAdminClient(createSupabaseClient({
         billing_customers: {
           maybeSingle: {
@@ -1146,13 +1258,24 @@ describe('billingService', () => {
           user_id: userId,
           stripe_subscription_id: 'sub_delete_123',
           stripe_customer_id: 'cus_delete_123',
-          price_id: 'price_tailor_monthly',
+          price_id: null,
           status: 'canceled',
-          current_period_end: '2029-11-30T00:00:00.000Z',
+          current_period_end: null,
           cancel_at_period_end: true,
           last_stripe_event_created: '2029-11-14T00:00:00.000Z',
         },
       });
+      expect(mockLog.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'billing_delete_event_partial',
+          operation: 'markSubscriptionDeletedFromEvent',
+          stripeSubscriptionId: formatStripeIdForLog('sub_delete_123', 'warn'),
+          userIdHash: buildExpectedLogHash(userId),
+          hasCurrentPeriodEnd: false,
+          hasCancelAtPeriodEnd: true,
+        }),
+        'Stripe subscription delete event omitted one or more snapshot fields'
+      );
     });
 
     it('rejects livemode mismatches before any billing-table read or write', async () => {
@@ -1169,6 +1292,7 @@ describe('billingService', () => {
 
       expect(mockSupabaseAdmin.from).not.toHaveBeenCalled();
       expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
+      expect(mockLog.error).toHaveBeenCalledTimes(1);
       expect(mockLog.error).toHaveBeenCalledWith(
         expect.objectContaining({
           event: 'billing_livemode_mismatch',
@@ -1189,6 +1313,27 @@ describe('billingService', () => {
           mockLog
         )
       ).rejects.toMatchObject({ code: 'BILLING_CUSTOMER_ID_MISSING' });
+    });
+
+    it('rejects delete-event timestamps that are too far in the future before any billing-table access', async () => {
+      const futureEventCreated = new Date(Date.now() + (10 * 60 * 1000)).toISOString();
+
+      await expect(
+        markSubscriptionDeletedFromEvent(
+          {
+            id: 'sub_delete_123',
+            customer: 'cus_delete_123',
+          },
+          { eventCreated: futureEventCreated, livemode: false },
+          mockLog
+        )
+      ).rejects.toMatchObject({
+        code: 'BILLING_EVENT_TIMESTAMP_IN_FUTURE',
+        message: 'Stripe subscription delete event timestamp is too far in the future',
+      });
+
+      expect(mockSupabaseAdmin.from).not.toHaveBeenCalled();
+      expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
     });
   });
 
