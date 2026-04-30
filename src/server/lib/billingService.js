@@ -42,6 +42,7 @@ export const BILLING_SYNC_MODES = Object.freeze({
 
 export const BILLING_WRITE_OUTCOMES = Object.freeze({
   PROCESSED: 'processed',
+  STALE_IGNORED: 'stale_ignored',
   CUSTOMER_NOT_FOUND: 'customer_not_found',
   UNSUPPORTED_STATUS_IGNORED: 'unsupported_status_ignored',
 });
@@ -50,6 +51,7 @@ const ALLOWED_BILLING_STATUSES = new Set(Object.values(BILLING_SUBSCRIPTION_STAT
 const STRIPE_EVENT_RECEIPT_RESULT_VALUES = Object.values(STRIPE_EVENT_RECEIPT_RESULTS);
 const BILLING_SYNC_MODE_VALUES = Object.values(BILLING_SYNC_MODES);
 const FULL_BILLING_ID_LOG_LEVELS = new Set(['error', 'debug']);
+const MAX_EVENT_CREATED_FUTURE_MS = 5 * 60 * 1000;
 
 const nonEmptyStringSchema = z.string().trim().min(1);
 const optionalEmailSchema = z.preprocess((value) => {
@@ -72,9 +74,12 @@ const stripeDeleteEventMetaSchema = z.object({
   livemode: z.boolean(),
 });
 
-function createBillingError(message, code = 'BILLING_INVALID_INPUT') {
+function createBillingError(message, code = 'BILLING_INVALID_INPUT', options = {}) {
   const error = new Error(message);
   error.code = code;
+  if (options.billingAlreadyLogged) {
+    error.billingAlreadyLogged = true;
+  }
   return error;
 }
 
@@ -201,6 +206,16 @@ function isOlderStripeEvent(localLastEventCreated, incomingEventCreated) {
   return new Date(incomingTimestamp).getTime() < new Date(localTimestamp).getTime();
 }
 
+function assertTimestampNotTooFarInFuture(isoTimestamp, message) {
+  const timestampMs = new Date(isoTimestamp).getTime();
+
+  if (timestampMs > Date.now() + MAX_EVENT_CREATED_FUTURE_MS) {
+    throw createBillingError(message, 'BILLING_EVENT_TIMESTAMP_IN_FUTURE');
+  }
+
+  return isoTimestamp;
+}
+
 function extractStripeCustomerId(customer) {
   if (typeof customer === 'string') {
     return customer.trim() || null;
@@ -295,7 +310,7 @@ export function formatStripeIdForLog(id, level) {
   if (!normalizedId) {
     return null;
   }
-
+  
   const normalizedLevel = normalizeLogLevel(level);
   const stripeMode = getConfiguredStripeMode();
   const allowFullIds =
@@ -354,7 +369,11 @@ export function assertStripeLivemode(livemode, context = {}) {
       'Rejected Stripe billing work for the wrong livemode'
     );
 
-    throw createBillingError('Stripe livemode mismatch', 'BILLING_LIVEMODE_MISMATCH');
+    throw createBillingError(
+      'Stripe livemode mismatch',
+      'BILLING_LIVEMODE_MISMATCH',
+      { billingAlreadyLogged: true }
+    );
   }
 
   return livemode;
@@ -372,6 +391,13 @@ function parseSyncSubscriptionOptions(options) {
 
   if (hasEventCreated && !eventCreated) {
     throw createBillingError('Invalid eventCreated timestamp');
+  }
+
+  if (eventCreated) {
+    assertTimestampNotTooFarInFuture(
+      eventCreated,
+      'eventCreated timestamp is too far in the future'
+    );
   }
 
   if (parsedMode.data === BILLING_SYNC_MODES.EVENT && !eventCreated) {
@@ -587,6 +613,56 @@ async function callStripeEventReceiptMergeRpc({ eventId, eventType, livemode, st
   }
 
   return normalizedData;
+}
+
+/**
+ * Best-effort sync the resolved billing customer's email to the linked Stripe
+ * customer record.
+ *
+ * Called from the Stripe customer resolution flow after the local
+ * `billing_customers` mapping has been resolved. Side effects: issues a
+ * Stripe customer update request and emits a warning through the provided
+ * logger when the provider sync fails after local billing state has already
+ * been established.
+ *
+ * @param {object} params
+ * @param {string | null | undefined} params.stripeCustomerId
+ * @param {string | null | undefined} params.normalizedEmail
+ * @param {object} params.log
+ * @param {string | null} params.userIdHash
+ * @returns {Promise<void>} Resolves when the sync is skipped or attempted;
+ * Stripe update failures are logged and swallowed instead of being rethrown.
+ */
+async function syncStripeCustomerEmail({
+  stripeCustomerId,
+  normalizedEmail,
+  log,
+  userIdHash,
+}) {
+  if (!stripeCustomerId || !normalizedEmail) {
+    return;
+  }
+
+  try {
+    await stripe.customers.update(stripeCustomerId, { email: normalizedEmail });
+  } catch (error) {
+    const sanitizedError = {
+      name: error?.name,
+      code: error?.code,
+      message: error?.message,
+    };
+
+    log.warn(
+      {
+        err: sanitizedError,
+        event: 'billing_customer_email_sync_failed',
+        operation: 'getOrCreateStripeCustomer',
+        userIdHash,
+        stripeCustomerId: formatStripeIdForLog(stripeCustomerId, 'warn'),
+      },
+      'Failed to sync Stripe customer email after resolving the local mapping'
+    );
+  }
 }
 
 /**
@@ -828,6 +904,13 @@ export async function getOrCreateStripeCustomer(userId, email, log = defaultLogg
     let localCustomer = await loadBillingCustomerByUserId(parsedInput.data.userId, supabaseAdmin);
 
     if (localCustomer?.stripe_customer_id) {
+      await syncStripeCustomerEmail({
+        stripeCustomerId: localCustomer.stripe_customer_id,
+        normalizedEmail,
+        log,
+        userIdHash,
+      });
+
       return {
         userId: parsedInput.data.userId,
         stripeCustomerId: localCustomer.stripe_customer_id,
@@ -853,6 +936,13 @@ export async function getOrCreateStripeCustomer(userId, email, log = defaultLogg
     }
 
     if (localCustomer?.stripe_customer_id) {
+      await syncStripeCustomerEmail({
+        stripeCustomerId: localCustomer.stripe_customer_id,
+        normalizedEmail,
+        log,
+        userIdHash,
+      });
+
       return {
         userId: parsedInput.data.userId,
         stripeCustomerId: localCustomer.stripe_customer_id,
@@ -864,9 +954,7 @@ export async function getOrCreateStripeCustomer(userId, email, log = defaultLogg
 
     const idempotencyHash = hashUserIdForIdempotency(parsedInput.data.userId);
     const stripeCustomer = await stripe.customers.create(
-      {
-        ...(normalizedEmail ? { email: normalizedEmail } : {}),
-      },
+      {},
       {
         idempotencyKey: `billing_customer_${idempotencyHash.slice(0, 24)}`,
       }
@@ -885,6 +973,13 @@ export async function getOrCreateStripeCustomer(userId, email, log = defaultLogg
     }
 
     if (updatedCustomer?.stripe_customer_id) {
+      await syncStripeCustomerEmail({
+        stripeCustomerId: updatedCustomer.stripe_customer_id,
+        normalizedEmail,
+        log,
+        userIdHash,
+      });
+
       return {
         userId: parsedInput.data.userId,
         stripeCustomerId: updatedCustomer.stripe_customer_id,
@@ -897,6 +992,13 @@ export async function getOrCreateStripeCustomer(userId, email, log = defaultLogg
     const racedCustomer = await loadBillingCustomerByUserId(parsedInput.data.userId, supabaseAdmin);
 
     if (racedCustomer?.stripe_customer_id) {
+      await syncStripeCustomerEmail({
+        stripeCustomerId: racedCustomer.stripe_customer_id,
+        normalizedEmail,
+        log,
+        userIdHash,
+      });
+
       return {
         userId: parsedInput.data.userId,
         stripeCustomerId: racedCustomer.stripe_customer_id,
@@ -1028,7 +1130,7 @@ export async function syncSubscriptionFromStripe(
           'Ignoring stale Stripe subscription event during sync'
         );
         return {
-          outcome: STRIPE_EVENT_RECEIPT_RESULTS.STALE_IGNORED,
+          outcome: BILLING_WRITE_OUTCOMES.STALE_IGNORED,
           userId: localCustomer.user_id,
           subscription: stripeSubscription,
           localSubscription,
@@ -1051,7 +1153,7 @@ export async function syncSubscriptionFromStripe(
       return {
         outcome: rpcResult.applied
           ? BILLING_WRITE_OUTCOMES.PROCESSED
-          : STRIPE_EVENT_RECEIPT_RESULTS.STALE_IGNORED,
+          : BILLING_WRITE_OUTCOMES.STALE_IGNORED,
         userId: localCustomer.user_id,
         subscription: stripeSubscription,
         localSubscription: rpcResult.subscription,
@@ -1078,14 +1180,17 @@ export async function syncSubscriptionFromStripe(
       localSubscription: rpcResult.subscription,
     };
   } catch (error) {
-    log.error(
-      {
-        err: error,
-        operation: 'syncSubscriptionFromStripe',
-        stripeSubscriptionId: formatStripeIdForLog(parsedSubscriptionId.data, 'error'),
-      },
-      'Failed to sync Stripe subscription into local billing state'
-    );
+    if (!error?.billingAlreadyLogged) {
+      log.error(
+        {
+          err: error,
+          operation: 'syncSubscriptionFromStripe',
+          stripeSubscriptionId: formatStripeIdForLog(parsedSubscriptionId.data, 'error'),
+        },
+        'Failed to sync Stripe subscription into local billing state'
+      );
+    }
+
     throw error;
   }
 }
@@ -1097,6 +1202,10 @@ export async function syncSubscriptionFromStripe(
  * Validation remains in JS so malformed event payloads never reach the RPC.
  * The database function handles only the race-sensitive merge semantics and
  * returns an explicit outcome plus the final/current receipt row.
+ *
+ * @security Caller MUST verify the Stripe webhook signature before invoking
+ * this helper. The current safe path is `withWebhookAuth`; do not call this
+ * from any route or script that has not already validated the Stripe event.
  *
  * @param {object} event
  * @param {string} result
@@ -1117,6 +1226,11 @@ export async function recordStripeEventReceipt(event, result, log = defaultLogge
     throw createBillingError('Stripe event receipt is missing a valid created timestamp');
   }
 
+  assertTimestampNotTooFarInFuture(
+    eventCreated,
+    'Stripe event receipt timestamp is too far in the future'
+  );
+
   try {
     assertStripeLivemode(parsedEvent.data.livemode, {
       operation: 'recordStripeEventReceipt',
@@ -1134,14 +1248,17 @@ export async function recordStripeEventReceipt(event, result, log = defaultLogge
 
     return rpcResult;
   } catch (error) {
-    log.error(
-      {
-        err: error,
-        operation: 'recordStripeEventReceipt',
-        stripeEventId: formatStripeIdForLog(parsedEvent.data.id, 'error'),
-      },
-      'Failed to record Stripe event receipt'
-    );
+    if (!error?.billingAlreadyLogged) {
+      log.error(
+        {
+          err: error,
+          operation: 'recordStripeEventReceipt',
+          stripeEventId: formatStripeIdForLog(parsedEvent.data.id, 'error'),
+        },
+        'Failed to record Stripe event receipt'
+      );
+    }
+
     throw error;
   }
 }
@@ -1153,6 +1270,10 @@ export async function recordStripeEventReceipt(event, result, log = defaultLogge
  * event envelope. The helper validates those fields, rejects livemode
  * mismatches before any billing-table access, keeps the JS stale-event check as
  * a fast path, and relies on the event RPC as the atomic correctness boundary.
+ *
+ * @security Caller MUST verify the Stripe webhook signature before invoking
+ * this helper. The current safe path is `withWebhookAuth`; do not call this
+ * from any route or script that has not already validated the Stripe event.
  *
  * @param {object} subscription
  * @param {{ eventCreated: number | string | Date, livemode: boolean }} eventMeta
@@ -1173,6 +1294,11 @@ export async function markSubscriptionDeletedFromEvent(
   if (!subscriptionId.success || !parsedEventMeta.success || !eventCreatedIso) {
     throw createBillingError('Invalid Stripe subscription delete event input');
   }
+
+  assertTimestampNotTooFarInFuture(
+    eventCreatedIso,
+    'Stripe subscription delete event timestamp is too far in the future'
+  );
 
   const stripeCustomerId = extractStripeCustomerId(subscription?.customer);
 
@@ -1220,25 +1346,38 @@ export async function markSubscriptionDeletedFromEvent(
         'Ignoring stale Stripe subscription delete event'
       );
       return {
-        outcome: STRIPE_EVENT_RECEIPT_RESULTS.STALE_IGNORED,
+        outcome: BILLING_WRITE_OUTCOMES.STALE_IGNORED,
         userId: localCustomer.user_id,
         localSubscription,
       };
     }
 
-    // Delete payloads can be partial, so JS merges the event snapshot with the
-    // existing row before the atomic event RPC enforces ordering.
+    const currentPeriodEnd = toIsoTimestamp(subscription?.current_period_end);
+    const hasCancelAtPeriodEnd = typeof subscription?.cancel_at_period_end === 'boolean';
+
+    if (!currentPeriodEnd || !hasCancelAtPeriodEnd) {
+      log.warn(
+        {
+          event: 'billing_delete_event_partial',
+          operation: 'markSubscriptionDeletedFromEvent',
+          stripeSubscriptionId: formatStripeIdForLog(subscriptionId.data, 'warn'),
+          userIdHash: hashUserIdForLog(localCustomer.user_id),
+          hasCurrentPeriodEnd: !!currentPeriodEnd,
+          hasCancelAtPeriodEnd,
+        },
+        'Stripe subscription delete event omitted one or more snapshot fields'
+      );
+    }
+
     const rpcResult = await callSubscriptionEventRpc(
       buildEventDrivenSubscriptionPayload({
         userId: localCustomer.user_id,
         stripeSubscriptionId: subscriptionId.data,
         stripeCustomerId,
-        priceId: extractStripePriceId(subscription) || localSubscription?.price_id || null,
+        priceId: extractStripePriceId(subscription) ?? null,
         status: BILLING_SUBSCRIPTION_STATUSES.CANCELED,
-        currentPeriodEnd:
-          toIsoTimestamp(subscription?.current_period_end) || localSubscription?.current_period_end || null,
-        cancelAtPeriodEnd:
-          subscription?.cancel_at_period_end ?? localSubscription?.cancel_at_period_end ?? false,
+        currentPeriodEnd,
+        cancelAtPeriodEnd: hasCancelAtPeriodEnd ? subscription.cancel_at_period_end : false,
         eventCreated: eventCreatedIso,
       })
     );
@@ -1246,19 +1385,22 @@ export async function markSubscriptionDeletedFromEvent(
     return {
       outcome: rpcResult.applied
         ? BILLING_WRITE_OUTCOMES.PROCESSED
-        : STRIPE_EVENT_RECEIPT_RESULTS.STALE_IGNORED,
+        : BILLING_WRITE_OUTCOMES.STALE_IGNORED,
       userId: localCustomer.user_id,
       localSubscription: rpcResult.subscription,
     };
   } catch (error) {
-    log.error(
-      {
-        err: error,
-        operation: 'markSubscriptionDeletedFromEvent',
-        stripeSubscriptionId: formatStripeIdForLog(subscriptionId.data, 'error'),
-      },
-      'Failed to persist local delete snapshot for Stripe subscription event'
-    );
+    if (!error?.billingAlreadyLogged) {
+      log.error(
+        {
+          err: error,
+          operation: 'markSubscriptionDeletedFromEvent',
+          stripeSubscriptionId: formatStripeIdForLog(subscriptionId.data, 'error'),
+        },
+        'Failed to persist local delete snapshot for Stripe subscription event'
+      );
+    }
+
     throw error;
   }
 }
