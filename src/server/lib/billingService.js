@@ -615,6 +615,24 @@ async function callStripeEventReceiptMergeRpc({ eventId, eventType, livemode, st
   return normalizedData;
 }
 
+/**
+ * Best-effort sync the resolved billing customer's email to the linked Stripe
+ * customer record.
+ *
+ * Called from the Stripe customer resolution flow after the local
+ * `billing_customers` mapping has been resolved. Side effects: issues a
+ * Stripe customer update request and emits a warning through the provided
+ * logger when the provider sync fails after local billing state has already
+ * been established.
+ *
+ * @param {object} params
+ * @param {string | null | undefined} params.stripeCustomerId
+ * @param {string | null | undefined} params.normalizedEmail
+ * @param {object} params.log
+ * @param {string | null} params.userIdHash
+ * @returns {Promise<void>} Resolves when the sync is skipped or attempted;
+ * Stripe update failures are logged and swallowed instead of being rethrown.
+ */
 async function syncStripeCustomerEmail({
   stripeCustomerId,
   normalizedEmail,
@@ -628,9 +646,15 @@ async function syncStripeCustomerEmail({
   try {
     await stripe.customers.update(stripeCustomerId, { email: normalizedEmail });
   } catch (error) {
+    const sanitizedError = {
+      name: error?.name,
+      code: error?.code,
+      message: error?.message,
+    };
+
     log.warn(
       {
-        err: error,
+        err: sanitizedError,
         event: 'billing_customer_email_sync_failed',
         operation: 'getOrCreateStripeCustomer',
         userIdHash,
@@ -912,6 +936,13 @@ export async function getOrCreateStripeCustomer(userId, email, log = defaultLogg
     }
 
     if (localCustomer?.stripe_customer_id) {
+      await syncStripeCustomerEmail({
+        stripeCustomerId: localCustomer.stripe_customer_id,
+        normalizedEmail,
+        log,
+        userIdHash,
+      });
+
       return {
         userId: parsedInput.data.userId,
         stripeCustomerId: localCustomer.stripe_customer_id,

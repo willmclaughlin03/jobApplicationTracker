@@ -710,6 +710,42 @@ describe('billingService', () => {
       });
     });
 
+    it('best-effort syncs email when the placeholder upsert races with an existing Stripe customer mapping', async () => {
+      const adminClient = useAdminClient(createSupabaseClient({
+        billing_customers: [
+          {
+            maybeSingle: { data: null, error: null },
+          },
+          {
+            maybeSingle: {
+              data: { user_id: userId, stripe_customer_id: 'cus_raced_123' },
+              error: null,
+            },
+          },
+        ],
+      }));
+
+      const result = await getOrCreateStripeCustomer(userId, 'test@example.com', mockLog);
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          userId,
+          stripeCustomerId: 'cus_raced_123',
+          createdInStripe: false,
+          createdPlaceholder: true,
+        })
+      );
+      expect(mockStripe.customers.create).not.toHaveBeenCalled();
+      expect(mockStripe.customers.update).toHaveBeenCalledWith('cus_raced_123', {
+        email: 'test@example.com',
+      });
+      expect(adminClient.buildersByTable.billing_customers).toHaveLength(2);
+      expect(adminClient.buildersByTable.billing_customers[1].state.upsertPayload).toEqual({
+        user_id: userId,
+      });
+      expect(adminClient.buildersByTable.billing_customers[1].state.updatePayload).toBeUndefined();
+    });
+
     it('logs and continues when Stripe customer email sync fails', async () => {
       useAdminClient(createSupabaseClient({
         billing_customers: {
@@ -719,7 +755,9 @@ describe('billingService', () => {
           },
         },
       }));
-      mockStripe.customers.update.mockRejectedValue(new Error('stripe update failed'));
+      const stripeError = new Error('stripe update failed');
+      stripeError.code = 'rate_limit';
+      mockStripe.customers.update.mockRejectedValue(stripeError);
 
       const result = await getOrCreateStripeCustomer(userId, 'test@example.com', mockLog);
 
@@ -732,6 +770,11 @@ describe('billingService', () => {
       );
       expect(mockLog.warn).toHaveBeenCalledWith(
         expect.objectContaining({
+          err: {
+            name: 'Error',
+            code: 'rate_limit',
+            message: 'stripe update failed',
+          },
           event: 'billing_customer_email_sync_failed',
           operation: 'getOrCreateStripeCustomer',
           userIdHash: buildExpectedLogHash(userId),
