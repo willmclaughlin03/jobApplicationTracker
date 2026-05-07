@@ -13,7 +13,7 @@ import { TIERS } from '../../shared/constants/tiers.js';
 import { getConfiguredStripeMode, stripe } from './stripe.js';
 import { supabaseAdmin } from './supabaseServer.js';
 
-const BILLING_CUSTOMER_SELECT = 'user_id, stripe_customer_id, created_at, updated_at';
+const BILLING_CUSTOMER_SELECT = 'user_id, stripe_customer_id, last_synced_stripe_email_fingerprint, created_at, updated_at';
 const BILLING_SUBSCRIPTION_SELECT = [
   'user_id',
   'stripe_subscription_id',
@@ -47,9 +47,20 @@ export const BILLING_WRITE_OUTCOMES = Object.freeze({
   UNSUPPORTED_STATUS_IGNORED: 'unsupported_status_ignored',
 });
 
+export const CHECKOUT_STATUS_STATES = Object.freeze({
+  PENDING: 'pending',
+  ACTIVE: 'active',
+  FREE: 'free',
+  ERROR: 'error',
+});
+
 const ALLOWED_BILLING_STATUSES = new Set(Object.values(BILLING_SUBSCRIPTION_STATUSES));
 const STRIPE_EVENT_RECEIPT_RESULT_VALUES = Object.values(STRIPE_EVENT_RECEIPT_RESULTS);
 const BILLING_SYNC_MODE_VALUES = Object.values(BILLING_SYNC_MODES);
+const CHECKOUT_START_ALLOWED_STATUSES = new Set([
+  BILLING_SUBSCRIPTION_STATUSES.CANCELED,
+  BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED,
+]);
 const FULL_BILLING_ID_LOG_LEVELS = new Set(['error', 'debug']);
 const MAX_EVENT_CREATED_FUTURE_MS = 5 * 60 * 1000;
 
@@ -74,6 +85,18 @@ const stripeDeleteEventMetaSchema = z.object({
   livemode: z.boolean(),
 });
 
+/**
+ * Create a typed billing error shared across the service layer.
+ *
+ * Purpose: keep route and webhook error-code checks stable, and let helpers
+ * mark errors that already emitted their own structured log entry so callers do
+ * not double-log the same failure.
+ *
+ * @param {string} message
+ * @param {string} [code='BILLING_INVALID_INPUT']
+ * @param {{ billingAlreadyLogged?: boolean }} [options]
+ * @returns {Error & { code: string, billingAlreadyLogged?: boolean }}
+ */
 function createBillingError(message, code = 'BILLING_INVALID_INPUT', options = {}) {
   const error = new Error(message);
   error.code = code;
@@ -83,8 +106,32 @@ function createBillingError(message, code = 'BILLING_INVALID_INPUT', options = {
   return error;
 }
 
+/**
+ * Specialize invalid-response errors from billing RPC boundaries.
+ *
+ * Purpose: distinguish malformed or unexpected database procedure payloads
+ * from upstream Supabase transport failures so reconcile callers can treat
+ * contract drift as a billing-logic problem.
+ *
+ * @param {string} message
+ * @returns {Error & { code: string }}
+ */
 function createBillingRpcError(message) {
   return createBillingError(message, 'BILLING_RPC_INVALID_RESPONSE');
+}
+
+/**
+ * Specialize ownership mismatches detected during user-scoped billing syncs.
+ *
+ * Purpose: let authenticated routes distinguish cross-user reconcile attempts
+ * from retryable provider failures and fail closed before any authoritative
+ * billing write lands on the wrong local user.
+ *
+ * @param {string} message
+ * @returns {Error & { code: string }}
+ */
+function createBillingOwnershipError(message) {
+  return createBillingError(message, 'BILLING_OWNERSHIP_MISMATCH', { billingAlreadyLogged: true });
 }
 
 function normalizePriceId(priceId) {
@@ -99,6 +146,20 @@ function normalizeEmail(email) {
   return typeof email === 'string' ? email.trim() : '';
 }
 
+/**
+ * Canonicalize an email only for fingerprint dedupe comparisons.
+ *
+ * Purpose: treat casing-only and incidental whitespace changes as the same
+ * logical email for the optimization field, while leaving the actual email
+ * sent to Stripe on the existing trim-only path.
+ *
+ * @param {string | null | undefined} email
+ * @returns {string}
+ */
+function normalizeEmailForFingerprint(email) {
+  return normalizeEmail(email).toLowerCase();
+}
+
 function normalizeLogLevel(level) {
   return typeof level === 'string' ? level.trim().toLowerCase() : 'info';
 }
@@ -108,6 +169,7 @@ function isTruthyEnvFlag(value) {
 }
 
 const BILLING_LOG_HASH_SECRET = normalizeString(process.env.BILLING_LOG_HASH_SECRET);
+let hasLoggedMissingEmailFingerprintSecret = false;
 
 if (!BILLING_LOG_HASH_SECRET) {
   defaultLogger.warn(
@@ -149,6 +211,72 @@ export function hashUserIdForIdempotency(userId) {
   return crypto.createHash('sha256').update(normalizedUserId).digest('hex');
 }
 
+/**
+ * Read the optional billing email fingerprint secret without failing startup.
+ *
+ * Purpose: the email-sync dedupe is an optimization, so missing runtime
+ * configuration should warn and fall back to the existing Stripe sync path
+ * instead of blocking billing flows.
+ *
+ * @param {object} log
+ * @returns {string | null}
+ */
+function getBillingEmailFingerprintSecret(log = defaultLogger) {
+  const secret = normalizeString(process.env.BILLING_EMAIL_FINGERPRINT_SECRET);
+
+  if (!secret && !hasLoggedMissingEmailFingerprintSecret) {
+    hasLoggedMissingEmailFingerprintSecret = true;
+    log.warn(
+      { event: 'billing_email_fingerprint_secret_missing' },
+      'BILLING_EMAIL_FINGERPRINT_SECRET is missing; skipping Stripe email fingerprint dedupe'
+    );
+  }
+
+  return secret || null;
+}
+
+/**
+ * Build the keyed email fingerprint stored after a confirmed Stripe sync.
+ *
+ * Purpose: avoid repeated no-op `stripe.customers.update(...)` calls while
+ * keeping the optimization field non-reversible and independent from the raw
+ * email value stored by Stripe.
+ *
+ * @param {string} normalizedEmail
+ * @param {string} secret
+ * @returns {string}
+ */
+function buildStripeEmailFingerprint(normalizedEmail, secret) {
+  return crypto.createHmac('sha256', secret).update(normalizedEmail).digest('hex');
+}
+
+/**
+ * Reduce provider and persistence failures to a safe structured log payload.
+ *
+ * Purpose: keep warning logs useful for debugging billing sync failures
+ * without dumping large error objects or unexpected nested fields.
+ *
+ * @param {unknown} error
+ * @returns {{ name: unknown, code: unknown, message: unknown }}
+ */
+function sanitizeStripeSyncErrorForLog(error) {
+  return {
+    name: error?.name,
+    code: error?.code,
+    message: error?.message,
+  };
+}
+
+/**
+ * Detect whether a caller supplied a structured logger compatible with the
+ * billing service's expected methods.
+ *
+ * Purpose: allow injected request loggers when present while still failing
+ * back to the shared logger for background or test-driven entry points.
+ *
+ * @param {unknown} value
+ * @returns {boolean}
+ */
 function isLoggerCandidate(value) {
   return (
     !!value
@@ -157,10 +285,31 @@ function isLoggerCandidate(value) {
   );
 }
 
+/**
+ * Guard the request-scoped Supabase read path before any local billing lookup.
+ *
+ * Purpose: getLocalBillingStatus() and loadBillingStatusOrThrow() intentionally
+ * fail closed when a caller forgets to pass a usable client instead of
+ * silently widening reads through supabaseAdmin.
+ *
+ * @param {unknown} value
+ * @returns {boolean}
+ */
 function isSupabaseReadClientCandidate(value) {
   return !!value && typeof value === 'object' && typeof value.from === 'function';
 }
 
+/**
+ * Normalize mixed Stripe and webhook timestamp inputs into one ISO-8601 shape.
+ *
+ * Accepts unix seconds, ISO-ish strings, and Date instances because Stripe
+ * event metadata, route inputs, and test fixtures do not all arrive in the
+ * same type. Invalid or empty inputs collapse to null so validation stays
+ * explicit at the call site.
+ *
+ * @param {number | string | Date | null | undefined} value
+ * @returns {string | null}
+ */
 function toIsoTimestamp(value) {
   if (value === null || value === undefined) {
     return null;
@@ -195,6 +344,17 @@ function toIsoTimestamp(value) {
   return null;
 }
 
+/**
+ * Compare the last applied Stripe event timestamp with an incoming event.
+ *
+ * Purpose: stale event-driven writes must be ignored so out-of-order webhooks
+ * do not roll canonical local state backward. Unparseable timestamps are
+ * treated as non-stale here because entry-point validation happens elsewhere.
+ *
+ * @param {string | number | Date | null | undefined} localLastEventCreated
+ * @param {string | number | Date | null | undefined} incomingEventCreated
+ * @returns {boolean}
+ */
 function isOlderStripeEvent(localLastEventCreated, incomingEventCreated) {
   const localTimestamp = toIsoTimestamp(localLastEventCreated);
   const incomingTimestamp = toIsoTimestamp(incomingEventCreated);
@@ -206,6 +366,17 @@ function isOlderStripeEvent(localLastEventCreated, incomingEventCreated) {
   return new Date(incomingTimestamp).getTime() < new Date(localTimestamp).getTime();
 }
 
+/**
+ * Reject obviously future-dated Stripe event timestamps beyond small clock skew.
+ *
+ * Purpose: protect event-driven and receipt flows from malformed payloads or
+ * replay mistakes that would otherwise poison stale-write ordering with a far
+ * future `last_stripe_event_created` value.
+ *
+ * @param {string} isoTimestamp
+ * @param {string} message
+ * @returns {string}
+ */
 function assertTimestampNotTooFarInFuture(isoTimestamp, message) {
   const timestampMs = new Date(isoTimestamp).getTime();
 
@@ -216,6 +387,16 @@ function assertTimestampNotTooFarInFuture(isoTimestamp, message) {
   return isoTimestamp;
 }
 
+/**
+ * Resolve a Stripe customer id from the expanded shapes Stripe may return.
+ *
+ * The customer field may already be a string id, an expanded customer object,
+ * or a deleted-object tombstone. Delete flows must treat deleted objects as no
+ * customer mapping instead of persisting the tombstone.
+ *
+ * @param {unknown} customer
+ * @returns {string | null}
+ */
 function extractStripeCustomerId(customer) {
   if (typeof customer === 'string') {
     return customer.trim() || null;
@@ -232,6 +413,16 @@ function extractStripeCustomerId(customer) {
   return null;
 }
 
+/**
+ * Resolve the Stripe price id from a subscription's line items.
+ *
+ * Purpose: canonical entitlement and local subscription persistence are keyed
+ * to the configured price id, not to mutable product metadata. The legacy
+ * `plan.id` fallback remains for older Stripe response shapes and test data.
+ *
+ * @param {object | null | undefined} subscription
+ * @returns {string | null}
+ */
 function extractStripePriceId(subscription) {
   const items = Array.isArray(subscription?.items?.data) ? subscription.items.data : [];
 
@@ -250,6 +441,16 @@ function normalizeStripeStatus(status) {
   return typeof status === 'string' ? status.trim() : '';
 }
 
+/**
+ * Normalize Supabase RPC JSON fields into a plain JS object when possible.
+ *
+ * Depending on the driver and test harness, RPC results may already be parsed
+ * objects or raw JSON strings. This helper keeps the downstream payload-shape
+ * assertions consistent across both cases.
+ *
+ * @param {unknown} data
+ * @returns {unknown}
+ */
 function normalizeRpcJsonData(data) {
   if (typeof data === 'string') {
     try {
@@ -279,6 +480,17 @@ export function classifyStripeStatus(status) {
   };
 }
 
+/**
+ * Redact Stripe resource ids for logs while preserving enough shape for
+ * debugging and cross-log correlation.
+ *
+ * The resource prefix is kept because distinguishing customer, session, and
+ * subscription ids is often operationally important, while the middle of the id
+ * stays hidden outside explicitly allowed log paths.
+ *
+ * @param {string | null | undefined} id
+ * @returns {string | null}
+ */
 export function redactStripeId(id) {
   const normalizedId = normalizeString(id);
 
@@ -322,6 +534,17 @@ export function formatStripeIdForLog(id, level) {
   return allowFullIds ? normalizedId : redactStripeId(normalizedId);
 }
 
+/**
+ * Emit the canonical structured log for unsupported Stripe subscription
+ * statuses that are intentionally ignored by local billing writes.
+ *
+ * Purpose: unsupported statuses should be visible for follow-up without being
+ * coerced into the repo's narrower local billing status model.
+ *
+ * @param {object} log
+ * @param {{ operation: string, userId: string, status: string, stripeSubscriptionId: string | null | undefined }} params
+ * @returns {void}
+ */
 function logUnsupportedStripeStatus(log, {
   operation,
   userId,
@@ -379,6 +602,20 @@ export function assertStripeLivemode(livemode, context = {}) {
   return livemode;
 }
 
+/**
+ * Validate and normalize sync options for subscription reconciliation flows.
+ *
+ * Event-driven sync requires an event timestamp because the write RPC uses it
+ * for stale-event protection. Authoritative sync may omit that timestamp
+ * because it overwrites canonical state from a direct Stripe fetch instead.
+ *
+ * `expectedUserId` is optional and is used by authenticated routes to require
+ * that the resolved local customer mapping still belongs to the caller before
+ * any authoritative write runs.
+ *
+ * @param {{ mode?: string, eventCreated?: string | number | Date, expectedUserId?: string }} options
+ * @returns {{ mode: string, eventCreated: string | undefined, expectedUserId: string | undefined }}
+ */
 function parseSyncSubscriptionOptions(options) {
   const parsedMode = nonEmptyStringSchema.safeParse(options?.mode);
 
@@ -404,12 +641,71 @@ function parseSyncSubscriptionOptions(options) {
     throw createBillingError('Event-driven subscription sync requires eventCreated');
   }
 
+  const hasExpectedUserId = options?.expectedUserId !== undefined;
+  const expectedUserId = hasExpectedUserId ? normalizeString(options.expectedUserId) : undefined;
+
+  if (hasExpectedUserId && !expectedUserId) {
+    throw createBillingError('Invalid expectedUserId for subscription sync');
+  }
+
   return {
     mode: parsedMode.data,
     eventCreated,
+    expectedUserId,
   };
 }
 
+/**
+ * Assert that a user-scoped billing sync still resolves to the caller's user id
+ * before an authoritative write occurs.
+ *
+ * Purpose: authenticated reconcile flows should stop if Stripe customer
+ * ownership drifts between the route's local read and the service's privileged
+ * customer lookup instead of letting the authoritative RPC write another
+ * user's billing row.
+ *
+ * @param {{ expectedUserId?: string, resolvedUserId?: string, stripeCustomerId?: string | null, stripeSubscriptionId?: string | null, log?: object }} input
+ * @returns {void}
+ */
+function assertExpectedSyncUserMatch(input = {}) {
+  const expectedUserId = normalizeString(input.expectedUserId);
+
+  if (!expectedUserId) {
+    return;
+  }
+
+  const resolvedUserId = normalizeString(input.resolvedUserId);
+
+  if (resolvedUserId && resolvedUserId === expectedUserId) {
+    return;
+  }
+
+  const log = isLoggerCandidate(input.log) ? input.log : defaultLogger;
+
+  log.error(
+    {
+      event: 'billing_sync_ownership_mismatch',
+      operation: 'syncSubscriptionFromStripe',
+      expectedUserIdHash: hashUserIdForLog(expectedUserId),
+      resolvedUserIdHash: hashUserIdForLog(resolvedUserId),
+      stripeCustomerId: formatStripeIdForLog(input.stripeCustomerId, 'error'),
+      stripeSubscriptionId: formatStripeIdForLog(input.stripeSubscriptionId, 'error'),
+    },
+    'Rejected Stripe subscription sync because the resolved local user did not match the caller'
+  );
+
+  throw createBillingOwnershipError('Stripe subscription resolved to a different local user');
+}
+
+/**
+ * Build the fail-closed free-state shape returned when local billing cannot be
+ * read or has not been established yet.
+ *
+ * Purpose: keep route and entitlement callers on one canonical response shape
+ * even when the underlying billing tables are empty or temporarily unreadable.
+ *
+ * @returns {object}
+ */
 function createEmptyBillingStatus() {
   return {
     customer: null,
@@ -428,6 +724,18 @@ function createEmptyBillingStatus() {
   };
 }
 
+/**
+ * Combine local customer and subscription rows into the canonical billing
+ * status object consumed by routes, entitlement checks, and checkout helpers.
+ *
+ * Purpose: centralize the mapping from raw table rows to derived fields such as
+ * `entitled`, `tier`, and the effective Stripe ids so downstream callers do not
+ * re-encode billing truth in multiple places.
+ *
+ * @param {object | null} customer
+ * @param {object | null} subscription
+ * @returns {object}
+ */
 function buildBillingStatus(customer, subscription) {
   const entitled = hasCanonicalBillingEntitlement(subscription);
   const stripeCustomerId =
@@ -454,6 +762,37 @@ function buildBillingStatus(customer, subscription) {
   };
 }
 
+/**
+ * Load both local billing tables through the caller's Supabase client and
+ * synthesize the canonical billing status in one place.
+ *
+ * Purpose: keep customer and subscription reads parallel while preserving the
+ * caller's auth/RLS context instead of silently escalating privileges.
+ *
+ * @param {string} userId
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient
+ * @returns {Promise<object>}
+ */
+async function loadBillingStatusWithClient(userId, supabaseClient) {
+  const [customer, subscription] = await Promise.all([
+    loadBillingCustomerByUserId(userId, supabaseClient),
+    loadBillingSubscriptionByUserId(userId, supabaseClient),
+  ]);
+
+  return buildBillingStatus(customer, subscription);
+}
+
+/**
+ * Read the canonical local Stripe-customer mapping for one user.
+ *
+ * Connects to the `billing_customers` table and intentionally throws raw
+ * Supabase errors so the higher-level status helpers can choose whether to fail
+ * closed or fail hard for the current route.
+ *
+ * @param {string} userId
+ * @param {import('@supabase/supabase-js').SupabaseClient} client
+ * @returns {Promise<object | null>}
+ */
 async function loadBillingCustomerByUserId(userId, client) {
   const { data, error } = await client
     .from('billing_customers')
@@ -468,6 +807,17 @@ async function loadBillingCustomerByUserId(userId, client) {
   return data;
 }
 
+/**
+ * Resolve the local billing customer row from a Stripe customer id.
+ *
+ * Purpose: webhook and authoritative sync flows start from Stripe-owned ids and
+ * must map them back to the canonical local `user_id` before touching
+ * `billing_subscriptions`.
+ *
+ * @param {string} stripeCustomerId
+ * @param {import('@supabase/supabase-js').SupabaseClient} client
+ * @returns {Promise<object | null>}
+ */
 async function loadBillingCustomerByStripeCustomerId(stripeCustomerId, client) {
   const { data, error } = await client
     .from('billing_customers')
@@ -482,6 +832,17 @@ async function loadBillingCustomerByStripeCustomerId(stripeCustomerId, client) {
   return data;
 }
 
+/**
+ * Read the canonical local subscription snapshot for one user.
+ *
+ * Connects to `billing_subscriptions`, which is the local source of truth for
+ * entitlement checks and checkout-state reads once Stripe reconciliation has
+ * completed.
+ *
+ * @param {string} userId
+ * @param {import('@supabase/supabase-js').SupabaseClient} client
+ * @returns {Promise<object | null>}
+ */
 async function loadBillingSubscriptionByUserId(userId, client) {
   const { data, error } = await client
     .from('billing_subscriptions')
@@ -496,6 +857,15 @@ async function loadBillingSubscriptionByUserId(userId, client) {
   return data;
 }
 
+/**
+ * Build the RPC payload for stale-aware event-driven subscription writes.
+ *
+ * The event path always includes `last_stripe_event_created` because the
+ * database RPC uses it to ignore out-of-order webhook updates.
+ *
+ * @param {object} params
+ * @returns {object}
+ */
 function buildEventDrivenSubscriptionPayload({
   userId,
   stripeSubscriptionId,
@@ -518,6 +888,16 @@ function buildEventDrivenSubscriptionPayload({
   };
 }
 
+/**
+ * Build the RPC payload for authoritative subscription reconciliation.
+ *
+ * Purpose: direct Stripe fetches can refresh the canonical local snapshot even
+ * when no webhook event timestamp is available. `last_stripe_event_created`
+ * stays optional so callers do not accidentally invent event ordering data.
+ *
+ * @param {object} params
+ * @returns {object}
+ */
 function buildAuthoritativeSubscriptionPayload({
   userId,
   stripeSubscriptionId,
@@ -545,6 +925,16 @@ function buildAuthoritativeSubscriptionPayload({
   return payload;
 }
 
+/**
+ * Call the stale-aware subscription upsert RPC through supabaseAdmin.
+ *
+ * Purpose: event-driven writes are server-controlled and intentionally bypass
+ * RLS. The response is validated here so unexpected RPC payload drift fails
+ * loudly before any caller trusts the result.
+ *
+ * @param {object} payload
+ * @returns {Promise<object>}
+ */
 async function callSubscriptionEventRpc(payload) {
   const { data, error } = await supabaseAdmin.rpc(
     'upsert_billing_subscription_if_newer_or_equal',
@@ -569,6 +959,16 @@ async function callSubscriptionEventRpc(payload) {
   return normalizedData;
 }
 
+/**
+ * Call the authoritative subscription upsert RPC through supabaseAdmin.
+ *
+ * This path is used when the server fetched the subscription directly from
+ * Stripe and wants the database to treat that snapshot as canonical rather
+ * than stale-checking it like a webhook event.
+ *
+ * @param {object} payload
+ * @returns {Promise<object>}
+ */
 async function callSubscriptionAuthoritativeRpc(payload) {
   const { data, error } = await supabaseAdmin.rpc(
     'upsert_billing_subscription_authoritative',
@@ -588,6 +988,16 @@ async function callSubscriptionAuthoritativeRpc(payload) {
   return normalizedData;
 }
 
+/**
+ * Merge one Stripe event receipt row through the receipt-dedupe RPC.
+ *
+ * Purpose: webhook processing records a canonical audit trail and duplicate
+ * detection state separate from the subscription snapshot itself. The RPC
+ * contract is validated here before routes rely on its outcome.
+ *
+ * @param {{ eventId: string, eventType: string, livemode: boolean, stripeEventCreated: string, result: string }} params
+ * @returns {Promise<object>}
+ */
 async function callStripeEventReceiptMergeRpc({ eventId, eventType, livemode, stripeEventCreated, result }) {
   const { data, error } = await supabaseAdmin.rpc('merge_stripe_event_receipt', {
     p_event_id: eventId,
@@ -616,17 +1026,48 @@ async function callStripeEventReceiptMergeRpc({ eventId, eventType, livemode, st
 }
 
 /**
+ * Persist the last successfully synced Stripe email fingerprint locally.
+ *
+ * Purpose: the billing customer row stores a best-effort optimization marker
+ * so future mapped-customer requests can skip no-op Stripe email updates.
+ *
+ * @param {{ userId: string | null, stripeCustomerId: string, emailFingerprint: string }} params
+ * @returns {Promise<void>}
+ */
+async function persistStripeCustomerEmailFingerprint({
+  userId,
+  stripeCustomerId,
+  emailFingerprint,
+}) {
+  if (!userId || !stripeCustomerId || !emailFingerprint) {
+    return;
+  }
+
+  const { error } = await supabaseAdmin
+    .from('billing_customers')
+    .update({ last_synced_stripe_email_fingerprint: emailFingerprint })
+    .eq('user_id', userId)
+    .eq('stripe_customer_id', stripeCustomerId)
+    .select(BILLING_CUSTOMER_SELECT)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+}
+
+/**
  * Best-effort sync the resolved billing customer's email to the linked Stripe
  * customer record.
  *
  * Called from the Stripe customer resolution flow after the local
- * `billing_customers` mapping has been resolved. Side effects: issues a
- * Stripe customer update request and emits a warning through the provided
- * logger when the provider sync fails after local billing state has already
- * been established.
+ * `billing_customers` mapping has been resolved. Side effects: may issue a
+ * Stripe customer update request, may persist the last successful email
+ * fingerprint locally, and emits warnings when provider sync or optimization
+ * persistence fails after local billing state has already been established.
  *
  * @param {object} params
- * @param {string | null | undefined} params.stripeCustomerId
+ * @param {object | null | undefined} params.billingCustomer
  * @param {string | null | undefined} params.normalizedEmail
  * @param {object} params.log
  * @param {string | null} params.userIdHash
@@ -634,33 +1075,66 @@ async function callStripeEventReceiptMergeRpc({ eventId, eventType, livemode, st
  * Stripe update failures are logged and swallowed instead of being rethrown.
  */
 async function syncStripeCustomerEmail({
-  stripeCustomerId,
+  billingCustomer,
   normalizedEmail,
   log,
   userIdHash,
 }) {
+  const stripeCustomerId = normalizeString(billingCustomer?.stripe_customer_id);
+
   if (!stripeCustomerId || !normalizedEmail) {
+    return;
+  }
+
+  const fingerprintSecret = getBillingEmailFingerprintSecret(log);
+  const emailFingerprint = fingerprintSecret
+    ? buildStripeEmailFingerprint(normalizeEmailForFingerprint(normalizedEmail), fingerprintSecret)
+    : null;
+
+  if (
+    emailFingerprint
+    && normalizeString(billingCustomer?.last_synced_stripe_email_fingerprint) === emailFingerprint
+  ) {
     return;
   }
 
   try {
     await stripe.customers.update(stripeCustomerId, { email: normalizedEmail });
   } catch (error) {
-    const sanitizedError = {
-      name: error?.name,
-      code: error?.code,
-      message: error?.message,
-    };
-
     log.warn(
       {
-        err: sanitizedError,
+        err: sanitizeStripeSyncErrorForLog(error),
         event: 'billing_customer_email_sync_failed',
         operation: 'getOrCreateStripeCustomer',
         userIdHash,
         stripeCustomerId: formatStripeIdForLog(stripeCustomerId, 'warn'),
       },
       'Failed to sync Stripe customer email after resolving the local mapping'
+    );
+
+    return;
+  }
+
+  if (!emailFingerprint) {
+    return;
+  }
+
+  try {
+    await persistStripeCustomerEmailFingerprint({
+      userId: normalizeString(billingCustomer?.user_id) || null,
+      stripeCustomerId,
+      emailFingerprint,
+    });
+  } catch (error) {
+    log.warn(
+      {
+        err: sanitizeStripeSyncErrorForLog(error),
+        event: 'billing_customer_email_fingerprint_persist_failed',
+        operation: 'getOrCreateStripeCustomer',
+        userIdHash,
+        stripeCustomerId: formatStripeIdForLog(stripeCustomerId, 'warn'),
+      },
+      'Failed to persist Stripe email fingerprint after syncing Stripe customer email'
     );
   }
 }
@@ -738,12 +1212,7 @@ export async function getLocalBillingStatus(
   const userIdHash = hashUserIdForLog(userId);
 
   try {
-    const [customer, subscription] = await Promise.all([
-      loadBillingCustomerByUserId(userId, supabaseClient),
-      loadBillingSubscriptionByUserId(userId, supabaseClient),
-    ]);
-
-    return buildBillingStatus(customer, subscription);
+    return await loadBillingStatusWithClient(userId, supabaseClient);
   } catch (error) {
     log.error(
       { err: error, operation: 'getLocalBillingStatus', userIdHash },
@@ -751,6 +1220,114 @@ export async function getLocalBillingStatus(
     );
     return createEmptyBillingStatus();
   }
+}
+
+/**
+ * Read the canonical local billing state for one user and fail hard instead of
+ * synthesizing a free-state fallback.
+ *
+ * Route handlers should prefer this helper when a transient billing read
+ * failure must block checkout or checkout completion handling.
+ *
+ * @param {string} userId
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient
+ * @param {object} log
+ * @returns {Promise<object>}
+ */
+export async function loadBillingStatusOrThrow(
+  userId,
+  supabaseClient,
+  log = defaultLogger
+) {
+  if (!userId || !isSupabaseReadClientCandidate(supabaseClient)) {
+    log.error(
+      {
+        operation: 'loadBillingStatusOrThrow',
+        hasUserId: !!userId,
+        hasSupabaseClient: isSupabaseReadClientCandidate(supabaseClient),
+      },
+      'Billing status resolver is missing a request-scoped Supabase client'
+    );
+
+    throw createBillingError(
+      'Billing status resolver is missing a request-scoped Supabase client',
+      'BILLING_STATUS_UNAVAILABLE'
+    );
+  }
+
+  const userIdHash = hashUserIdForLog(userId);
+
+  try {
+    return await loadBillingStatusWithClient(userId, supabaseClient);
+  } catch (error) {
+    log.error(
+      { err: error, operation: 'loadBillingStatusOrThrow', userIdHash },
+      'Failed to load local billing status'
+    );
+
+    const billingError = createBillingError(
+      'Failed to load local billing status',
+      'BILLING_STATUS_UNAVAILABLE'
+    );
+    billingError.cause = error;
+    throw billingError;
+  }
+}
+
+/**
+ * Decide whether the current canonical local billing state may start a new
+ * Checkout Session.
+ *
+ * Unknown or corrupt subscription statuses fail closed.
+ *
+ * @param {object} billingStatus
+ * @returns {boolean}
+ */
+export function canStartCheckout(billingStatus) {
+  if (!billingStatus || typeof billingStatus !== 'object') {
+    return false;
+  }
+
+  if (!billingStatus.hasSubscription) {
+    return true;
+  }
+
+  const status = normalizeString(billingStatus.status);
+
+  if (!status || !ALLOWED_BILLING_STATUSES.has(status)) {
+    return false;
+  }
+
+  return CHECKOUT_START_ALLOWED_STATUSES.has(status);
+}
+
+/**
+ * Map canonical local billing state plus Stripe Checkout Session status into
+ * the UI state consumed by the success-page polling flow.
+ *
+ * @param {{ billingStatus?: object | null, checkoutSessionStatus?: string | null }} input
+ * @returns {'pending' | 'active' | 'free' | 'error'}
+ */
+export function mapCheckoutStatus(input = {}) {
+  if (input?.billingStatus?.entitled) {
+    return CHECKOUT_STATUS_STATES.ACTIVE;
+  }
+
+  const checkoutSessionStatus = normalizeString(input?.checkoutSessionStatus).toLowerCase();
+
+  if (checkoutSessionStatus === 'open') {
+    return CHECKOUT_STATUS_STATES.PENDING;
+  }
+
+  if (checkoutSessionStatus === 'complete') {
+    return CHECKOUT_STATUS_STATES.FREE;
+  }
+
+  if (checkoutSessionStatus === 'expired') {
+    return CHECKOUT_STATUS_STATES.ERROR;
+  }
+
+  return CHECKOUT_STATUS_STATES.ERROR;
 }
 
 /**
@@ -905,7 +1482,7 @@ export async function getOrCreateStripeCustomer(userId, email, log = defaultLogg
 
     if (localCustomer?.stripe_customer_id) {
       await syncStripeCustomerEmail({
-        stripeCustomerId: localCustomer.stripe_customer_id,
+        billingCustomer: localCustomer,
         normalizedEmail,
         log,
         userIdHash,
@@ -937,7 +1514,7 @@ export async function getOrCreateStripeCustomer(userId, email, log = defaultLogg
 
     if (localCustomer?.stripe_customer_id) {
       await syncStripeCustomerEmail({
-        stripeCustomerId: localCustomer.stripe_customer_id,
+        billingCustomer: localCustomer,
         normalizedEmail,
         log,
         userIdHash,
@@ -974,7 +1551,7 @@ export async function getOrCreateStripeCustomer(userId, email, log = defaultLogg
 
     if (updatedCustomer?.stripe_customer_id) {
       await syncStripeCustomerEmail({
-        stripeCustomerId: updatedCustomer.stripe_customer_id,
+        billingCustomer: updatedCustomer,
         normalizedEmail,
         log,
         userIdHash,
@@ -993,7 +1570,7 @@ export async function getOrCreateStripeCustomer(userId, email, log = defaultLogg
 
     if (racedCustomer?.stripe_customer_id) {
       await syncStripeCustomerEmail({
-        stripeCustomerId: racedCustomer.stripe_customer_id,
+        billingCustomer: racedCustomer,
         normalizedEmail,
         log,
         userIdHash,
@@ -1044,7 +1621,11 @@ export async function getOrCreateStripeCustomer(userId, email, log = defaultLogg
  * later supported sync or manual intervention.
  *
  * @param {string} subscriptionId
- * @param {{ mode: 'event' | 'authoritative', eventCreated?: number | string | Date }} options
+ * `expectedUserId` may be supplied by authenticated routes that want the
+ * service to fail closed unless the resolved Stripe customer mapping still
+ * belongs to that same user before any authoritative write is attempted.
+ *
+ * @param {{ mode: 'event' | 'authoritative', eventCreated?: number | string | Date, expectedUserId?: string }} options
  * @param {object} log
  * @returns {Promise<object>}
  */
@@ -1098,6 +1679,14 @@ export async function syncSubscriptionFromStripe(
         localSubscription: null,
       };
     }
+
+    assertExpectedSyncUserMatch({
+      expectedUserId: parsedOptions.expectedUserId,
+      resolvedUserId: localCustomer.user_id,
+      stripeCustomerId,
+      stripeSubscriptionId: parsedSubscriptionId.data,
+      log,
+    });
 
     const classifiedStatus = classifyStripeStatus(stripeSubscription.status);
 

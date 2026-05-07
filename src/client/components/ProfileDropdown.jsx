@@ -53,6 +53,14 @@ export default function ProfileDropdown({ user, onSignOut }) {
           </div>
 
           <div className="p-2">
+            <Link
+              href="/billing"
+              onClick={() => setOpen(false)}
+              className="block px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 rounded-md transition-colors"
+            >
+              Billing
+            </Link>
+
             {user?.role === 'admin' && (
               <Link
                 href="/admin/users"

@@ -37,10 +37,16 @@ const { apiRequest } = require('../api.js');
 // Helpers
 // =========================================================================
 
-function mockFetchOnce(status, body, ok = status < 400) {
+function mockFetchOnce(status, body, ok = status < 400, headers = {}) {
     return {
         ok,
         status,
+        headers: {
+            get: jest.fn((name) => {
+                const normalizedName = typeof name === 'string' ? name.toLowerCase() : '';
+                return headers[normalizedName] ?? null;
+            }),
+        },
         json: jest.fn().mockResolvedValue(body),
     };
 }
@@ -75,10 +81,14 @@ describe('apiRequest — GET requests', () => {
         const responseData = { jobs: [{ id: 1 }] };
         global.fetch = jest.fn().mockResolvedValue(mockFetchOnce(200, responseData));
 
-        const { data, error } = await apiRequest('/api/jobs', { method: 'GET' });
+        const { data, error, meta } = await apiRequest('/api/jobs', { method: 'GET' });
 
         expect(error).toBeNull();
         expect(data).toEqual(responseData);
+        expect(meta).toEqual({
+            status: 200,
+            retryAfterSeconds: null,
+        });
     });
 
     /**
@@ -112,10 +122,14 @@ describe('apiRequest — GET requests', () => {
     it('returns UNAUTHORIZED on 401', async () => {
         global.fetch = jest.fn().mockResolvedValue(mockFetchOnce(401, { error: 'UNAUTHORIZED' }, false));
 
-        const { data, error } = await apiRequest('/api/jobs', { method: 'GET' });
+        const { data, error, meta } = await apiRequest('/api/jobs', { method: 'GET' });
 
         expect(data).toBeNull();
         expect(error).toBe(ERROR_MESSAGES.UNAUTHORIZED);
+        expect(meta).toEqual({
+            status: 401,
+            retryAfterSeconds: null,
+        });
     });
 
     /**
@@ -124,10 +138,14 @@ describe('apiRequest — GET requests', () => {
     it('returns FETCH_FAILED when fetch throws', async () => {
         global.fetch = jest.fn().mockRejectedValue(new Error('Network error'));
 
-        const { data, error } = await apiRequest('/api/jobs', { method: 'GET' });
+        const { data, error, meta } = await apiRequest('/api/jobs', { method: 'GET' });
 
         expect(data).toBeNull();
         expect(error).toBe(ERROR_MESSAGES.FETCH_FAILED);
+        expect(meta).toEqual({
+            status: null,
+            retryAfterSeconds: null,
+        });
     });
 });
 
@@ -230,11 +248,15 @@ describe('apiRequest — SERVICE_UNAVAILABLE retry', () => {
             mockFetchOnce(503, { error: 'SERVICE_UNAVAILABLE' }, false)
         );
 
-        const { data } = await apiRequest('/api/jobs', { method: 'GET' });
+        const { data, meta } = await apiRequest('/api/jobs', { method: 'GET' });
 
         // MAX_CLIENT_RETRIES = 2 → 3 total attempts (attempt 0, 1, 2)
         expect(global.fetch).toHaveBeenCalledTimes(3);
         expect(data).toEqual({ error: 'SERVICE_UNAVAILABLE' });
+        expect(meta).toEqual({
+            status: 503,
+            retryAfterSeconds: null,
+        });
     }, 10000);
 
     /**
@@ -248,6 +270,26 @@ describe('apiRequest — SERVICE_UNAVAILABLE retry', () => {
         await apiRequest('/api/jobs', { method: 'GET' });
 
         expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('surfaces Retry-After metadata on rate-limited responses', async () => {
+        global.fetch = jest.fn().mockResolvedValue(
+            mockFetchOnce(
+                429,
+                { error: 'RATE_LIMIT_EXCEEDED' },
+                false,
+                { 'retry-after': '45' }
+            )
+        );
+
+        const { data, error, meta } = await apiRequest('/api/jobs', { method: 'GET' });
+
+        expect(error).toBeNull();
+        expect(data).toEqual({ error: 'RATE_LIMIT_EXCEEDED' });
+        expect(meta).toEqual({
+            status: 429,
+            retryAfterSeconds: 45,
+        });
     });
 });
 

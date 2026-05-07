@@ -1,11 +1,17 @@
 const crypto = require('crypto');
 const { TIERS } = require('../../../shared/constants/tiers.js');
 const { ERROR_MESSAGES } = require('../../../shared/errors.js');
-const { BILLING_ENTITLEMENTS } = require('../../../shared/constants/billing.js');
+const {
+  BILLING_ENTITLEMENTS,
+  BILLING_SUBSCRIPTION_STATUSES,
+} = require('../../../shared/constants/billing.js');
 
 const TEST_BILLING_LOG_HASH_SECRET = 'billing-log-secret-test';
+const TEST_BILLING_EMAIL_FINGERPRINT_SECRET = 'billing-email-fingerprint-secret-test';
 const originalBillingLogHashSecret = process.env.BILLING_LOG_HASH_SECRET;
+const originalBillingEmailFingerprintSecret = process.env.BILLING_EMAIL_FINGERPRINT_SECRET;
 process.env.BILLING_LOG_HASH_SECRET = TEST_BILLING_LOG_HASH_SECRET;
+process.env.BILLING_EMAIL_FINGERPRINT_SECRET = TEST_BILLING_EMAIL_FINGERPRINT_SECRET;
 
 let mockStripeMode = 'test';
 
@@ -36,6 +42,8 @@ jest.mock('../supabaseServer.js', () => ({
 const {
   BILLING_SYNC_MODES,
   BILLING_WRITE_OUTCOMES,
+  CHECKOUT_STATUS_STATES,
+  canStartCheckout,
   STRIPE_EVENT_RECEIPT_RESULTS,
   classifyStripeStatus,
   formatStripeIdForLog,
@@ -46,7 +54,9 @@ const {
   hasCanonicalBillingEntitlement,
   hashUserIdForIdempotency,
   hashUserIdForLog,
+  loadBillingStatusOrThrow,
   markSubscriptionDeletedFromEvent,
+  mapCheckoutStatus,
   recordStripeEventReceipt,
   redactStripeId,
   resolveStorageEntitlement,
@@ -196,6 +206,13 @@ function buildExpectedLogHash(userId) {
     .digest('hex');
 }
 
+function buildExpectedEmailFingerprint(email) {
+  return crypto
+    .createHmac('sha256', TEST_BILLING_EMAIL_FINGERPRINT_SECRET)
+    .update(email.trim().toLowerCase())
+    .digest('hex');
+}
+
 describe('billingService', () => {
   const originalLogFullBillingIds = process.env.LOG_FULL_BILLING_IDS;
   const testNowMs = new Date('2029-11-14T00:00:00.000Z').getTime();
@@ -218,6 +235,7 @@ describe('billingService', () => {
     mockStripeMode = 'test';
     delete process.env.LOG_FULL_BILLING_IDS;
     process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+    process.env.BILLING_EMAIL_FINGERPRINT_SECRET = TEST_BILLING_EMAIL_FINGERPRINT_SECRET;
   });
 
   afterEach(() => {
@@ -235,6 +253,12 @@ describe('billingService', () => {
       delete process.env.BILLING_LOG_HASH_SECRET;
     } else {
       process.env.BILLING_LOG_HASH_SECRET = originalBillingLogHashSecret;
+    }
+
+    if (originalBillingEmailFingerprintSecret === undefined) {
+      delete process.env.BILLING_EMAIL_FINGERPRINT_SECRET;
+    } else {
+      process.env.BILLING_EMAIL_FINGERPRINT_SECRET = originalBillingEmailFingerprintSecret;
     }
   });
 
@@ -442,6 +466,166 @@ describe('billingService', () => {
     });
   });
 
+  describe('loadBillingStatusOrThrow', () => {
+    const userId = 'user-strict-status';
+
+    it('returns the canonical local billing state through the caller client', async () => {
+      const client = createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: { user_id: userId, stripe_customer_id: 'cus_strict_123' },
+            error: null,
+          },
+        },
+        billing_subscriptions: {
+          maybeSingle: {
+            data: {
+              user_id: userId,
+              stripe_subscription_id: 'sub_strict_123',
+              stripe_customer_id: 'cus_strict_123',
+              price_id: 'price_tailor_monthly',
+              status: 'active',
+              cancel_at_period_end: false,
+            },
+            error: null,
+          },
+        },
+      });
+
+      const status = await loadBillingStatusOrThrow(userId, client, mockLog);
+
+      expect(status).toEqual(
+        expect.objectContaining({
+          hasCustomerMapping: true,
+          hasSubscription: true,
+          entitled: true,
+          stripeCustomerId: 'cus_strict_123',
+          stripeSubscriptionId: 'sub_strict_123',
+        })
+      );
+    });
+
+    it('throws when the request-scoped client is missing', async () => {
+      await expect(loadBillingStatusOrThrow(userId, null, mockLog)).rejects.toMatchObject({
+        code: 'BILLING_STATUS_UNAVAILABLE',
+        message: 'Billing status resolver is missing a request-scoped Supabase client',
+      });
+
+      expect(mockLog.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: 'loadBillingStatusOrThrow',
+          hasUserId: true,
+          hasSupabaseClient: false,
+        }),
+        'Billing status resolver is missing a request-scoped Supabase client'
+      );
+    });
+
+    it('throws instead of returning a synthetic free state when a billing read fails', async () => {
+      const dbError = new Error('strict read failed');
+      const client = createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: { user_id: userId, stripe_customer_id: 'cus_strict_123' },
+            error: null,
+          },
+        },
+        billing_subscriptions: {
+          maybeSingle: { data: null, error: dbError },
+        },
+      });
+
+      await expect(loadBillingStatusOrThrow(userId, client, mockLog)).rejects.toMatchObject({
+        code: 'BILLING_STATUS_UNAVAILABLE',
+        message: 'Failed to load local billing status',
+      });
+
+      expect(mockLog.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          err: dbError,
+          operation: 'loadBillingStatusOrThrow',
+          userIdHash: buildExpectedLogHash(userId),
+        }),
+        'Failed to load local billing status'
+      );
+    });
+  });
+
+  describe('canStartCheckout', () => {
+    it('allows checkout when no local subscription row exists', () => {
+      expect(canStartCheckout({ hasSubscription: false, status: null })).toBe(true);
+    });
+
+    it.each([
+      BILLING_SUBSCRIPTION_STATUSES.CANCELED,
+      BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED,
+    ])('allows checkout for %s subscriptions', (status) => {
+      expect(canStartCheckout({ hasSubscription: true, status })).toBe(true);
+    });
+
+    it.each([
+      BILLING_SUBSCRIPTION_STATUSES.ACTIVE,
+      BILLING_SUBSCRIPTION_STATUSES.PAST_DUE,
+      BILLING_SUBSCRIPTION_STATUSES.UNPAID,
+      BILLING_SUBSCRIPTION_STATUSES.PAUSED,
+      BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE,
+    ])('blocks checkout for %s subscriptions', (status) => {
+      expect(canStartCheckout({ hasSubscription: true, status })).toBe(false);
+    });
+
+    it('fails closed for unknown billing statuses', () => {
+      expect(canStartCheckout({ hasSubscription: true, status: 'trialing' })).toBe(false);
+      expect(canStartCheckout({ hasSubscription: true, status: 'corrupt' })).toBe(false);
+      expect(canStartCheckout({ hasSubscription: true, status: null })).toBe(false);
+      expect(canStartCheckout(null)).toBe(false);
+    });
+  });
+
+  describe('mapCheckoutStatus', () => {
+    it('returns active when local canonical billing state is entitled', () => {
+      expect(
+        mapCheckoutStatus({
+          billingStatus: { entitled: true },
+          checkoutSessionStatus: 'open',
+        })
+      ).toBe(CHECKOUT_STATUS_STATES.ACTIVE);
+    });
+
+    it('returns pending when the Checkout Session is still open', () => {
+      expect(
+        mapCheckoutStatus({
+          billingStatus: { entitled: false },
+          checkoutSessionStatus: 'open',
+        })
+      ).toBe(CHECKOUT_STATUS_STATES.PENDING);
+    });
+
+    it('returns free when checkout completed but local canonical state is still non-entitled', () => {
+      expect(
+        mapCheckoutStatus({
+          billingStatus: { entitled: false },
+          checkoutSessionStatus: 'complete',
+        })
+      ).toBe(CHECKOUT_STATUS_STATES.FREE);
+    });
+
+    it('fails closed to error for expired or unknown Checkout Session statuses', () => {
+      expect(
+        mapCheckoutStatus({
+          billingStatus: { entitled: false },
+          checkoutSessionStatus: 'expired',
+        })
+      ).toBe(CHECKOUT_STATUS_STATES.ERROR);
+
+      expect(
+        mapCheckoutStatus({
+          billingStatus: { entitled: false },
+          checkoutSessionStatus: 'mystery',
+        })
+      ).toBe(CHECKOUT_STATUS_STATES.ERROR);
+    });
+  });
+
   describe('resolveStorageEntitlement', () => {
     const userId = 'user-storage';
 
@@ -639,14 +823,30 @@ describe('billingService', () => {
       expect(mockStripe.customers.update).not.toHaveBeenCalled();
     });
 
-    it('best-effort syncs email for an existing local Stripe customer mapping without recreating the customer', async () => {
-      useAdminClient(createSupabaseClient({
-        billing_customers: {
-          maybeSingle: {
-            data: { user_id: userId, stripe_customer_id: 'cus_existing_123' },
-            error: null,
+    it('persists the Stripe email fingerprint after a successful mapped-customer email sync', async () => {
+      const adminClient = useAdminClient(createSupabaseClient({
+        billing_customers: [
+          {
+            maybeSingle: {
+              data: {
+                user_id: userId,
+                stripe_customer_id: 'cus_existing_123',
+                last_synced_stripe_email_fingerprint: null,
+              },
+              error: null,
+            },
           },
-        },
+          {
+            maybeSingle: {
+              data: {
+                user_id: userId,
+                stripe_customer_id: 'cus_existing_123',
+                last_synced_stripe_email_fingerprint: buildExpectedEmailFingerprint('test@example.com'),
+              },
+              error: null,
+            },
+          },
+        ],
       }));
 
       const result = await getOrCreateStripeCustomer(userId, 'test@example.com', mockLog);
@@ -662,6 +862,36 @@ describe('billingService', () => {
       expect(mockStripe.customers.update).toHaveBeenCalledWith('cus_existing_123', {
         email: 'test@example.com',
       });
+      expect(adminClient.buildersByTable.billing_customers[1].state.updatePayload).toEqual({
+        last_synced_stripe_email_fingerprint: buildExpectedEmailFingerprint('test@example.com'),
+      });
+    });
+
+    it('skips the Stripe email update when the stored fingerprint already matches', async () => {
+      useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: {
+              user_id: userId,
+              stripe_customer_id: 'cus_existing_123',
+              last_synced_stripe_email_fingerprint: buildExpectedEmailFingerprint('Test@Example.com'),
+            },
+            error: null,
+          },
+        },
+      }));
+
+      const result = await getOrCreateStripeCustomer(userId, '  test@example.com  ', mockLog);
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          userId,
+          stripeCustomerId: 'cus_existing_123',
+          createdInStripe: false,
+        })
+      );
+      expect(mockStripe.customers.create).not.toHaveBeenCalled();
+      expect(mockStripe.customers.update).not.toHaveBeenCalled();
     });
 
     it('creates a placeholder row before persisting a new Stripe customer id and uses deterministic idempotency hashing', async () => {
@@ -671,11 +901,32 @@ describe('billingService', () => {
             maybeSingle: { data: null, error: null },
           },
           {
-            maybeSingle: { data: { user_id: userId, stripe_customer_id: null }, error: null },
+            maybeSingle: {
+              data: {
+                user_id: userId,
+                stripe_customer_id: null,
+                last_synced_stripe_email_fingerprint: null,
+              },
+              error: null,
+            },
           },
           {
             maybeSingle: {
-              data: { user_id: userId, stripe_customer_id: 'cus_new_123' },
+              data: {
+                user_id: userId,
+                stripe_customer_id: 'cus_new_123',
+                last_synced_stripe_email_fingerprint: null,
+              },
+              error: null,
+            },
+          },
+          {
+            maybeSingle: {
+              data: {
+                user_id: userId,
+                stripe_customer_id: 'cus_new_123',
+                last_synced_stripe_email_fingerprint: buildExpectedEmailFingerprint('test@example.com'),
+              },
               error: null,
             },
           },
@@ -708,6 +959,9 @@ describe('billingService', () => {
       expect(adminClient.buildersByTable.billing_customers[2].state.updatePayload).toEqual({
         stripe_customer_id: 'cus_new_123',
       });
+      expect(adminClient.buildersByTable.billing_customers[3].state.updatePayload).toEqual({
+        last_synced_stripe_email_fingerprint: buildExpectedEmailFingerprint('test@example.com'),
+      });
     });
 
     it('best-effort syncs email when the placeholder upsert races with an existing Stripe customer mapping', async () => {
@@ -718,7 +972,21 @@ describe('billingService', () => {
           },
           {
             maybeSingle: {
-              data: { user_id: userId, stripe_customer_id: 'cus_raced_123' },
+              data: {
+                user_id: userId,
+                stripe_customer_id: 'cus_raced_123',
+                last_synced_stripe_email_fingerprint: null,
+              },
+              error: null,
+            },
+          },
+          {
+            maybeSingle: {
+              data: {
+                user_id: userId,
+                stripe_customer_id: 'cus_raced_123',
+                last_synced_stripe_email_fingerprint: buildExpectedEmailFingerprint('test@example.com'),
+              },
               error: null,
             },
           },
@@ -739,18 +1007,25 @@ describe('billingService', () => {
       expect(mockStripe.customers.update).toHaveBeenCalledWith('cus_raced_123', {
         email: 'test@example.com',
       });
-      expect(adminClient.buildersByTable.billing_customers).toHaveLength(2);
+      expect(adminClient.buildersByTable.billing_customers).toHaveLength(3);
       expect(adminClient.buildersByTable.billing_customers[1].state.upsertPayload).toEqual({
         user_id: userId,
       });
       expect(adminClient.buildersByTable.billing_customers[1].state.updatePayload).toBeUndefined();
+      expect(adminClient.buildersByTable.billing_customers[2].state.updatePayload).toEqual({
+        last_synced_stripe_email_fingerprint: buildExpectedEmailFingerprint('test@example.com'),
+      });
     });
 
-    it('logs and continues when Stripe customer email sync fails', async () => {
+    it('does not persist the Stripe email fingerprint when the Stripe email sync fails', async () => {
       useAdminClient(createSupabaseClient({
         billing_customers: {
           maybeSingle: {
-            data: { user_id: userId, stripe_customer_id: 'cus_existing_123' },
+            data: {
+              user_id: userId,
+              stripe_customer_id: 'cus_existing_123',
+              last_synced_stripe_email_fingerprint: null,
+            },
             error: null,
           },
         },
@@ -781,6 +1056,43 @@ describe('billingService', () => {
           stripeCustomerId: formatStripeIdForLog('cus_existing_123', 'warn'),
         }),
         'Failed to sync Stripe customer email after resolving the local mapping'
+      );
+      expect(mockSupabaseAdmin.from).toHaveBeenCalledTimes(1);
+    });
+
+    it('continues the normal Stripe email sync when the fingerprint secret is missing', async () => {
+      delete process.env.BILLING_EMAIL_FINGERPRINT_SECRET;
+      useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: {
+              user_id: userId,
+              stripe_customer_id: 'cus_existing_123',
+              last_synced_stripe_email_fingerprint: null,
+            },
+            error: null,
+          },
+        },
+      }));
+
+      const result = await getOrCreateStripeCustomer(userId, 'test@example.com', mockLog);
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          userId,
+          stripeCustomerId: 'cus_existing_123',
+          createdInStripe: false,
+        })
+      );
+      expect(mockStripe.customers.update).toHaveBeenCalledWith('cus_existing_123', {
+        email: 'test@example.com',
+      });
+      expect(mockSupabaseAdmin.from).toHaveBeenCalledTimes(1);
+      expect(mockLog.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'billing_email_fingerprint_secret_missing',
+        }),
+        'BILLING_EMAIL_FINGERPRINT_SECRET is missing; skipping Stripe email fingerprint dedupe'
       );
     });
   });
@@ -920,6 +1232,65 @@ describe('billingService', () => {
           cancel_at_period_end: false,
         },
       });
+    });
+
+    it('rejects authoritative sync when the resolved local user does not match expectedUserId before the RPC write', async () => {
+      useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: { user_id: 'user-other', stripe_customer_id: 'cus_sync_123' },
+            error: null,
+          },
+        },
+        rpc: {
+          upsert_billing_subscription_authoritative: {
+            data: {
+              subscription: {
+                user_id: 'user-other',
+              },
+            },
+            error: null,
+          },
+        },
+      }));
+      mockStripe.subscriptions.retrieve.mockResolvedValue({
+        id: 'sub_sync_123',
+        customer: 'cus_sync_123',
+        status: 'active',
+        livemode: false,
+        current_period_end: 1889827200,
+        cancel_at_period_end: false,
+        items: {
+          data: [{ price: { id: 'price_tailor_monthly' } }],
+        },
+      });
+
+      await expect(
+        syncSubscriptionFromStripe(
+          'sub_sync_123',
+          {
+            mode: BILLING_SYNC_MODES.AUTHORITATIVE,
+            expectedUserId: userId,
+          },
+          mockLog
+        )
+      ).rejects.toMatchObject({
+        code: 'BILLING_OWNERSHIP_MISMATCH',
+        message: 'Stripe subscription resolved to a different local user',
+      });
+
+      expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
+      expect(mockLog.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'billing_sync_ownership_mismatch',
+          operation: 'syncSubscriptionFromStripe',
+          expectedUserIdHash: buildExpectedLogHash(userId),
+          resolvedUserIdHash: buildExpectedLogHash('user-other'),
+          stripeCustomerId: 'cus_sync_123',
+          stripeSubscriptionId: 'sub_sync_123',
+        }),
+        'Rejected Stripe subscription sync because the resolved local user did not match the caller'
+      );
     });
 
     it('rejects a supplied invalid eventCreated timestamp before Stripe work in authoritative mode', async () => {

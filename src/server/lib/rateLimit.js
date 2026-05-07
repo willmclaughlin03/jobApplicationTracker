@@ -14,6 +14,18 @@ const WARN_THROTTLE_MS = 60_000;
 /** @type {Map<string, {limiter: Ratelimit, redis: Redis}>} Cached limiter instances keyed by tier:operation:window */
 const limiterCache = new Map()
 
+/**
+ * Resolve or create the cached Upstash limiter for one tier/operation/window.
+ *
+ * Purpose: avoid rebuilding limiter objects on every request while still
+ * invalidating the cache if the underlying Redis client instance changes after
+ * reconnect or reconfiguration.
+ *
+ * @param {string} tier
+ * @param {string} operation
+ * @param {'hourly' | 'daily'} windowType
+ * @returns {Ratelimit | null}
+ */
 function getOrCreateLimiter(tier, operation, windowType){
     const key = `${tier}:${operation}:${windowType}`
     const redis = getRedisClient()
@@ -48,11 +60,16 @@ function getOrCreateLimiter(tier, operation, windowType){
  * Checks rate limit for a given identifier, tier, and operation
  *
  * Validates inputs, checks Redis availability, then evaluates both hourly
- * and daily windows. Returns the most restrictive result.
+ * and daily windows. Returns the most restrictive result and fails closed to
+ * `unavailable` when Redis or limiter evaluation is not trustworthy.
  *
  * Connects to:
  * - getOrCreateLimiter() for cached Ratelimit instances
  * - Redis via Upstash for actual limit evaluation
+ *
+ * Tradeoff:
+ * - the daily window is checked first so a request that is already over the
+ *   broader quota does not spend the narrower hourly token too
  *
  * @param {string} identifier - Rate limit key (e.g. 'user:uuid' or 'ip:1.2.3.4')
  * @param {string} tier - User tier from TIERS constant

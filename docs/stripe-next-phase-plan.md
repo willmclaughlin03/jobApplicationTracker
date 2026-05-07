@@ -400,6 +400,8 @@ into the route handlers.
 - canonical local billing status reads
 - checkout completion polling and reconciliation
 - the exact request and response contract for billing success-page polling
+- minimal billing pages for Stripe redirects
+- authenticated navigation entry to the billing surface
 
 ### What this chunk does not cover
 
@@ -410,71 +412,316 @@ into the route handlers.
 
 - `src/shared/validations/billingSchema.js`
 - `src/shared/validations/__tests__/billingSchema.test.js`
+- `src/server/lib/billingService.js`
 - `src/pages/api/billing/checkout.js`
 - `src/pages/api/billing/portal.js`
 - `src/pages/api/billing/status.js`
 - `src/pages/api/billing/checkout-status.js`
+- `src/pages/billing/index.js`
+- `src/pages/billing/success.js`
+- `src/pages/billing/cancel.js`
+- `src/client/components/ProfileDropdown.jsx`
 - tests for each new route
 
-### Expected edits
+### Implementation order
 
-- `POST /api/billing/checkout`
-- require auth and CSRF
-- validate `{ plan }`
-- resolve or create the local Stripe customer mapping
-- reject users who already have active or unresolved local billing state
-- create a subscription Checkout Session
-- create the Checkout Session with:
-- `mode: 'subscription'`
-- `client_reference_id: user.id`
-- `success_url: ${NEXT_PUBLIC_APP_URL}/billing/success?session_id={CHECKOUT_SESSION_ID}`
-- `cancel_url: ${NEXT_PUBLIC_APP_URL}/billing/cancel`
-- return only the hosted checkout URL
+1. add `billingSchema.js` and its tests before any route work
+2. add route-facing billing helpers in `billingService.js`
+3. implement `GET /api/billing/status`
+4. implement `POST /api/billing/portal`
+5. implement `POST /api/billing/checkout`
+6. implement `POST /api/billing/checkout-status`
+7. implement `/billing`, `/billing/success`, and `/billing/cancel`
+8. run route safety and billing route tests last
 
-- `POST /api/billing/portal`
-- require auth and CSRF
-- load the Stripe customer from `billing_customers`
-- create the hosted portal session
+### Major decisions and implementation references
+
+- Decision: keep the standard API envelope `{ data, error, message }` for all
+  billing routes.
+  - Reference in current code:
+    - `src/shared/response.js`
+    - existing API routes under `src/pages/api/`
+  - Reasoning:
+    - the repo already centralizes response formatting through
+      `createSuccessResponse()` and `createErrorResponse()`
+    - returning naked JSON for billing would create a second response contract
+      and make client handling driftier over time
+    - billing payloads should therefore be:
+      - `data: { url }`
+      - `data: { state }`
+      - `data: { entitlement, status, currentPeriodEnd, cancelAtPeriodEnd }`
+
+- Decision: validate `NEXT_PUBLIC_APP_URL` at module init and fail fast.
+  - Reference in current code:
+    - `src/server/lib/stripe.js`
+    - `src/server/lib/csrf.js`
+  - Reasoning:
+    - this repo already treats critical Stripe and CSRF config as startup-time
+      validation, not a best-effort runtime concern
+    - checkout redirect targets are security- and integrity-sensitive, so a
+      missing or malformed origin must stop startup instead of producing broken
+      Stripe redirect URLs
+    - require `https://` in production
+    - allow `http://localhost`, `http://127.0.0.1`, and `http://[::1]` only in
+      non-production
+    - never derive the origin from request headers
+
+- Decision: keep route logic thin by adding route-facing billing helpers instead
+  of duplicating state logic in each API file.
+  - Reference in current code:
+    - `src/server/lib/billingService.js`
+    - Chunk 3 in this plan
+  - Reasoning:
+    - the service layer already owns customer creation, canonical status reads,
+      livemode checks, and authoritative reconciliation
+    - billing routes should compose those helpers rather than branching on raw
+      Stripe and Supabase details directly
+
+- Decision: add `loadBillingStatusOrThrow(...)` beside
+  `getLocalBillingStatus(...)`.
+  - Reference in current code:
+    - `src/server/lib/billingService.js`
+  - Reasoning:
+    - `getLocalBillingStatus(...)` intentionally fails closed to a synthetic
+      free status on missing client or DB failure
+    - that behavior is correct for entitlement gating, but unsafe for:
+      - checkout eligibility, where a transient read failure could look like
+        "no subscription"
+      - checkout-status, where a transient read failure could look like `free`
+        for a paid user
+    - the new helper should reuse the same underlying reads but throw on route-
+      blocking failures so the route can return `503`
+
+- Decision: `POST /api/billing/checkout-status` must remain `POST`, not `GET`.
+  - Reference in current code:
+    - `src/server/middleware/withRateLimit.js`
+  - Reasoning:
+    - `withRateLimit(...)` only applies CSRF validation to state-changing
+      methods: `POST`, `PUT`, `DELETE`, and `PATCH`
+    - checkout-status can trigger authoritative reconcile work, so it is not a
+      pure read route
+    - turning it into `GET` would skip CSRF on a route that can write
+
+- Decision: every new billing route must declare `allowedMethods`.
+  - Reference in current code:
+    - `src/server/middleware/withRateLimit.js`
+  - Reasoning:
+    - the middleware fails closed with `405` when `allowedMethods` is omitted
+    - explicit method declarations also prevent quota drain on junk methods
+
+- Decision: keep webhook concerns out of Chunk 4.
+  - Reference in current code:
+    - `src/server/lib/readRawBody.js`
+    - `src/server/lib/webhookSignature.js`
+    - `src/server/middleware/withWebhookAuth.js`
+  - Reasoning:
+    - the raw-body and webhook-signature foundations already exist and belong to
+      Chunk 5
+    - Chunk 4 should not duplicate webhook verification or public-route logic
+
+### Route contracts
 
 - `GET /api/billing/status`
-- require auth
-- read local canonical billing state only
-- return entitlement, subscription status, current period end, and
-  cancel-at-period-end
-- set `Cache-Control: no-store`
-- set `Vary: Cookie`
+  - Reference in current code:
+    - `src/server/middleware/withRateLimit.js`
+    - `src/server/lib/billingService.js`
+  - Reasoning:
+    - wrap with `withRateLimit(..., { requireAuth: true, operation:
+      OPERATIONS.BILLING_READ, allowedMethods: ['GET'] })`
+    - the route must stay local-state-only and must never reconcile
+    - GET routes skip CSRF validation in the middleware, so no mutation can
+      hide here later
+    - return only canonical local fields in `data`
+    - set `Cache-Control: no-store`, `Vary: Cookie`, `Pragma: no-cache`, and
+      `CDN-Cache-Control: no-store`
+
+- `POST /api/billing/portal`
+  - Reference in current code:
+    - `src/server/middleware/withRateLimit.js`
+    - `src/server/lib/billingService.js`
+  - Reasoning:
+    - wrap with `withRateLimit(..., { requireAuth: true, operation:
+      OPERATIONS.BILLING_WRITE, allowedMethods: ['POST'] })`
+    - rely on the middleware's default auth then CSRF then rate-limit order
+    - fail closed when no local customer mapping exists
+    - return only `data.url`
+
+- `POST /api/billing/checkout`
+  - Reference in current code:
+    - `src/server/lib/billingService.js`
+    - `src/server/lib/stripe.js`
+    - `src/server/middleware/withRateLimit.js`
+  - Reasoning:
+    - validate `{ plan }` through `billingSchema.js`
+    - call `loadBillingStatusOrThrow(...)` before
+      `getOrCreateStripeCustomer(...)`
+    - this order matters because `getOrCreateStripeCustomer(...)` can upsert a
+      placeholder `billing_customers` row before any Stripe call
+    - use `getPriceIdForPlan(...)` for the allowlisted Stripe price
+    - create the Checkout Session with:
+      - `mode: 'subscription'`
+      - `client_reference_id: user.id`
+      - validated `success_url`
+      - validated `cancel_url`
+      - no trial settings
+    - return only `data.url`
+
+- Decision: checkout eligibility must be explicit and fail closed on unknown
+  states.
+  - Reference in current code:
+    - `src/server/lib/billingService.js`
+    - `src/shared/constants/billing.js`
+  - Reasoning:
+    - local billing status preserves raw subscription status values instead of
+      coercing them into a smaller UI enum
+    - eligibility must therefore check canonical status membership, not just
+      `entitled === false`
+    - allow checkout only when:
+      - there is no local subscription row
+      - status is `canceled`
+      - status is `incomplete_expired`
+    - block checkout when status is:
+      - `active`
+      - `past_due`
+      - `unpaid`
+      - `paused`
+      - `incomplete`
+      - any unknown or corrupt value
+
+- Decision: checkout session creation must use a time-bucketed idempotency key.
+  - Reference in current code:
+    - `src/server/lib/billingService.js`
+  - Reasoning:
+    - the existing customer-creation helper already uses a stable Stripe
+      idempotency key per user
+    - checkout session creation needs narrower dedupe semantics than customer
+      creation
+    - use a key shaped like:
+      `billing_checkout_${userHash.slice(0, 24)}_${plan}_${hourBucketUtc}`
+    - this suppresses double-click or fast-retry duplication without replaying
+      an abandoned session long after the user intended to try again
 
 - `POST /api/billing/checkout-status`
-- require auth and CSRF
-- validate `{ sessionId }`
-- fetch the Checkout Session from Stripe
-- verify ownership through `client_reference_id` or server-controlled metadata
-- read local billing state
-- if Stripe reports completed checkout but local state is still free, trigger a
-  server-side reconcile
-- return one of these exact UI states:
-- `pending`
-- `active`
-- `free`
-- `error`
+  - Reference in current code:
+    - `src/server/lib/billingService.js`
+    - `src/server/middleware/withRateLimit.js`
+    - `src/client/lib/api.js`
+  - Reasoning:
+    - wrap with `withRateLimit(..., { requireAuth: true, operation:
+      OPERATIONS.BILLING_WRITE, allowedMethods: ['POST'] })`
+    - validate `{ sessionId }`
+    - fetch the Checkout Session from Stripe
+    - verify ownership with `client_reference_id` before any reconcile
+    - assert Stripe livemode after ownership verification
+    - then do strict local billing read
+    - if Stripe shows completed checkout and local state is still non-entitled,
+      trigger at most one authoritative reconcile
+    - return exactly one of these UI states in `data.state`:
+      - `pending`
+      - `active`
+      - `free`
+      - `error`
+
+- Decision: transport failures in `checkout-status` must preserve the standard
+  `503 SERVICE_UNAVAILABLE` code.
+  - Reference in current code:
+    - `src/client/lib/api.js`
+    - `src/server/middleware/withRateLimit.js`
+  - Reasoning:
+    - the shared API client only retries when `data?.error` is exactly
+      `SERVICE_UNAVAILABLE`
+    - using a billing-specific retryable 503 code would silently disable the
+      built-in retry loop on the success page
+    - this applies to retryable Stripe, Redis, configuration, and strict-read
+      transport failures
+
+### Billing success-page contract
+
+- Decision: the success page must use the shared authenticated API helper, not
+  raw `fetch`.
+  - Reference in current code:
+    - `src/client/lib/api.js`
+    - `src/server/lib/csrf.js`
+    - `src/pages/api/auth/csrf.js`
+  - Reasoning:
+    - `apiRequest(...)` already handles:
+      - retrying `503 SERVICE_UNAVAILABLE`
+      - refreshing CSRF on `403 CSRF_VALIDATION_FAILED`
+    - the CSRF cookie is a signed, user-bound token with a finite lifetime
+    - using raw `fetch` would duplicate this logic and make long-lived billing
+      flows more fragile
+
+- Decision: use a bounded fixed poll schedule on `/billing/success`.
+  - Reference in current code:
+    - `src/client/lib/api.js`
+    - `src/shared/constants/tiers.js`
+    - `src/server/middleware/withRateLimit.js`
+  - Reasoning:
+    - billing write quota is intentionally limited
+    - `apiRequest(...)` can retry `503` twice before surfacing failure
+    - CSRF validation happens before rate limiting, so forged or stale CSRF
+      requests do not consume billing quota
+    - use this fixed schedule:
+      - immediate
+      - `+3s`
+      - `+10s`
+      - `+30s`
+      - `+60s`
+    - then stop polling
+
+- Decision: define terminal and non-terminal success-page stop rules up front.
+  - Reference in current code:
+    - `src/client/lib/api.js`
+    - `src/server/middleware/withRateLimit.js`
+  - Reasoning:
+    - the shared client returns `401` differently from `429` and `503`
+    - without explicit stop rules, two implementations could produce different
+      retry and cleanup behavior
+    - stop rules are:
+      - `active`: stop polling and move into entitled UI
+      - `error`: stop polling and show terminal checkout failure UI
+      - `401`: stop polling and require re-auth
+      - `429`: stop polling and show manual refresh UI
+      - `503` after client retries: stop polling and show temporary outage UI
+      - `pending`: continue while poll budget remains
+      - `free`: continue while poll budget remains, then stop after the final
+        poll and show manual refresh UI
+
+- Decision: another agent implementing the page must account for the shared
+  client's dual-shape error contract.
+  - Reference in current code:
+    - `src/client/lib/api.js`
+  - Reasoning:
+    - `401` is surfaced through `result.error`
+    - `429`, `503`, and other non-401 HTTP failures are surfaced through
+      `result.data?.error`
+    - success-page logic must check both paths explicitly
 
 ### Tradeoffs
 
 - pro: routes stay thin and readable
 - pro: local DB remains the app-facing truth
+- pro: billing success-page behavior stays aligned with existing auth, CSRF, and
+  retry conventions
 - con: checkout-status introduces Stripe reads during the success-page flow
-- con: this path needs debounce or rate protection to avoid excessive polling
+- con: strict route-facing reads add one more service helper because fail-closed
+  entitlement reads and fail-hard route reads have different safety semantics
 
 ### Must-have coding requirements
 
 - all request bodies must be schema-validated
 - the route contracts above must be treated as part of the spec, not left as
   implementation-detail decisions
+- new billing routes must use `withRateLimit(...)` with explicit
+  `allowedMethods`
 - `checkout-status` must not grant access directly from Stripe session
   completion
 - `status` must return local state only
 - `checkout-status` must verify session ownership before any reconcile
 - status-like routes must send cache-hardening headers
+- checkout eligibility must fail closed on unknown local subscription statuses
+- retryable `checkout-status` transport failures must return
+  `503 SERVICE_UNAVAILABLE`
 
 ### Key security decisions
 
@@ -484,17 +731,25 @@ into the route handlers.
   completed
 - ownership validation is required before revealing or reconciling a checkout
   session
+- request-header-derived origins are not acceptable for Stripe redirect URLs
+- GET billing routes must stay read-only because they do not receive CSRF
+  protection in the current middleware
 
 ### Testing requirements
 
 - unauthenticated and CSRF-invalid requests fail correctly
 - invalid plans are rejected
 - checkout session creation uses the exact required Stripe fields
+- checkout session creation uses the intended time-bucketed idempotency key
 - portal creation fails closed when no customer mapping exists
 - status route returns only local billing state
 - checkout-status returns only `pending`, `active`, `free`, or `error`
 - checkout-status rejects session ownership mismatches
 - checkout-status triggers reconcile only in the expected pending case
+- route-facing strict billing reads return `503` instead of synthetic free state
+- unknown local billing statuses block checkout
+- billing success-page polling stops according to the terminal vs non-terminal
+  rules above
 
 ## Chunk 5: Public Webhook Route And Event Processing
 
@@ -688,6 +943,9 @@ Acceptable rollout paths:
   verification pass
 - route tests for checkout, portal, status, checkout-status, and webhook pass
 - billing integration tests pass in the configured integration environment
+- deferred follow-up: add a billing-success round-trip client integration test
+  that exercises `apiRequest(...)` response metadata and the shared response
+  wrapper together instead of relying only on hand-built helper result shapes
 - CloudFront header forwarding is verified
 - existing paid users have local billing state before the canonical entitlement
   switch is relied upon
