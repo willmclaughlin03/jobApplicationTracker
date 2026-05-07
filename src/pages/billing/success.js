@@ -89,6 +89,32 @@ export default function BillingSuccessPage() {
     }
   }, [authLoading, router, user]);
 
+  /**
+   * Poll the canonical checkout-status route after the Stripe redirect lands.
+   *
+   * Purpose: drive the success-page state machine from the local billing record
+   * instead of trusting the redirect alone.
+   *
+   * Dependency contract:
+   * - starts only when authLoading is false, user exists, router.isReady is true,
+   *   and the sessionId query param has been derived
+   * - restarts when refreshVersion increments via manual refresh
+   * - stops when auth/user/router/session prerequisites disappear or the effect
+   *   is replaced/unmounted
+   *
+   * Side effects and transitions:
+   * - POSTs /api/billing/checkout-status with the current sessionId
+   * - updates outcome, checkoutState, and rateLimitCooldownSeconds from
+   *   interpretCheckoutStatusPollResult()
+   * - schedules bounded retry timers using getNextPollDelayMs()
+   * - switches pending/free exhaustion to getExhaustedPollingOutcome() when the
+   *   fixed poll budget runs out
+   *
+   * Cleanup:
+   * - isCancelled blocks late async completions from mutating state after the
+   *   effect has been torn down
+   * - timers stores every scheduled timeout id so cleanup can clear them
+   */
   useEffect(() => {
     if (!router.isReady || authLoading || !user) {
       return undefined;
@@ -104,6 +130,29 @@ export default function BillingSuccessPage() {
     const timers = [];
     setRateLimitCooldownSeconds(null);
 
+    /**
+     * Execute one checkout-status poll tick and either settle the rendered
+     * outcome or schedule the next backoff step.
+     *
+     * Inputs:
+     * - pollIndex selects the current delay bucket from the fixed poll schedule
+     *
+     * Outputs and transition rules:
+     * - interpretCheckoutStatusPollResult() returns an outcome plus optional
+     *   checkoutState and retryAfterSeconds
+     * - RATE_LIMITED stores retryAfterSeconds in rateLimitCooldownSeconds so the
+     *   manual refresh button can show/disable against the server cooldown
+     * - CONTINUE keeps polling, updates checkoutState ('pending' or 'free'),
+     *   and advances via getNextPollDelayMs()
+     * - when no next delay exists, getExhaustedPollingOutcome() converts the
+     *   last in-flight checkoutState into MANUAL_REFRESH or ERROR
+     * - terminal outcomes (ACTIVE, REAUTH, UNAVAILABLE, ERROR, RATE_LIMITED)
+     *   stop scheduling further polls and update outcome immediately
+     *
+     * Cancellation semantics:
+     * - return early when isCancelled is true so stale async completions do not
+     *   set React state after cleanup
+     */
     async function runPoll(pollIndex) {
       const result = await api.post('/api/billing/checkout-status', { sessionId });
 
