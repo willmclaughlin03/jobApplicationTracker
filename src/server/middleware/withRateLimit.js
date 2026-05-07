@@ -3,6 +3,7 @@ import { checkRateLimit } from '../lib/rateLimit.js';
 import { validateCsrfToken } from '../lib/csrf.js';
 import { METHOD_TO_OPERATIONS, OPERATIONS } from '../../shared/constants/tiers.js';
 import { resolveRateLimitTier } from '../lib/userTier.js';
+import { isIP } from 'node:net';
 
 /**
  * Operations where 429 responses are logged at debug instead of warn.
@@ -17,12 +18,6 @@ import { logger, attachRequestLogger } from '../../shared/logger.js';
 
 
 
-/**
- * IPv4 and IPv6 format patterns for basic validation
- * Purpose: Reject obviously invalid strings before using as rate limit keys
- */
-const IPV4_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
-const IPV6_REGEX = /^[0-9a-fA-F:]{2,45}$/;
 const MAX_IP_LENGTH = 45;
 
 /**
@@ -74,8 +69,8 @@ function formatRateLimitMessage(seconds) {
 /**
  * Validates and normalizes an IP address string
  *
- * Strips IPv4-mapped IPv6 prefix and validates basic format.
- * Rejects strings that don't look like valid IP addresses to prevent
+ * Strips IPv4-mapped IPv6 prefix and validates the final value with node:net.
+ * Rejects strings that aren't strict IPv4/IPv6 addresses to prevent
  * spoofed headers from creating arbitrary rate limit keys.
  *
  * @param {string} ip - Raw IP string from request headers or socket
@@ -92,7 +87,8 @@ function normalizeIp(ip){
         normalized = normalized.slice(7);
     }
 
-    if(IPV4_REGEX.test(normalized) || IPV6_REGEX.test(normalized)){
+    const ipVersion = isIP(normalized);
+    if(ipVersion === 4 || ipVersion === 6){
         return normalized;
     }
 

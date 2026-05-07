@@ -191,6 +191,26 @@ describe('withRateLimit middleware', () => {
         });
 
         /**
+         * Test: Malformed dotted-quad values are rejected
+         * Security: Regex-shaped IPv4 strings with invalid octets must not become rate-limit keys
+         */
+        it('should reject malformed IPv4 strings that only look like addresses', async () => {
+            const req = createMockRequest(
+                'GET',
+                {},
+                { remoteAddress: '999.999.999.999' }
+            );
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(403);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
          * Test: Empty strings are rejected
          * Edge case: Header present but empty value
          */
@@ -396,6 +416,27 @@ describe('withRateLimit middleware', () => {
             expect(handler).toHaveBeenCalled();
         });
 
+        /**
+         * Test: CloudFront-Viewer-Address still fails closed after port stripping
+         * Security: Values that look like "ip:port" but contain an invalid IP must be rejected
+         */
+        it('should reject malformed cloudfront-viewer-address values after stripping the port', async () => {
+            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
+            const req = createMockRequest(
+                'GET',
+                { 'cloudfront-viewer-address': '999.999.999.999:12345' },
+                { remoteAddress: '169.254.0.1' }
+            );
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(403);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
         it('should handle x-forwarded-for arrays without throwing and use the rightmost IP', async () => {
             process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
             const req = createMockRequest(
@@ -414,6 +455,23 @@ describe('withRateLimit middleware', () => {
                 expect.any(String)
             );
             expect(handler).toHaveBeenCalled();
+        });
+
+        it('should reject malformed rightmost x-forwarded-for entries', async () => {
+            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
+            const req = createMockRequest(
+                'GET',
+                { 'x-forwarded-for': '10.0.0.1, 999.999.999.999' },
+                { remoteAddress: '169.254.0.1' }
+            );
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(403);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
         });
 
         it('should fail closed when cloudfront-viewer-address is repeated as an array', async () => {

@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import ProfileDropdown from '../../client/components/ProfileDropdown';
 import { useAuth } from '../../client/contexts/AuthContext';
@@ -39,7 +39,12 @@ export default function BillingPage() {
   const [loadState, setLoadState] = useState(BILLING_PAGE_LOAD_STATES.LOADING);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState('');
+  const actionLoadingRef = useRef('');
   const [errorMessage, setErrorMessage] = useState('');
+
+  useEffect(() => {
+    actionLoadingRef.current = actionLoading;
+  }, [actionLoading]);
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -61,6 +66,16 @@ export default function BillingPage() {
       const result = await api.get('/api/billing/status');
 
       if (isCancelled) {
+        return;
+      }
+
+      if (
+        result.error === ERROR_MESSAGES.UNAUTHORIZED
+        || result.meta?.status === 401
+        || (result.data?.error === 'UNAUTHORIZED' && result.data?.status === 401)
+      ) {
+        await signOut();
+        router.replace('/login');
         return;
       }
 
@@ -90,7 +105,7 @@ export default function BillingPage() {
     return () => {
       isCancelled = true;
     };
-  }, [user]);
+  }, [router, user]);
 
   const handleSignOut = async () => {
     await signOut();
@@ -98,6 +113,13 @@ export default function BillingPage() {
   };
 
   const handleCheckout = async () => {
+    if (loading || actionLoading !== '' || actionLoadingRef.current !== '') {
+      return;
+    }
+
+    actionLoadingRef.current = BILLING_PAGE_ACTIONS.CHECKOUT;
+    setActionLoading(BILLING_PAGE_ACTIONS.CHECKOUT);
+
     await runBillingPageRedirectAction({
       action: BILLING_PAGE_ACTIONS.CHECKOUT,
       request: () => api.post('/api/billing/checkout', {
@@ -114,6 +136,13 @@ export default function BillingPage() {
   };
 
   const handlePortal = async () => {
+    if (loading || actionLoading !== '' || actionLoadingRef.current !== '') {
+      return;
+    }
+
+    actionLoadingRef.current = BILLING_PAGE_ACTIONS.PORTAL;
+    setActionLoading(BILLING_PAGE_ACTIONS.PORTAL);
+
     await runBillingPageRedirectAction({
       action: BILLING_PAGE_ACTIONS.PORTAL,
       request: () => api.post('/api/billing/portal', {}),
