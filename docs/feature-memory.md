@@ -11,6 +11,8 @@ Use this file as a quick-running log of implemented changes.
 - `YYYY-MM-DD` - `Feature or change name`: short note on what was added or updated.
 
 ## Entries
+- `2026-05-09` - `Review guidance for automated findings`: Added repo-level review-quality and output-format guidance to `AGENTS.md` and `CLAUDE.md` so automated reviewers verify findings against current code, focus on concrete billing/auth/race-condition issues, and report actionable fixes.
+- `2026-05-09` - `Billing success manual-refresh latch`: Added a refresh-pending guard on the success-page manual refresh button, documented the latch/reset behavior in the polling JSDoc, and covered duplicate-click suppression with focused page coverage.
 - `2026-05-09` - `Billing success rejected-poll guard`: Wrapped the success-page checkout-status poll interpretation in a local fail-closed catch so rejected poll promises clear cooldown/timers, settle into a terminal error state, and stop the continuing polling UI; added focused page coverage.
 - `2026-05-06` - `Billing success polling docs`: Documented the billing success-page polling effect and `runPoll()` state machine, including dependency start/stop rules, outcome transitions, backoff exhaustion, and timer/cancellation cleanup semantics.
 - `2026-05-06` - `Stripe test NODE_ENV teardown fix`: Updated the Stripe test suite teardown to delete `process.env.NODE_ENV` when it was originally unset instead of restoring the literal `"undefined"` string.

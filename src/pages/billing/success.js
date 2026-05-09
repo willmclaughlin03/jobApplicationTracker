@@ -75,6 +75,7 @@ export default function BillingSuccessPage() {
   const { user, loading: authLoading } = useAuth();
   const [outcome, setOutcome] = useState(BILLING_SUCCESS_OUTCOMES.CONTINUE);
   const [checkoutState, setCheckoutState] = useState('pending');
+  const [refreshPending, setRefreshPending] = useState(false);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [rateLimitCooldownSeconds, setRateLimitCooldownSeconds] = useState(null);
 
@@ -98,7 +99,8 @@ export default function BillingSuccessPage() {
    * Dependency contract:
    * - starts only when authLoading is false, user exists, router.isReady is true,
    *   and the sessionId query param has been derived
-   * - restarts when refreshVersion increments via manual refresh
+   * - restarts when refreshVersion increments via manual refresh after the
+   *   click handler latches refreshPending to block duplicate refreshes
    * - stops when auth/user/router/session prerequisites disappear or the effect
    *   is replaced/unmounted
    *
@@ -109,6 +111,9 @@ export default function BillingSuccessPage() {
    * - schedules bounded retry timers using getNextPollDelayMs()
    * - switches pending/free exhaustion to getExhaustedPollingOutcome() when the
    *   fixed poll budget runs out
+   * - clears refreshPending when a manual refresh-triggered poll attempt
+   *   settles into a terminal outcome or hard error; CONTINUE keeps the latch
+   *   in place across scheduled backoff steps
    *
    * Cleanup:
    * - isCancelled blocks late async completions from mutating state after the
@@ -116,13 +121,23 @@ export default function BillingSuccessPage() {
    * - timers stores every scheduled timeout id so cleanup can clear them
    */
   useEffect(() => {
+    const shouldResetRefreshPending = refreshVersion > 0;
+
     if (!router.isReady || authLoading || !user) {
+      if (shouldResetRefreshPending) {
+        setRefreshPending(false);
+      }
+
       return undefined;
     }
 
     if (!sessionId) {
       setOutcome(BILLING_SUCCESS_OUTCOMES.ERROR);
       setCheckoutState('error');
+      if (shouldResetRefreshPending) {
+        setRefreshPending(false);
+      }
+
       return undefined;
     }
 
@@ -154,11 +169,14 @@ export default function BillingSuccessPage() {
      * - when no next delay exists, getExhaustedPollingOutcome() converts the
      *   last in-flight checkoutState into MANUAL_REFRESH or ERROR
      * - terminal outcomes (ACTIVE, REAUTH, UNAVAILABLE, ERROR, RATE_LIMITED)
-     *   stop scheduling further polls and update outcome immediately
+     *   stop scheduling further polls, update outcome immediately, and clear
+     *   refreshPending when the current run was triggered by manual refresh
      *
      * Cancellation semantics:
      * - return early when isCancelled is true so stale async completions do not
      *   set React state after cleanup
+     * - cancelled stale runs deliberately avoid clearing refreshPending so only
+     *   the active manual-refresh attempt can release that latch
      */
     async function runPoll(pollIndex) {
       let interpreted;
@@ -176,6 +194,10 @@ export default function BillingSuccessPage() {
         setRateLimitCooldownSeconds(null);
         setOutcome(BILLING_SUCCESS_OUTCOMES.ERROR);
         setCheckoutState('error');
+        if (shouldResetRefreshPending) {
+          setRefreshPending(false);
+        }
+
         return;
       }
 
@@ -197,6 +219,10 @@ export default function BillingSuccessPage() {
 
         if (nextDelayMs === null) {
           setOutcome(getExhaustedPollingOutcome(interpreted.checkoutState));
+          if (shouldResetRefreshPending) {
+            setRefreshPending(false);
+          }
+
           return;
         }
 
@@ -210,6 +236,10 @@ export default function BillingSuccessPage() {
       setOutcome(interpreted.outcome);
       if (interpreted.checkoutState) {
         setCheckoutState(interpreted.checkoutState);
+      }
+
+      if (shouldResetRefreshPending) {
+        setRefreshPending(false);
       }
     }
 
@@ -286,8 +316,15 @@ export default function BillingSuccessPage() {
             || outcome === BILLING_SUCCESS_OUTCOMES.RATE_LIMITED) && (
             <button
               type="button"
-              onClick={() => setRefreshVersion((value) => value + 1)}
-              disabled={refreshDisabled}
+              onClick={() => {
+                if (refreshPending) {
+                  return;
+                }
+
+                setRefreshPending(true);
+                setRefreshVersion((value) => value + 1);
+              }}
+              disabled={refreshDisabled || refreshPending}
               className="inline-flex items-center justify-center rounded-md bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-400"
             >
               {refreshButtonLabel}

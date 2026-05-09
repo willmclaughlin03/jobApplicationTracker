@@ -164,4 +164,41 @@ describe('BillingSuccessPage', () => {
 
     expect(mockApiPost).toHaveBeenCalledTimes(2);
   });
+
+  it('latches manual refresh clicks until the refresh-triggered poll settles', async () => {
+    mockApiPost
+      .mockResolvedValueOnce({
+        data: { error: 'RATE_LIMIT_EXCEEDED' },
+        error: null,
+        meta: { status: 429, retryAfterSeconds: 0 },
+      })
+      .mockImplementationOnce(() => new Promise(() => {}));
+
+    const el = await renderBillingSuccessPage();
+    const refreshButton = el.querySelector('button[type="button"]');
+
+    if (!refreshButton) {
+      throw new Error('Expected the manual refresh button to render.');
+    }
+
+    expect(refreshButton.disabled).toBe(false);
+    expect(el.textContent).toContain('Polling paused');
+
+    await act(async () => {
+      refreshButton.click();
+      await Promise.resolve();
+    });
+
+    await flushAsyncWork();
+
+    expect(mockApiPost).toHaveBeenCalledTimes(2);
+    expect(refreshButton.disabled).toBe(true);
+
+    await act(async () => {
+      refreshButton.click();
+      await Promise.resolve();
+    });
+
+    expect(mockApiPost).toHaveBeenCalledTimes(2);
+  });
 });
