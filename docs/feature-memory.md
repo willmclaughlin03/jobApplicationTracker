@@ -11,6 +11,8 @@ Use this file as a quick-running log of implemented changes.
 - `YYYY-MM-DD` - `Feature or change name`: short note on what was added or updated.
 
 ## Entries
+- `2026-05-09` - `Billing success rejected-poll guard`: Wrapped the success-page checkout-status poll interpretation in a local fail-closed catch so rejected poll promises clear cooldown/timers, settle into a terminal error state, and stop the continuing polling UI; added focused page coverage.
+- `2026-05-06` - `Billing success polling docs`: Documented the billing success-page polling effect and `runPoll()` state machine, including dependency start/stop rules, outcome transitions, backoff exhaustion, and timer/cancellation cleanup semantics.
 - `2026-05-06` - `Stripe test NODE_ENV teardown fix`: Updated the Stripe test suite teardown to delete `process.env.NODE_ENV` when it was originally unset instead of restoring the literal `"undefined"` string.
 - `2026-05-06` - `Billing action submit guards`: Added handler-side in-flight latching on the billing page so checkout and portal clicks optimistically mark themselves loading and ignore duplicate submissions before the UI re-renders, with focused page tests for repeated clicks.
 - `2026-05-06` - `Billing page unauthorized recovery`: Updated the billing status load path to treat `401` responses as expired auth, trigger `signOut()` plus login redirect instead of a false service-outage state, and added focused billing-page coverage.

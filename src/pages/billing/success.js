@@ -137,9 +137,16 @@ export default function BillingSuccessPage() {
      * Inputs:
      * - pollIndex selects the current delay bucket from the fixed poll schedule
      *
-     * Outputs and transition rules:
-     * - interpretCheckoutStatusPollResult() returns an outcome plus optional
-     *   checkoutState and retryAfterSeconds
+     * Result normalization and transitions:
+     * - the try block POSTs /api/billing/checkout-status and immediately
+     *   normalizes the raw shared-client result through
+     *   interpretCheckoutStatusPollResult()
+     * - the interpreted object is the page-facing state-machine payload and
+     *   always carries a terminal/continue outcome plus optional checkoutState
+     *   and retryAfterSeconds
+     * - rejected poll promises clear pending timers, clear any rate-limit
+     *   cooldown, and force the page into the terminal error state so the UI
+     *   stops rendering the continuing poll path
      * - RATE_LIMITED stores retryAfterSeconds in rateLimitCooldownSeconds so the
      *   manual refresh button can show/disable against the server cooldown
      * - CONTINUE keeps polling, updates checkoutState ('pending' or 'free'),
@@ -154,13 +161,28 @@ export default function BillingSuccessPage() {
      *   set React state after cleanup
      */
     async function runPoll(pollIndex) {
-      const result = await api.post('/api/billing/checkout-status', { sessionId });
+      let interpreted;
+
+      try {
+        const result = await api.post('/api/billing/checkout-status', { sessionId });
+        interpreted = interpretCheckoutStatusPollResult(result);
+      } catch {
+        if (isCancelled) {
+          return;
+        }
+
+        timers.forEach((timer) => window.clearTimeout(timer));
+        timers.length = 0;
+        setRateLimitCooldownSeconds(null);
+        setOutcome(BILLING_SUCCESS_OUTCOMES.ERROR);
+        setCheckoutState('error');
+        return;
+      }
 
       if (isCancelled) {
         return;
       }
 
-      const interpreted = interpretCheckoutStatusPollResult(result);
       setRateLimitCooldownSeconds(
         interpreted.outcome === BILLING_SUCCESS_OUTCOMES.RATE_LIMITED
           ? interpreted.retryAfterSeconds ?? null
