@@ -35,6 +35,17 @@ describe('billing tier invariants', () => {
     expect(paid.daily).toBeGreaterThanOrEqual(free.daily);
   });
 
+  it('pins the raised billing_write limits for free and paid tiers', () => {
+    expect(TIER_LIMITS[TIERS.FREE][OPERATIONS.BILLING_WRITE]).toEqual({
+      hourly: 60,
+      daily: 180,
+    });
+    expect(TIER_LIMITS[TIERS.PAID][OPERATIONS.BILLING_WRITE]).toEqual({
+      hourly: 60,
+      daily: 180,
+    });
+  });
+
   it('requires explicit billing limits on both free and paid tiers', () => {
     for (const tier of [TIERS.FREE, TIERS.PAID]) {
       expect(TIER_LIMITS[tier]).toHaveProperty(OPERATIONS.BILLING_READ);

@@ -1,0 +1,132 @@
+jest.mock('../../../middleware/withRateLimit.js', () => ({
+  withRateLimit: (handler) => handler,
+}));
+
+const mockLoadBillingStatusOrThrow = jest.fn();
+const mockCreatePortalSession = jest.fn();
+const mockBuildAppUrl = jest.fn((path) => `https://app.example.test${path}`);
+
+jest.mock('../../../lib/billingService.js', () => ({
+  loadBillingStatusOrThrow: mockLoadBillingStatusOrThrow,
+}));
+
+jest.mock('../../../lib/stripe.js', () => ({
+  buildAppUrl: mockBuildAppUrl,
+  stripe: {
+    billingPortal: {
+      sessions: {
+        create: mockCreatePortalSession,
+      },
+    },
+  },
+}));
+
+const handler = require('../../../../pages/api/billing/portal.js').default;
+
+describe('/api/billing/portal handler', () => {
+  const mockUser = { id: 'user-billing-portal' };
+  const mockClient = { from: jest.fn() };
+  const mockLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+
+  function createMockReq() {
+    return {
+      method: 'POST',
+      body: {},
+      _rateLimitUser: mockUser,
+      _supabaseClient: mockClient,
+      log: mockLog,
+    };
+  }
+
+  function createMockRes() {
+    return {
+      status: jest.fn().mockReturnThis(),
+      json: jest.fn().mockReturnThis(),
+    };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('creates a Stripe billing portal session from the local customer mapping', async () => {
+    mockLoadBillingStatusOrThrow.mockResolvedValue({
+      stripeCustomerId: 'cus_portal_123',
+    });
+    mockCreatePortalSession.mockResolvedValue({
+      url: 'https://billing.stripe.test/session_123',
+    });
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockLoadBillingStatusOrThrow).toHaveBeenCalledWith(mockUser.id, mockClient, mockLog);
+    expect(mockBuildAppUrl).toHaveBeenCalledWith('/billing');
+    expect(mockCreatePortalSession).toHaveBeenCalledWith({
+      customer: 'cus_portal_123',
+      return_url: 'https://app.example.test/billing',
+    });
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { url: 'https://billing.stripe.test/session_123' },
+      })
+    );
+  });
+
+  it('fails closed when no local customer mapping exists', async () => {
+    mockLoadBillingStatusOrThrow.mockResolvedValue({
+      stripeCustomerId: null,
+    });
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockCreatePortalSession).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'PORTAL_SESSION_FAILED',
+      })
+    );
+  });
+
+  it('returns 503 when the strict local billing read fails', async () => {
+    const req = createMockReq();
+    const res = createMockRes();
+
+    mockLoadBillingStatusOrThrow.mockRejectedValue({
+      code: 'BILLING_STATUS_UNAVAILABLE',
+      message: 'strict billing read failed',
+    });
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'SERVICE_UNAVAILABLE',
+      })
+    );
+  });
+
+  it('returns 503 when Stripe portal session creation fails', async () => {
+    mockLoadBillingStatusOrThrow.mockResolvedValue({
+      stripeCustomerId: 'cus_portal_123',
+    });
+    mockCreatePortalSession.mockRejectedValue(new Error('Stripe down'));
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'PORTAL_SESSION_FAILED',
+      })
+    );
+  });
+});

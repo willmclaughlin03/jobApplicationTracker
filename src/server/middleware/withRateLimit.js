@@ -3,6 +3,7 @@ import { checkRateLimit } from '../lib/rateLimit.js';
 import { validateCsrfToken } from '../lib/csrf.js';
 import { METHOD_TO_OPERATIONS, OPERATIONS } from '../../shared/constants/tiers.js';
 import { resolveRateLimitTier } from '../lib/userTier.js';
+import { isIP } from 'node:net';
 
 /**
  * Operations where 429 responses are logged at debug instead of warn.
@@ -17,12 +18,6 @@ import { logger, attachRequestLogger } from '../../shared/logger.js';
 
 
 
-/**
- * IPv4 and IPv6 format patterns for basic validation
- * Purpose: Reject obviously invalid strings before using as rate limit keys
- */
-const IPV4_REGEX = /^(\d{1,3}\.){3}\d{1,3}$/;
-const IPV6_REGEX = /^[0-9a-fA-F:]{2,45}$/;
 const MAX_IP_LENGTH = 45;
 
 /**
@@ -41,7 +36,8 @@ function getSingleHeaderValue(value) {
 /**
  * Normalizes X-Forwarded-For into a single comma-separated string.
  *
- * Multiple header lines are semantically equivalent to one comma-joined value.
+ * Multiple header lines are semantically equivalent to one comma-joined value,
+ * and extractIpIdentifier() still applies trusted-position rules afterward.
  *
  * @param {string | string[] | undefined} value
  * @returns {string|null}
@@ -55,7 +51,11 @@ function getForwardedForHeaderValue(value) {
 }
 
 /**
- * Formats a human-readable retry message from a seconds-until-reset value
+ * Format the user-facing Retry-After message for a throttled request.
+ *
+ * Purpose: keep 429 responses human-readable without exposing implementation
+ * details from the underlying Upstash limiter payload.
+ *
  * @param {number} seconds - Seconds until the rate limit window resets
  * @returns {string} User-facing message indicating when to retry
  */
@@ -69,8 +69,8 @@ function formatRateLimitMessage(seconds) {
 /**
  * Validates and normalizes an IP address string
  *
- * Strips IPv4-mapped IPv6 prefix and validates basic format.
- * Rejects strings that don't look like valid IP addresses to prevent
+ * Strips IPv4-mapped IPv6 prefix and validates the final value with node:net.
+ * Rejects strings that aren't strict IPv4/IPv6 addresses to prevent
  * spoofed headers from creating arbitrary rate limit keys.
  *
  * @param {string} ip - Raw IP string from request headers or socket
@@ -87,7 +87,8 @@ function normalizeIp(ip){
         normalized = normalized.slice(7);
     }
 
-    if(IPV4_REGEX.test(normalized) || IPV6_REGEX.test(normalized)){
+    const ipVersion = isIP(normalized);
+    if(ipVersion === 4 || ipVersion === 6){
         return normalized;
     }
 
@@ -96,10 +97,10 @@ function normalizeIp(ip){
 
 
 /**
- * Extracts IP-based rate limit identifier from request
+ * Extracts the public-route IP identifier used for rate limiting.
  *
- * Purpose: Provides IP identifier for public/unauthenticated routes
- * Connects to: normalizeIp() for IP validation
+ * Purpose: provide a fail-closed identifier for unauthenticated routes without
+ * trusting spoofable client-controlled headers more than necessary.
  *
  * Deployed on AWS Amplify behind CloudFront:
  * 1. CloudFront-Viewer-Address — set by CloudFront, cannot be spoofed by clients.
@@ -108,8 +109,8 @@ function normalizeIp(ip){
  *    Earlier entries may be spoofed by the client, so only the last is trusted.
  * 3. req.socket.remoteAddress — only meaningful in local dev where no proxy exists.
  *
- * Returns null (→ 403) when no valid IP can be extracted, so misconfiguration
- * is visible rather than silently bypassed.
+ * Returns null (`->` 403) when no valid IP can be extracted, so proxy
+ * misconfiguration is visible rather than silently bypassing throttling.
  *
  * @param {import('next').NextApiRequest} req - Next.js API request
  * @returns {string|null} 'ip:{address}' or null if no valid IP
@@ -161,7 +162,11 @@ function extractIpIdentifier(req){
 
 
 /**
- * Set rate limit headers on the res obj
+ * Apply the normalized rate-limit headers returned by checkRateLimit().
+ *
+ * Purpose: keep header emission in one helper so protected and public routes
+ * expose the same rate-limit metadata regardless of which path identified the
+ * caller.
  *
  * @param {import('next').NextApiResponse} res - Next.js res obj
  * @param {object} rateLimitResult - result from checkRateLimit
@@ -203,13 +208,19 @@ function setRateLimitHeaders(res, rateLimitResult){
  * - METHOD_TO_OPERATIONS from tiers.js for HTTP method mapping
  * - sendError() from response.js for error responses
  *
+ * Side effects:
+ * - attaches a request-scoped logger via attachRequestLogger()
+ * - stores req._rateLimitUser and req._supabaseClient on protected-route passes
+ *
  * @param {Function} handler - Next.js API handler (req, res) => Promise
  * @param {Object} [options] - Configuration options
  * @param {boolean} [options.requireAuth=true] - If true, block when auth fails (protected routes).
  *                                               If false, use IP-based rate limiting (public routes).
  * @param {string} [options.operation] - Override operation type. If not set, derived from HTTP method.
+ * @param {Record<string, string> | null} [options.operationByMethod=null] - Optional per-method operation map.
  * @param {string[]} [options.allowedMethods=null] - HTTP methods this route accepts (e.g. ['GET', 'POST']).
  *                                                   If omitted, all requests return 405 (fail-closed).
+ * @param {boolean} [options.csrfProtect] - Override the default CSRF behavior for protected routes.
  * @returns {Function} Wrapped handler with rate limiting applied
  */
 export function withRateLimit(handler, options = {}){

@@ -4,7 +4,7 @@
 - Current environment is pre-production only.
 - There are currently no paid users in this environment.
 - Current fail-closed local billing entitlement behavior does not create a live paid-user access or premium-storage regression in this environment.
-- Remaining Stripe work for Chunks 3, 4, 5, and repo-facing Chunk 6 is still required before any production rollout that serves paid users.
+- Remaining Stripe work for Chunks 5, and repo-facing Chunk 6 is still required before any production rollout that serves paid users.
 
 ## 1. Code Organization
 - Small, focused modules with single responsibilities
@@ -30,7 +30,10 @@
 
 ## 5. Documentation
 - Document important functions: purpose, connections/dependencies, params, returns
+- Every new function written must have a short comment block above it in the repo's existing style. Include what the function is for, why it exists, key params/vars, and important side effects or connections. Apply this to internal helpers too, not just exported functions.
 - Explain complex business logic and side effects
+- Use `docs/feature-memory.md` as a quick-running log of changes; briefly note the feature or what was added whenever work is completed
+- After every `git push`, update `docs/fixes.md` with a brief note covering the issue, the approach taken, and how it was fixed
 
 ## 6. Permission to Edit
 - **NEVER make edits without explicit permission**
@@ -51,5 +54,37 @@
 - Identify edge cases before finalizing
 - Write unit tests in `__tests__/` using mocks; explain reasoning
 
-## 10. Before Submitting Code
+## 9. Automated Review / Findings Quality
+- When reviewing code or triaging automated findings, verify each finding against the current code before reporting it
+- Do not report speculative issues without a concrete execution path or failure mode
+- Prefer real bugs, regressions, race conditions, missing cleanup, auth gaps, validation gaps, and meaningful test gaps over style feedback
+- Skip stale or already-fixed findings and briefly say why they are no longer valid
+- For each valid finding, include:
+- severity
+- exact file and line reference
+- the specific trigger scenario
+- the user or system impact
+- why existing guards do not prevent it
+- the smallest safe fix
+- the test that should cover it
+- Focus especially on:
+- duplicate submissions and double-click races
+- async state bugs and stale closures
+- missing effect cleanup, cancellation handling, or timer cleanup
+- auth, ownership, or permission checks
+- rate-limit, retry, cooldown, and idempotency edge cases
+- fail-open behavior in billing, entitlement, or protected flows
+- If a finding depends on production-only or paid-user behavior, say that explicitly and do not present it as a current live regression in this pre-production environment
+- Do not suggest broad rewrites when a minimal patch is sufficient
+- If no valid findings remain after verification, say so clearly instead of forcing feedback
+
+## 10. Review Output Format
+- Present review findings in this order:
+- confirmed bugs or regressions
+- security, auth, or data-exposure concerns
+- missing tests for risky behavior
+- lower-risk maintainability notes
+- Keep each finding short, concrete, and tied to current code behavior
+
+## 11. Before Submitting Code
 Verify: no hardcoded secrets, proper validation, logger (not console.log), documented, follows existing patterns, testable

@@ -42,8 +42,8 @@ export const TIER_LIMITS = {
             daily: 500
         },
         billing_write: {
-            hourly: 20,
-            daily: 60
+            hourly: 60,
+            daily: 180
         },
         storage: {
             maxJobs: 300,
@@ -105,8 +105,8 @@ export const TIER_LIMITS = {
         // Intentionally mirrors FREE billing limits so an accidental paid-tier
         // assignment cannot create an unmetered billing route.
         billing_write: {
-            hourly: 20,
-            daily: 60
+            hourly: 60,
+            daily: 180
         },
         storage: {
             maxJobs: 3000,

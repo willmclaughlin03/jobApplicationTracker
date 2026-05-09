@@ -3,6 +3,17 @@ import { OPERATIONS, TIERS } from '../../shared/constants/tiers.js';
 
 const BILLING_OPERATIONS = new Set([OPERATIONS.BILLING_READ, OPERATIONS.BILLING_WRITE]);
 
+/**
+ * Return the first non-nullish value from a list of possible auth payload
+ * locations.
+ *
+ * Purpose: Supabase auth metadata has historically arrived in slightly
+ * different shapes, and the rate-limit tier helper still needs to read those
+ * hints without duplicating the precedence order each time.
+ *
+ * @param {unknown[]} values
+ * @returns {unknown}
+ */
 function getFirstDefinedValue(values) {
   for (const value of values) {
     if (value !== undefined && value !== null) {
@@ -49,6 +60,10 @@ export function hasBillingEntitlement(user) {
 /**
  * Resolve the effective rate-limit tier for a specific operation.
  *
+ * Purpose: this helper is intentionally limited to request-time throttling
+ * decisions. Canonical billing authorization still belongs to local billing
+ * state in billingService, not auth payload hints.
+ *
  * @param {object | null | undefined} user
  * @param {string} operation
  * @returns {string}
@@ -71,6 +86,9 @@ export function resolveRateLimitTier(user, operation) {
 /**
  * @deprecated Storage entitlement must be resolved from canonical local
  * billing state via billingService.resolveStorageEntitlement().
+ *
+ * This fallback remains only for older auth-hint call sites and should not be
+ * used for premium authorization decisions.
  *
  * @param {object | null | undefined} user
  * @returns {string}

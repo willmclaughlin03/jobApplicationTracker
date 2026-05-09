@@ -1,4 +1,5 @@
 const STRIPE_ENV_VARS = [
+  'NEXT_PUBLIC_APP_URL',
   'STRIPE_SECRET_KEY',
   'STRIPE_PRICE_RESUME_TAILOR_MONTHLY',
   'STRIPE_WEBHOOK_SECRET_TEST',
@@ -26,6 +27,7 @@ function restoreStripeEnv() {
 }
 
 function setValidTestEnv() {
+  process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test';
   process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
   process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
   process.env.STRIPE_WEBHOOK_SECRET_TEST = 'whsec_test_chunk2';
@@ -37,12 +39,21 @@ function loadStripeModule() {
 }
 
 describe('stripe runtime foundation', () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+
   beforeEach(() => {
     resetStripeEnv();
+    process.env.NODE_ENV = 'test';
   });
 
   afterAll(() => {
     restoreStripeEnv();
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+      return;
+    }
+
+    process.env.NODE_ENV = originalNodeEnv;
   });
 
   it('returns the allowlisted Stripe price id for the supported billing plan', () => {
@@ -52,13 +63,19 @@ describe('stripe runtime foundation', () => {
       BILLING_PLANS,
       STRIPE_API_VERSION,
       STRIPE_MODE,
+      buildAppUrl,
+      getAppOrigin,
       getPriceIdForPlan,
       stripe,
     } = loadStripeModule();
 
     expect(STRIPE_API_VERSION).toBe('2026-02-25.clover');
     expect(STRIPE_MODE).toBe('test');
+    expect(getAppOrigin()).toBe('https://app.example.test');
+    expect(buildAppUrl('/billing/success')).toBe('https://app.example.test/billing/success');
     expect(getPriceIdForPlan(BILLING_PLANS.RESUME_TAILOR_MONTHLY)).toBe('price_tailor_monthly');
+    expect(stripe.getApiField('timeout')).toBe(10000);
+    expect(stripe.getApiField('maxNetworkRetries')).toBe(2);
     expect(typeof stripe.webhooks.constructEvent).toBe('function');
   });
 
@@ -92,22 +109,86 @@ describe('stripe runtime foundation', () => {
   });
 
   it('fails fast when STRIPE_SECRET_KEY is missing', () => {
+    process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test';
     process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
 
     expect(() => loadStripeModule()).toThrow(/missing STRIPE_SECRET_KEY/i);
   });
 
   it('fails fast when the allowlisted price id env var is missing', () => {
+    process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test';
     process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
 
     expect(() => loadStripeModule()).toThrow(/missing STRIPE_PRICE_RESUME_TAILOR_MONTHLY/i);
   });
 
   it('fails fast when STRIPE_SECRET_KEY is malformed', () => {
+    process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test';
     process.env.STRIPE_SECRET_KEY = 'pk_test_not_a_secret';
     process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
 
     expect(() => loadStripeModule()).toThrow(/invalid STRIPE_SECRET_KEY/i);
+  });
+
+  it('fails fast when NEXT_PUBLIC_APP_URL is missing', () => {
+    process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
+    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+
+    expect(() => loadStripeModule()).toThrow(/missing NEXT_PUBLIC_APP_URL/i);
+  });
+
+  it('rejects non-origin NEXT_PUBLIC_APP_URL values', () => {
+    process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test/billing';
+    process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
+    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+
+    expect(() => loadStripeModule()).toThrow(/invalid NEXT_PUBLIC_APP_URL/i);
+  });
+
+  it('rejects NEXT_PUBLIC_APP_URL values with embedded credentials', () => {
+    process.env.NEXT_PUBLIC_APP_URL = 'https://user:pass@app.example.test';
+    process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
+    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+
+    expect(() => loadStripeModule()).toThrow(/invalid NEXT_PUBLIC_APP_URL/i);
+  });
+
+  it('rejects insecure non-local development origins outside production', () => {
+    process.env.NEXT_PUBLIC_APP_URL = 'http://staging.example.test';
+    process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
+    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+
+    expect(() => loadStripeModule()).toThrow(/invalid NEXT_PUBLIC_APP_URL/i);
+  });
+
+  it('allows localhost http origins outside production', () => {
+    process.env.NEXT_PUBLIC_APP_URL = 'http://localhost:3000';
+    process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
+    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+    process.env.STRIPE_WEBHOOK_SECRET_TEST = 'whsec_test_chunk2';
+
+    const { getAppOrigin } = loadStripeModule();
+
+    expect(getAppOrigin()).toBe('http://localhost:3000');
+  });
+
+  it('rejects non-app-relative pathnames when building app URLs', () => {
+    setValidTestEnv();
+
+    const { buildAppUrl } = loadStripeModule();
+
+    expect(() => buildAppUrl('billing')).toThrow(/invalid app pathname/i);
+    expect(() => buildAppUrl('//evil.example/path')).toThrow(/invalid app pathname/i);
+    expect(() => buildAppUrl('https://evil.example/path')).toThrow(/invalid app pathname/i);
+  });
+
+  it('requires https origins in production', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.NEXT_PUBLIC_APP_URL = 'http://localhost:3000';
+    process.env.STRIPE_SECRET_KEY = 'sk_live_chunk2';
+    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+
+    expect(() => loadStripeModule()).toThrow(/invalid NEXT_PUBLIC_APP_URL/i);
   });
 
   it('returns the active webhook secret for test mode', () => {
@@ -119,6 +200,7 @@ describe('stripe runtime foundation', () => {
   });
 
   it('returns the active webhook secret for live mode', () => {
+    process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test';
     process.env.STRIPE_SECRET_KEY = 'sk_live_chunk2';
     process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
     process.env.STRIPE_WEBHOOK_SECRET_LIVE = 'whsec_live_chunk2';
@@ -130,6 +212,7 @@ describe('stripe runtime foundation', () => {
   });
 
   it('fails closed when the active webhook secret is missing', () => {
+    process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test';
     process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
     process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
 

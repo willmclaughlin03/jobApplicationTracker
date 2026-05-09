@@ -4,10 +4,28 @@ import { logger, attachRequestLogger } from '../../shared/logger.js';
 import { verifyWebhookSignature } from '../lib/webhookSignature.js';
 import { MAX_WEBHOOK_RAW_BODY_BYTES } from '../lib/readRawBody.js';
 
+/**
+ * Normalize a trusted single-value header and fail closed on repeated values.
+ *
+ * Purpose: webhook verification should not silently pick one header entry from
+ * an unexpected array shape when upstream infrastructure duplicates a header.
+ *
+ * @param {string | string[] | undefined} value
+ * @returns {string | null}
+ */
 function getSingleHeaderValue(value) {
   return typeof value === 'string' ? value : null;
 }
 
+/**
+ * Parse the Content-Length header when it is a simple non-negative integer.
+ *
+ * Purpose: this is only an early rejection hint for oversized webhook
+ * requests; raw-body buffering still enforces the hard byte cap independently.
+ *
+ * @param {string | string[] | undefined} value
+ * @returns {number | null}
+ */
 function getContentLength(value) {
   if (typeof value !== 'string') {
     return null;
@@ -33,6 +51,12 @@ function getContentLength(value) {
  * - Consuming routes must set `export const config = { api: { bodyParser: false } }`.
  * - Consuming routes must enforce a hard raw-body read cap while buffering.
  * - Webhook routes must never log `req.body` or any raw body buffer.
+ * - Content-Length is treated as advisory only; the buffering helper is still
+ *   the real fail-closed size guard.
+ *
+ * Side effects:
+ * - attaches a request-scoped logger via attachRequestLogger()
+ * - stores the verified provider event on `req.webhookEvent`
  *
  * @param {Function} handler - Next.js API handler (req, res) => Promise
  * @param {Object} [options]
