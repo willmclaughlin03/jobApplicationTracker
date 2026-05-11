@@ -253,6 +253,31 @@ describe('stripe runtime narrow module', () => {
     expect(getConfiguredStripeMode()).toBe('test');
   });
 
+  it('does not cache successful custom env snapshot resolutions', () => {
+    const runtime = loadStripeRuntimeModule();
+
+    expect(runtime.resolveStripeConfig({
+      STRIPE_SECRET_KEY: 'sk_live_custom_snapshot',
+    })).toEqual({
+      secretKey: 'sk_live_custom_snapshot',
+      mode: 'live',
+    });
+
+    process.env.STRIPE_SECRET_KEY = 'sk_test_process_snapshot';
+
+    expect(runtime.getConfiguredStripeMode()).toBe('test');
+  });
+
+  it('does not cache custom env snapshot validation errors', () => {
+    const runtime = loadStripeRuntimeModule();
+
+    expect(() => runtime.resolveStripeConfig({})).toThrow(/missing STRIPE_SECRET_KEY/i);
+
+    process.env.STRIPE_SECRET_KEY = 'sk_live_process_after_custom_error';
+
+    expect(runtime.getConfiguredStripeMode()).toBe('live');
+  });
+
   it('rethrows the same missing-key error reference until reset', () => {
     const runtime = loadStripeRuntimeModule();
     let firstError;

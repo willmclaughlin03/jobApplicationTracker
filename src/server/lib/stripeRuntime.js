@@ -109,12 +109,14 @@ export function inferStripeMode(secretKey) {
  * @param {NodeJS.ProcessEnv} env
  * @returns {{ secretKey: string, mode: 'test' | 'live' }}
  */
-function resolveStripeConfig(env = process.env) {
-  if (cachedStripeConfig) {
+export function resolveStripeConfig(env = process.env) {
+  const shouldUseCache = env === process.env;
+
+  if (shouldUseCache && cachedStripeConfig) {
     return cachedStripeConfig;
   }
 
-  if (cachedStripeConfigError) {
+  if (shouldUseCache && cachedStripeConfigError) {
     throw cachedStripeConfigError;
   }
 
@@ -129,13 +131,21 @@ function resolveStripeConfig(env = process.env) {
       throw createStripeConfigError(`Invalid ${STRIPE_SECRET_KEY_ENV_VAR} environment variable`);
     }
 
-    cachedStripeConfig = Object.freeze({
+    const stripeConfig = Object.freeze({
       secretKey,
       mode: inferStripeMode(secretKey),
     });
-    return cachedStripeConfig;
+
+    if (shouldUseCache) {
+      cachedStripeConfig = stripeConfig;
+    }
+
+    return stripeConfig;
   } catch (error) {
-    cachedStripeConfigError = error;
+    if (shouldUseCache) {
+      cachedStripeConfigError = error;
+    }
+
     throw error;
   }
 }
