@@ -28,6 +28,9 @@ const mockRouter = {
 const mockUseAuth = jest.fn();
 const mockApiGet = jest.fn();
 const mockApiPost = jest.fn();
+const mockRandomUUID = jest.fn();
+const checkoutAttemptUuid = '01234567-89ab-cdef-0123-456789abcdef';
+const checkoutAttemptNonce = '0123456789abcdef0123456789abcdef';
 
 jest.mock('next/router', () => ({
   useRouter: () => mockRouter,
@@ -159,6 +162,15 @@ describe('BillingPage', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    if (!globalThis.crypto) {
+      Object.defineProperty(globalThis, 'crypto', { value: {}, configurable: true });
+    }
+
+    Object.defineProperty(globalThis.crypto, 'randomUUID', {
+      value: mockRandomUUID,
+      configurable: true,
+    });
+    mockRandomUUID.mockReturnValue(checkoutAttemptUuid);
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123', email: 'billing@example.com' },
       loading: false,
@@ -261,6 +273,7 @@ describe('BillingPage', () => {
     expect(mockApiPost).toHaveBeenCalledTimes(1);
     expect(mockApiPost).toHaveBeenCalledWith('/api/billing/checkout', expect.objectContaining({
       plan: 'resume_tailor_monthly',
+      checkoutAttemptNonce,
     }));
   });
 

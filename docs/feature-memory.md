@@ -11,6 +11,9 @@ Use this file as a quick-running log of implemented changes.
 - `YYYY-MM-DD` - `Feature or change name`: short note on what was added or updated.
 
 ## Entries
+- `2026-05-11` - `Auth-invalid log severity`: Lowered expected 401/403 token validation failures from error logs to warnings while preserving sanitized auth metadata and returned auth payloads.
+- `2026-05-11` - `Webhook env snapshot mode selection`: Updated webhook secret lookup to choose test/live secrets from the provided Stripe env snapshot before falling back to cached runtime mode.
+- `2026-05-11` - `Checkout nonce idempotency restore`: Switched checkout idempotency back to validated per-attempt nonces combined with the server-side user hash and plan so stale hourly Stripe Checkout Sessions are not replayed.
 - `2026-05-11` - `Webhook verifier config status fix`: Mapped Stripe runtime config failures from webhook verification to `503 SERVICE_UNAVAILABLE` and added middleware coverage for invalid Stripe runtime configuration.
 - `2026-05-11` - `Stripe billing foundation hardening`: Split Stripe runtime from checkout-only config, enforced webhook raw-body caps for cached and streamed bodies, mapped auth backend outages to 503, replaced client checkout nonces with server-owned hour-bucket idempotency, made completed non-entitled checkout reconciliation terminal, and updated the Stripe next-phase plan.
 - `2026-05-10` - `Stage 5 webhook plan gap audit`: Expanded Chunk 5 of `docs/stripe-next-phase-plan.md` with verified current-branch webhook and billing-contract gaps, resolved the duplicate-receipt semantics contradiction in favor of preserving `processed`, and added concrete code references plus test expectations for the follow-up fixes.

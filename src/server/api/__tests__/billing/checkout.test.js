@@ -36,10 +36,15 @@ describe('/api/billing/checkout handler', () => {
   const mockUser = { id: 'user-billing-checkout', email: 'test@example.com' };
   const mockClient = { from: jest.fn() };
   const mockLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
-  const defaultNowMs = Date.parse('2026-05-11T12:15:00.000Z');
-  let dateNowSpy;
+  const defaultCheckoutAttemptNonce = '0123456789abcdef0123456789abcdef';
 
-  function createMockReq(body = { plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY }, user = mockUser) {
+  function createMockReq(
+    body = {
+      plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+      checkoutAttemptNonce: defaultCheckoutAttemptNonce,
+    },
+    user = mockUser
+  ) {
     return {
       method: 'POST',
       body,
@@ -57,7 +62,6 @@ describe('/api/billing/checkout handler', () => {
   }
 
   beforeEach(() => {
-    dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(defaultNowMs);
     jest.clearAllMocks();
     mockCanStartCheckout.mockReturnValue(true);
     mockGetOrCreateStripeCustomer.mockResolvedValue({ stripeCustomerId: 'cus_checkout_123' });
@@ -69,12 +73,11 @@ describe('/api/billing/checkout handler', () => {
     });
   });
 
-  afterEach(() => {
-    dateNowSpy.mockRestore();
-  });
-
   it('rejects invalid billing request bodies', async () => {
-    const req = createMockReq({ plan: 'bad-plan' });
+    const req = createMockReq({
+      plan: 'bad-plan',
+      checkoutAttemptNonce: defaultCheckoutAttemptNonce,
+    });
     const res = createMockRes();
 
     await handler(req, res);
@@ -88,10 +91,10 @@ describe('/api/billing/checkout handler', () => {
     );
   });
 
-  it('rejects legacy client-provided checkout nonces under the strict body contract', async () => {
+  it('rejects invalid checkout attempt nonces before billing reads', async () => {
     const req = createMockReq({
       plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
-      checkoutAttemptNonce: '0123456789abcdef0123456789abcdef',
+      checkoutAttemptNonce: 'not-a-valid-nonce',
     });
     const res = createMockRes();
 
@@ -136,7 +139,7 @@ describe('/api/billing/checkout handler', () => {
       success_url: 'https://app.example.test/billing/success?session_id={CHECKOUT_SESSION_ID}',
       cancel_url: 'https://app.example.test/billing/cancel',
     }, {
-      idempotencyKey: `billing_checkout_hash1234567890hash123456_resume_tailor_monthly_${Math.floor(defaultNowMs / (60 * 60 * 1000))}`,
+      idempotencyKey: `billing_checkout_hash1234567890hash123456_resume_tailor_monthly_${defaultCheckoutAttemptNonce}`,
     });
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith(
@@ -146,7 +149,7 @@ describe('/api/billing/checkout handler', () => {
     );
   });
 
-  it('dedupes parallel duplicate submits in the same hour to one Stripe session URL', async () => {
+  it('dedupes parallel duplicate submits with the same nonce to one Stripe session URL', async () => {
     const sessionsByIdempotencyKey = new Map();
     mockCreateCheckoutSession.mockImplementation((payload, options) => {
       const url = sessionsByIdempotencyKey.get(options.idempotencyKey)
@@ -192,11 +195,17 @@ describe('/api/billing/checkout handler', () => {
     });
 
     const firstReq = createMockReq(
-      { plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY },
+      {
+        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        checkoutAttemptNonce: defaultCheckoutAttemptNonce,
+      },
       { id: 'user-a', email: 'a@example.com' }
     );
     const secondReq = createMockReq(
-      { plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY },
+      {
+        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        checkoutAttemptNonce: defaultCheckoutAttemptNonce,
+      },
       { id: 'user-b', email: 'b@example.com' }
     );
     const firstRes = createMockRes();
@@ -213,26 +222,28 @@ describe('/api/billing/checkout handler', () => {
     expect(secondKey).not.toBe(firstKey);
   });
 
-  it('uses different idempotency keys across a UTC hour boundary', async () => {
-    const beforeBoundary = Date.parse('2026-05-11T12:59:59.500Z');
-    const afterBoundary = Date.parse('2026-05-11T13:00:00.500Z');
-    dateNowSpy
-      .mockReturnValueOnce(beforeBoundary)
-      .mockReturnValueOnce(afterBoundary);
-
-    const firstReq = createMockReq();
+  it('uses different idempotency keys for different checkout attempt nonces', async () => {
+    const firstNonce = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const secondNonce = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const firstReq = createMockReq({
+      plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+      checkoutAttemptNonce: firstNonce,
+    });
     const firstRes = createMockRes();
-    const secondReq = createMockReq();
+    const secondReq = createMockReq({
+      plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+      checkoutAttemptNonce: secondNonce,
+    });
     const secondRes = createMockRes();
 
     await handler(firstReq, firstRes);
     await handler(secondReq, secondRes);
 
     expect(mockCreateCheckoutSession.mock.calls[0][1].idempotencyKey).toBe(
-      `billing_checkout_hash1234567890hash123456_resume_tailor_monthly_${Math.floor(beforeBoundary / (60 * 60 * 1000))}`
+      `billing_checkout_hash1234567890hash123456_resume_tailor_monthly_${firstNonce}`
     );
     expect(mockCreateCheckoutSession.mock.calls[1][1].idempotencyKey).toBe(
-      `billing_checkout_hash1234567890hash123456_resume_tailor_monthly_${Math.floor(afterBoundary / (60 * 60 * 1000))}`
+      `billing_checkout_hash1234567890hash123456_resume_tailor_monthly_${secondNonce}`
     );
   });
 

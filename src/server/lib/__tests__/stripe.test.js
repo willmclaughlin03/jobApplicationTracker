@@ -322,4 +322,17 @@ describe('stripe runtime narrow module', () => {
 
     expect(getActiveStripeWebhookSecret()).toBe('whsec_runtime_second');
   });
+
+  it('selects the webhook secret from the provided env secret key before cached mode', () => {
+    process.env.STRIPE_SECRET_KEY = 'sk_test_runtime_webhook';
+
+    const { getActiveStripeWebhookSecret, getConfiguredStripeMode } = loadStripeRuntimeModule();
+
+    expect(getConfiguredStripeMode()).toBe('test');
+    expect(getActiveStripeWebhookSecret({
+      STRIPE_SECRET_KEY: 'sk_live_runtime_webhook',
+      STRIPE_WEBHOOK_SECRET_TEST: 'whsec_runtime_test',
+      STRIPE_WEBHOOK_SECRET_LIVE: 'whsec_runtime_live',
+    })).toBe('whsec_runtime_live');
+  });
 });

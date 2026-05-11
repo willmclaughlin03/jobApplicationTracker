@@ -118,7 +118,7 @@ export async function getUserFromRequest(req, res) {
         };
       }
 
-      logger.error(sanitizeAuthErrorForLog(error), 'Token validation failed');
+      logger.warn(sanitizeAuthErrorForLog(error), 'Token validation failed');
       return {
         user: null,
         error: 'Invalid or expired token',

@@ -109,7 +109,7 @@ describe('supabaseServer', () => {
     /**
      * Test: Supabase returns an auth error (e.g., expired/invalid cookie)
      * Expected: Returns generic error message (not exposing internal details)
-     * Verifies: logger.error called with Pino-style (context, message) order
+     * Verifies: logger.warn called with Pino-style (context, message) order
      */
     it('should return error when Supabase auth fails', async () => {
       const authError = { message: 'Token expired', status: 401 };
@@ -131,10 +131,11 @@ describe('supabaseServer', () => {
         errorCode: AUTH_ERROR_CODES.AUTH_INVALID,
         supabaseClient: null,
       });
-      expect(mockLogger.error).toHaveBeenCalledWith(
+      expect(mockLogger.warn).toHaveBeenCalledWith(
         { name: undefined, status: 401, code: undefined },
         'Token validation failed'
       );
+      expect(mockLogger.error).not.toHaveBeenCalled();
       expect(consoleSpy).not.toHaveBeenCalled();
 
       consoleSpy.mockRestore();

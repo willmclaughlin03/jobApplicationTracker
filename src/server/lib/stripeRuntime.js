@@ -194,7 +194,10 @@ export function getStripeClient() {
  * @returns {string}
  */
 export function getActiveStripeWebhookSecret(env = process.env) {
-  const mode = getConfiguredStripeMode();
+  const envSecretKey = normalizeEnvValue(env?.[STRIPE_SECRET_KEY_ENV_VAR]);
+  const mode = envSecretKey
+    ? inferStripeMode(envSecretKey)
+    : cachedStripeConfig?.mode ?? getConfiguredStripeMode();
   const envVarName = STRIPE_WEBHOOK_SECRET_ENV_VARS[mode];
   const secret = normalizeEnvValue(env?.[envVarName]);
 

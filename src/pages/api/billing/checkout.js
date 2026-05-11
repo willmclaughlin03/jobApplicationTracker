@@ -35,8 +35,7 @@ async function handler(req, res) {
       req.log
     );
     const userHash = hashUserIdForIdempotency(req._rateLimitUser.id);
-    const { plan } = validationResult.data;
-    const hourBucketUtc = Math.floor(Date.now() / (60 * 60 * 1000));
+    const { checkoutAttemptNonce, plan } = validationResult.data;
     const checkoutSession = await stripe.checkout.sessions.create({
       mode: 'subscription',
       customer: stripeCustomerId,
@@ -50,7 +49,7 @@ async function handler(req, res) {
       success_url: buildAppUrl('/billing/success?session_id={CHECKOUT_SESSION_ID}'),
       cancel_url: buildAppUrl('/billing/cancel'),
     }, {
-      idempotencyKey: `billing_checkout_${userHash.slice(0, 24)}_${plan}_${hourBucketUtc}`,
+      idempotencyKey: `billing_checkout_${userHash.slice(0, 24)}_${plan}_${checkoutAttemptNonce}`,
     });
 
     if (!checkoutSession?.url) {
