@@ -17,6 +17,11 @@
 
 const mockGetUserFromRequest = jest.fn();
 jest.mock('../../lib/supabaseServer.js', () => ({
+    AUTH_ERROR_CODES: {
+        AUTH_INVALID: 'AUTH_INVALID',
+        AUTH_NOT_FOUND: 'AUTH_NOT_FOUND',
+        AUTH_UNAVAILABLE: 'AUTH_UNAVAILABLE',
+    },
     getUserFromRequest: mockGetUserFromRequest,
 }));
 

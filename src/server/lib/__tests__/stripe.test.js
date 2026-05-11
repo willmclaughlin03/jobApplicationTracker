@@ -38,6 +38,22 @@ function loadStripeModule() {
   return require('../stripe.js');
 }
 
+/**
+ * Load a fresh Stripe runtime module instance for isolated tests.
+ *
+ * Purpose: resets Jest's module registry before loading runtime-only Stripe
+ * exports so each caller observes a clean module cache.
+ * Params/returns: takes no params and returns the required module exports.
+ * Side effects/connections: calls jest.resetModules() and requires
+ * ../stripeRuntime.js, which affects Jest's module cache.
+ *
+ * @returns {typeof import('../stripeRuntime.js')}
+ */
+function loadStripeRuntimeModule() {
+  jest.resetModules();
+  return require('../stripeRuntime.js');
+}
+
 describe('stripe runtime foundation', () => {
   const originalNodeEnv = process.env.NODE_ENV;
 
@@ -223,6 +239,178 @@ describe('stripe runtime foundation', () => {
       throw new Error('Expected webhook secret lookup to fail closed');
     } catch (error) {
       expect(error.code).toBe('WEBHOOK_VERIFIER_NOT_CONFIGURED');
+    }
+  });
+});
+
+describe('stripe runtime narrow module', () => {
+  beforeEach(() => {
+    resetStripeEnv();
+  });
+
+  afterAll(() => {
+    restoreStripeEnv();
+  });
+
+  it('memoizes the configured Stripe mode after the first successful resolution', () => {
+    process.env.STRIPE_SECRET_KEY = 'sk_test_runtime_mode';
+
+    const { getConfiguredStripeMode } = loadStripeRuntimeModule();
+
+    expect(getConfiguredStripeMode()).toBe('test');
+
+    process.env.STRIPE_SECRET_KEY = 'sk_live_runtime_mode';
+
+    expect(getConfiguredStripeMode()).toBe('test');
+  });
+
+  it('does not cache successful custom env snapshot resolutions', () => {
+    const runtime = loadStripeRuntimeModule();
+
+    expect(runtime.resolveStripeConfig({
+      STRIPE_SECRET_KEY: '  sk_live_custom_snapshot  ',
+    })).toEqual({
+      secretKey: 'sk_live_custom_snapshot',
+      mode: 'live',
+    });
+
+    process.env.STRIPE_SECRET_KEY = 'sk_test_process_snapshot';
+
+    expect(runtime.getConfiguredStripeMode()).toBe('test');
+  });
+
+  it('rejects schema-invalid custom env snapshots without caching them', () => {
+    const runtime = loadStripeRuntimeModule();
+    const tooLongSecretKey = `sk_test_${'a'.repeat(248)}`;
+    const invalidSecretKeys = [
+      123,
+      'sk_test_',
+      'sk_test_bad-key',
+      tooLongSecretKey,
+    ];
+
+    for (const secretKey of invalidSecretKeys) {
+      expect(() => runtime.resolveStripeConfig({
+        STRIPE_SECRET_KEY: secretKey,
+      })).toThrow(/invalid STRIPE_SECRET_KEY/i);
+    }
+
+    process.env.STRIPE_SECRET_KEY = 'sk_test_process_after_schema_errors';
+
+    expect(runtime.getConfiguredStripeMode()).toBe('test');
+  });
+
+  it('does not cache custom env snapshot validation errors', () => {
+    const runtime = loadStripeRuntimeModule();
+
+    expect(() => runtime.resolveStripeConfig({})).toThrow(/missing STRIPE_SECRET_KEY/i);
+
+    process.env.STRIPE_SECRET_KEY = 'sk_live_process_after_custom_error';
+
+    expect(runtime.getConfiguredStripeMode()).toBe('live');
+  });
+
+  it('rethrows the same missing-key error reference until reset', () => {
+    const runtime = loadStripeRuntimeModule();
+    let firstError;
+    let secondError;
+
+    try {
+      runtime.getConfiguredStripeMode();
+    } catch (error) {
+      firstError = error;
+    }
+
+    try {
+      runtime.getConfiguredStripeMode();
+    } catch (error) {
+      secondError = error;
+    }
+
+    expect(firstError).toBeDefined();
+    expect(secondError).toBe(firstError);
+    expect(firstError.code).toBe('STRIPE_CONFIG_INVALID');
+    expect(firstError.message).toMatch(/missing STRIPE_SECRET_KEY/i);
+
+    process.env.STRIPE_SECRET_KEY = 'sk_live_runtime_after_reset';
+    runtime.__resetForTests();
+
+    expect(runtime.getConfiguredStripeMode()).toBe('live');
+  });
+
+  it('clears cached clients and errors when reset for tests', () => {
+    process.env.STRIPE_SECRET_KEY = 'pk_test_not_a_secret';
+
+    const runtime = loadStripeRuntimeModule();
+
+    expect(() => runtime.getStripeClient()).toThrow(/invalid STRIPE_SECRET_KEY/i);
+
+    process.env.STRIPE_SECRET_KEY = 'sk_test_runtime_client';
+    expect(() => runtime.getStripeClient()).toThrow(/invalid STRIPE_SECRET_KEY/i);
+
+    runtime.__resetForTests();
+
+    const firstClient = runtime.getStripeClient();
+
+    expect(firstClient.getApiField('timeout')).toBe(10000);
+
+    process.env.STRIPE_SECRET_KEY = 'sk_live_runtime_client';
+
+    expect(runtime.getStripeClient()).toBe(firstClient);
+
+    runtime.__resetForTests();
+
+    const secondClient = runtime.getStripeClient();
+
+    expect(secondClient).not.toBe(firstClient);
+    expect(runtime.getConfiguredStripeMode()).toBe('live');
+  });
+
+  it('reads the active webhook secret dynamically for the cached mode', () => {
+    process.env.STRIPE_SECRET_KEY = 'sk_test_runtime_webhook';
+    process.env.STRIPE_WEBHOOK_SECRET_TEST = 'whsec_runtime_first';
+
+    const { getActiveStripeWebhookSecret, getConfiguredStripeMode } = loadStripeRuntimeModule();
+
+    expect(getConfiguredStripeMode()).toBe('test');
+    expect(getActiveStripeWebhookSecret()).toBe('whsec_runtime_first');
+
+    process.env.STRIPE_WEBHOOK_SECRET_TEST = 'whsec_runtime_second';
+
+    expect(getActiveStripeWebhookSecret()).toBe('whsec_runtime_second');
+  });
+
+  it('selects the webhook secret from the provided env secret key before cached mode', () => {
+    process.env.STRIPE_SECRET_KEY = 'sk_test_runtime_webhook';
+
+    const { getActiveStripeWebhookSecret, getConfiguredStripeMode } = loadStripeRuntimeModule();
+
+    expect(getConfiguredStripeMode()).toBe('test');
+    expect(getActiveStripeWebhookSecret({
+      STRIPE_SECRET_KEY: 'sk_live_runtime_webhook',
+      STRIPE_WEBHOOK_SECRET_TEST: 'whsec_runtime_test',
+      STRIPE_WEBHOOK_SECRET_LIVE: 'whsec_runtime_live',
+    })).toBe('whsec_runtime_live');
+  });
+
+  it('validates provided webhook env secret keys through the shared schema', () => {
+    process.env.STRIPE_SECRET_KEY = 'sk_test_runtime_webhook';
+
+    const { getActiveStripeWebhookSecret, getConfiguredStripeMode } = loadStripeRuntimeModule();
+
+    expect(getConfiguredStripeMode()).toBe('test');
+
+    for (const secretKey of [123, 'sk_live_bad-key']) {
+      try {
+        getActiveStripeWebhookSecret({
+          STRIPE_SECRET_KEY: secretKey,
+          STRIPE_WEBHOOK_SECRET_LIVE: 'whsec_runtime_live',
+        });
+        throw new Error('Expected webhook secret lookup to reject a malformed secret key');
+      } catch (error) {
+        expect(error.code).toBe('STRIPE_CONFIG_INVALID');
+        expect(error.message).toMatch(/invalid STRIPE_SECRET_KEY/i);
+      }
     }
   });
 });

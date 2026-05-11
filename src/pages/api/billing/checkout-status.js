@@ -238,8 +238,18 @@ async function handler(req, res) {
     );
   }
 
-  if (checkoutSession?.status === 'complete' && !billingStatus.entitled) {
-    if (!hasConfirmedCheckoutCustomerOwnership(checkoutSessionCustomerId, billingStatus.stripeCustomerId)) {
+  const checkoutSessionWasComplete = checkoutSession?.status === 'complete';
+  let completedCheckoutOwnershipPassed = false;
+  let completedCheckoutSubscriptionId = null;
+  let authoritativeReconcileAttempted = false;
+
+  if (checkoutSessionWasComplete && !billingStatus.entitled) {
+    completedCheckoutOwnershipPassed = hasConfirmedCheckoutCustomerOwnership(
+      checkoutSessionCustomerId,
+      billingStatus.stripeCustomerId
+    );
+
+    if (!completedCheckoutOwnershipPassed) {
       return sendError(
         res,
         403,
@@ -248,15 +258,16 @@ async function handler(req, res) {
       );
     }
 
-    const stripeSubscriptionId = extractStripeSubscriptionId(checkoutSession.subscription);
+    completedCheckoutSubscriptionId = extractStripeSubscriptionId(checkoutSession.subscription);
 
-    if (!stripeSubscriptionId) {
+    if (!completedCheckoutSubscriptionId) {
       return sendSuccess(res, 200, { state: 'error' }, 'Checkout session could not be reconciled');
     }
 
     try {
+      authoritativeReconcileAttempted = true;
       const syncResult = await syncSubscriptionFromStripe(
-        stripeSubscriptionId,
+        completedCheckoutSubscriptionId,
         {
           mode: BILLING_SYNC_MODES.AUTHORITATIVE,
           expectedUserId: req._rateLimitUser.id,
@@ -282,6 +293,16 @@ async function handler(req, res) {
         req._supabaseClient,
         req.log
       );
+
+      if (
+        checkoutSessionWasComplete
+        && completedCheckoutOwnershipPassed
+        && completedCheckoutSubscriptionId
+        && authoritativeReconcileAttempted
+        && !billingStatus.entitled
+      ) {
+        return sendSuccess(res, 200, { state: 'error' }, 'Checkout session could not be reconciled');
+      }
     } catch (error) {
       if (error?.code === 'BILLING_OWNERSHIP_MISMATCH') {
         return sendError(

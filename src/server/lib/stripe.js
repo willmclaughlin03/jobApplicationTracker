@@ -1,24 +1,20 @@
-import Stripe from 'stripe';
 import {
   BILLING_PLANS,
   BILLING_PLAN_PRICE_ENV_VARS,
 } from '../../shared/constants/billing.js';
+import {
+  STRIPE_API_VERSION,
+  STRIPE_WEBHOOK_SECRET_ENV_VARS,
+  getActiveStripeWebhookSecret,
+  getConfiguredStripeMode,
+  getStripeClient,
+  inferStripeMode,
+} from './stripeRuntime.js';
 
-export const STRIPE_API_VERSION = '2026-02-25.clover';
-export const STRIPE_WEBHOOK_SECRET_ENV_VARS = Object.freeze({
-  test: 'STRIPE_WEBHOOK_SECRET_TEST',
-  live: 'STRIPE_WEBHOOK_SECRET_LIVE',
-});
-
-const STRIPE_SECRET_KEY_ENV_VAR = 'STRIPE_SECRET_KEY';
 const APP_ORIGIN_ENV_VAR = 'NEXT_PUBLIC_APP_URL';
-const STRIPE_SECRET_KEY_PREFIXES = ['sk_test_', 'sk_live_'];
 const STRIPE_PRICE_ID_PREFIX = 'price_';
-const STRIPE_WEBHOOK_SECRET_PREFIX = 'whsec_';
 const MAX_PLAN_ERROR_LENGTH = 80;
 const LOCAL_DEVELOPMENT_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
-const STRIPE_TIMEOUT_MS = 10_000;
-const STRIPE_MAX_NETWORK_RETRIES = 2;
 
 /**
  * Create the shared configuration error type for startup-time Stripe guards.
@@ -33,21 +29,6 @@ const STRIPE_MAX_NETWORK_RETRIES = 2;
 function createStripeConfigError(message) {
   const error = new Error(message);
   error.code = 'STRIPE_CONFIG_INVALID';
-  return error;
-}
-
-/**
- * Create the error used when webhook verification cannot be configured safely.
- *
- * Purpose: let webhook middleware distinguish missing secrets from invalid
- * request signatures and respond with 503 instead of 400 in that case.
- *
- * @param {string} message
- * @returns {Error & { code: string }}
- */
-function createWebhookConfigError(message) {
-  const error = new Error(message);
-  error.code = 'WEBHOOK_VERIFIER_NOT_CONFIGURED';
   return error;
 }
 
@@ -73,15 +54,11 @@ function sanitizePlanForError(plan) {
   return sanitizedPlan || '[empty]';
 }
 
-function hasAnyPrefix(value, prefixes) {
-  return prefixes.some((prefix) => value.startsWith(prefix));
-}
-
 /**
  * Read and validate one required Stripe-related environment variable.
  *
  * Purpose: centralize startup-time config guarding so the module fails closed
- * before any route attempts checkout, portal, or webhook work with partial
+ * before any route attempts checkout or portal work with partial
  * configuration.
  *
  * @param {string} envVarName
@@ -160,36 +137,6 @@ function validateAppOrigin(rawOrigin, env = process.env) {
   throw createStripeConfigError(`Invalid ${APP_ORIGIN_ENV_VAR} environment variable`);
 }
 
-/**
- * Infer whether the configured Stripe key targets test or live mode.
- *
- * Purpose: the billing service uses this single derived mode to separate live
- * and test webhook traffic, control logging policy, and choose the matching
- * webhook secret.
- *
- * @param {string} secretKey
- * @returns {'test' | 'live'}
- */
-export function inferStripeMode(secretKey) {
-  if (typeof secretKey !== 'string') {
-    throw createStripeConfigError('Invalid STRIPE_SECRET_KEY environment variable');
-  }
-
-  if (secretKey.startsWith('sk_live_')) {
-    return 'live';
-  }
-
-  if (secretKey.startsWith('sk_test_')) {
-    return 'test';
-  }
-
-  throw createStripeConfigError('Invalid STRIPE_SECRET_KEY environment variable');
-}
-
-const stripeSecretKey = requireStripeEnv(
-  STRIPE_SECRET_KEY_ENV_VAR,
-  (value) => hasAnyPrefix(value, STRIPE_SECRET_KEY_PREFIXES)
-);
 const appOrigin = validateAppOrigin(process.env[APP_ORIGIN_ENV_VAR]);
 
 const priceIdByPlan = Object.freeze(
@@ -201,13 +148,8 @@ const priceIdByPlan = Object.freeze(
   )
 );
 
-export const STRIPE_MODE = inferStripeMode(stripeSecretKey);
-
-export const stripe = new Stripe(stripeSecretKey, {
-  apiVersion: STRIPE_API_VERSION,
-  timeout: STRIPE_TIMEOUT_MS,
-  maxNetworkRetries: STRIPE_MAX_NETWORK_RETRIES,
-});
+export const STRIPE_MODE = getConfiguredStripeMode();
+export const stripe = getStripeClient();
 
 /**
  * Resolve the single allowlisted Stripe price id for a known billing plan.
@@ -229,18 +171,6 @@ export function getPriceIdForPlan(plan) {
   const error = new Error(`Unsupported billing plan: ${sanitizedPlan}`);
   error.code = 'STRIPE_PLAN_INVALID';
   throw error;
-}
-
-/**
- * Return the server-wide Stripe mode derived at module initialization.
- *
- * Purpose: downstream billing helpers should rely on the same validated mode
- * rather than re-inferring it from request data or environment variables.
- *
- * @returns {'test' | 'live'}
- */
-export function getConfiguredStripeMode() {
-  return STRIPE_MODE;
 }
 
 /**
@@ -282,29 +212,11 @@ export function buildAppUrl(pathname) {
   return url.toString();
 }
 
-/**
- * Resolve the active Stripe webhook secret for the configured mode.
- *
- * Purpose: webhook verification must fail closed if the mode-specific secret is
- * missing or malformed rather than accidentally verifying test traffic against
- * live configuration or vice versa.
- *
- * @param {NodeJS.ProcessEnv} env
- * @returns {string}
- */
-export function getActiveStripeWebhookSecret(env = process.env) {
-  const envVarName = STRIPE_WEBHOOK_SECRET_ENV_VARS[STRIPE_MODE];
-  const secret = normalizeEnvValue(env?.[envVarName]);
-
-  if (!secret) {
-    throw createWebhookConfigError(`Missing ${envVarName} environment variable`);
-  }
-
-  if (!secret.startsWith(STRIPE_WEBHOOK_SECRET_PREFIX)) {
-    throw createWebhookConfigError(`Invalid ${envVarName} environment variable`);
-  }
-
-  return secret;
-}
-
 export { BILLING_PLANS };
+export {
+  STRIPE_API_VERSION,
+  STRIPE_WEBHOOK_SECRET_ENV_VARS,
+  getActiveStripeWebhookSecret,
+  getConfiguredStripeMode,
+  inferStripeMode,
+};

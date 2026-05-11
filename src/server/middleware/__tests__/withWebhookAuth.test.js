@@ -204,6 +204,30 @@ describe('withWebhookAuth middleware', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  it('returns 503 when Stripe runtime config is invalid', async () => {
+    const runtimeConfigError = new Error('Invalid STRIPE_SECRET_KEY environment variable');
+    runtimeConfigError.code = 'STRIPE_CONFIG_INVALID';
+    mockVerifyWebhookSignature.mockRejectedValueOnce(runtimeConfigError);
+
+    const req = createMockRequest('POST');
+    const res = createMockResponse();
+    const handler = jest.fn().mockResolvedValue(undefined);
+
+    await withWebhookAuth(handler, { allowedMethods: ['POST'] })(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: 'SERVICE_UNAVAILABLE' })
+    );
+    expect(handler).not.toHaveBeenCalled();
+    expect(mockLog.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorCode: 'STRIPE_CONFIG_INVALID',
+      }),
+      'Webhook signature verifier is not configured'
+    );
+  });
+
   it('returns 413 when raw body buffering exceeds the configured cap', async () => {
     const oversizedBodyError = new Error('Webhook payload exceeded 262144 bytes');
     oversizedBodyError.code = 'RAW_BODY_TOO_LARGE';
@@ -243,8 +267,28 @@ describe('withWebhookAuth middleware', () => {
       expect.objectContaining({
         signature: 't=1713456000,v1=valid-signature',
         signatureHeader: 'stripe-signature',
+        maxBodyBytes: 256 * 1024,
       })
     );
+  });
+
+  it('passes a custom maxBodyBytes value into signature verification', async () => {
+    const req = createMockRequest('POST');
+    const res = createMockResponse();
+    const handler = jest.fn().mockResolvedValue('ok');
+
+    await withWebhookAuth(handler, {
+      allowedMethods: ['POST'],
+      maxBodyBytes: 128,
+    })(req, res);
+
+    expect(mockVerifyWebhookSignature).toHaveBeenCalledWith(
+      req,
+      expect.objectContaining({
+        maxBodyBytes: 128,
+      })
+    );
+    expect(handler).toHaveBeenCalledWith(req, res);
   });
 
   it('returns 500 when the handler throws', async () => {

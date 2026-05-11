@@ -5,30 +5,50 @@ const {
 } = require('../billingSchema.js');
 
 describe('billingSchema', () => {
+  const validCheckoutAttemptNonce = '0123456789abcdef0123456789abcdef';
+
   describe('billingCheckoutSchema', () => {
-    it('accepts the supported billing plan', () => {
+    it('accepts the supported billing plan and checkout attempt nonce', () => {
       const result = billingCheckoutSchema.safeParse({
         plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
-        checkoutAttemptNonce: '0123456789abcdef0123456789abcdef',
+        checkoutAttemptNonce: validCheckoutAttemptNonce,
       });
 
       expect(result.success).toBe(true);
       expect(result.data).toEqual({
         plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
-        checkoutAttemptNonce: '0123456789abcdef0123456789abcdef',
+        checkoutAttemptNonce: validCheckoutAttemptNonce,
       });
+    });
+
+    it('normalizes uppercase checkout attempt nonces', () => {
+      const result = billingCheckoutSchema.safeParse({
+        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        checkoutAttemptNonce: 'ABCDEFABCDEFABCDEFABCDEFABCDEFAB',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data.checkoutAttemptNonce).toBe('abcdefabcdefabcdefabcdefabcdefab');
     });
 
     it('rejects unknown billing plans', () => {
       const result = billingCheckoutSchema.safeParse({
         plan: 'unknown_plan',
-        checkoutAttemptNonce: '0123456789abcdef0123456789abcdef',
+        checkoutAttemptNonce: validCheckoutAttemptNonce,
       });
 
       expect(result.success).toBe(false);
     });
 
-    it('rejects a missing checkout attempt nonce', () => {
+    it('rejects missing billing plans', () => {
+      const result = billingCheckoutSchema.safeParse({
+        checkoutAttemptNonce: validCheckoutAttemptNonce,
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects missing checkout attempt nonces', () => {
       const result = billingCheckoutSchema.safeParse({
         plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
       });
@@ -36,27 +56,23 @@ describe('billingSchema', () => {
       expect(result.success).toBe(false);
     });
 
-    it('rejects checkout attempt nonces that are not exactly 32 lowercase hex characters', () => {
-      expect(
-        billingCheckoutSchema.safeParse({
-          plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
-          checkoutAttemptNonce: 'short',
-        }).success
-      ).toBe(false);
+    it('rejects malformed checkout attempt nonces', () => {
+      const result = billingCheckoutSchema.safeParse({
+        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        checkoutAttemptNonce: 'not-a-valid-nonce',
+      });
 
-      expect(
-        billingCheckoutSchema.safeParse({
-          plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
-          checkoutAttemptNonce: '0123456789abcdef0123456789abcdeg',
-        }).success
-      ).toBe(false);
+      expect(result.success).toBe(false);
+    });
 
-      expect(
-        billingCheckoutSchema.safeParse({
-          plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
-          checkoutAttemptNonce: '0123456789ABCDEF0123456789ABCDEF',
-        }).success
-      ).toBe(false);
+    it('rejects checkout request fields outside the strict nonce-backed contract', () => {
+      const result = billingCheckoutSchema.safeParse({
+        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        checkoutAttemptNonce: validCheckoutAttemptNonce,
+        clientSessionId: 'extra-session-field',
+      });
+
+      expect(result.success).toBe(false);
     });
   });
 

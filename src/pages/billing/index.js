@@ -6,7 +6,6 @@ import { useAuth } from '../../client/contexts/AuthContext';
 import { api } from '../../client/lib/api.js';
 import {
   BILLING_PAGE_ACTIONS,
-  generateCheckoutAttemptNonce,
   runBillingPageRedirectAction,
 } from '../../client/lib/billingPageActions.js';
 import {
@@ -30,6 +29,31 @@ function formatDate(value) {
   }
 
   return asDate.toLocaleString();
+}
+
+/**
+ * Create a per-attempt nonce that satisfies the checkout API's 32-hex contract.
+ *
+ * Purpose: checkout idempotency should dedupe one submitted browser attempt
+ * without replaying a stale Stripe Checkout Session for later attempts.
+ *
+ * @returns {string}
+ */
+function createCheckoutAttemptNonce() {
+  const browserCrypto = typeof globalThis !== 'undefined' ? globalThis.crypto : null;
+
+  if (typeof browserCrypto?.randomUUID === 'function') {
+    return browserCrypto.randomUUID().replace(/-/g, '').toLowerCase();
+  }
+
+  if (typeof browserCrypto?.getRandomValues === 'function') {
+    const randomBytes = new Uint8Array(16);
+    browserCrypto.getRandomValues(randomBytes);
+
+    return Array.from(randomBytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  throw new Error('Secure checkout nonce generation is unavailable');
 }
 
 export default function BillingPage() {
@@ -117,6 +141,15 @@ export default function BillingPage() {
       return;
     }
 
+    let checkoutAttemptNonce;
+
+    try {
+      checkoutAttemptNonce = createCheckoutAttemptNonce();
+    } catch (error) {
+      setErrorMessage(ERROR_MESSAGES.CHECKOUT_SESSION_FAILED);
+      return;
+    }
+
     actionLoadingRef.current = BILLING_PAGE_ACTIONS.CHECKOUT;
     setActionLoading(BILLING_PAGE_ACTIONS.CHECKOUT);
 
@@ -124,7 +157,7 @@ export default function BillingPage() {
       action: BILLING_PAGE_ACTIONS.CHECKOUT,
       request: () => api.post('/api/billing/checkout', {
         plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
-        checkoutAttemptNonce: generateCheckoutAttemptNonce(),
+        checkoutAttemptNonce,
       }),
       setActionLoading,
       setErrorMessage,

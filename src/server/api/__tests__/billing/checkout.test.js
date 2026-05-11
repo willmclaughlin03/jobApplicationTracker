@@ -36,15 +36,19 @@ describe('/api/billing/checkout handler', () => {
   const mockUser = { id: 'user-billing-checkout', email: 'test@example.com' };
   const mockClient = { from: jest.fn() };
   const mockLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+  const defaultCheckoutAttemptNonce = '0123456789abcdef0123456789abcdef';
 
-  function createMockReq(body = {
-    plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
-    checkoutAttemptNonce: '0123456789abcdef0123456789abcdef',
-  }) {
+  function createMockReq(
+    body = {
+      plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+      checkoutAttemptNonce: defaultCheckoutAttemptNonce,
+    },
+    user = mockUser
+  ) {
     return {
       method: 'POST',
       body,
-      _rateLimitUser: mockUser,
+      _rateLimitUser: user,
       _supabaseClient: mockClient,
       log: mockLog,
     };
@@ -68,8 +72,30 @@ describe('/api/billing/checkout handler', () => {
       url: 'https://checkout.stripe.test/session_123',
     });
   });
+
   it('rejects invalid billing request bodies', async () => {
-    const req = createMockReq({ plan: 'bad-plan' });
+    const req = createMockReq({
+      plan: 'bad-plan',
+      checkoutAttemptNonce: defaultCheckoutAttemptNonce,
+    });
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockLoadBillingStatusOrThrow).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'VALIDATION_ERROR',
+      })
+    );
+  });
+
+  it('rejects invalid checkout attempt nonces before billing reads', async () => {
+    const req = createMockReq({
+      plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+      checkoutAttemptNonce: 'not-a-valid-nonce',
+    });
     const res = createMockRes();
 
     await handler(req, res);
@@ -113,13 +139,111 @@ describe('/api/billing/checkout handler', () => {
       success_url: 'https://app.example.test/billing/success?session_id={CHECKOUT_SESSION_ID}',
       cancel_url: 'https://app.example.test/billing/cancel',
     }, {
-      idempotencyKey: 'billing_checkout_hash1234567890hash123456_resume_tailor_monthly_0123456789abcdef0123456789abcdef',
+      idempotencyKey: `billing_checkout_hash1234567890hash123456_resume_tailor_monthly_${defaultCheckoutAttemptNonce}`,
     });
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
         data: { url: 'https://checkout.stripe.test/session_123' },
       })
+    );
+  });
+
+  it('dedupes parallel duplicate submits with the same nonce to one Stripe session URL', async () => {
+    const sessionsByIdempotencyKey = new Map();
+    mockCreateCheckoutSession.mockImplementation((payload, options) => {
+      const url = sessionsByIdempotencyKey.get(options.idempotencyKey)
+        ?? `https://checkout.stripe.test/${options.idempotencyKey}`;
+      sessionsByIdempotencyKey.set(options.idempotencyKey, url);
+      return Promise.resolve({ url });
+    });
+
+    const firstReq = createMockReq();
+    const firstRes = createMockRes();
+    const secondReq = createMockReq();
+    const secondRes = createMockRes();
+
+    await Promise.all([
+      handler(firstReq, firstRes),
+      handler(secondReq, secondRes),
+    ]);
+
+    const firstKey = mockCreateCheckoutSession.mock.calls[0][1].idempotencyKey;
+    const secondKey = mockCreateCheckoutSession.mock.calls[1][1].idempotencyKey;
+
+    expect(secondKey).toBe(firstKey);
+    expect(sessionsByIdempotencyKey.size).toBe(1);
+    expect(firstRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { url: `https://checkout.stripe.test/${firstKey}` },
+      })
+    );
+    expect(secondRes.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { url: `https://checkout.stripe.test/${firstKey}` },
+      })
+    );
+  });
+
+  it('uses different idempotency keys for different users', async () => {
+    mockHashUserIdForIdempotency.mockImplementation((userId) => {
+      if (userId === 'user-a') {
+        return 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      }
+
+      return 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    });
+
+    const firstReq = createMockReq(
+      {
+        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        checkoutAttemptNonce: defaultCheckoutAttemptNonce,
+      },
+      { id: 'user-a', email: 'a@example.com' }
+    );
+    const secondReq = createMockReq(
+      {
+        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        checkoutAttemptNonce: defaultCheckoutAttemptNonce,
+      },
+      { id: 'user-b', email: 'b@example.com' }
+    );
+    const firstRes = createMockRes();
+    const secondRes = createMockRes();
+
+    await handler(firstReq, firstRes);
+    await handler(secondReq, secondRes);
+
+    const firstKey = mockCreateCheckoutSession.mock.calls[0][1].idempotencyKey;
+    const secondKey = mockCreateCheckoutSession.mock.calls[1][1].idempotencyKey;
+
+    expect(firstKey).toContain('aaaaaaaaaaaaaaaaaaaaaaaa');
+    expect(secondKey).toContain('bbbbbbbbbbbbbbbbbbbbbbbb');
+    expect(secondKey).not.toBe(firstKey);
+  });
+
+  it('uses different idempotency keys for different checkout attempt nonces', async () => {
+    const firstNonce = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const secondNonce = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const firstReq = createMockReq({
+      plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+      checkoutAttemptNonce: firstNonce,
+    });
+    const firstRes = createMockRes();
+    const secondReq = createMockReq({
+      plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+      checkoutAttemptNonce: secondNonce,
+    });
+    const secondRes = createMockRes();
+
+    await handler(firstReq, firstRes);
+    await handler(secondReq, secondRes);
+
+    expect(mockCreateCheckoutSession.mock.calls[0][1].idempotencyKey).toBe(
+      `billing_checkout_hash1234567890hash123456_resume_tailor_monthly_${firstNonce}`
+    );
+    expect(mockCreateCheckoutSession.mock.calls[1][1].idempotencyKey).toBe(
+      `billing_checkout_hash1234567890hash123456_resume_tailor_monthly_${secondNonce}`
     );
   });
 

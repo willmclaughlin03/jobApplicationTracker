@@ -1,22 +1,10 @@
 const {
   BILLING_PAGE_ACTIONS,
-  generateCheckoutAttemptNonce,
   resolveBillingRedirectResult,
   runBillingPageRedirectAction,
 } = require('../billingPageActions.js');
 
 describe('billingPageActions', () => {
-  it('generates a 32-character lowercase hex checkout nonce from browser crypto', () => {
-    const cryptoApi = {
-      getRandomValues: jest.fn((bytes) => {
-        bytes.set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
-        return bytes;
-      }),
-    };
-
-    expect(generateCheckoutAttemptNonce(cryptoApi)).toBe('000102030405060708090a0b0c0d0e0f');
-  });
-
   it('normalizes redirect responses into a redirect URL or a concrete error message', () => {
     expect(
       resolveBillingRedirectResult({

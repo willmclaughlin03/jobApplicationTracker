@@ -1,4 +1,4 @@
-import { getUserFromRequest } from '../lib/supabaseServer.js';
+import { AUTH_ERROR_CODES, getUserFromRequest } from '../lib/supabaseServer.js';
 import { checkRateLimit } from '../lib/rateLimit.js';
 import { validateCsrfToken } from '../lib/csrf.js';
 import { METHOD_TO_OPERATIONS, OPERATIONS } from '../../shared/constants/tiers.js';
@@ -19,6 +19,7 @@ import { logger, attachRequestLogger } from '../../shared/logger.js';
 
 
 const MAX_IP_LENGTH = 45;
+const AUTH_UNAVAILABLE_RETRY_AFTER_SECONDS = 5;
 
 /**
  * Normalizes a header expected to have a single string value.
@@ -267,9 +268,23 @@ export function withRateLimit(handler, options = {}){
             if(requireAuth){
                 // PROTECTED ROUTE: Auth is mandatory, no IP fallback
                 try{
-                    const { user, error, supabaseClient } = await getUserFromRequest(req, res);
+                    const { user, error, errorCode, supabaseClient } = await getUserFromRequest(req, res);
                     if(!user){
-                        req.log.warn({ authError: error || 'Unknown auth failure', method: req.method }, 'Auth required but failed on protected route');
+                        if (errorCode === AUTH_ERROR_CODES.AUTH_UNAVAILABLE) {
+                            req.log.error(
+                                { event: 'auth_backend_unavailable', method: req.method },
+                                'Auth backend unavailable on protected route'
+                            );
+                            res.setHeader('Retry-After', AUTH_UNAVAILABLE_RETRY_AFTER_SECONDS);
+                            return sendError(
+                                res,
+                                503,
+                                'SERVICE_UNAVAILABLE',
+                                ERROR_MESSAGES.SERVICE_UNAVAILABLE
+                            );
+                        }
+
+                        req.log.warn({ authError: error || 'Unknown auth failure', authErrorCode: errorCode || null, method: req.method }, 'Auth required but failed on protected route');
                         return sendError(
                             res,
                             401,
@@ -281,12 +296,16 @@ export function withRateLimit(handler, options = {}){
                     req._supabaseClient = supabaseClient;
                     identifier = `user:${user.id}`;
                 }catch(error){
-                    req.log.error({ err: error, method: req.method }, 'Auth service error on protected route');
+                    req.log.error(
+                        { event: 'auth_backend_unavailable', method: req.method },
+                        'Auth service error on protected route'
+                    );
+                    res.setHeader('Retry-After', AUTH_UNAVAILABLE_RETRY_AFTER_SECONDS);
                     return sendError(
                         res,
-                        401,
-                        'UNAUTHORIZED',
-                        ERROR_MESSAGES.UNAUTHORIZED
+                        503,
+                        'SERVICE_UNAVAILABLE',
+                        ERROR_MESSAGES.SERVICE_UNAVAILABLE
                     );
                 }
             }else{

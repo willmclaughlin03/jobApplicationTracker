@@ -10,7 +10,7 @@ import {
   PAYMENT_RECOVERY_BILLING_STATUSES,
 } from '../../shared/constants/billing.js';
 import { TIERS } from '../../shared/constants/tiers.js';
-import { getConfiguredStripeMode, stripe } from './stripe.js';
+import { getConfiguredStripeMode, getStripeClient } from './stripeRuntime.js';
 import { supabaseAdmin } from './supabaseServer.js';
 
 const BILLING_CUSTOMER_SELECT = 'user_id, stripe_customer_id, last_synced_stripe_email_fingerprint, created_at, updated_at';
@@ -1099,7 +1099,7 @@ async function syncStripeCustomerEmail({
   }
 
   try {
-    await stripe.customers.update(stripeCustomerId, { email: normalizedEmail });
+    await getStripeClient().customers.update(stripeCustomerId, { email: normalizedEmail });
   } catch (error) {
     log.warn(
       {
@@ -1530,7 +1530,7 @@ export async function getOrCreateStripeCustomer(userId, email, log = defaultLogg
     }
 
     const idempotencyHash = hashUserIdForIdempotency(parsedInput.data.userId);
-    const stripeCustomer = await stripe.customers.create(
+    const stripeCustomer = await getStripeClient().customers.create(
       {},
       {
         idempotencyKey: `billing_customer_${idempotencyHash.slice(0, 24)}`,
@@ -1643,7 +1643,7 @@ export async function syncSubscriptionFromStripe(
   const parsedOptions = parseSyncSubscriptionOptions(options);
 
   try {
-    const stripeSubscription = await stripe.subscriptions.retrieve(parsedSubscriptionId.data, {
+    const stripeSubscription = await getStripeClient().subscriptions.retrieve(parsedSubscriptionId.data, {
       expand: ['customer', 'items.data.price'],
     });
     const stripeCustomerId = extractStripeCustomerId(stripeSubscription?.customer);

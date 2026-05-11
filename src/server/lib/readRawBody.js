@@ -32,6 +32,18 @@ export async function readRawBody(req, options = {}) {
   }
 
   if (Buffer.isBuffer(req.rawBody)) {
+    if (req.rawBody.length > maxBytes) {
+      throw createRawBodyError(
+        `Webhook payload exceeded ${maxBytes} bytes`,
+        'RAW_BODY_TOO_LARGE',
+        {
+          maxBytes,
+          receivedBytes: req.rawBody.length,
+          statusCode: 413,
+        }
+      );
+    }
+
     return req.rawBody;
   }
 

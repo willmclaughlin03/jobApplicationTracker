@@ -35,7 +35,7 @@ async function handler(req, res) {
       req.log
     );
     const userHash = hashUserIdForIdempotency(req._rateLimitUser.id);
-    const { plan, checkoutAttemptNonce } = validationResult.data;
+    const { checkoutAttemptNonce, plan } = validationResult.data;
     const checkoutSession = await stripe.checkout.sessions.create({
       mode: 'subscription',
       customer: stripeCustomerId,
