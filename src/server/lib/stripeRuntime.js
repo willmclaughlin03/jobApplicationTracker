@@ -1,4 +1,5 @@
 import Stripe from 'stripe';
+import { z } from 'zod';
 
 export const STRIPE_API_VERSION = '2026-02-25.clover';
 export const STRIPE_WEBHOOK_SECRET_ENV_VARS = Object.freeze({
@@ -8,6 +9,9 @@ export const STRIPE_WEBHOOK_SECRET_ENV_VARS = Object.freeze({
 
 const STRIPE_SECRET_KEY_ENV_VAR = 'STRIPE_SECRET_KEY';
 const STRIPE_SECRET_KEY_PREFIXES = ['sk_test_', 'sk_live_'];
+const STRIPE_SECRET_KEY_MIN_LENGTH = 9;
+const STRIPE_SECRET_KEY_MAX_LENGTH = 255;
+const STRIPE_SECRET_KEY_FORMAT_PATTERN = /^sk_(test|live)_[A-Za-z0-9_]+$/;
 const STRIPE_WEBHOOK_SECRET_PREFIX = 'whsec_';
 const STRIPE_TIMEOUT_MS = 10_000;
 const STRIPE_MAX_NETWORK_RETRIES = 2;
@@ -16,6 +20,24 @@ let cachedStripeConfig = null;
 let cachedStripeConfigError = null;
 let cachedStripeClient = null;
 let cachedStripeClientError = null;
+
+const StripeConfigSchema = z.object({
+  [STRIPE_SECRET_KEY_ENV_VAR]: z.preprocess(
+    normalizeStripeConfigValue,
+    z.string({ error: `Invalid ${STRIPE_SECRET_KEY_ENV_VAR} environment variable` })
+      .min(1, `Missing ${STRIPE_SECRET_KEY_ENV_VAR} environment variable`)
+      .min(STRIPE_SECRET_KEY_MIN_LENGTH, `Invalid ${STRIPE_SECRET_KEY_ENV_VAR} environment variable`)
+      .max(STRIPE_SECRET_KEY_MAX_LENGTH, `Invalid ${STRIPE_SECRET_KEY_ENV_VAR} environment variable`)
+      .refine(
+        (value) => hasAnyPrefix(value, STRIPE_SECRET_KEY_PREFIXES),
+        `Invalid ${STRIPE_SECRET_KEY_ENV_VAR} environment variable`
+      )
+      .regex(
+        STRIPE_SECRET_KEY_FORMAT_PATTERN,
+        `Invalid ${STRIPE_SECRET_KEY_ENV_VAR} environment variable`
+      )
+  ),
+}).strict();
 
 /**
  * Build the shared Stripe runtime configuration error type.
@@ -30,6 +52,25 @@ function createStripeConfigError(message) {
   const error = new Error(message);
   error.code = 'STRIPE_CONFIG_INVALID';
   return error;
+}
+
+/**
+ * Convert schema failures into the Stripe runtime config error type.
+ *
+ * Purpose: lets all Stripe secret-key callers share Zod boundary validation
+ * while preserving the existing error code contract used by routes and tests.
+ *
+ * @param {{ issues?: Array<{ message?: string }> }} error
+ * @returns {Error & { code: string }}
+ */
+function createStripeConfigSchemaError(error) {
+  const issueMessage = error?.issues?.[0]?.message;
+
+  return createStripeConfigError(
+    typeof issueMessage === 'string' && issueMessage
+      ? issueMessage
+      : `Invalid ${STRIPE_SECRET_KEY_ENV_VAR} environment variable`
+  );
 }
 
 /**
@@ -61,6 +102,23 @@ function normalizeEnvValue(value) {
 }
 
 /**
+ * Normalize env input before Stripe config schema validation.
+ *
+ * Purpose: trim real env strings and report absent values as missing while
+ * leaving non-string custom snapshots for the schema's type guard to reject.
+ *
+ * @param {unknown} value
+ * @returns {unknown}
+ */
+function normalizeStripeConfigValue(value) {
+  if (value === undefined) {
+    return '';
+  }
+
+  return typeof value === 'string' ? normalizeEnvValue(value) : value;
+}
+
+/**
  * Check whether a value starts with one of the allowed prefixes.
  *
  * Purpose: keep Stripe key validation explicit without duplicating prefix
@@ -72,6 +130,29 @@ function normalizeEnvValue(value) {
  */
 function hasAnyPrefix(value, prefixes) {
   return prefixes.some((prefix) => value.startsWith(prefix));
+}
+
+/**
+ * Validate the Stripe runtime config read from an env snapshot.
+ *
+ * Purpose: keep runtime config resolution and webhook mode selection on the
+ * same schema-backed boundary, returning only normalized validated values.
+ *
+ * @param {unknown} secretKeyValue
+ * @returns {{ secretKey: string }}
+ */
+function parseStripeConfig(secretKeyValue) {
+  const parsedConfig = StripeConfigSchema.safeParse({
+    [STRIPE_SECRET_KEY_ENV_VAR]: secretKeyValue,
+  });
+
+  if (!parsedConfig.success) {
+    throw createStripeConfigSchemaError(parsedConfig.error);
+  }
+
+  return {
+    secretKey: parsedConfig.data[STRIPE_SECRET_KEY_ENV_VAR],
+  };
 }
 
 /**
@@ -121,15 +202,7 @@ export function resolveStripeConfig(env = process.env) {
   }
 
   try {
-    const secretKey = normalizeEnvValue(env?.[STRIPE_SECRET_KEY_ENV_VAR]);
-
-    if (!secretKey) {
-      throw createStripeConfigError(`Missing ${STRIPE_SECRET_KEY_ENV_VAR} environment variable`);
-    }
-
-    if (!hasAnyPrefix(secretKey, STRIPE_SECRET_KEY_PREFIXES)) {
-      throw createStripeConfigError(`Invalid ${STRIPE_SECRET_KEY_ENV_VAR} environment variable`);
-    }
+    const { secretKey } = parseStripeConfig(env?.[STRIPE_SECRET_KEY_ENV_VAR]);
 
     const stripeConfig = Object.freeze({
       secretKey,
@@ -204,9 +277,12 @@ export function getStripeClient() {
  * @returns {string}
  */
 export function getActiveStripeWebhookSecret(env = process.env) {
-  const envSecretKey = normalizeEnvValue(env?.[STRIPE_SECRET_KEY_ENV_VAR]);
-  const mode = envSecretKey
-    ? inferStripeMode(envSecretKey)
+  const rawEnvSecretKey = env?.[STRIPE_SECRET_KEY_ENV_VAR];
+  const shouldValidateEnvSecretKey = typeof rawEnvSecretKey === 'string'
+    ? normalizeEnvValue(rawEnvSecretKey) !== ''
+    : rawEnvSecretKey !== undefined;
+  const mode = shouldValidateEnvSecretKey
+    ? inferStripeMode(parseStripeConfig(rawEnvSecretKey).secretKey)
     : cachedStripeConfig?.mode ?? getConfiguredStripeMode();
   const envVarName = STRIPE_WEBHOOK_SECRET_ENV_VARS[mode];
   const secret = normalizeEnvValue(env?.[envVarName]);
