@@ -30,8 +30,8 @@ const mockSupabaseAdmin = {
   rpc: jest.fn(),
 };
 
-jest.mock('../stripe.js', () => ({
-  stripe: mockStripe,
+jest.mock('../stripeRuntime.js', () => ({
+  getStripeClient: () => mockStripe,
   getConfiguredStripeMode: () => mockStripeMode,
 }));
 
@@ -1789,8 +1789,8 @@ describe('billingService', () => {
         jest.doMock('../../../shared/logger.js', () => ({
           logger: isolatedLogger,
         }));
-        jest.doMock('../stripe.js', () => ({
-          stripe: isolatedStripe,
+        jest.doMock('../stripeRuntime.js', () => ({
+          getStripeClient: () => isolatedStripe,
           getConfiguredStripeMode: () => 'test',
         }));
         jest.doMock('../supabaseServer.js', () => ({

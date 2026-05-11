@@ -30,6 +30,18 @@ describe('readRawBody', () => {
     expect(rawBody).toEqual(Buffer.from('{"cached":true}'));
   });
 
+  it('rejects oversized existing raw body buffers', async () => {
+    const req = createRequest([]);
+    req.rawBody = Buffer.alloc(6, 'a');
+
+    await expect(readRawBody(req, { maxBytes: 5 })).rejects.toMatchObject({
+      code: 'RAW_BODY_TOO_LARGE',
+      maxBytes: 5,
+      receivedBytes: 6,
+      statusCode: 413,
+    });
+  });
+
   it('normalizes an existing string raw body into a buffer', async () => {
     const req = createRequest([]);
     req.rawBody = '{"cached":"string"}';

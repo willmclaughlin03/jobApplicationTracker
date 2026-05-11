@@ -9,54 +9,35 @@ describe('billingSchema', () => {
     it('accepts the supported billing plan', () => {
       const result = billingCheckoutSchema.safeParse({
         plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
-        checkoutAttemptNonce: '0123456789abcdef0123456789abcdef',
       });
 
       expect(result.success).toBe(true);
       expect(result.data).toEqual({
         plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
-        checkoutAttemptNonce: '0123456789abcdef0123456789abcdef',
       });
     });
 
     it('rejects unknown billing plans', () => {
       const result = billingCheckoutSchema.safeParse({
         plan: 'unknown_plan',
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects missing billing plans', () => {
+      const result = billingCheckoutSchema.safeParse({});
+
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects checkout request fields outside the strict plan contract', () => {
+      const result = billingCheckoutSchema.safeParse({
+        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
         checkoutAttemptNonce: '0123456789abcdef0123456789abcdef',
       });
 
       expect(result.success).toBe(false);
-    });
-
-    it('rejects a missing checkout attempt nonce', () => {
-      const result = billingCheckoutSchema.safeParse({
-        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
-      });
-
-      expect(result.success).toBe(false);
-    });
-
-    it('rejects checkout attempt nonces that are not exactly 32 lowercase hex characters', () => {
-      expect(
-        billingCheckoutSchema.safeParse({
-          plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
-          checkoutAttemptNonce: 'short',
-        }).success
-      ).toBe(false);
-
-      expect(
-        billingCheckoutSchema.safeParse({
-          plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
-          checkoutAttemptNonce: '0123456789abcdef0123456789abcdeg',
-        }).success
-      ).toBe(false);
-
-      expect(
-        billingCheckoutSchema.safeParse({
-          plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
-          checkoutAttemptNonce: '0123456789ABCDEF0123456789ABCDEF',
-        }).success
-      ).toBe(false);
     });
   });
 

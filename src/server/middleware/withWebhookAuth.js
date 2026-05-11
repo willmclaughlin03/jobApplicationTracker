@@ -4,6 +4,11 @@ import { logger, attachRequestLogger } from '../../shared/logger.js';
 import { verifyWebhookSignature } from '../lib/webhookSignature.js';
 import { MAX_WEBHOOK_RAW_BODY_BYTES } from '../lib/readRawBody.js';
 
+const WEBHOOK_VERIFIER_CONFIG_ERROR_CODES = new Set([
+  'WEBHOOK_VERIFIER_NOT_CONFIGURED',
+  'STRIPE_CONFIG_INVALID',
+]);
+
 /**
  * Normalize a trusted single-value header and fail closed on repeated values.
  *
@@ -113,7 +118,11 @@ export function withWebhookAuth(handler, options = {}) {
       }
 
       try {
-        req.webhookEvent = await verifySignature(req, { signature, signatureHeader });
+        req.webhookEvent = await verifySignature(req, {
+          signature,
+          signatureHeader,
+          maxBodyBytes,
+        });
       } catch (verificationError) {
         const verificationLog = {
           method: req.method,
@@ -122,7 +131,7 @@ export function withWebhookAuth(handler, options = {}) {
           errorMessage: verificationError?.message,
         };
 
-        if (verificationError?.code === 'WEBHOOK_VERIFIER_NOT_CONFIGURED') {
+        if (WEBHOOK_VERIFIER_CONFIG_ERROR_CODES.has(verificationError?.code)) {
           (req.log || logger).error(
             verificationLog,
             'Webhook signature verifier is not configured'

@@ -41,7 +41,11 @@ jest.mock('../../../shared/logger.js', () => ({
   logger: mockLogger,
 }));
 
-const { getUserFromRequest } = require('../supabaseServer.js');
+const {
+  AUTH_ERROR_CODES,
+  classifyAuthError,
+  getUserFromRequest,
+} = require('../supabaseServer.js');
 
 describe('supabaseServer', () => {
   const createMockRes = () => ({
@@ -77,6 +81,7 @@ describe('supabaseServer', () => {
       expect(result).toEqual({
         user: mockUser,
         error: null,
+        errorCode: null,
         supabaseClient: mockSupabaseRouteClient,
       });
       expect(mockGetUser).toHaveBeenCalledWith();
@@ -123,15 +128,40 @@ describe('supabaseServer', () => {
       expect(result).toEqual({
         user: null,
         error: 'Invalid or expired token',
+        errorCode: AUTH_ERROR_CODES.AUTH_INVALID,
         supabaseClient: null,
       });
       expect(mockLogger.error).toHaveBeenCalledWith(
-        { err: authError, status: 401 },
+        { name: undefined, status: 401, code: undefined },
         'Token validation failed'
       );
       expect(consoleSpy).not.toHaveBeenCalled();
 
       consoleSpy.mockRestore();
+    });
+
+    it.each([
+      [{ message: 'Forbidden', status: 403 }, AUTH_ERROR_CODES.AUTH_INVALID, 'Invalid or expired token'],
+      [{ message: 'Auth unavailable', status: 503 }, AUTH_ERROR_CODES.AUTH_UNAVAILABLE, 'Authentication service unavailable'],
+      [{ message: 'Auth rate limited', status: 429 }, AUTH_ERROR_CODES.AUTH_UNAVAILABLE, 'Authentication service unavailable'],
+      [{ name: 'AuthRetryableFetchError', message: 'Retryable auth fetch failed' }, AUTH_ERROR_CODES.AUTH_UNAVAILABLE, 'Authentication service unavailable'],
+    ])('returns structured auth code %s for provider error %#', async (authError, expectedCode, expectedMessage) => {
+      mockGetUser.mockResolvedValue({
+        data: { user: null },
+        error: authError,
+      });
+
+      const req = { headers: {}, cookies: {} };
+      const res = createMockRes();
+
+      const result = await getUserFromRequest(req, res);
+
+      expect(result).toEqual({
+        user: null,
+        error: expectedMessage,
+        errorCode: expectedCode,
+        supabaseClient: null,
+      });
     });
 
     /**
@@ -152,6 +182,7 @@ describe('supabaseServer', () => {
       expect(result).toEqual({
         user: null,
         error: 'User not found',
+        errorCode: AUTH_ERROR_CODES.AUTH_NOT_FOUND,
         supabaseClient: null,
       });
     });
@@ -175,10 +206,11 @@ describe('supabaseServer', () => {
       expect(result).toEqual({
         user: null,
         error: 'Authentication service unavailable',
+        errorCode: AUTH_ERROR_CODES.AUTH_UNAVAILABLE,
         supabaseClient: null,
       });
       expect(mockLogger.error).toHaveBeenCalledWith(
-        { err: networkError },
+        { name: 'Error', status: undefined, code: undefined },
         'Unexpected authentication error'
       );
       expect(consoleSpy).not.toHaveBeenCalled();
@@ -203,6 +235,7 @@ describe('supabaseServer', () => {
 
       expect(result.user).toBeNull();
       expect(result.error).toBe('Invalid or expired token');
+      expect(result.errorCode).toBe(AUTH_ERROR_CODES.AUTH_INVALID);
       expect(result.supabaseClient).toBeNull();
     });
 
@@ -224,10 +257,11 @@ describe('supabaseServer', () => {
       expect(result).toEqual({
         user: null,
         error: 'Authentication service unavailable',
+        errorCode: AUTH_ERROR_CODES.AUTH_UNAVAILABLE,
         supabaseClient: null,
       });
       expect(mockLogger.error).toHaveBeenCalledWith(
-        { err: expect.any(Error) },
+        { name: 'Error', status: undefined, code: undefined },
         'Unexpected authentication error'
       );
     });
@@ -248,6 +282,17 @@ describe('supabaseServer', () => {
       const result = await getUserFromRequest(req, res);
 
       expect(result.supabaseClient).toBeNull();
+    });
+
+    it.each([
+      [{ status: 401 }, AUTH_ERROR_CODES.AUTH_INVALID],
+      [{ status: 403 }, AUTH_ERROR_CODES.AUTH_INVALID],
+      [{ status: 503 }, AUTH_ERROR_CODES.AUTH_UNAVAILABLE],
+      [{ status: 429 }, AUTH_ERROR_CODES.AUTH_UNAVAILABLE],
+      [{ name: 'AuthRetryableFetchError' }, AUTH_ERROR_CODES.AUTH_UNAVAILABLE],
+      [{ message: 'unknown shape' }, AUTH_ERROR_CODES.AUTH_UNAVAILABLE],
+    ])('classifies auth error %j as %s', (error, expectedCode) => {
+      expect(classifyAuthError(error)).toBe(expectedCode);
     });
   });
 });

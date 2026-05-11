@@ -16,6 +16,11 @@
 
 const mockGetUserFromRequest = jest.fn();
 jest.mock('../../lib/supabaseServer.js', () => ({
+    AUTH_ERROR_CODES: {
+        AUTH_INVALID: 'AUTH_INVALID',
+        AUTH_NOT_FOUND: 'AUTH_NOT_FOUND',
+        AUTH_UNAVAILABLE: 'AUTH_UNAVAILABLE',
+    },
     getUserFromRequest: mockGetUserFromRequest,
 }));
 
@@ -850,10 +855,10 @@ describe('withRateLimit middleware', () => {
         });
 
         /**
-         * Test: Auth service crash returns 401, does NOT fall back to IP
+         * Test: Auth service crash returns 503, does NOT fall back to IP
          * Verifies: Even when auth throws, protected routes don't degrade to IP
          */
-        it('should return 401 when getUserFromRequest throws on protected route', async () => {
+        it('should return 503 when getUserFromRequest throws on protected route', async () => {
             mockGetUserFromRequest.mockRejectedValue(new Error('Auth service down'));
             const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.99' });
             const res = createMockResponse();
@@ -861,9 +866,46 @@ describe('withRateLimit middleware', () => {
 
             await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
-            expect(res.status).toHaveBeenCalledWith(401);
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 5);
+            expect(res.json).toHaveBeenCalledWith(
+                expect.objectContaining({ error: 'SERVICE_UNAVAILABLE' })
+            );
             expect(mockCheckRateLimit).not.toHaveBeenCalled();
             expect(handler).not.toHaveBeenCalled();
+            expect(mockLog.error).toHaveBeenCalledWith(
+                expect.objectContaining({ event: 'auth_backend_unavailable', method: 'GET' }),
+                'Auth service error on protected route'
+            );
+        });
+
+        /**
+         * Test: Structured auth-unavailable results return 503 with Retry-After
+         * Verifies: Backend outages are not flattened into unauthenticated 401s
+         */
+        it('should return 503 when auth result is AUTH_UNAVAILABLE', async () => {
+            mockGetUserFromRequest.mockResolvedValue({
+                user: null,
+                error: 'Authentication service unavailable',
+                errorCode: 'AUTH_UNAVAILABLE',
+            });
+            const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.99' });
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 5);
+            expect(res.json).toHaveBeenCalledWith(
+                expect.objectContaining({ error: 'SERVICE_UNAVAILABLE' })
+            );
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+            expect(mockLog.error).toHaveBeenCalledWith(
+                expect.objectContaining({ event: 'auth_backend_unavailable', method: 'GET' }),
+                'Auth backend unavailable on protected route'
+            );
         });
 
         /**

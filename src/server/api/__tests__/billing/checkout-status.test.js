@@ -300,6 +300,65 @@ describe('/api/billing/checkout-status handler', () => {
     );
   });
 
+  it('returns a terminal error when completed checkout reconcile leaves local state non-entitled', async () => {
+    mockRetrieveCheckoutSession.mockResolvedValue({
+      client_reference_id: mockUser.id,
+      customer: 'cus_local_123',
+      livemode: false,
+      status: 'complete',
+      subscription: 'sub_checkout_123',
+    });
+    mockLoadBillingStatusOrThrow
+      .mockResolvedValueOnce({ entitled: false, stripeCustomerId: 'cus_local_123' })
+      .mockResolvedValueOnce({ entitled: false, stripeCustomerId: 'cus_local_123' });
+    mockSyncSubscriptionFromStripe.mockResolvedValue({ outcome: 'processed' });
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockSyncSubscriptionFromStripe).toHaveBeenCalledTimes(1);
+    expect(mockLoadBillingStatusOrThrow).toHaveBeenCalledTimes(2);
+    expect(mockMapCheckoutStatus).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { state: 'error' },
+      })
+    );
+  });
+
+  it('returns pending for an open checkout session with non-entitled local state', async () => {
+    mockRetrieveCheckoutSession.mockResolvedValue({
+      client_reference_id: mockUser.id,
+      customer: 'cus_local_123',
+      livemode: false,
+      status: 'open',
+      subscription: null,
+    });
+    mockLoadBillingStatusOrThrow.mockResolvedValue({
+      entitled: false,
+      stripeCustomerId: 'cus_local_123',
+    });
+    mockMapCheckoutStatus.mockReturnValue('pending');
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockSyncSubscriptionFromStripe).not.toHaveBeenCalled();
+    expect(mockMapCheckoutStatus).toHaveBeenCalledWith({
+      billingStatus: { entitled: false, stripeCustomerId: 'cus_local_123' },
+      checkoutSessionStatus: 'open',
+    });
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { state: 'pending' },
+      })
+    );
+  });
+
   it('returns a terminal error state when a completed session has no subscription id to reconcile', async () => {
     mockRetrieveCheckoutSession.mockResolvedValue({
       client_reference_id: mockUser.id,

@@ -6,7 +6,6 @@ import { useAuth } from '../../client/contexts/AuthContext';
 import { api } from '../../client/lib/api.js';
 import {
   BILLING_PAGE_ACTIONS,
-  generateCheckoutAttemptNonce,
   runBillingPageRedirectAction,
 } from '../../client/lib/billingPageActions.js';
 import {
@@ -124,7 +123,6 @@ export default function BillingPage() {
       action: BILLING_PAGE_ACTIONS.CHECKOUT,
       request: () => api.post('/api/billing/checkout', {
         plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
-        checkoutAttemptNonce: generateCheckoutAttemptNonce(),
       }),
       setActionLoading,
       setErrorMessage,

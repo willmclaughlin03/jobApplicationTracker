@@ -38,6 +38,11 @@ function loadStripeModule() {
   return require('../stripe.js');
 }
 
+function loadStripeRuntimeModule() {
+  jest.resetModules();
+  return require('../stripeRuntime.js');
+}
+
 describe('stripe runtime foundation', () => {
   const originalNodeEnv = process.env.NODE_ENV;
 
@@ -224,5 +229,97 @@ describe('stripe runtime foundation', () => {
     } catch (error) {
       expect(error.code).toBe('WEBHOOK_VERIFIER_NOT_CONFIGURED');
     }
+  });
+});
+
+describe('stripe runtime narrow module', () => {
+  beforeEach(() => {
+    resetStripeEnv();
+  });
+
+  afterAll(() => {
+    restoreStripeEnv();
+  });
+
+  it('memoizes the configured Stripe mode after the first successful resolution', () => {
+    process.env.STRIPE_SECRET_KEY = 'sk_test_runtime_mode';
+
+    const { getConfiguredStripeMode } = loadStripeRuntimeModule();
+
+    expect(getConfiguredStripeMode()).toBe('test');
+
+    process.env.STRIPE_SECRET_KEY = 'sk_live_runtime_mode';
+
+    expect(getConfiguredStripeMode()).toBe('test');
+  });
+
+  it('rethrows the same missing-key error reference until reset', () => {
+    const runtime = loadStripeRuntimeModule();
+    let firstError;
+    let secondError;
+
+    try {
+      runtime.getConfiguredStripeMode();
+    } catch (error) {
+      firstError = error;
+    }
+
+    try {
+      runtime.getConfiguredStripeMode();
+    } catch (error) {
+      secondError = error;
+    }
+
+    expect(firstError).toBeDefined();
+    expect(secondError).toBe(firstError);
+    expect(firstError.code).toBe('STRIPE_CONFIG_INVALID');
+    expect(firstError.message).toMatch(/missing STRIPE_SECRET_KEY/i);
+
+    process.env.STRIPE_SECRET_KEY = 'sk_live_runtime_after_reset';
+    runtime.__resetForTests();
+
+    expect(runtime.getConfiguredStripeMode()).toBe('live');
+  });
+
+  it('clears cached clients and errors when reset for tests', () => {
+    process.env.STRIPE_SECRET_KEY = 'pk_test_not_a_secret';
+
+    const runtime = loadStripeRuntimeModule();
+
+    expect(() => runtime.getStripeClient()).toThrow(/invalid STRIPE_SECRET_KEY/i);
+
+    process.env.STRIPE_SECRET_KEY = 'sk_test_runtime_client';
+    expect(() => runtime.getStripeClient()).toThrow(/invalid STRIPE_SECRET_KEY/i);
+
+    runtime.__resetForTests();
+
+    const firstClient = runtime.getStripeClient();
+
+    expect(firstClient.getApiField('timeout')).toBe(10000);
+
+    process.env.STRIPE_SECRET_KEY = 'sk_live_runtime_client';
+
+    expect(runtime.getStripeClient()).toBe(firstClient);
+
+    runtime.__resetForTests();
+
+    const secondClient = runtime.getStripeClient();
+
+    expect(secondClient).not.toBe(firstClient);
+    expect(runtime.getConfiguredStripeMode()).toBe('live');
+  });
+
+  it('reads the active webhook secret dynamically for the cached mode', () => {
+    process.env.STRIPE_SECRET_KEY = 'sk_test_runtime_webhook';
+    process.env.STRIPE_WEBHOOK_SECRET_TEST = 'whsec_runtime_first';
+
+    const { getActiveStripeWebhookSecret, getConfiguredStripeMode } = loadStripeRuntimeModule();
+
+    expect(getConfiguredStripeMode()).toBe('test');
+    expect(getActiveStripeWebhookSecret()).toBe('whsec_runtime_first');
+
+    process.env.STRIPE_WEBHOOK_SECRET_TEST = 'whsec_runtime_second';
+
+    expect(getActiveStripeWebhookSecret()).toBe('whsec_runtime_second');
   });
 });

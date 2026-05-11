@@ -1,4 +1,4 @@
-import { stripe, getActiveStripeWebhookSecret } from './stripe.js';
+import { getActiveStripeWebhookSecret, getStripeClient } from './stripeRuntime.js';
 import { readRawBody } from './readRawBody.js';
 
 function normalizeSignature(signature) {
@@ -21,7 +21,7 @@ class WebhookSignatureError extends Error {
  * never accidentally verify against parsed JSON or partial payloads.
  *
  * @param {import('http').IncomingMessage & { rawBody?: Buffer | string }} req
- * @param {{ signature?: string }} [options]
+ * @param {{ signature?: string, maxBodyBytes?: number }} [options]
  * @returns {Promise<import('stripe').Stripe.Event>}
  */
 export async function verifyWebhookSignature(req, options = {}) {
@@ -36,7 +36,7 @@ export async function verifyWebhookSignature(req, options = {}) {
   }
 
   const webhookSecret = getActiveStripeWebhookSecret();
-  const rawBody = await readRawBody(req);
+  const rawBody = await readRawBody(req, { maxBytes: options.maxBodyBytes });
 
-  return stripe.webhooks.constructEvent(rawBody, signature, webhookSecret);
+  return getStripeClient().webhooks.constructEvent(rawBody, signature, webhookSecret);
 }

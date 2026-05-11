@@ -4,27 +4,6 @@ export const BILLING_PAGE_ACTIONS = Object.freeze({
 });
 
 /**
- * Generate a per-attempt checkout nonce from browser crypto.
- *
- * Purpose: Stripe idempotency should dedupe duplicate submits of the same
- * click attempt without reusing one Checkout Session URL across unrelated
- * retries later in the hour.
- *
- * @param {Crypto | { getRandomValues: (array: Uint8Array) => Uint8Array }} [cryptoApi]
- * @returns {string}
- */
-export function generateCheckoutAttemptNonce(cryptoApi = globalThis.crypto) {
-  if (!cryptoApi || typeof cryptoApi.getRandomValues !== 'function') {
-    throw new Error('Secure billing nonce generation is unavailable');
-  }
-
-  const nonceBytes = new Uint8Array(16);
-  cryptoApi.getRandomValues(nonceBytes);
-
-  return Array.from(nonceBytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-/**
  * Resolve a shared-client billing redirect response into either a redirect URL
  * or a user-facing error message.
  *

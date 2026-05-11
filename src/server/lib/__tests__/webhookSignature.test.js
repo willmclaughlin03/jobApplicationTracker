@@ -6,6 +6,7 @@ const STRIPE_ENV_VARS = [
   'STRIPE_PRICE_RESUME_TAILOR_MONTHLY',
   'STRIPE_WEBHOOK_SECRET_TEST',
   'STRIPE_WEBHOOK_SECRET_LIVE',
+  'NEXT_PUBLIC_APP_URL',
 ];
 
 const ORIGINAL_ENV = Object.fromEntries(
@@ -30,7 +31,6 @@ function restoreStripeEnv() {
 
 function setValidTestEnv() {
   process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
-  process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
   process.env.STRIPE_WEBHOOK_SECRET_TEST = 'whsec_test_chunk2';
 }
 
@@ -67,11 +67,11 @@ function createStreamRequest(payload) {
 function loadModules() {
   jest.resetModules();
 
-  const stripeModule = require('../stripe.js');
+  const stripeRuntimeModule = require('../stripeRuntime.js');
   const webhookSignatureModule = require('../webhookSignature.js');
 
   return {
-    ...stripeModule,
+    ...stripeRuntimeModule,
     ...webhookSignatureModule,
   };
 }
@@ -89,8 +89,8 @@ describe('verifyWebhookSignature', () => {
     setValidTestEnv();
 
     const payload = createEventPayload();
-    const { stripe, verifyWebhookSignature } = loadModules();
-    const signature = stripe.webhooks.generateTestHeaderString({
+    const { getStripeClient, verifyWebhookSignature } = loadModules();
+    const signature = getStripeClient().webhooks.generateTestHeaderString({
       payload,
       secret: process.env.STRIPE_WEBHOOK_SECRET_TEST,
     });
@@ -105,8 +105,8 @@ describe('verifyWebhookSignature', () => {
     setValidTestEnv();
 
     const payload = createEventPayload({ id: 'evt_stream' });
-    const { stripe, verifyWebhookSignature } = loadModules();
-    const signature = stripe.webhooks.generateTestHeaderString({
+    const { getStripeClient, verifyWebhookSignature } = loadModules();
+    const signature = getStripeClient().webhooks.generateTestHeaderString({
       payload,
       secret: process.env.STRIPE_WEBHOOK_SECRET_TEST,
     });
@@ -144,9 +144,26 @@ describe('verifyWebhookSignature', () => {
     ).rejects.toThrow(/no signatures found matching/i);
   });
 
+  it('enforces custom maxBodyBytes while reading stream payloads', async () => {
+    setValidTestEnv();
+
+    const payload = createEventPayload({ id: 'evt_oversized_stream' });
+    const { verifyWebhookSignature } = loadModules();
+
+    await expect(
+      verifyWebhookSignature(createStreamRequest(payload), {
+        signature: 't=1,v1=invalid',
+        maxBodyBytes: 5,
+      })
+    ).rejects.toMatchObject({
+      code: 'RAW_BODY_TOO_LARGE',
+      maxBytes: 5,
+      statusCode: 413,
+    });
+  });
+
   it('fails closed when the active webhook secret is not configured', async () => {
     process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
-    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
 
     const payload = createEventPayload();
     const { verifyWebhookSignature } = loadModules();
@@ -156,5 +173,22 @@ describe('verifyWebhookSignature', () => {
     ).rejects.toMatchObject({
       code: 'WEBHOOK_VERIFIER_NOT_CONFIGURED',
     });
+  });
+
+  it('does not require checkout-only app URL or price env vars', async () => {
+    setValidTestEnv();
+    delete process.env.NEXT_PUBLIC_APP_URL;
+    delete process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY;
+
+    const payload = createEventPayload({ id: 'evt_runtime_only' });
+    const { getStripeClient, verifyWebhookSignature } = loadModules();
+    const signature = getStripeClient().webhooks.generateTestHeaderString({
+      payload,
+      secret: process.env.STRIPE_WEBHOOK_SECRET_TEST,
+    });
+
+    const event = await verifyWebhookSignature(createBufferedRequest(payload), { signature });
+
+    expect(event.id).toBe('evt_runtime_only');
   });
 });
