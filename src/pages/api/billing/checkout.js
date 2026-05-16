@@ -5,11 +5,82 @@ import { OPERATIONS } from '../../../shared/constants/tiers.js';
 import { billingCheckoutSchema } from '../../../shared/validations/billingSchema.js';
 import {
   canStartCheckout,
+  claimPendingCheckoutSession,
+  failPendingCheckoutSession,
+  finalizePendingCheckoutSession,
   getOrCreateStripeCustomer,
   hashUserIdForIdempotency,
   loadBillingStatusOrThrow,
+  PENDING_CHECKOUT_SESSION_OUTCOMES,
+  waitForPendingCheckoutSessionOpen,
 } from '../../../server/lib/billingService.js';
 import { buildAppUrl, getPriceIdForPlan, stripe } from '../../../server/lib/stripe.js';
+
+/**
+ * Normalize Stripe's Checkout Session expiry into the local timestamptz shape.
+ *
+ * Purpose: pending-session reuse must be bounded by Stripe's actual expiry, so
+ * the route persists a validated ISO timestamp alongside the local checkout URL.
+ *
+ * @param {unknown} expiresAt
+ * @returns {string}
+ */
+function normalizeCheckoutSessionExpiresAt(expiresAt) {
+  if (expiresAt === null || expiresAt === undefined) {
+    throw new Error('Stripe checkout session did not include a valid expiry');
+  }
+
+  if (typeof expiresAt === 'string' && expiresAt.trim() === '') {
+    throw new Error('Stripe checkout session did not include a valid expiry');
+  }
+
+  if (
+    typeof expiresAt !== 'number'
+    && typeof expiresAt !== 'string'
+    && !(expiresAt instanceof Date)
+  ) {
+    throw new Error('Stripe checkout session did not include a valid expiry');
+  }
+
+  if (typeof expiresAt === 'number' && !Number.isFinite(expiresAt)) {
+    throw new Error('Stripe checkout session did not include a valid expiry');
+  }
+
+  const expiresAtDate = typeof expiresAt === 'number'
+    ? new Date(expiresAt * 1000)
+    : new Date(expiresAt);
+
+  if (!Number.isFinite(expiresAtDate.getTime())) {
+    throw new Error('Stripe checkout session did not include a valid expiry');
+  }
+
+  return expiresAtDate.toISOString();
+}
+
+/**
+ * Best-effort release for a pending checkout claim after route failure.
+ *
+ * Purpose: if Stripe creation or local finalize fails after this request owns a
+ * creating row, later checkout attempts should not be blocked by that claim.
+ *
+ * @param {string | number | null | undefined} pendingSessionId
+ * @param {object} log
+ * @returns {Promise<void>}
+ */
+async function failPendingClaimQuietly(pendingSessionId, log) {
+  if (!pendingSessionId) {
+    return;
+  }
+
+  try {
+    await failPendingCheckoutSession({ id: pendingSessionId }, log);
+  } catch (error) {
+    log.warn(
+      { err: error, operation: 'checkoutRoutePendingClaimRelease' },
+      'Failed to release pending checkout claim after checkout route failure'
+    );
+  }
+}
 
 async function handler(req, res) {
   const validationResult = billingCheckoutSchema.safeParse(req.body);
@@ -18,7 +89,11 @@ async function handler(req, res) {
     return sendError(res, 400, 'VALIDATION_ERROR', ERROR_MESSAGES.VALIDATION_ERROR);
   }
 
+  let claimedPendingSessionId = null;
+
   try {
+    const { checkoutAttemptNonce, plan } = validationResult.data;
+
     const billingStatus = await loadBillingStatusOrThrow(
       req._rateLimitUser.id,
       req._supabaseClient,
@@ -29,13 +104,61 @@ async function handler(req, res) {
       return sendError(res, 409, 'CHECKOUT_SESSION_FAILED', ERROR_MESSAGES.CHECKOUT_SESSION_FAILED);
     }
 
+    const pendingCheckoutClaim = await claimPendingCheckoutSession(
+      {
+        userId: req._rateLimitUser.id,
+        plan,
+        checkoutAttemptNonce,
+      },
+      req.log
+    );
+
+    if (pendingCheckoutClaim.outcome === PENDING_CHECKOUT_SESSION_OUTCOMES.REUSED) {
+      if (!pendingCheckoutClaim.session.checkoutUrl) {
+        throw new Error('Pending checkout session did not include a URL');
+      }
+
+      return sendSuccess(
+        res,
+        200,
+        { url: pendingCheckoutClaim.session.checkoutUrl },
+        'Checkout session reused'
+      );
+    }
+
+    if (pendingCheckoutClaim.outcome === PENDING_CHECKOUT_SESSION_OUTCOMES.CREATING) {
+      const openPendingSession = await waitForPendingCheckoutSessionOpen(
+        {
+          userId: req._rateLimitUser.id,
+          plan,
+        },
+        req.log
+      );
+
+      if (openPendingSession?.checkoutUrl) {
+        return sendSuccess(
+          res,
+          200,
+          { url: openPendingSession.checkoutUrl },
+          'Checkout session reused'
+        );
+      }
+
+      return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+    }
+
+    if (pendingCheckoutClaim.outcome !== PENDING_CHECKOUT_SESSION_OUTCOMES.CLAIMED) {
+      throw new Error('Pending checkout session claim returned an unsupported outcome');
+    }
+
+    claimedPendingSessionId = pendingCheckoutClaim.session.id;
+
     const { stripeCustomerId } = await getOrCreateStripeCustomer(
       req._rateLimitUser.id,
       req._rateLimitUser.email,
       req.log
     );
     const userHash = hashUserIdForIdempotency(req._rateLimitUser.id);
-    const { checkoutAttemptNonce, plan } = validationResult.data;
     const checkoutSession = await stripe.checkout.sessions.create({
       mode: 'subscription',
       customer: stripeCustomerId,
@@ -52,12 +175,33 @@ async function handler(req, res) {
       idempotencyKey: `billing_checkout_${userHash.slice(0, 24)}_${plan}_${checkoutAttemptNonce}`,
     });
 
-    if (!checkoutSession?.url) {
-      throw new Error('Stripe checkout session did not include a URL');
+    if (!checkoutSession?.id || !checkoutSession?.url) {
+      throw new Error('Stripe checkout session did not include an id and URL');
     }
 
-    return sendSuccess(res, 200, { url: checkoutSession.url }, 'Checkout session created');
+    // If finalizing below fails, the Stripe Session may remain in Stripe, but
+    // returning an unpersisted URL would bypass the local ownership/reuse guard.
+    const finalizedPendingSession = await finalizePendingCheckoutSession(
+      {
+        id: claimedPendingSessionId,
+        stripeCheckoutSessionId: checkoutSession.id,
+        checkoutUrl: checkoutSession.url,
+        expiresAt: normalizeCheckoutSessionExpiresAt(checkoutSession.expires_at),
+      },
+      req.log
+    );
+
+    claimedPendingSessionId = null;
+
+    return sendSuccess(
+      res,
+      200,
+      { url: finalizedPendingSession.checkoutUrl },
+      'Checkout session created'
+    );
   } catch (error) {
+    await failPendingClaimQuietly(claimedPendingSessionId, req.log);
+
     if (error?.code === 'BILLING_STATUS_UNAVAILABLE') {
       req.log.error({ err: error }, 'Failed to start checkout due to local billing read failure');
       return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);

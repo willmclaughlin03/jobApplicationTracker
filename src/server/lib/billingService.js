@@ -4,6 +4,7 @@ import { logger as defaultLogger } from '../../shared/logger.js';
 import { ERROR_MESSAGES } from '../../shared/errors.js';
 import {
   BILLING_ENTITLEMENTS,
+  BILLING_PLANS,
   BILLING_PLAN_PRICE_ENV_VARS,
   BILLING_SUBSCRIPTION_STATUSES,
   ENTITLED_BILLING_STATUSES,
@@ -24,6 +25,17 @@ const BILLING_SUBSCRIPTION_SELECT = [
   'cancel_at_period_end',
   'last_stripe_event_created',
   'status_changed_at',
+  'created_at',
+  'updated_at',
+].join(', ');
+const BILLING_CHECKOUT_SESSION_SELECT = [
+  'id',
+  'user_id',
+  'plan',
+  'stripe_checkout_session_id',
+  'checkout_url',
+  'status',
+  'expires_at',
   'created_at',
   'updated_at',
 ].join(', ');
@@ -54,17 +66,42 @@ export const CHECKOUT_STATUS_STATES = Object.freeze({
   ERROR: 'error',
 });
 
+export const PENDING_CHECKOUT_SESSION_STATUSES = Object.freeze({
+  CREATING: 'creating',
+  OPEN: 'open',
+  COMPLETE: 'complete',
+  EXPIRED: 'expired',
+  FAILED: 'failed',
+});
+
+export const PENDING_CHECKOUT_SESSION_OUTCOMES = Object.freeze({
+  CLAIMED: 'claimed',
+  REUSED: 'reused',
+  CREATING: 'creating',
+});
+
 const ALLOWED_BILLING_STATUSES = new Set(Object.values(BILLING_SUBSCRIPTION_STATUSES));
+const BILLING_PLAN_VALUES = Object.values(BILLING_PLANS);
+const CHECKOUT_ATTEMPT_NONCE_PATTERN = /^[A-Fa-f0-9]{32}$/;
 const STRIPE_EVENT_RECEIPT_RESULT_VALUES = Object.values(STRIPE_EVENT_RECEIPT_RESULTS);
 const BILLING_SYNC_MODE_VALUES = Object.values(BILLING_SYNC_MODES);
+const PENDING_CHECKOUT_SESSION_STATUS_VALUES = Object.values(PENDING_CHECKOUT_SESSION_STATUSES);
+const PENDING_CHECKOUT_SESSION_OUTCOME_VALUES = Object.values(PENDING_CHECKOUT_SESSION_OUTCOMES);
 const CHECKOUT_START_ALLOWED_STATUSES = new Set([
   BILLING_SUBSCRIPTION_STATUSES.CANCELED,
   BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED,
 ]);
 const FULL_BILLING_ID_LOG_LEVELS = new Set(['error', 'debug']);
 const MAX_EVENT_CREATED_FUTURE_MS = 5 * 60 * 1000;
+const PENDING_CHECKOUT_WAIT_ATTEMPTS = 9;
+const PENDING_CHECKOUT_WAIT_DELAY_MS = 250;
 
 const nonEmptyStringSchema = z.string().trim().min(1);
+const billingPlanSchema = z.enum(BILLING_PLAN_VALUES);
+const checkoutAttemptNonceSchema = z.string()
+  .trim()
+  .regex(CHECKOUT_ATTEMPT_NONCE_PATTERN)
+  .transform((nonce) => nonce.toLowerCase());
 const optionalEmailSchema = z.preprocess((value) => {
   if (typeof value !== 'string') {
     return value;
@@ -83,6 +120,51 @@ const stripeReceiptResultSchema = z.enum(STRIPE_EVENT_RECEIPT_RESULT_VALUES);
 const stripeDeleteEventMetaSchema = z.object({
   eventCreated: z.union([z.number().finite(), z.string().trim().min(1), z.date()]),
   livemode: z.boolean(),
+});
+const pendingCheckoutSessionIdSchema = z.union([
+  z.number().int().positive(),
+  nonEmptyStringSchema,
+]);
+const pendingCheckoutSessionRowSchema = z.object({
+  id: pendingCheckoutSessionIdSchema,
+  user_id: nonEmptyStringSchema,
+  plan: billingPlanSchema,
+  stripe_checkout_session_id: nonEmptyStringSchema.nullable().optional(),
+  checkout_url: z.string().trim().url().nullable().optional(),
+  status: z.enum(PENDING_CHECKOUT_SESSION_STATUS_VALUES),
+  expires_at: nonEmptyStringSchema.nullable().optional(),
+  created_at: nonEmptyStringSchema.optional(),
+  updated_at: nonEmptyStringSchema.optional(),
+}).passthrough();
+const pendingCheckoutClaimInputSchema = z.object({
+  userId: nonEmptyStringSchema,
+  plan: billingPlanSchema,
+  checkoutAttemptNonce: checkoutAttemptNonceSchema,
+});
+const pendingCheckoutFinalizeInputSchema = z.object({
+  id: pendingCheckoutSessionIdSchema,
+  stripeCheckoutSessionId: nonEmptyStringSchema,
+  checkoutUrl: z.string().trim().url(),
+  expiresAt: nonEmptyStringSchema,
+});
+const pendingCheckoutFailInputSchema = z.object({
+  id: pendingCheckoutSessionIdSchema,
+});
+const pendingCheckoutLookupInputSchema = z.object({
+  userId: nonEmptyStringSchema,
+  sessionId: nonEmptyStringSchema,
+});
+const pendingCheckoutTerminalInputSchema = z.object({
+  userId: nonEmptyStringSchema,
+  sessionId: nonEmptyStringSchema,
+  status: z.enum([
+    PENDING_CHECKOUT_SESSION_STATUSES.COMPLETE,
+    PENDING_CHECKOUT_SESSION_STATUSES.EXPIRED,
+  ]),
+});
+const pendingCheckoutWaitInputSchema = z.object({
+  userId: nonEmptyStringSchema,
+  plan: billingPlanSchema,
 });
 
 /**
@@ -461,6 +543,106 @@ function normalizeRpcJsonData(data) {
   }
 
   return data;
+}
+
+/**
+ * Convert a billing_checkout_sessions row into the camelCase service shape.
+ *
+ * Purpose: routes should not trust raw database/RPC payloads directly, so this
+ * helper validates the row contract and gives callers one normalized shape for
+ * claim, finalize, fail, and lookup paths.
+ *
+ * @param {unknown} row
+ * @param {string} message
+ * @returns {object}
+ */
+function normalizePendingCheckoutSessionRow(row, message) {
+  const parsedRow = pendingCheckoutSessionRowSchema.safeParse(row);
+
+  if (!parsedRow.success) {
+    throw createBillingRpcError(message);
+  }
+
+  return {
+    id: parsedRow.data.id,
+    userId: parsedRow.data.user_id,
+    plan: parsedRow.data.plan,
+    stripeCheckoutSessionId: parsedRow.data.stripe_checkout_session_id ?? null,
+    checkoutUrl: parsedRow.data.checkout_url ?? null,
+    status: parsedRow.data.status,
+    expiresAt: parsedRow.data.expires_at ?? null,
+    createdAt: parsedRow.data.created_at ?? null,
+    updatedAt: parsedRow.data.updated_at ?? null,
+  };
+}
+
+/**
+ * Validate the pending-checkout claim RPC payload before routes trust it.
+ *
+ * Purpose: the database owns the race-sensitive claim decision, while this JS
+ * boundary keeps malformed RPC responses from becoming checkout redirects.
+ *
+ * @param {unknown} data
+ * @returns {{ outcome: string, session: object }}
+ */
+function normalizePendingCheckoutClaimRpcData(data) {
+  const normalizedData = normalizeRpcJsonData(data);
+
+  if (
+    !normalizedData
+    || typeof normalizedData !== 'object'
+    || !PENDING_CHECKOUT_SESSION_OUTCOME_VALUES.includes(normalizedData.action)
+    || !normalizedData.session
+  ) {
+    throw createBillingRpcError('Pending checkout claim RPC returned an unexpected payload');
+  }
+
+  return {
+    outcome: normalizedData.action,
+    session: normalizePendingCheckoutSessionRow(
+      normalizedData.session,
+      'Pending checkout claim RPC returned an invalid session row'
+    ),
+  };
+}
+
+/**
+ * Decide whether a normalized pending Checkout Session row can be reused now.
+ *
+ * Purpose: route-level duplicate prevention must reuse only open rows that have
+ * a persisted Stripe Checkout URL and have not passed their Stripe expiry.
+ *
+ * @param {object | null | undefined} session
+ * @returns {boolean}
+ */
+function isReusablePendingCheckoutSession(session) {
+  if (
+    session?.status !== PENDING_CHECKOUT_SESSION_STATUSES.OPEN
+    || !session.checkoutUrl
+    || !session.expiresAt
+  ) {
+    return false;
+  }
+
+  const expiresAtMs = new Date(session.expiresAt).getTime();
+
+  return Number.isFinite(expiresAtMs) && expiresAtMs > Date.now();
+}
+
+/**
+ * Pause briefly between pending-checkout re-reads.
+ *
+ * Purpose: a second concurrent checkout request can wait for the request that
+ * owns a creating claim to persist the Stripe URL without introducing route
+ * code that knows about timers directly.
+ *
+ * @param {number} delayMs
+ * @returns {Promise<void>}
+ */
+function sleep(delayMs) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, delayMs);
+  });
 }
 
 /**
@@ -926,6 +1108,65 @@ function buildAuthoritativeSubscriptionPayload({
 }
 
 /**
+ * Claim or reuse the active pending Checkout Session row through Postgres.
+ *
+ * Purpose: duplicate checkout prevention is race-sensitive in serverless route
+ * handlers, so the claim decision must happen inside the database boundary
+ * rather than as a route-level read-then-insert sequence.
+ *
+ * @param {{ userId: string, plan: string }} params
+ * @returns {Promise<{ outcome: string, session: object }>}
+ */
+async function callPendingCheckoutSessionClaimRpc({ userId, plan }) {
+  const { data, error } = await supabaseAdmin.rpc(
+    'claim_billing_checkout_session',
+    {
+      p_user_id: userId,
+      p_plan: plan,
+    }
+  );
+
+  if (error) {
+    throw error;
+  }
+
+  return normalizePendingCheckoutClaimRpcData(data);
+}
+
+/**
+ * Read an open pending Checkout Session row for one user and plan.
+ *
+ * Purpose: concurrent checkout requests that did not own the creating claim can
+ * re-read this local row briefly instead of creating another Stripe Session or
+ * trusting client-provided state.
+ *
+ * @param {{ userId: string, plan: string }} params
+ * @returns {Promise<object | null>}
+ */
+async function loadOpenPendingCheckoutSession({ userId, plan }) {
+  const { data, error } = await supabaseAdmin
+    .from('billing_checkout_sessions')
+    .select(BILLING_CHECKOUT_SESSION_SELECT)
+    .eq('user_id', userId)
+    .eq('plan', plan)
+    .eq('status', PENDING_CHECKOUT_SESSION_STATUSES.OPEN)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    return null;
+  }
+
+  return normalizePendingCheckoutSessionRow(
+    data,
+    'Open pending checkout query returned an invalid session row'
+  );
+}
+
+/**
  * Call the stale-aware subscription upsert RPC through supabaseAdmin.
  *
  * Purpose: event-driven writes are server-controlled and intentionally bypass
@@ -1299,6 +1540,300 @@ export function canStartCheckout(billingStatus) {
   }
 
   return CHECKOUT_START_ALLOWED_STATUSES.has(status);
+}
+
+/**
+ * Claim or reuse the server-owned pending Checkout Session row for a user.
+ *
+ * Purpose: this is the route-facing boundary for duplicate checkout prevention;
+ * it validates request-derived values before asking the database RPC to make
+ * the atomic `user_id + plan` claim decision.
+ *
+ * @param {{ userId: string, plan: string, checkoutAttemptNonce: string }} input
+ * @param {object} log
+ * @returns {Promise<{ outcome: string, session: object }>}
+ */
+export async function claimPendingCheckoutSession(input, log = defaultLogger) {
+  const parsedInput = pendingCheckoutClaimInputSchema.safeParse(input);
+
+  if (!parsedInput.success) {
+    throw createBillingError('Invalid pending checkout session claim input');
+  }
+
+  const userIdHash = hashUserIdForLog(parsedInput.data.userId);
+
+  try {
+    return await callPendingCheckoutSessionClaimRpc({
+      userId: parsedInput.data.userId,
+      plan: parsedInput.data.plan,
+    });
+  } catch (error) {
+    log.error(
+      {
+        err: error,
+        operation: 'claimPendingCheckoutSession',
+        userIdHash,
+        plan: parsedInput.data.plan,
+      },
+      'Failed to claim pending checkout session'
+    );
+    throw error;
+  }
+}
+
+/**
+ * Persist the Stripe Checkout Session fields after a claim owner creates it.
+ *
+ * Purpose: checkout routes should redirect only to a Stripe URL that has been
+ * durably associated with the local pending-session claim.
+ *
+ * @param {{ id: string | number, stripeCheckoutSessionId: string, checkoutUrl: string, expiresAt: string }} input
+ * @param {object} log
+ * @returns {Promise<object>}
+ */
+export async function finalizePendingCheckoutSession(input, log = defaultLogger) {
+  const parsedInput = pendingCheckoutFinalizeInputSchema.safeParse(input);
+
+  if (!parsedInput.success) {
+    throw createBillingError('Invalid pending checkout session finalize input');
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('billing_checkout_sessions')
+      .update({
+        stripe_checkout_session_id: parsedInput.data.stripeCheckoutSessionId,
+        checkout_url: parsedInput.data.checkoutUrl,
+        expires_at: parsedInput.data.expiresAt,
+        status: PENDING_CHECKOUT_SESSION_STATUSES.OPEN,
+      })
+      .eq('id', parsedInput.data.id)
+      .eq('status', PENDING_CHECKOUT_SESSION_STATUSES.CREATING)
+      .select(BILLING_CHECKOUT_SESSION_SELECT)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    if (!data) {
+      throw createBillingError(
+        'Pending checkout session claim could not be finalized',
+        'BILLING_PENDING_CHECKOUT_FINALIZE_FAILED'
+      );
+    }
+
+    return normalizePendingCheckoutSessionRow(
+      data,
+      'Pending checkout finalize returned an invalid session row'
+    );
+  } catch (error) {
+    log.error(
+      {
+        err: error,
+        operation: 'finalizePendingCheckoutSession',
+        stripeCheckoutSessionId: formatStripeIdForLog(parsedInput.data.stripeCheckoutSessionId, 'error'),
+      },
+      'Failed to finalize pending checkout session'
+    );
+    throw error;
+  }
+}
+
+/**
+ * Mark a creating pending Checkout Session row as failed.
+ *
+ * Purpose: Stripe or persistence failures must release the active user-plan
+ * claim so a later checkout attempt is not permanently blocked.
+ *
+ * @param {{ id: string | number }} input
+ * @param {object} log
+ * @returns {Promise<object | null>}
+ */
+export async function failPendingCheckoutSession(input, log = defaultLogger) {
+  const parsedInput = pendingCheckoutFailInputSchema.safeParse(input);
+
+  if (!parsedInput.success) {
+    throw createBillingError('Invalid pending checkout session fail input');
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('billing_checkout_sessions')
+      .update({ status: PENDING_CHECKOUT_SESSION_STATUSES.FAILED })
+      .eq('id', parsedInput.data.id)
+      .eq('status', PENDING_CHECKOUT_SESSION_STATUSES.CREATING)
+      .select(BILLING_CHECKOUT_SESSION_SELECT)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    return data
+      ? normalizePendingCheckoutSessionRow(data, 'Pending checkout fail returned an invalid session row')
+      : null;
+  } catch (error) {
+    log.warn(
+      {
+        err: error,
+        operation: 'failPendingCheckoutSession',
+      },
+      'Failed to mark pending checkout session as failed'
+    );
+    throw error;
+  }
+}
+
+/**
+ * Wait briefly for another request's creating claim to become reusable.
+ *
+ * Purpose: parallel checkout submissions with different nonces should converge
+ * on the first persisted Stripe URL instead of minting another session.
+ *
+ * @param {{ userId: string, plan: string }} input
+ * @param {object} log
+ * @returns {Promise<object | null>}
+ */
+export async function waitForPendingCheckoutSessionOpen(input, log = defaultLogger) {
+  const parsedInput = pendingCheckoutWaitInputSchema.safeParse(input);
+
+  if (!parsedInput.success) {
+    throw createBillingError('Invalid pending checkout session wait input');
+  }
+
+  const userIdHash = hashUserIdForLog(parsedInput.data.userId);
+
+  try {
+    for (let attempt = 0; attempt < PENDING_CHECKOUT_WAIT_ATTEMPTS; attempt += 1) {
+      if (attempt > 0) {
+        await sleep(PENDING_CHECKOUT_WAIT_DELAY_MS);
+      }
+
+      const pendingSession = await loadOpenPendingCheckoutSession({
+        userId: parsedInput.data.userId,
+        plan: parsedInput.data.plan,
+      });
+
+      if (isReusablePendingCheckoutSession(pendingSession)) {
+        return pendingSession;
+      }
+    }
+
+    return null;
+  } catch (error) {
+    log.error(
+      {
+        err: error,
+        operation: 'waitForPendingCheckoutSessionOpen',
+        userIdHash,
+        plan: parsedInput.data.plan,
+      },
+      'Failed while waiting for pending checkout session'
+    );
+    throw error;
+  }
+}
+
+/**
+ * Look up a locally minted Checkout Session id for one authenticated user.
+ *
+ * Purpose: checkout-status can reject unknown or cross-user session ids before
+ * making a Stripe API call, reducing API amplification and making ownership
+ * intent explicit in local state.
+ *
+ * @param {{ userId: string, sessionId: string }} input
+ * @param {object} log
+ * @returns {Promise<object | null>}
+ */
+export async function getMintedCheckoutSessionForUser(input, log = defaultLogger) {
+  const parsedInput = pendingCheckoutLookupInputSchema.safeParse(input);
+
+  if (!parsedInput.success) {
+    throw createBillingError('Invalid pending checkout session lookup input');
+  }
+
+  const userIdHash = hashUserIdForLog(parsedInput.data.userId);
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('billing_checkout_sessions')
+      .select(BILLING_CHECKOUT_SESSION_SELECT)
+      .eq('user_id', parsedInput.data.userId)
+      .eq('stripe_checkout_session_id', parsedInput.data.sessionId)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    return data
+      ? normalizePendingCheckoutSessionRow(data, 'Pending checkout lookup returned an invalid session row')
+      : null;
+  } catch (error) {
+    log.error(
+      {
+        err: error,
+        operation: 'getMintedCheckoutSessionForUser',
+        userIdHash,
+        stripeCheckoutSessionId: formatStripeIdForLog(parsedInput.data.sessionId, 'error'),
+      },
+      'Failed to look up locally minted checkout session'
+    );
+    throw error;
+  }
+}
+
+/**
+ * Mark a locally minted Checkout Session as terminal after Stripe confirms it.
+ *
+ * Purpose: a reused checkout URL must remain available only while Stripe still
+ * considers that Checkout Session open, so terminal Stripe statuses release the
+ * active local user-plan claim without granting entitlement from this row.
+ *
+ * @param {{ userId: string, sessionId: string, status: 'complete' | 'expired' }} input
+ * @param {object} log
+ * @returns {Promise<object | null>}
+ */
+export async function markMintedCheckoutSessionTerminal(input, log = defaultLogger) {
+  const parsedInput = pendingCheckoutTerminalInputSchema.safeParse(input);
+
+  if (!parsedInput.success) {
+    throw createBillingError('Invalid pending checkout session terminal input');
+  }
+
+  const userIdHash = hashUserIdForLog(parsedInput.data.userId);
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('billing_checkout_sessions')
+      .update({ status: parsedInput.data.status })
+      .eq('user_id', parsedInput.data.userId)
+      .eq('stripe_checkout_session_id', parsedInput.data.sessionId)
+      .eq('status', PENDING_CHECKOUT_SESSION_STATUSES.OPEN)
+      .select(BILLING_CHECKOUT_SESSION_SELECT)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    return data
+      ? normalizePendingCheckoutSessionRow(data, 'Pending checkout terminal mark returned an invalid session row')
+      : null;
+  } catch (error) {
+    log.warn(
+      {
+        err: error,
+        operation: 'markMintedCheckoutSessionTerminal',
+        userIdHash,
+        stripeCheckoutSessionId: formatStripeIdForLog(parsedInput.data.sessionId, 'warn'),
+        status: parsedInput.data.status,
+      },
+      'Failed to mark minted checkout session terminal'
+    );
+    throw error;
+  }
 }
 
 /**
