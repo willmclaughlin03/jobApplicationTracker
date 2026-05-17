@@ -64,16 +64,17 @@ function normalizeCheckoutSessionExpiresAt(expiresAt) {
  * creating row, later checkout attempts should not be blocked by that claim.
  *
  * @param {string | number | null | undefined} pendingSessionId
+ * @param {string | null | undefined} userId
  * @param {object} log
  * @returns {Promise<void>}
  */
-async function failPendingClaimQuietly(pendingSessionId, log) {
-  if (!pendingSessionId) {
+async function failPendingClaimQuietly(pendingSessionId, userId, log) {
+  if (!pendingSessionId || !userId) {
     return;
   }
 
   try {
-    await failPendingCheckoutSession({ id: pendingSessionId }, log);
+    await failPendingCheckoutSession({ userId, id: pendingSessionId }, log);
   } catch (error) {
     log.warn(
       { err: error, operation: 'checkoutRoutePendingClaimRelease' },
@@ -90,6 +91,7 @@ async function handler(req, res) {
   }
 
   let claimedPendingSessionId = null;
+  let claimedPendingSessionUserId = null;
 
   try {
     const { checkoutAttemptNonce, plan } = validationResult.data;
@@ -152,6 +154,7 @@ async function handler(req, res) {
     }
 
     claimedPendingSessionId = pendingCheckoutClaim.session.id;
+    claimedPendingSessionUserId = req._rateLimitUser.id;
 
     const { stripeCustomerId } = await getOrCreateStripeCustomer(
       req._rateLimitUser.id,
@@ -183,6 +186,7 @@ async function handler(req, res) {
     // returning an unpersisted URL would bypass the local ownership/reuse guard.
     const finalizedPendingSession = await finalizePendingCheckoutSession(
       {
+        userId: claimedPendingSessionUserId,
         id: claimedPendingSessionId,
         stripeCheckoutSessionId: checkoutSession.id,
         checkoutUrl: checkoutSession.url,
@@ -192,6 +196,7 @@ async function handler(req, res) {
     );
 
     claimedPendingSessionId = null;
+    claimedPendingSessionUserId = null;
 
     return sendSuccess(
       res,
@@ -200,7 +205,7 @@ async function handler(req, res) {
       'Checkout session created'
     );
   } catch (error) {
-    await failPendingClaimQuietly(claimedPendingSessionId, req.log);
+    await failPendingClaimQuietly(claimedPendingSessionId, claimedPendingSessionUserId, req.log);
 
     if (error?.code === 'BILLING_STATUS_UNAVAILABLE') {
       req.log.error({ err: error }, 'Failed to start checkout due to local billing read failure');

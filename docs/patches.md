@@ -52,8 +52,8 @@ It should own:
 Important details:
 - `getConfiguredStripeMode()` must memoize after first successful resolution.
 - `getStripeClient()` must memoize after first successful creation.
-- Missing/malformed `STRIPE_SECRET_KEY` should throw consistently. If you cache config errors, expose a test-only reset helper.
-- Add `__resetForTests()` or equivalent so tests can reset cached mode/client/error state.
+- Missing/malformed `STRIPE_SECRET_KEY` should throw consistently. If you cache config errors, expose a test-only reset helper with a runtime `process.env.NODE_ENV === 'test'` assertion.
+- Add `__resetForTests()` or equivalent so tests can reset cached mode/client/error state. Security warning: the helper must throw outside `NODE_ENV=test`, must carry a test-only docstring/comment, and must never be imported or called by production code.
 - The reset helper must clear cached successful mode/client state and cached error state if errors are memoized; otherwise tests can become order-sensitive.
 - Do not memoize `getActiveStripeWebhookSecret()`. Webhook secrets should be read from `process.env` each call to support rotation.
 - Do not validate `NEXT_PUBLIC_APP_URL` or price ids in this runtime module.
@@ -155,14 +155,26 @@ Schema choice:
 Because client and server are shipped together in this repo, prefer changing the checkout body to strict `{ plan }` and removing `checkoutAttemptNonce` from the client. Do not half-do this. If you keep accepting the old field for compatibility, explicitly ignore it and document why.
 Update the client, shared schema, route, and tests together. Leaving the old nonce accepted but ignored is acceptable only if explicitly documented for compatibility, but the better implementation for this repo is strict `{ plan }`.
 
-UX trade-off to document:
-The hour-bucket fix intentionally replays the same Checkout Session URL for retries within the same UTC hour. This closes the duplicate-session window, but it can send a user back to an abandoned session URL for up to one hour. This is acceptable as the immediate minimal fix because Stripe Checkout Sessions are valid for 24 hours by default, but a follow-up should consider a Redis-backed short-TTL server nonce keyed by `userId + plan` to dedupe only active submit windows, e.g. 60–120 seconds. Document this tradeoff.
+Current pending-checkout UX handling:
+The hour-bucket replay approach was an intermediate fix and has been superseded by `billing_checkout_sessions` pending-session dedupe. Do not reintroduce hour-bucket-only Stripe idempotency. Current checkout handling should claim or reuse one active pending row per `user_id + plan`, persist the Stripe Checkout Session URL and expiry, and scope finalize/fail writes to the authenticated owner.
+
+Recommended client recovery:
+- If the pending Checkout Session is expired, canceled, missing locally, or no longer reusable, show a friendly "session expired" modal or inline message with a primary "Retry checkout" action.
+- On retry, clear local checkout-in-progress state, pending checkout cookies/storage, and any cached Checkout URL before making a new checkout request.
+- Before reusing a locally minted Checkout URL, re-fetch active local subscription status so entitled users are not sent back through checkout.
+- If the re-fetch shows an active subscription, route the user back to billing/success state instead of reopening Stripe Checkout.
+
+Suggested monitoring:
+- `pending-checkout-reuse-rate`
+- `pending-checkout-expired-retry-success`
+- `pending-checkout-finalize-failure-rate`
+- `pending-checkout-owner-scope-miss`
 
 Tests:
-- “parallel duplicate submits in the same hour are deduped to one Stripe session”: two checkout requests for same user/plan in same hour use the same idempotency key and return the same mocked Stripe session URL.
-- different users use different keys.
-- two requests across an hour boundary, e.g. 12:59:59.500 and 13:00:00.500 UTC, produce different keys.
-- checkout route still validates the plan and uses allowlisted price id.
+- parallel duplicate submits for the same user and plan converge through one active `billing_checkout_sessions` row and return one persisted Stripe Checkout URL.
+- different users claim separate pending checkout rows and keep user-specific Stripe idempotency material.
+- stale `creating` rows are released and expired `open` rows are marked terminal before a new claim is minted.
+- checkout route still validates the plan, uses the allowlisted price id, and scopes pending-session finalize/fail writes by owner.
 
 5. Fix completed checkout that remains non-entitled
 
@@ -194,7 +206,7 @@ Update the plan so future agents do not reintroduce the old behavior.
 Make these documentation changes:
 - In Chunk 4 checkout route contract, change the checkout request body to strict `{ plan }` if that is what you implemented.
 - In Chunk 4 checkout idempotency section, explicitly state that idempotency entropy must be server-owned and must not come from request body/client nonce.
-- Document the hour-bucket trade-off: same session URL may replay for up to one UTC hour; acceptable immediate fix; Redis short-TTL server nonce is a follow-up improvement.
+- Document that hour-bucket idempotency was superseded by `billing_checkout_sessions`; future changes should preserve pending-session dedupe and owner-scoped finalize/fail writes.
 - In Chunk 5 “Current-branch gaps,” update webhook verifier decoupling to reference the new runtime split. It should say webhook verification depends only on secret key, derived mode, and active webhook secret.
 - Replace the current `webhookSignature.test.js` / `NEXT_PUBLIC_APP_URL` drift note with the new expected contract: webhook signature tests should prove checkout-only config is not required.
 - The plan must remove the old idea that `webhookSignature.test.js` should seed `NEXT_PUBLIC_APP_URL`; that is the opposite of the new runtime split.
@@ -216,3 +228,4 @@ Add a short entry describing:
 Run focused tests:
 ```powershell
 npm test -- --runInBand src/server/lib/__tests__/stripe.test.js src/server/lib/__tests__/webhookSignature.test.js src/server/lib/__tests__/readRawBody.test.js src/server/middleware/__tests__/withWebhookAuth.test.js src/server/middleware/__tests__/withRateLimit.test.js src/server/api/__tests__/billing/checkout.test.js src/server/api/__tests__/billing/checkout-status.test.js src/server/lib/__tests__/billingService.test.js
+```

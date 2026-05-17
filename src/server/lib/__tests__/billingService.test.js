@@ -441,6 +441,7 @@ describe('billingService', () => {
 
       const result = await finalizePendingCheckoutSession(
         {
+          userId,
           id: pendingRow.id,
           stripeCheckoutSessionId: 'cs_test_pending_123',
           checkoutUrl: 'https://checkout.stripe.test/session_123',
@@ -462,6 +463,7 @@ describe('billingService', () => {
         status: 'open',
       });
       expect(adminClient.buildersByTable.billing_checkout_sessions[0].state.eqArgs).toEqual([
+        ['user_id', userId],
         ['id', pendingRow.id],
         ['status', 'creating'],
       ]);
@@ -480,6 +482,7 @@ describe('billingService', () => {
       await expect(
         finalizePendingCheckoutSession(
           {
+            userId,
             id: pendingRow.id,
             stripeCheckoutSessionId: 'cs_test_pending_123',
             checkoutUrl: 'https://checkout.stripe.test/session_123',
@@ -503,7 +506,7 @@ describe('billingService', () => {
         },
       }));
 
-      const result = await failPendingCheckoutSession({ id: pendingRow.id }, mockLog);
+      const result = await failPendingCheckoutSession({ userId, id: pendingRow.id }, mockLog);
 
       expect(result).toEqual(expect.objectContaining({
         id: pendingRow.id,
@@ -513,6 +516,7 @@ describe('billingService', () => {
         status: 'failed',
       });
       expect(adminClient.buildersByTable.billing_checkout_sessions[0].state.eqArgs).toEqual([
+        ['user_id', userId],
         ['id', pendingRow.id],
         ['status', 'creating'],
       ]);
@@ -662,6 +666,24 @@ describe('billingService', () => {
 
       expect(mockSupabaseAdmin.from).not.toHaveBeenCalled();
       expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
+
+      await expect(
+        finalizePendingCheckoutSession(
+          {
+            id: pendingRow.id,
+            stripeCheckoutSessionId: 'cs_test_pending_123',
+            checkoutUrl: 'https://checkout.stripe.test/session_123',
+            expiresAt: '2030-01-01T00:00:00.000Z',
+          },
+          mockLog
+        )
+      ).rejects.toMatchObject({ code: 'BILLING_INVALID_INPUT' });
+
+      await expect(
+        failPendingCheckoutSession({ id: pendingRow.id }, mockLog)
+      ).rejects.toMatchObject({ code: 'BILLING_INVALID_INPUT' });
+
+      expect(mockSupabaseAdmin.from).not.toHaveBeenCalled();
     });
   });
 

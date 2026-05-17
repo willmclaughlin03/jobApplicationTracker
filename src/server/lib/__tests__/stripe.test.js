@@ -366,6 +366,16 @@ describe('stripe runtime narrow module', () => {
     expect(runtime.getConfiguredStripeMode()).toBe('live');
   });
 
+  it('refuses to reset runtime caches outside the test environment', () => {
+    const runtime = loadStripeRuntimeModule();
+
+    process.env.NODE_ENV = 'production';
+
+    expect(() => runtime.__resetForTests()).toThrow(
+      '__resetForTests() is only available in test environment'
+    );
+  });
+
   it('reads the active webhook secret dynamically for the cached mode', () => {
     process.env.STRIPE_SECRET_KEY = 'sk_test_runtime_webhook';
     process.env.STRIPE_WEBHOOK_SECRET_TEST = 'whsec_runtime_first';

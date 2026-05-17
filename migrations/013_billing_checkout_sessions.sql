@@ -21,6 +21,8 @@ CREATE TABLE public.billing_checkout_sessions (
   updated_at timestamptz NOT NULL DEFAULT pg_catalog.now(),
   CONSTRAINT billing_checkout_sessions_plan_format_check
     CHECK (char_length(btrim(plan)) > 0 AND char_length(plan) <= 120),
+  CONSTRAINT billing_checkout_sessions_plan_allowed_check
+    CHECK (plan IN ('resume_tailor_monthly')),
   CONSTRAINT billing_checkout_sessions_status_check
     CHECK (
       status IN (
@@ -68,6 +70,8 @@ ALTER TABLE public.billing_checkout_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.billing_checkout_sessions FORCE ROW LEVEL SECURITY;
 
 REVOKE ALL ON public.billing_checkout_sessions FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT, UPDATE ON public.billing_checkout_sessions TO service_role;
+GRANT USAGE, SELECT ON SEQUENCE public.billing_checkout_sessions_id_seq TO service_role;
 
 -- claim_billing_checkout_session(p_user_id, p_plan)
 --
@@ -105,6 +109,11 @@ BEGIN
   IF normalized_plan IS NULL OR normalized_plan = '' THEN
     RAISE EXCEPTION 'plan is required'
       USING ERRCODE = '23502';
+  END IF;
+
+  IF normalized_plan NOT IN ('resume_tailor_monthly') THEN
+    RAISE EXCEPTION 'unsupported billing plan: %', normalized_plan
+      USING ERRCODE = '22023';
   END IF;
 
   PERFORM pg_advisory_xact_lock(hashtext(p_user_id::text), hashtext(normalized_plan));

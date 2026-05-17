@@ -194,6 +194,7 @@ describe('/api/billing/checkout handler', () => {
     });
     expect(mockFinalizePendingCheckoutSession).toHaveBeenCalledWith(
       {
+        userId: mockUser.id,
         id: defaultPendingSession.id,
         stripeCheckoutSessionId: defaultCheckoutSession.id,
         checkoutUrl: defaultCheckoutSession.url,
@@ -440,7 +441,7 @@ describe('/api/billing/checkout handler', () => {
     await handler(req, res);
 
     expect(mockFailPendingCheckoutSession).toHaveBeenCalledWith(
-      { id: defaultPendingSession.id },
+      { userId: mockUser.id, id: defaultPendingSession.id },
       mockLog
     );
     expect(res.status).toHaveBeenCalledWith(503);
@@ -459,7 +460,7 @@ describe('/api/billing/checkout handler', () => {
     await handler(req, res);
 
     expect(mockFailPendingCheckoutSession).toHaveBeenCalledWith(
-      { id: defaultPendingSession.id },
+      { userId: mockUser.id, id: defaultPendingSession.id },
       mockLog
     );
     expect(mockFinalizePendingCheckoutSession).not.toHaveBeenCalled();
@@ -482,7 +483,7 @@ describe('/api/billing/checkout handler', () => {
     await handler(req, res);
 
     expect(mockFailPendingCheckoutSession).toHaveBeenCalledWith(
-      { id: defaultPendingSession.id },
+      { userId: mockUser.id, id: defaultPendingSession.id },
       mockLog
     );
     expect(mockFinalizePendingCheckoutSession).not.toHaveBeenCalled();
@@ -502,7 +503,7 @@ describe('/api/billing/checkout handler', () => {
     await handler(req, res);
 
     expect(mockFailPendingCheckoutSession).toHaveBeenCalledWith(
-      { id: defaultPendingSession.id },
+      { userId: mockUser.id, id: defaultPendingSession.id },
       mockLog
     );
     expect(res.status).toHaveBeenCalledWith(503);

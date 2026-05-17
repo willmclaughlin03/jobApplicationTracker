@@ -11,6 +11,19 @@ Use this file as a quick-running log of implemented changes.
 - `YYYY-MM-DD` - `Feature or change name`: short note on what was added or updated.
 
 ## Entries
+
+### Week of 2026-05-11
+- `2026-05-17` - `Pending checkout UX docs`: Reframed stale hour-bucket replay guidance around the current pending-session dedupe model and owner-scoped recovery metrics.
+- `2026-05-17` - `Pending checkout owner-scoped writes`: Required user ids for pending checkout finalize/fail helpers and filtered writes by owner.
+- `2026-05-17` - `Billing checkout plan allowlist`: Added migration-level plan allowlist enforcement for pending checkout sessions and RPC claims.
+- `2026-05-17` - `Billing checkout session grants`: Granted service-role table and identity-sequence access for pending checkout session claims and admin updates.
+- `2026-05-17` - `Patch command fence fix`: Closed the focused-test command block in `docs/patches.md` so the markdown renders correctly.
+- `2026-05-17` - `Stripe test reset guard`: Added a `NODE_ENV=test` runtime guard and security documentation for the Stripe runtime test reset helper.
+  - impact: Production code cannot accidentally clear memoized Stripe runtime state through the test-only helper.
+- `2026-05-16` - `Stripe checkout terminal cleanup`: Marked completed/expired Checkout Sessions terminal in local pending-session state, tightened checkout expiry validation, extended duplicate-submit convergence, and documented the success-polling limitation for terminal cleanup.
+- `2026-05-16` - `Stripe pending checkout dedupe`: Added service-role pending Checkout Session claims, checkout route reuse/failure handling, local checkout-status mint checks, focused tests, and migration `013_billing_checkout_sessions.sql`.
+- `2026-05-16` - `Stripe next-phase chunk reorder`: Moved pending Checkout Session dedupe ahead of public webhook work, renumbered the rollout chunks, and added production-cutover blockers for checkout dedupe plus Stripe customer mapping consistency.
+- `2026-05-12` - `Stripe Chunk 7 pending-checkout plan`: Added a dedicated Chunk 7 to `docs/stripe-next-phase-plan.md` for Supabase-backed pending Checkout Session dedupe and replaced the stale nonce-preservation guidance.
 - `2026-05-11` - `Stripe runtime schema validation`: Centralized Stripe secret-key env validation behind a Zod schema shared by runtime config resolution and webhook env-snapshot mode selection.
 - `2026-05-11` - `Stripe runtime env-cache isolation`: Limited Stripe runtime config cache writes to `process.env` resolutions so custom env snapshots validate without poisoning global runtime state.
 - `2026-05-11` - `Auth-invalid log severity`: Lowered expected 401/403 token validation failures from error logs to warnings while preserving sanitized auth metadata and returned auth payloads.
@@ -18,6 +31,8 @@ Use this file as a quick-running log of implemented changes.
 - `2026-05-11` - `Checkout nonce idempotency restore`: Switched checkout idempotency back to validated per-attempt nonces combined with the server-side user hash and plan so stale hourly Stripe Checkout Sessions are not replayed.
 - `2026-05-11` - `Webhook verifier config status fix`: Mapped Stripe runtime config failures from webhook verification to `503 SERVICE_UNAVAILABLE` and added middleware coverage for invalid Stripe runtime configuration.
 - `2026-05-11` - `Stripe billing foundation hardening`: Split Stripe runtime from checkout-only config, enforced webhook raw-body caps for cached and streamed bodies, mapped auth backend outages to 503, initially replaced client checkout nonces with server-owned hour-bucket idempotency; later restored nonce-backed checkout idempotency - see `2026-05-11 - Checkout nonce idempotency restore`, made completed non-entitled checkout reconciliation terminal, and updated the Stripe next-phase plan.
+
+### Week of 2026-05-04
 - `2026-05-10` - `Stage 5 webhook plan gap audit`: Expanded Chunk 5 of `docs/stripe-next-phase-plan.md` with verified current-branch webhook and billing-contract gaps, resolved the duplicate-receipt semantics contradiction in favor of preserving `processed`, and added concrete code references plus test expectations for the follow-up fixes.
 - `2026-05-09` - `Stripe Stage 5 and Phase 6 plan rewrite`: Replaced the public-webhook chunk with the finalized thin-route plus dispatcher plan, clarified duplicate-receipt semantics and unexpected `CUSTOMER_NOT_FOUND` monitoring, and added explicit Phase 6 rollout context plus end-of-phase WAF hardening.
 - `2026-05-09` - `Review guidance for automated findings`: Added repo-level review-quality and output-format guidance to `AGENTS.md` and `CLAUDE.md` so automated reviewers verify findings against current code, focus on concrete billing/auth/race-condition issues, and report actionable fixes.
@@ -28,6 +43,8 @@ Use this file as a quick-running log of implemented changes.
 - `2026-05-06` - `Billing action submit guards`: Added handler-side in-flight latching on the billing page so checkout and portal clicks optimistically mark themselves loading and ignore duplicate submissions before the UI re-renders, with focused page tests for repeated clicks.
 - `2026-05-06` - `Billing page unauthorized recovery`: Updated the billing status load path to treat `401` responses as expired auth, trigger `signOut()` plus login redirect instead of a false service-outage state, and added focused billing-page coverage.
 - `2026-05-06` - `Rate-limit IP validation tightening`: Replaced permissive regex-based public-route IP checks with strict `node:net` `isIP()` validation, kept the CloudFront header precedence and fail-closed behavior, and added focused malformed-header coverage.
+
+### Week of 2026-04-27
 - `2026-05-03` - `Billing polling, idempotency, and Stripe sync hardening`: Raised `billing_write` quotas to protect the success-page poll flow, replaced hour-bucket checkout idempotency with client nonces, tightened checkout-status retry and ownership handling, pinned explicit Stripe timeout/retry config, added best-effort Stripe email fingerprint dedupe plus migration, extended shared-client response metadata, and aligned billing-page/success-page helpers and focused tests with the new cooldown and redirect-loading behavior.
 - `2026-05-03` - `Billing ownership assertion and portal-capability gating`: Added a service-layer expected-user assertion for authoritative Stripe subscription syncs, made checkout-status require positive completed-session customer confirmation before reconcile, exposed `hasPortalCustomer` from the billing status API, and aligned billing-page portal gating and focused tests with the backend contract.
 - `2026-05-02` - `Billing checkout flow hardening`: Fixed billing-page error-state gating, treated success-page fetch failures as temporary unavailability, made checkout-status stop on terminal reconcile outcomes, added Stripe customer-consistency guards before reconcile, and hardened app URL building against off-origin inputs.

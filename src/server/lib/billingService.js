@@ -142,12 +142,14 @@ const pendingCheckoutClaimInputSchema = z.object({
   checkoutAttemptNonce: checkoutAttemptNonceSchema,
 });
 const pendingCheckoutFinalizeInputSchema = z.object({
+  userId: nonEmptyStringSchema,
   id: pendingCheckoutSessionIdSchema,
   stripeCheckoutSessionId: nonEmptyStringSchema,
   checkoutUrl: z.string().trim().url(),
   expiresAt: nonEmptyStringSchema,
 });
 const pendingCheckoutFailInputSchema = z.object({
+  userId: nonEmptyStringSchema,
   id: pendingCheckoutSessionIdSchema,
 });
 const pendingCheckoutLookupInputSchema = z.object({
@@ -1587,7 +1589,7 @@ export async function claimPendingCheckoutSession(input, log = defaultLogger) {
  * Purpose: checkout routes should redirect only to a Stripe URL that has been
  * durably associated with the local pending-session claim.
  *
- * @param {{ id: string | number, stripeCheckoutSessionId: string, checkoutUrl: string, expiresAt: string }} input
+ * @param {{ userId: string, id: string | number, stripeCheckoutSessionId: string, checkoutUrl: string, expiresAt: string }} input
  * @param {object} log
  * @returns {Promise<object>}
  */
@@ -1607,6 +1609,7 @@ export async function finalizePendingCheckoutSession(input, log = defaultLogger)
         expires_at: parsedInput.data.expiresAt,
         status: PENDING_CHECKOUT_SESSION_STATUSES.OPEN,
       })
+      .eq('user_id', parsedInput.data.userId)
       .eq('id', parsedInput.data.id)
       .eq('status', PENDING_CHECKOUT_SESSION_STATUSES.CREATING)
       .select(BILLING_CHECKOUT_SESSION_SELECT)
@@ -1646,7 +1649,7 @@ export async function finalizePendingCheckoutSession(input, log = defaultLogger)
  * Purpose: Stripe or persistence failures must release the active user-plan
  * claim so a later checkout attempt is not permanently blocked.
  *
- * @param {{ id: string | number }} input
+ * @param {{ userId: string, id: string | number }} input
  * @param {object} log
  * @returns {Promise<object | null>}
  */
@@ -1661,6 +1664,7 @@ export async function failPendingCheckoutSession(input, log = defaultLogger) {
     const { data, error } = await supabaseAdmin
       .from('billing_checkout_sessions')
       .update({ status: PENDING_CHECKOUT_SESSION_STATUSES.FAILED })
+      .eq('user_id', parsedInput.data.userId)
       .eq('id', parsedInput.data.id)
       .eq('status', PENDING_CHECKOUT_SESSION_STATUSES.CREATING)
       .select(BILLING_CHECKOUT_SESSION_SELECT)
