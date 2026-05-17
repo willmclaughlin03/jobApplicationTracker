@@ -44,6 +44,10 @@ const {
   BILLING_WRITE_OUTCOMES,
   CHECKOUT_STATUS_STATES,
   canStartCheckout,
+  claimPendingCheckoutSession,
+  failPendingCheckoutSession,
+  finalizePendingCheckoutSession,
+  getMintedCheckoutSessionForUser,
   STRIPE_EVENT_RECEIPT_RESULTS,
   classifyStripeStatus,
   formatStripeIdForLog,
@@ -55,8 +59,10 @@ const {
   hashUserIdForIdempotency,
   hashUserIdForLog,
   loadBillingStatusOrThrow,
+  markMintedCheckoutSessionTerminal,
   markSubscriptionDeletedFromEvent,
   mapCheckoutStatus,
+  PENDING_CHECKOUT_SESSION_OUTCOMES,
   recordStripeEventReceipt,
   redactStripeId,
   resolveStorageEntitlement,
@@ -64,6 +70,7 @@ const {
   resolveTailorEntitlement,
   resolveTailorEntitlementPrivileged,
   syncSubscriptionFromStripe,
+  waitForPendingCheckoutSessionOpen,
 } = require('../billingService.js');
 
 function createQueryBuilder(plan = {}) {
@@ -347,6 +354,336 @@ describe('billingService', () => {
       );
       expect(hashUserIdForLog(userId)).not.toBe(hashUserIdForIdempotency(userId));
       expect(hashUserIdForIdempotency(null)).toEqual(expect.any(String));
+    });
+  });
+
+  describe('pending checkout session helpers', () => {
+    const userId = 'user-pending-checkout';
+    const plan = 'resume_tailor_monthly';
+    const checkoutAttemptNonce = '0123456789abcdef0123456789abcdef';
+    const pendingRow = {
+      id: 42,
+      user_id: userId,
+      plan,
+      stripe_checkout_session_id: null,
+      checkout_url: null,
+      status: 'creating',
+      expires_at: null,
+      created_at: '2029-11-14T00:00:00.000Z',
+      updated_at: '2029-11-14T00:00:00.000Z',
+    };
+    const openRow = {
+      ...pendingRow,
+      stripe_checkout_session_id: 'cs_test_pending_123',
+      checkout_url: 'https://checkout.stripe.test/session_123',
+      status: 'open',
+      expires_at: '2030-01-01T00:00:00.000Z',
+    };
+
+    it('claims a pending checkout session through the service-role RPC', async () => {
+      const adminClient = useAdminClient(createSupabaseClient({
+        rpc: {
+          claim_billing_checkout_session: {
+            data: {
+              action: 'claimed',
+              session: pendingRow,
+            },
+            error: null,
+          },
+        },
+      }));
+
+      const result = await claimPendingCheckoutSession(
+        { userId, plan, checkoutAttemptNonce },
+        mockLog
+      );
+
+      expect(result.outcome).toBe(PENDING_CHECKOUT_SESSION_OUTCOMES.CLAIMED);
+      expect(result.session).toEqual(expect.objectContaining({
+        id: pendingRow.id,
+        userId,
+        plan,
+        status: 'creating',
+      }));
+      expect(adminClient.rpcCallsByName.claim_billing_checkout_session[0].args).toEqual({
+        p_user_id: userId,
+        p_plan: plan,
+      });
+    });
+
+    it('rejects malformed pending checkout claim RPC responses', async () => {
+      useAdminClient(createSupabaseClient({
+        rpc: {
+          claim_billing_checkout_session: {
+            data: {
+              action: 'claimed',
+              session: null,
+            },
+            error: null,
+          },
+        },
+      }));
+
+      await expect(
+        claimPendingCheckoutSession({ userId, plan, checkoutAttemptNonce }, mockLog)
+      ).rejects.toMatchObject({ code: 'BILLING_RPC_INVALID_RESPONSE' });
+    });
+
+    it('finalizes a creating pending checkout session with persisted Stripe fields', async () => {
+      const adminClient = useAdminClient(createSupabaseClient({
+        billing_checkout_sessions: {
+          maybeSingle: {
+            data: openRow,
+            error: null,
+          },
+        },
+      }));
+
+      const result = await finalizePendingCheckoutSession(
+        {
+          userId,
+          id: pendingRow.id,
+          stripeCheckoutSessionId: 'cs_test_pending_123',
+          checkoutUrl: 'https://checkout.stripe.test/session_123',
+          expiresAt: '2030-01-01T00:00:00.000Z',
+        },
+        mockLog
+      );
+
+      expect(result).toEqual(expect.objectContaining({
+        id: pendingRow.id,
+        status: 'open',
+        checkoutUrl: 'https://checkout.stripe.test/session_123',
+        stripeCheckoutSessionId: 'cs_test_pending_123',
+      }));
+      expect(adminClient.buildersByTable.billing_checkout_sessions[0].state.updatePayload).toEqual({
+        stripe_checkout_session_id: 'cs_test_pending_123',
+        checkout_url: 'https://checkout.stripe.test/session_123',
+        expires_at: '2030-01-01T00:00:00.000Z',
+        status: 'open',
+      });
+      expect(adminClient.buildersByTable.billing_checkout_sessions[0].state.eqArgs).toEqual([
+        ['user_id', userId],
+        ['id', pendingRow.id],
+        ['status', 'creating'],
+      ]);
+    });
+
+    it('throws the finalize-failed code when the creating row is no longer present', async () => {
+      useAdminClient(createSupabaseClient({
+        billing_checkout_sessions: {
+          maybeSingle: {
+            data: null,
+            error: null,
+          },
+        },
+      }));
+
+      await expect(
+        finalizePendingCheckoutSession(
+          {
+            userId,
+            id: pendingRow.id,
+            stripeCheckoutSessionId: 'cs_test_pending_123',
+            checkoutUrl: 'https://checkout.stripe.test/session_123',
+            expiresAt: '2030-01-01T00:00:00.000Z',
+          },
+          mockLog
+        )
+      ).rejects.toMatchObject({ code: 'BILLING_PENDING_CHECKOUT_FINALIZE_FAILED' });
+    });
+
+    it('marks a creating pending checkout session failed after Stripe creation errors', async () => {
+      const adminClient = useAdminClient(createSupabaseClient({
+        billing_checkout_sessions: {
+          maybeSingle: {
+            data: {
+              ...pendingRow,
+              status: 'failed',
+            },
+            error: null,
+          },
+        },
+      }));
+
+      const result = await failPendingCheckoutSession({ userId, id: pendingRow.id }, mockLog);
+
+      expect(result).toEqual(expect.objectContaining({
+        id: pendingRow.id,
+        status: 'failed',
+      }));
+      expect(adminClient.buildersByTable.billing_checkout_sessions[0].state.updatePayload).toEqual({
+        status: 'failed',
+      });
+      expect(adminClient.buildersByTable.billing_checkout_sessions[0].state.eqArgs).toEqual([
+        ['user_id', userId],
+        ['id', pendingRow.id],
+        ['status', 'creating'],
+      ]);
+    });
+
+    it('marks an open minted checkout session terminal by user and Stripe session id', async () => {
+      const adminClient = useAdminClient(createSupabaseClient({
+        billing_checkout_sessions: {
+          maybeSingle: {
+            data: {
+              ...openRow,
+              status: 'complete',
+            },
+            error: null,
+          },
+        },
+      }));
+
+      const result = await markMintedCheckoutSessionTerminal(
+        {
+          userId,
+          sessionId: 'cs_test_pending_123',
+          status: 'complete',
+        },
+        mockLog
+      );
+
+      expect(result).toEqual(expect.objectContaining({
+        userId,
+        stripeCheckoutSessionId: 'cs_test_pending_123',
+        status: 'complete',
+      }));
+      expect(adminClient.buildersByTable.billing_checkout_sessions[0].state.updatePayload).toEqual({
+        status: 'complete',
+      });
+      expect(adminClient.buildersByTable.billing_checkout_sessions[0].state.eqArgs).toEqual([
+        ['user_id', userId],
+        ['stripe_checkout_session_id', 'cs_test_pending_123'],
+        ['status', 'open'],
+      ]);
+    });
+
+    it('returns null when no open minted checkout session can be marked terminal', async () => {
+      useAdminClient(createSupabaseClient({
+        billing_checkout_sessions: {
+          maybeSingle: {
+            data: null,
+            error: null,
+          },
+        },
+      }));
+
+      await expect(
+        markMintedCheckoutSessionTerminal(
+          {
+            userId,
+            sessionId: 'cs_test_pending_123',
+            status: 'expired',
+          },
+          mockLog
+        )
+      ).resolves.toBeNull();
+    });
+
+    it('rejects invalid terminal checkout session statuses before database work', async () => {
+      await expect(
+        markMintedCheckoutSessionTerminal(
+          {
+            userId,
+            sessionId: 'cs_test_pending_123',
+            status: 'open',
+          },
+          mockLog
+        )
+      ).rejects.toMatchObject({ code: 'BILLING_INVALID_INPUT' });
+
+      expect(mockSupabaseAdmin.from).not.toHaveBeenCalled();
+    });
+
+    it('looks up locally minted checkout sessions by user before checkout-status calls Stripe', async () => {
+      const adminClient = useAdminClient(createSupabaseClient({
+        billing_checkout_sessions: {
+          maybeSingle: {
+            data: openRow,
+            error: null,
+          },
+        },
+      }));
+
+      const result = await getMintedCheckoutSessionForUser(
+        {
+          userId,
+          sessionId: 'cs_test_pending_123',
+        },
+        mockLog
+      );
+
+      expect(result).toEqual(expect.objectContaining({
+        userId,
+        stripeCheckoutSessionId: 'cs_test_pending_123',
+      }));
+      expect(adminClient.buildersByTable.billing_checkout_sessions[0].state.eqArgs).toEqual([
+        ['user_id', userId],
+        ['stripe_checkout_session_id', 'cs_test_pending_123'],
+      ]);
+    });
+
+    it('returns null when a minted checkout session is not found for the user', async () => {
+      useAdminClient(createSupabaseClient({
+        billing_checkout_sessions: {
+          maybeSingle: {
+            data: null,
+            error: null,
+          },
+        },
+      }));
+
+      await expect(
+        getMintedCheckoutSessionForUser({ userId, sessionId: 'cs_test_pending_123' }, mockLog)
+      ).resolves.toBeNull();
+    });
+
+    it('waits for an open pending checkout session without calling Stripe', async () => {
+      useAdminClient(createSupabaseClient({
+        billing_checkout_sessions: {
+          maybeSingle: {
+            data: openRow,
+            error: null,
+          },
+        },
+      }));
+
+      const result = await waitForPendingCheckoutSessionOpen({ userId, plan }, mockLog);
+
+      expect(result).toEqual(expect.objectContaining({
+        status: 'open',
+        checkoutUrl: 'https://checkout.stripe.test/session_123',
+      }));
+      expect(mockStripe.customers.create).not.toHaveBeenCalled();
+      expect(mockStripe.subscriptions.retrieve).not.toHaveBeenCalled();
+    });
+
+    it('rejects invalid pending checkout helper input before database work', async () => {
+      await expect(
+        claimPendingCheckoutSession({ userId, plan, checkoutAttemptNonce: 'bad' }, mockLog)
+      ).rejects.toMatchObject({ code: 'BILLING_INVALID_INPUT' });
+
+      expect(mockSupabaseAdmin.from).not.toHaveBeenCalled();
+      expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
+
+      await expect(
+        finalizePendingCheckoutSession(
+          {
+            id: pendingRow.id,
+            stripeCheckoutSessionId: 'cs_test_pending_123',
+            checkoutUrl: 'https://checkout.stripe.test/session_123',
+            expiresAt: '2030-01-01T00:00:00.000Z',
+          },
+          mockLog
+        )
+      ).rejects.toMatchObject({ code: 'BILLING_INVALID_INPUT' });
+
+      await expect(
+        failPendingCheckoutSession({ id: pendingRow.id }, mockLog)
+      ).rejects.toMatchObject({ code: 'BILLING_INVALID_INPUT' });
+
+      expect(mockSupabaseAdmin.from).not.toHaveBeenCalled();
     });
   });
 

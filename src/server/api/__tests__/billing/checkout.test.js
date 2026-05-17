@@ -3,18 +3,31 @@ jest.mock('../../../middleware/withRateLimit.js', () => ({
 }));
 
 const mockCanStartCheckout = jest.fn();
+const mockClaimPendingCheckoutSession = jest.fn();
+const mockFailPendingCheckoutSession = jest.fn();
+const mockFinalizePendingCheckoutSession = jest.fn();
 const mockGetOrCreateStripeCustomer = jest.fn();
 const mockHashUserIdForIdempotency = jest.fn();
 const mockLoadBillingStatusOrThrow = jest.fn();
+const mockWaitForPendingCheckoutSessionOpen = jest.fn();
 const mockBuildAppUrl = jest.fn((path) => `https://app.example.test${path}`);
 const mockGetPriceIdForPlan = jest.fn();
 const mockCreateCheckoutSession = jest.fn();
 
 jest.mock('../../../lib/billingService.js', () => ({
   canStartCheckout: mockCanStartCheckout,
+  claimPendingCheckoutSession: mockClaimPendingCheckoutSession,
+  failPendingCheckoutSession: mockFailPendingCheckoutSession,
+  finalizePendingCheckoutSession: mockFinalizePendingCheckoutSession,
   getOrCreateStripeCustomer: mockGetOrCreateStripeCustomer,
   hashUserIdForIdempotency: mockHashUserIdForIdempotency,
   loadBillingStatusOrThrow: mockLoadBillingStatusOrThrow,
+  PENDING_CHECKOUT_SESSION_OUTCOMES: {
+    CLAIMED: 'claimed',
+    CREATING: 'creating',
+    REUSED: 'reused',
+  },
+  waitForPendingCheckoutSessionOpen: mockWaitForPendingCheckoutSessionOpen,
 }));
 
 jest.mock('../../../lib/stripe.js', () => ({
@@ -37,6 +50,20 @@ describe('/api/billing/checkout handler', () => {
   const mockClient = { from: jest.fn() };
   const mockLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
   const defaultCheckoutAttemptNonce = '0123456789abcdef0123456789abcdef';
+  const defaultPendingSession = {
+    id: 42,
+    userId: mockUser.id,
+    plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+    status: 'creating',
+    checkoutUrl: null,
+    expiresAt: null,
+  };
+  const defaultCheckoutSession = {
+    id: 'cs_test_checkout_123',
+    url: 'https://checkout.stripe.test/session_123',
+    expires_at: 1899849600,
+  };
+  const defaultExpiresAtIso = '2030-03-16T00:00:00.000Z';
 
   function createMockReq(
     body = {
@@ -64,13 +91,27 @@ describe('/api/billing/checkout handler', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockCanStartCheckout.mockReturnValue(true);
+    mockClaimPendingCheckoutSession.mockResolvedValue({
+      outcome: 'claimed',
+      session: defaultPendingSession,
+    });
+    mockFailPendingCheckoutSession.mockResolvedValue({
+      ...defaultPendingSession,
+      status: 'failed',
+    });
+    mockFinalizePendingCheckoutSession.mockResolvedValue({
+      ...defaultPendingSession,
+      status: 'open',
+      stripeCheckoutSessionId: defaultCheckoutSession.id,
+      checkoutUrl: defaultCheckoutSession.url,
+      expiresAt: defaultExpiresAtIso,
+    });
     mockGetOrCreateStripeCustomer.mockResolvedValue({ stripeCustomerId: 'cus_checkout_123' });
     mockHashUserIdForIdempotency.mockReturnValue('hash1234567890hash1234567890');
     mockLoadBillingStatusOrThrow.mockResolvedValue({ hasSubscription: false, status: null });
+    mockWaitForPendingCheckoutSessionOpen.mockResolvedValue(null);
     mockGetPriceIdForPlan.mockReturnValue('price_tailor_monthly');
-    mockCreateCheckoutSession.mockResolvedValue({
-      url: 'https://checkout.stripe.test/session_123',
-    });
+    mockCreateCheckoutSession.mockResolvedValue(defaultCheckoutSession);
   });
 
   it('rejects invalid billing request bodies', async () => {
@@ -83,6 +124,7 @@ describe('/api/billing/checkout handler', () => {
     await handler(req, res);
 
     expect(mockLoadBillingStatusOrThrow).not.toHaveBeenCalled();
+    expect(mockClaimPendingCheckoutSession).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -101,6 +143,7 @@ describe('/api/billing/checkout handler', () => {
     await handler(req, res);
 
     expect(mockLoadBillingStatusOrThrow).not.toHaveBeenCalled();
+    expect(mockClaimPendingCheckoutSession).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -109,7 +152,7 @@ describe('/api/billing/checkout handler', () => {
     );
   });
 
-  it('loads eligibility before customer creation and creates the exact Stripe checkout payload', async () => {
+  it('claims a pending row before Stripe creation and persists the returned session URL', async () => {
     const req = createMockReq();
     const res = createMockRes();
 
@@ -117,7 +160,15 @@ describe('/api/billing/checkout handler', () => {
 
     expect(mockLoadBillingStatusOrThrow).toHaveBeenCalledWith(mockUser.id, mockClient, mockLog);
     expect(mockCanStartCheckout).toHaveBeenCalledWith({ hasSubscription: false, status: null });
-    expect(mockLoadBillingStatusOrThrow.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(mockClaimPendingCheckoutSession).toHaveBeenCalledWith(
+      {
+        userId: mockUser.id,
+        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        checkoutAttemptNonce: defaultCheckoutAttemptNonce,
+      },
+      mockLog
+    );
+    expect(mockClaimPendingCheckoutSession.mock.invocationCallOrder[0]).toBeLessThan(
       mockGetOrCreateStripeCustomer.mock.invocationCallOrder[0]
     );
     expect(mockGetOrCreateStripeCustomer).toHaveBeenCalledWith(
@@ -141,26 +192,106 @@ describe('/api/billing/checkout handler', () => {
     }, {
       idempotencyKey: `billing_checkout_hash1234567890hash123456_resume_tailor_monthly_${defaultCheckoutAttemptNonce}`,
     });
+    expect(mockFinalizePendingCheckoutSession).toHaveBeenCalledWith(
+      {
+        userId: mockUser.id,
+        id: defaultPendingSession.id,
+        stripeCheckoutSessionId: defaultCheckoutSession.id,
+        checkoutUrl: defaultCheckoutSession.url,
+        expiresAt: defaultExpiresAtIso,
+      },
+      mockLog
+    );
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { url: 'https://checkout.stripe.test/session_123' },
+        data: { url: defaultCheckoutSession.url },
       })
     );
   });
 
-  it('dedupes parallel duplicate submits with the same nonce to one Stripe session URL', async () => {
-    const sessionsByIdempotencyKey = new Map();
-    mockCreateCheckoutSession.mockImplementation((payload, options) => {
-      const url = sessionsByIdempotencyKey.get(options.idempotencyKey)
-        ?? `https://checkout.stripe.test/${options.idempotencyKey}`;
-      sessionsByIdempotencyKey.set(options.idempotencyKey, url);
-      return Promise.resolve({ url });
+  it('reuses an existing open pending session without calling Stripe again', async () => {
+    mockClaimPendingCheckoutSession.mockResolvedValue({
+      outcome: 'reused',
+      session: {
+        ...defaultPendingSession,
+        status: 'open',
+        checkoutUrl: 'https://checkout.stripe.test/reused',
+      },
     });
+    const req = createMockReq();
+    const res = createMockRes();
 
-    const firstReq = createMockReq();
+    await handler(req, res);
+
+    expect(mockGetOrCreateStripeCustomer).not.toHaveBeenCalled();
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+    expect(mockFinalizePendingCheckoutSession).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { url: 'https://checkout.stripe.test/reused' },
+      })
+    );
+  });
+
+  it('waits for another creating claim and reuses its persisted URL', async () => {
+    mockClaimPendingCheckoutSession.mockResolvedValue({
+      outcome: 'creating',
+      session: defaultPendingSession,
+    });
+    mockWaitForPendingCheckoutSessionOpen.mockResolvedValue({
+      ...defaultPendingSession,
+      status: 'open',
+      checkoutUrl: 'https://checkout.stripe.test/waited',
+    });
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockWaitForPendingCheckoutSessionOpen).toHaveBeenCalledWith(
+      {
+        userId: mockUser.id,
+        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+      },
+      mockLog
+    );
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { url: 'https://checkout.stripe.test/waited' },
+      })
+    );
+  });
+
+  it('dedupes parallel requests with different nonces to one persisted pending-session URL', async () => {
+    const firstNonce = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const secondNonce = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    mockClaimPendingCheckoutSession
+      .mockResolvedValueOnce({
+        outcome: 'claimed',
+        session: defaultPendingSession,
+      })
+      .mockResolvedValueOnce({
+        outcome: 'creating',
+        session: defaultPendingSession,
+      });
+    mockWaitForPendingCheckoutSessionOpen.mockResolvedValue({
+      ...defaultPendingSession,
+      status: 'open',
+      checkoutUrl: defaultCheckoutSession.url,
+    });
+    const firstReq = createMockReq({
+      plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+      checkoutAttemptNonce: firstNonce,
+    });
     const firstRes = createMockRes();
-    const secondReq = createMockReq();
+    const secondReq = createMockReq({
+      plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+      checkoutAttemptNonce: secondNonce,
+    });
     const secondRes = createMockRes();
 
     await Promise.all([
@@ -168,24 +299,21 @@ describe('/api/billing/checkout handler', () => {
       handler(secondReq, secondRes),
     ]);
 
-    const firstKey = mockCreateCheckoutSession.mock.calls[0][1].idempotencyKey;
-    const secondKey = mockCreateCheckoutSession.mock.calls[1][1].idempotencyKey;
-
-    expect(secondKey).toBe(firstKey);
-    expect(sessionsByIdempotencyKey.size).toBe(1);
+    expect(mockCreateCheckoutSession).toHaveBeenCalledTimes(1);
+    expect(mockFinalizePendingCheckoutSession).toHaveBeenCalledTimes(1);
     expect(firstRes.json).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { url: `https://checkout.stripe.test/${firstKey}` },
+        data: { url: defaultCheckoutSession.url },
       })
     );
     expect(secondRes.json).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { url: `https://checkout.stripe.test/${firstKey}` },
+        data: { url: defaultCheckoutSession.url },
       })
     );
   });
 
-  it('uses different idempotency keys for different users', async () => {
+  it('keeps user-specific Stripe idempotency material for the claim owner', async () => {
     mockHashUserIdForIdempotency.mockImplementation((userId) => {
       if (userId === 'user-a') {
         return 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -222,7 +350,7 @@ describe('/api/billing/checkout handler', () => {
     expect(secondKey).not.toBe(firstKey);
   });
 
-  it('uses different idempotency keys for different checkout attempt nonces', async () => {
+  it('keeps nonce-specific Stripe idempotency material only after owning a claim', async () => {
     const firstNonce = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     const secondNonce = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
     const firstReq = createMockReq({
@@ -254,6 +382,7 @@ describe('/api/billing/checkout handler', () => {
 
     await handler(req, res);
 
+    expect(mockClaimPendingCheckoutSession).not.toHaveBeenCalled();
     expect(mockGetOrCreateStripeCustomer).not.toHaveBeenCalled();
     expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(409);
@@ -274,6 +403,7 @@ describe('/api/billing/checkout handler', () => {
 
     await handler(req, res);
 
+    expect(mockClaimPendingCheckoutSession).not.toHaveBeenCalled();
     expect(mockGetOrCreateStripeCustomer).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(503);
     expect(res.json).toHaveBeenCalledWith(
@@ -283,13 +413,99 @@ describe('/api/billing/checkout handler', () => {
     );
   });
 
-  it('returns 503 when Stripe checkout session creation fails', async () => {
+  it('returns retryable 503 when another creating claim never becomes reusable', async () => {
+    mockClaimPendingCheckoutSession.mockResolvedValue({
+      outcome: 'creating',
+      session: defaultPendingSession,
+    });
+    mockWaitForPendingCheckoutSessionOpen.mockResolvedValue(null);
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'SERVICE_UNAVAILABLE',
+      })
+    );
+  });
+
+  it('marks the pending claim failed when Stripe checkout session creation fails', async () => {
     mockCreateCheckoutSession.mockRejectedValue(new Error('Stripe unavailable'));
     const req = createMockReq();
     const res = createMockRes();
 
     await handler(req, res);
 
+    expect(mockFailPendingCheckoutSession).toHaveBeenCalledWith(
+      { userId: mockUser.id, id: defaultPendingSession.id },
+      mockLog
+    );
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'CHECKOUT_SESSION_FAILED',
+      })
+    );
+  });
+
+  it('marks the pending claim failed when Stripe omits required session fields', async () => {
+    mockCreateCheckoutSession.mockResolvedValue({ id: 'cs_test_missing_url' });
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockFailPendingCheckoutSession).toHaveBeenCalledWith(
+      { userId: mockUser.id, id: defaultPendingSession.id },
+      mockLog
+    );
+    expect(mockFinalizePendingCheckoutSession).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(503);
+  });
+
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['empty string', ''],
+    ['non-finite number', Number.POSITIVE_INFINITY],
+  ])('marks the pending claim failed when Stripe returns a %s expiry', async (_label, expiresAt) => {
+    mockCreateCheckoutSession.mockResolvedValue({
+      ...defaultCheckoutSession,
+      expires_at: expiresAt,
+    });
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockFailPendingCheckoutSession).toHaveBeenCalledWith(
+      { userId: mockUser.id, id: defaultPendingSession.id },
+      mockLog
+    );
+    expect(mockFinalizePendingCheckoutSession).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'CHECKOUT_SESSION_FAILED',
+      })
+    );
+  });
+
+  it('does not return an unpersisted Stripe URL when pending finalize fails', async () => {
+    mockFinalizePendingCheckoutSession.mockRejectedValue(new Error('database unavailable'));
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockFailPendingCheckoutSession).toHaveBeenCalledWith(
+      { userId: mockUser.id, id: defaultPendingSession.id },
+      mockLog
+    );
     expect(res.status).toHaveBeenCalledWith(503);
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({

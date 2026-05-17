@@ -4,7 +4,9 @@ jest.mock('../../../middleware/withRateLimit.js', () => ({
 
 const mockAssertStripeLivemode = jest.fn();
 const mockFormatStripeIdForLog = jest.fn((value) => value);
+const mockGetMintedCheckoutSessionForUser = jest.fn();
 const mockLoadBillingStatusOrThrow = jest.fn();
+const mockMarkMintedCheckoutSessionTerminal = jest.fn();
 const mockMapCheckoutStatus = jest.fn();
 const mockSyncSubscriptionFromStripe = jest.fn();
 const mockRetrieveCheckoutSession = jest.fn();
@@ -20,7 +22,9 @@ jest.mock('../../../lib/billingService.js', () => ({
     UNSUPPORTED_STATUS_IGNORED: 'unsupported_status_ignored',
   },
   formatStripeIdForLog: mockFormatStripeIdForLog,
+  getMintedCheckoutSessionForUser: mockGetMintedCheckoutSessionForUser,
   loadBillingStatusOrThrow: mockLoadBillingStatusOrThrow,
+  markMintedCheckoutSessionTerminal: mockMarkMintedCheckoutSessionTerminal,
   mapCheckoutStatus: mockMapCheckoutStatus,
   syncSubscriptionFromStripe: mockSyncSubscriptionFromStripe,
 }));
@@ -63,9 +67,16 @@ describe('/api/billing/checkout-status handler', () => {
     jest.clearAllMocks();
     mockAssertStripeLivemode.mockReset();
     mockLoadBillingStatusOrThrow.mockReset();
+    mockMarkMintedCheckoutSessionTerminal.mockReset();
     mockMapCheckoutStatus.mockReset();
     mockSyncSubscriptionFromStripe.mockReset();
+    mockGetMintedCheckoutSessionForUser.mockReset();
     mockRetrieveCheckoutSession.mockReset();
+    mockGetMintedCheckoutSessionForUser.mockResolvedValue({
+      id: 42,
+      userId: mockUser.id,
+      stripeCheckoutSessionId: 'cs_test_a1Ae6ClgOkjygKwrf9B3L6IT',
+    });
     mockRetrieveCheckoutSession.mockResolvedValue({
       client_reference_id: mockUser.id,
       customer: 'cus_local_123',
@@ -77,6 +88,7 @@ describe('/api/billing/checkout-status handler', () => {
       entitled: false,
       stripeCustomerId: 'cus_local_123',
     });
+    mockMarkMintedCheckoutSessionTerminal.mockResolvedValue(null);
     mockMapCheckoutStatus.mockReturnValue('pending');
     mockSyncSubscriptionFromStripe.mockResolvedValue({ outcome: 'processed' });
   });
@@ -92,6 +104,45 @@ describe('/api/billing/checkout-status handler', () => {
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
         error: 'VALIDATION_ERROR',
+      })
+    );
+  });
+
+  it('rejects unknown local checkout sessions before calling Stripe', async () => {
+    mockGetMintedCheckoutSessionForUser.mockResolvedValue(null);
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockGetMintedCheckoutSessionForUser).toHaveBeenCalledWith(
+      {
+        userId: mockUser.id,
+        sessionId: 'cs_test_a1Ae6ClgOkjygKwrf9B3L6IT',
+      },
+      mockLog
+    );
+    expect(mockRetrieveCheckoutSession).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'CHECKOUT_SESSION_OWNERSHIP_INVALID',
+      })
+    );
+  });
+
+  it('returns 503 when the local checkout-session ownership check fails', async () => {
+    mockGetMintedCheckoutSessionForUser.mockRejectedValue(new Error('database unavailable'));
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockRetrieveCheckoutSession).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'SERVICE_UNAVAILABLE',
       })
     );
   });
@@ -128,6 +179,7 @@ describe('/api/billing/checkout-status handler', () => {
     await handler(req, res);
 
     expect(mockAssertStripeLivemode).not.toHaveBeenCalled();
+    expect(mockMarkMintedCheckoutSessionTerminal).not.toHaveBeenCalled();
     expect(mockSyncSubscriptionFromStripe).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(403);
     expect(res.json).toHaveBeenCalledWith(
@@ -150,6 +202,7 @@ describe('/api/billing/checkout-status handler', () => {
 
     await handler(req, res);
 
+    expect(mockMarkMintedCheckoutSessionTerminal).not.toHaveBeenCalled();
     expect(mockSyncSubscriptionFromStripe).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(403);
     expect(res.json).toHaveBeenCalledWith(
@@ -346,6 +399,7 @@ describe('/api/billing/checkout-status handler', () => {
 
     await handler(req, res);
 
+    expect(mockMarkMintedCheckoutSessionTerminal).not.toHaveBeenCalled();
     expect(mockSyncSubscriptionFromStripe).not.toHaveBeenCalled();
     expect(mockMapCheckoutStatus).toHaveBeenCalledWith({
       billingStatus: { entitled: false, stripeCustomerId: 'cus_local_123' },
@@ -355,6 +409,108 @@ describe('/api/billing/checkout-status handler', () => {
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
         data: { state: 'pending' },
+      })
+    );
+  });
+
+  it('marks a completed locally minted checkout session terminal without using that row for entitlement', async () => {
+    mockRetrieveCheckoutSession.mockResolvedValue({
+      client_reference_id: mockUser.id,
+      customer: 'cus_local_123',
+      livemode: false,
+      status: 'complete',
+      subscription: 'sub_checkout_123',
+    });
+    mockLoadBillingStatusOrThrow.mockResolvedValue({
+      entitled: true,
+      stripeCustomerId: 'cus_local_123',
+    });
+    mockMapCheckoutStatus.mockReturnValue('active');
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockMarkMintedCheckoutSessionTerminal).toHaveBeenCalledWith(
+      {
+        userId: mockUser.id,
+        sessionId: 'cs_test_a1Ae6ClgOkjygKwrf9B3L6IT',
+        status: 'complete',
+      },
+      mockLog
+    );
+    expect(mockSyncSubscriptionFromStripe).not.toHaveBeenCalled();
+    expect(mockMapCheckoutStatus).toHaveBeenCalledWith({
+      billingStatus: { entitled: true, stripeCustomerId: 'cus_local_123' },
+      checkoutSessionStatus: 'complete',
+    });
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { state: 'active' },
+      })
+    );
+  });
+
+  it('marks an expired locally minted checkout session terminal and returns the mapped state', async () => {
+    mockRetrieveCheckoutSession.mockResolvedValue({
+      client_reference_id: mockUser.id,
+      customer: 'cus_local_123',
+      livemode: false,
+      status: 'expired',
+      subscription: null,
+    });
+    mockMapCheckoutStatus.mockReturnValue('error');
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockMarkMintedCheckoutSessionTerminal).toHaveBeenCalledWith(
+      {
+        userId: mockUser.id,
+        sessionId: 'cs_test_a1Ae6ClgOkjygKwrf9B3L6IT',
+        status: 'expired',
+      },
+      mockLog
+    );
+    expect(mockSyncSubscriptionFromStripe).not.toHaveBeenCalled();
+    expect(mockMapCheckoutStatus).toHaveBeenCalledWith({
+      billingStatus: { entitled: false, stripeCustomerId: 'cus_local_123' },
+      checkoutSessionStatus: 'expired',
+    });
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { state: 'error' },
+      })
+    );
+  });
+
+  it('continues checkout-status resolution when terminal local marking fails', async () => {
+    mockRetrieveCheckoutSession.mockResolvedValue({
+      client_reference_id: mockUser.id,
+      customer: 'cus_local_123',
+      livemode: false,
+      status: 'expired',
+      subscription: null,
+    });
+    mockMarkMintedCheckoutSessionTerminal.mockRejectedValue(new Error('mark failed'));
+    mockMapCheckoutStatus.mockReturnValue('error');
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockMarkMintedCheckoutSessionTerminal).toHaveBeenCalledTimes(1);
+    expect(mockMapCheckoutStatus).toHaveBeenCalledWith({
+      billingStatus: { entitled: false, stripeCustomerId: 'cus_local_123' },
+      checkoutSessionStatus: 'expired',
+    });
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { state: 'error' },
       })
     );
   });

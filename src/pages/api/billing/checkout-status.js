@@ -8,7 +8,9 @@ import {
   BILLING_SYNC_MODES,
   BILLING_WRITE_OUTCOMES,
   formatStripeIdForLog,
+  getMintedCheckoutSessionForUser,
   loadBillingStatusOrThrow,
+  markMintedCheckoutSessionTerminal,
   mapCheckoutStatus,
   syncSubscriptionFromStripe,
 } from '../../../server/lib/billingService.js';
@@ -30,6 +32,7 @@ const TERMINAL_CHECKOUT_STATUS_ERROR_CODES = new Set([
   'BILLING_OWNERSHIP_MISMATCH',
   'BILLING_RPC_INVALID_RESPONSE',
 ]);
+const TERMINAL_CHECKOUT_SESSION_STATUSES = new Set(['complete', 'expired']);
 
 /**
  * Resolve the Stripe customer id from a Checkout Session's mixed customer
@@ -151,6 +154,41 @@ function isRetryableCheckoutStatusError(error) {
 }
 
 /**
+ * Best-effort local terminal marker for Stripe Checkout Sessions.
+ *
+ * Purpose: checkout-status observes terminal Stripe state only when the
+ * success/cancel polling path calls this route, so it should release reusable
+ * local pending rows when it can without making entitlement depend on them.
+ *
+ * @param {{ userId: string, sessionId: string, status: string | null | undefined, log: object }} input
+ * @returns {Promise<void>}
+ */
+async function markTerminalCheckoutSessionQuietly({
+  userId,
+  sessionId,
+  status,
+  log,
+}) {
+  if (!TERMINAL_CHECKOUT_SESSION_STATUSES.has(status)) {
+    return;
+  }
+
+  try {
+    await markMintedCheckoutSessionTerminal(
+      {
+        userId,
+        sessionId,
+        status,
+      },
+      log
+    );
+  } catch {
+    // The service helper already emits the structured warning; polling should
+    // keep resolving from Stripe plus canonical billing state.
+  }
+}
+
+/**
  * Resolve the authenticated caller's checkout-session poll state.
  *
  * Purpose: the billing success page uses this route to verify Stripe checkout
@@ -169,6 +207,28 @@ async function handler(req, res) {
   }
 
   let checkoutSession;
+
+  try {
+    const mintedCheckoutSession = await getMintedCheckoutSessionForUser(
+      {
+        userId: req._rateLimitUser.id,
+        sessionId: validationResult.data.sessionId,
+      },
+      req.log
+    );
+
+    if (!mintedCheckoutSession) {
+      return sendError(
+        res,
+        403,
+        'CHECKOUT_SESSION_OWNERSHIP_INVALID',
+        ERROR_MESSAGES.CHECKOUT_SESSION_OWNERSHIP_INVALID
+      );
+    }
+  } catch (error) {
+    req.log.error({ err: error }, 'Failed to verify local checkout session ownership');
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+  }
 
   try {
     checkoutSession = await stripe.checkout.sessions.retrieve(validationResult.data.sessionId);
@@ -238,10 +298,23 @@ async function handler(req, res) {
     );
   }
 
-  const checkoutSessionWasComplete = checkoutSession?.status === 'complete';
+  const checkoutSessionStatus = typeof checkoutSession?.status === 'string'
+    ? checkoutSession.status
+    : null;
+  const checkoutSessionWasComplete = checkoutSessionStatus === 'complete';
+  const checkoutSessionWasExpired = checkoutSessionStatus === 'expired';
   let completedCheckoutOwnershipPassed = false;
   let completedCheckoutSubscriptionId = null;
   let authoritativeReconcileAttempted = false;
+
+  if (checkoutSessionWasExpired || (checkoutSessionWasComplete && billingStatus.entitled)) {
+    await markTerminalCheckoutSessionQuietly({
+      userId: req._rateLimitUser.id,
+      sessionId: validationResult.data.sessionId,
+      status: checkoutSessionStatus,
+      log: req.log,
+    });
+  }
 
   if (checkoutSessionWasComplete && !billingStatus.entitled) {
     completedCheckoutOwnershipPassed = hasConfirmedCheckoutCustomerOwnership(
@@ -257,6 +330,13 @@ async function handler(req, res) {
         ERROR_MESSAGES.CHECKOUT_SESSION_OWNERSHIP_INVALID
       );
     }
+
+    await markTerminalCheckoutSessionQuietly({
+      userId: req._rateLimitUser.id,
+      sessionId: validationResult.data.sessionId,
+      status: checkoutSessionStatus,
+      log: req.log,
+    });
 
     completedCheckoutSubscriptionId = extractStripeSubscriptionId(checkoutSession.subscription);
 

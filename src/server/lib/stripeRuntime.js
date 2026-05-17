@@ -299,14 +299,20 @@ export function getActiveStripeWebhookSecret(env = process.env) {
 }
 
 /**
- * Reset memoized Stripe runtime state for isolated tests.
+ * Reset memoized Stripe runtime state for isolated tests only.
  *
  * Purpose: tests mutate process.env heavily, so they need an explicit way to
  * clear cached successful config, cached clients, and cached error objects.
+ * Security: this helper is exported only for Jest/runtime isolation and must
+ * never be used by production code; the NODE_ENV guard below is intentional.
  *
  * @returns {void}
  */
 export function __resetForTests() {
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error('__resetForTests() is only available in test environment');
+  }
+
   cachedStripeConfig = null;
   cachedStripeConfigError = null;
   cachedStripeClient = null;
