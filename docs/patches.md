@@ -1,3 +1,5 @@
+# Patches
+
 You are working in c:\Users\willm\job-application-tracker as a security/logic implementation agent.
 
 Goal:
@@ -79,7 +81,7 @@ Tests:
 - Do not "fix" webhook signature tests by seeding `NEXT_PUBLIC_APP_URL`; the corrected contract is that webhook verification works with only Stripe secret/webhook-secret config and does not require checkout app URL or price env vars.
 - checkout Stripe config tests still prove checkout config fails fast when app URL or price id is missing.
 
-2. Enforce webhook raw-body caps consistently
+1. Enforce webhook raw-body caps consistently
 
 Problem:
 `readRawBody()` returns cached `req.rawBody` Buffers without checking length. Also `withWebhookAuth` accepts `maxBodyBytes`, but it does not pass it into `verifyWebhookSignature()` / `readRawBody()`.
@@ -96,7 +98,7 @@ Tests:
 - custom `maxBodyBytes` is enforced during stream buffering.
 - middleware maps raw-body oversize to `413 PAYLOAD_TOO_LARGE`.
 
-3. Return 503 for Supabase auth backend outages
+1. Return 503 for Supabase auth backend outages
 
 Problem:
 `getUserFromRequest()` currently distinguishes “Authentication service unavailable” only in text, and `withRateLimit()` maps every no-user path to `401`.
@@ -130,7 +132,7 @@ Tests:
 - auth-unavailable `503` includes `Retry-After`.
 - protected routes still do not call rate limiting or handler on auth failure.
 
-4. Fix checkout idempotency
+1. Fix checkout idempotency
 
 Problem:
 Checkout idempotency currently includes client-provided `checkoutAttemptNonce`, allowing parallel requests with different nonces to create multiple Stripe Checkout Sessions before local subscription state exists.
@@ -176,7 +178,7 @@ Tests:
 - stale `creating` rows are released and expired `open` rows are marked terminal before a new claim is minted.
 - checkout route still validates the plan, uses the allowlisted price id, and scopes pending-session finalize/fail writes by owner.
 
-5. Fix completed checkout that remains non-entitled
+1. Fix completed checkout that remains non-entitled
 
 Problem:
 After a completed checkout and authoritative reconcile, the route can still return `free` if local state remains non-entitled. That hides allowlist/configuration/sync integrity failures.
@@ -199,7 +201,7 @@ Tests:
 - open session + non-entitled still returns `pending`.
 - missing subscription id still returns terminal `error`.
 
-6. Update docs/stripe-next-phase-plan.md
+1. Update docs/stripe-next-phase-plan.md
 
 Update the plan so future agents do not reintroduce the old behavior.
 
@@ -215,7 +217,7 @@ Make these documentation changes:
 - Add a current-branch gap or resolved design note for duplicate checkout idempotency.
 - Keep the Chunk 5 route plan focused on webhook route implementation. Do not imply this task implemented the public webhook route.
 
-7. Update docs/feature-memory.md
+1. Update docs/feature-memory.md
 
 Add a short entry describing:
 - Stripe runtime decoupling
@@ -226,6 +228,7 @@ Add a short entry describing:
 - plan doc update
 
 Run focused tests:
+
 ```powershell
 npm test -- --runInBand src/server/lib/__tests__/stripe.test.js src/server/lib/__tests__/webhookSignature.test.js src/server/lib/__tests__/readRawBody.test.js src/server/middleware/__tests__/withWebhookAuth.test.js src/server/middleware/__tests__/withRateLimit.test.js src/server/api/__tests__/billing/checkout.test.js src/server/api/__tests__/billing/checkout-status.test.js src/server/lib/__tests__/billingService.test.js
 ```
