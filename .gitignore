@@ -7,5 +7,7 @@ node_modules/
 # tokens) used to verify the credential scanner. Keep them out of git so
 # secret scanners don't false-positive on the repo.
 src/server/ai/__tests__/
-src/server/db/__tests__/
+src/server/db/__tests__/*
+!src/server/db/__tests__/
+!src/server/db/__tests__/billingMigrations.integration.test.js
 src/shared/schemas/__tests__/

@@ -28,6 +28,7 @@ AS $$
 DECLARE
   applied boolean;
   subscription jsonb;
+  reason text;
 BEGIN
   IF payload IS NULL OR jsonb_typeof(payload) <> 'object' THEN
     RAISE EXCEPTION 'payload must be a json object'
@@ -83,29 +84,51 @@ BEGIN
       current_period_end = excluded.current_period_end,
       cancel_at_period_end = excluded.cancel_at_period_end,
       last_stripe_event_created = excluded.last_stripe_event_created
-    WHERE billing_subscriptions.last_stripe_event_created IS NULL
-      OR excluded.last_stripe_event_created >= billing_subscriptions.last_stripe_event_created
-    RETURNING true AS applied, to_jsonb(billing_subscriptions) AS subscription
+    WHERE (
+        billing_subscriptions.last_stripe_event_created IS NULL
+        OR excluded.last_stripe_event_created >= billing_subscriptions.last_stripe_event_created
+      )
+      AND (
+        billing_subscriptions.stripe_subscription_id IS NULL
+        OR excluded.stripe_subscription_id IS NOT DISTINCT FROM billing_subscriptions.stripe_subscription_id
+        OR billing_subscriptions.status IN ('canceled', 'incomplete_expired')
+      )
+    RETURNING
+      true AS applied,
+      to_jsonb(billing_subscriptions) AS subscription,
+      'applied'::text AS reason
   ),
   final_result AS (
-    SELECT applied, subscription
+    SELECT applied, subscription, reason
     FROM attempted
 
     UNION ALL
 
-    SELECT false AS applied, to_jsonb(billing_subscriptions) AS subscription
+    SELECT
+      false AS applied,
+      to_jsonb(billing_subscriptions) AS subscription,
+      CASE
+        WHEN incoming.last_stripe_event_created < billing_subscriptions.last_stripe_event_created
+          THEN 'stale_ignored'
+        WHEN billing_subscriptions.stripe_subscription_id IS NOT NULL
+          AND incoming.stripe_subscription_id IS DISTINCT FROM billing_subscriptions.stripe_subscription_id
+          AND billing_subscriptions.status NOT IN ('canceled', 'incomplete_expired')
+          THEN 'non_current_ignored'
+        ELSE 'not_applied'
+      END AS reason
     FROM public.billing_subscriptions
     JOIN incoming
       ON incoming.user_id = billing_subscriptions.user_id
     WHERE NOT EXISTS (SELECT 1 FROM attempted)
   )
-  SELECT final_result.applied, final_result.subscription
-  INTO applied, subscription
+  SELECT final_result.applied, final_result.subscription, final_result.reason
+  INTO applied, subscription, reason
   FROM final_result;
 
   RETURN jsonb_build_object(
     'applied', applied,
-    'subscription', subscription
+    'subscription', subscription,
+    'reason', reason
   );
 END;
 $$;
@@ -233,18 +256,38 @@ REVOKE ALL ON FUNCTION public.upsert_billing_subscription_authoritative(jsonb)
 GRANT EXECUTE ON FUNCTION public.upsert_billing_subscription_authoritative(jsonb)
   TO service_role;
 
+-- Replace the original receipt result check from 007 without editing that
+-- already-reviewed migration. This keeps fresh and partially-applied
+-- environments on the same Chunk 6 receipt contract after 011 runs.
+ALTER TABLE public.stripe_event_receipts
+  DROP CONSTRAINT IF EXISTS stripe_event_receipts_result_check;
+
+ALTER TABLE public.stripe_event_receipts
+  ADD CONSTRAINT stripe_event_receipts_result_check
+    CHECK (
+      result IN (
+        'processing',
+        'processed',
+        'stale_ignored',
+        'failed'
+      )
+    );
+
 -- merge_stripe_event_receipt(...)
 --
 -- Ordering semantics:
 --   - inserts a new receipt when absent
---   - preserves an already-processed receipt instead of downgrading it
---   - upgrades non-processed receipts to processed atomically
+--   - preserves already-terminal successful receipts instead of downgrading
+--     them to failed or another non-terminal result
+--   - transitions failed receipts back to processing for retries
+--   - returns processing_active for same-envelope in-flight work
+--   - reclaims processing receipts older than five minutes
 --
 -- Null-handling semantics:
 --   - SQL/table constraints remain the primary validation boundary here
---   - new rows still get processed_at from the table default even when the
---     inserted result is failed/stale_ignored/duplicate_ignored
---   - processed_at refreshes only when a receipt transitions into processed
+--   - processed_at doubles as the processing claim timestamp until a separate
+--     receipt timing model exists
+--   - processed_at refreshes on processing claims/reclaims and terminal writes
 --
 -- Permission model:
 --   - SECURITY INVOKER with a pinned search_path
@@ -267,6 +310,11 @@ DECLARE
   final_receipt public.stripe_event_receipts%ROWTYPE;
   outcome text;
 BEGIN
+  IF p_result NOT IN ('processing', 'processed', 'stale_ignored', 'failed') THEN
+    RAISE EXCEPTION 'unsupported stripe_event_receipts result: %', p_result
+      USING ERRCODE = '22023';
+  END IF;
+
   INSERT INTO public.stripe_event_receipts (
     event_id,
     event_type,
@@ -301,29 +349,35 @@ BEGIN
   IF p_event_type IS DISTINCT FROM existing_receipt.event_type
     OR p_livemode IS DISTINCT FROM existing_receipt.livemode
     OR p_stripe_event_created IS DISTINCT FROM existing_receipt.stripe_event_created THEN
-    RAISE EXCEPTION
-      'stripe_event_receipts envelope mismatch for %, existing=(%, %, %), incoming=(%, %, %)',
-      p_event_id,
-      existing_receipt.event_type,
-      existing_receipt.livemode,
-      existing_receipt.stripe_event_created,
-      p_event_type,
-      p_livemode,
-      p_stripe_event_created;
+    RAISE EXCEPTION 'stripe_event_receipts envelope mismatch';
   END IF;
 
-  IF existing_receipt.result = 'processed' AND p_result <> 'processed' THEN
+  IF existing_receipt.result IN ('processed', 'stale_ignored')
+    AND p_result IS DISTINCT FROM existing_receipt.result THEN
     outcome := 'preserved_existing';
     final_receipt := existing_receipt;
   ELSIF existing_receipt.result = p_result THEN
-    outcome := 'already_recorded';
-    final_receipt := existing_receipt;
+    IF p_result = 'processing'
+      AND existing_receipt.processed_at < pg_catalog.now() - interval '5 minutes' THEN
+      UPDATE public.stripe_event_receipts
+      SET processed_at = pg_catalog.now()
+      WHERE event_id = p_event_id
+      RETURNING * INTO final_receipt;
+
+      outcome := 'reclaimed_processing';
+    ELSIF p_result = 'processing' THEN
+      outcome := 'processing_active';
+      final_receipt := existing_receipt;
+    ELSE
+      outcome := 'already_recorded';
+      final_receipt := existing_receipt;
+    END IF;
   ELSE
     UPDATE public.stripe_event_receipts
     SET
       result = p_result,
       processed_at = CASE
-        WHEN existing_receipt.result <> 'processed' AND p_result = 'processed'
+        WHEN p_result IN ('processing', 'processed', 'stale_ignored', 'failed')
           THEN pg_catalog.now()
         ELSE existing_receipt.processed_at
       END

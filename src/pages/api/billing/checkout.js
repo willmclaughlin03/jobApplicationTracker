@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { sendError, sendSuccess } from '../../../shared/response.js';
 import { ERROR_MESSAGES } from '../../../shared/errors.js';
 import { withRateLimit } from '../../../server/middleware/withRateLimit.js';
@@ -15,6 +16,8 @@ import {
   waitForPendingCheckoutSessionOpen,
 } from '../../../server/lib/billingService.js';
 import { buildAppUrl, getPriceIdForPlan, stripe } from '../../../server/lib/stripe.js';
+
+const authenticatedBillingEmailSchema = z.string().trim().email().max(320);
 
 /**
  * Normalize Stripe's Checkout Session expiry into the local timestamptz shape.
@@ -58,6 +61,21 @@ function normalizeCheckoutSessionExpiresAt(expiresAt) {
 }
 
 /**
+ * Resolve the authenticated account email required for Stripe receipts.
+ *
+ * Purpose: Checkout-created Stripe Customers must be tied to the OAuth-backed
+ * account email; Checkout-entered emails or webhook payload emails are not
+ * local ownership signals.
+ *
+ * @param {{ email?: string | null } | null | undefined} user
+ * @returns {string | null}
+ */
+function getAuthenticatedBillingEmail(user) {
+  const parsedEmail = authenticatedBillingEmailSchema.safeParse(user?.email);
+  return parsedEmail.success ? parsedEmail.data : null;
+}
+
+/**
  * Best-effort release for a pending checkout claim after route failure.
  *
  * Purpose: if Stripe creation or local finalize fails after this request owns a
@@ -95,6 +113,11 @@ async function handler(req, res) {
 
   try {
     const { checkoutAttemptNonce, plan } = validationResult.data;
+    const authenticatedBillingEmail = getAuthenticatedBillingEmail(req._rateLimitUser);
+
+    if (!authenticatedBillingEmail) {
+      return sendError(res, 409, 'CHECKOUT_SESSION_FAILED', ERROR_MESSAGES.CHECKOUT_SESSION_FAILED);
+    }
 
     const billingStatus = await loadBillingStatusOrThrow(
       req._rateLimitUser.id,
@@ -158,7 +181,7 @@ async function handler(req, res) {
 
     const { stripeCustomerId } = await getOrCreateStripeCustomer(
       req._rateLimitUser.id,
-      req._rateLimitUser.email,
+      authenticatedBillingEmail,
       req.log
     );
     const userHash = hashUserIdForIdempotency(req._rateLimitUser.id);

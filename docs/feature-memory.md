@@ -12,6 +12,15 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-05-18
+
+- `2026-05-19` - `Stripe Chunk 6 billing hardening follow-up`: Validated authenticated checkout emails, sanitized receipt envelope mismatch errors, and made billing migration integration coverage trackable.
+  - impact: Checkout and webhook receipt integrity failures now fail closed earlier without exposing raw database mismatch details in logs.
+- `2026-05-18` - `Stripe Chunk 6 webhook ingress`: Added the public billing webhook route, explicit event dispatcher, processing receipt claims, non-current subscription guards, checkout-session terminal cleanup, checkout email gating, and focused webhook coverage.
+  - impact: Stripe billing events now have a verified public path into canonical local billing reconciliation without granting entitlement from webhook payload fragments.
+- `2026-05-18` - `Stripe Chunk 6 processing and receipts plan`: Added light webhook `processing` receipt-state guidance, Stripe-managed receipt email expectations tied to OAuth account email, and rollout checks for stuck processing plus receipt delivery.
+  - impact: The pending webhook plan now covers in-flight retry safety and smoother receipt UX without introducing custom email side effects.
+
 ### Week of 2026-05-11
 
 - `2026-05-17` - `Pending checkout UX docs`: Reframed stale hour-bucket replay guidance around the current pending-session dedupe model and owner-scoped recovery metrics.

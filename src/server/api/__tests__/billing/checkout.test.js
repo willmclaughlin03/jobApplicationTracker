@@ -152,6 +152,77 @@ describe('/api/billing/checkout handler', () => {
     );
   });
 
+  it('rejects checkout before local billing or Stripe work when the authenticated user has no email', async () => {
+    const req = createMockReq(
+      {
+        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        checkoutAttemptNonce: defaultCheckoutAttemptNonce,
+      },
+      { id: mockUser.id, email: '   ' }
+    );
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockLoadBillingStatusOrThrow).not.toHaveBeenCalled();
+    expect(mockClaimPendingCheckoutSession).not.toHaveBeenCalled();
+    expect(mockGetOrCreateStripeCustomer).not.toHaveBeenCalled();
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'CHECKOUT_SESSION_FAILED',
+      })
+    );
+  });
+
+  it.each([
+    ['malformed', 'not-an-email'],
+    ['overlong', `${'a'.repeat(309)}@example.com`],
+  ])('rejects checkout before local billing or Stripe work when the authenticated email is %s', async (_label, email) => {
+    const req = createMockReq(
+      {
+        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        checkoutAttemptNonce: defaultCheckoutAttemptNonce,
+      },
+      { id: mockUser.id, email }
+    );
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockLoadBillingStatusOrThrow).not.toHaveBeenCalled();
+    expect(mockClaimPendingCheckoutSession).not.toHaveBeenCalled();
+    expect(mockGetOrCreateStripeCustomer).not.toHaveBeenCalled();
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'CHECKOUT_SESSION_FAILED',
+      })
+    );
+  });
+
+  it('trims a valid authenticated billing email before resolving the Stripe customer', async () => {
+    const req = createMockReq(
+      {
+        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        checkoutAttemptNonce: defaultCheckoutAttemptNonce,
+      },
+      { id: mockUser.id, email: '  test@example.com  ' }
+    );
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockGetOrCreateStripeCustomer).toHaveBeenCalledWith(
+      mockUser.id,
+      'test@example.com',
+      mockLog
+    );
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
   it('claims a pending row before Stripe creation and persists the returned session URL', async () => {
     const req = createMockReq();
     const res = createMockRes();
