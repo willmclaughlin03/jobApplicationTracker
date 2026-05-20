@@ -74,7 +74,8 @@ function normalizeStripeEventCreatedForLog(created) {
   }
 
   const createdDate = typeof created === 'number'
-    ? new Date(created * 1000)
+    || (typeof created === 'string' && /^\d+$/.test(created))
+    ? new Date(Number(created) * 1000)
     : new Date(created);
 
   return Number.isFinite(createdDate.getTime())
@@ -263,7 +264,16 @@ async function dispatchSubscriptionSyncEvent(event, log) {
  * @returns {Promise<object>}
  */
 async function dispatchSubscriptionDeletedEvent(event, log) {
-  const subscriptionId = extractStripeId(event?.data?.object);
+  const subscription = event?.data?.object;
+
+  if (!subscription || typeof subscription !== 'object' || Array.isArray(subscription)) {
+    throw createBillingWebhookError(
+      'Stripe subscription delete webhook is missing a subscription object',
+      'BILLING_WEBHOOK_MALFORMED_EVENT'
+    );
+  }
+
+  const subscriptionId = extractStripeId(subscription);
 
   if (!subscriptionId) {
     throw createBillingWebhookError(
@@ -273,7 +283,7 @@ async function dispatchSubscriptionDeletedEvent(event, log) {
   }
 
   return markSubscriptionDeletedFromEvent(
-    event?.data?.object,
+    subscription,
     {
       eventCreated: event?.created,
       livemode: event?.livemode,

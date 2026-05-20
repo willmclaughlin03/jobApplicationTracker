@@ -14,6 +14,10 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-05-18
 
+- `2026-05-20` - `Stripe webhook timestamp-string normalization`: Treated digit-only Stripe event `created` strings like epoch-second numbers in mismatch logs.
+  - impact: Receipt envelope mismatch logs now show comparable ISO timestamps when Stripe-created values arrive as numeric strings.
+- `2026-05-20` - `Stripe delete webhook payload validation`: Rejected non-object subscription delete payloads before the billing service receives them.
+  - impact: Malformed delete webhooks now fail closed without passing string payloads into subscription terminalization.
 - `2026-05-20` - `Stripe webhook dispatcher audit fixes`: Normalized malformed delete events onto the webhook malformed-event code, added future-timestamp rejection logging, made receipt mismatch timestamps comparable, and covered subscription-delete dispatcher paths.
   - impact: Webhook failures now produce clearer operational signals while preserving fail-closed retry behavior.
 - `2026-05-20` - `Stripe Chunk 7 audit hardening`: Added kill-switch, rollback, backup/rebuild, portal, trial, dispute, downgrade, alert escalation, and live cutover gates to the Stripe rollout plan.

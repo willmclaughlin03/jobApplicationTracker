@@ -172,6 +172,30 @@ describe('billingWebhookDispatcher', () => {
     );
   });
 
+  it('normalizes digit-only string created timestamps in receipt mismatch logs', async () => {
+    mockGetStripeEventReceiptForEvent.mockResolvedValue({
+      eventId: 'evt_webhook_123',
+      eventType: 'invoice.payment_failed',
+      livemode: false,
+      stripeEventCreated: '2029-11-14T00:00:00.000Z',
+      result: 'failed',
+    });
+    mockHasMatchingStripeEventReceiptEnvelope.mockReturnValue(false);
+
+    await expect(processBillingWebhookEvent(createEvent({ created: '1889308800' }), mockLog))
+      .rejects.toMatchObject({ code: 'BILLING_EVENT_RECEIPT_ENVELOPE_MISMATCH' });
+
+    expect(mockLog.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'billing_event_receipt_envelope_mismatch',
+        stripeEvent: expect.objectContaining({
+          created: '2029-11-14T00:00:00.000Z',
+        }),
+      }),
+      'Rejected Stripe webhook because the event receipt envelope mismatched'
+    );
+  });
+
   it('claims processing, syncs invoice subscription ids, and records processed', async () => {
     const event = createEvent();
 
@@ -270,6 +294,24 @@ describe('billingWebhookDispatcher', () => {
 
     await expect(processBillingWebhookEvent(event, mockLog))
       .rejects.toMatchObject({ code: 'BILLING_WEBHOOK_MALFORMED_EVENT' });
+
+    expect(mockMarkSubscriptionDeletedFromEvent).not.toHaveBeenCalled();
+    expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'failed', mockLog);
+  });
+
+  it('records failed for non-object subscription delete payloads before calling the service', async () => {
+    const event = createEvent({
+      type: 'customer.subscription.deleted',
+      data: {
+        object: 'sub_deleted_123',
+      },
+    });
+
+    await expect(processBillingWebhookEvent(event, mockLog))
+      .rejects.toMatchObject({
+        code: 'BILLING_WEBHOOK_MALFORMED_EVENT',
+        message: 'Stripe subscription delete webhook is missing a subscription object',
+      });
 
     expect(mockMarkSubscriptionDeletedFromEvent).not.toHaveBeenCalled();
     expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'failed', mockLog);
