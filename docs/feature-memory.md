@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-05-18
 
+- `2026-05-20` - `Billing receipt timestamp simplification`: Replaced a tautological receipt-merge `processed_at` CASE with a direct timestamp assignment.
+  - impact: The billing receipt migration now expresses the validated state transition more clearly without changing runtime behavior.
 - `2026-05-19` - `Stripe Chunk 6 billing hardening follow-up`: Validated authenticated checkout emails, sanitized receipt envelope mismatch errors, and made billing migration integration coverage trackable.
   - impact: Checkout and webhook receipt integrity failures now fail closed earlier without exposing raw database mismatch details in logs.
 - `2026-05-18` - `Stripe Chunk 6 webhook ingress`: Added the public billing webhook route, explicit event dispatcher, processing receipt claims, non-current subscription guards, checkout-session terminal cleanup, checkout email gating, and focused webhook coverage.

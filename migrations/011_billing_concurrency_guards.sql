@@ -376,11 +376,7 @@ BEGIN
     UPDATE public.stripe_event_receipts
     SET
       result = p_result,
-      processed_at = CASE
-        WHEN p_result IN ('processing', 'processed', 'stale_ignored', 'failed')
-          THEN pg_catalog.now()
-        ELSE existing_receipt.processed_at
-      END
+      processed_at = pg_catalog.now()
     WHERE event_id = p_event_id
     RETURNING * INTO final_receipt;
 
