@@ -104,6 +104,29 @@ describe('billingWebhookDispatcher', () => {
     expect(mockSyncSubscriptionFromEvent).not.toHaveBeenCalled();
   });
 
+  it('logs future timestamp rejections from receipt pre-read before claiming processing', async () => {
+    const timestampError = new Error('Stripe event receipt timestamp is too far in the future');
+    timestampError.code = 'BILLING_EVENT_TIMESTAMP_IN_FUTURE';
+    mockGetStripeEventReceiptForEvent.mockRejectedValue(timestampError);
+
+    await expect(processBillingWebhookEvent(createEvent(), mockLog))
+      .rejects.toMatchObject({ code: 'BILLING_EVENT_TIMESTAMP_IN_FUTURE' });
+
+    expect(mockClaimStripeEventReceiptProcessing).not.toHaveBeenCalled();
+    expect(mockRecordStripeEventReceipt).not.toHaveBeenCalled();
+    expect(mockLog.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: timestampError,
+        event: 'billing_webhook_future_timestamp_rejected',
+        stripeEvent: expect.objectContaining({
+          id: 'evt_webhook_123',
+          created: 1889308800,
+        }),
+      }),
+      'Rejected Stripe webhook because the event timestamp is too far in the future'
+    );
+  });
+
   it('short-circuits same-envelope processed duplicates before claiming processing', async () => {
     mockGetStripeEventReceiptForEvent.mockResolvedValue({
       eventId: 'evt_webhook_123',
@@ -141,6 +164,33 @@ describe('billingWebhookDispatcher', () => {
     expect(mockLog.error).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'billing_event_receipt_envelope_mismatch',
+        stripeEvent: expect.objectContaining({
+          created: '2029-11-14T00:00:00.000Z',
+        }),
+      }),
+      'Rejected Stripe webhook because the event receipt envelope mismatched'
+    );
+  });
+
+  it('normalizes digit-only string created timestamps in receipt mismatch logs', async () => {
+    mockGetStripeEventReceiptForEvent.mockResolvedValue({
+      eventId: 'evt_webhook_123',
+      eventType: 'invoice.payment_failed',
+      livemode: false,
+      stripeEventCreated: '2029-11-14T00:00:00.000Z',
+      result: 'failed',
+    });
+    mockHasMatchingStripeEventReceiptEnvelope.mockReturnValue(false);
+
+    await expect(processBillingWebhookEvent(createEvent({ created: '1889308800' }), mockLog))
+      .rejects.toMatchObject({ code: 'BILLING_EVENT_RECEIPT_ENVELOPE_MISMATCH' });
+
+    expect(mockLog.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'billing_event_receipt_envelope_mismatch',
+        stripeEvent: expect.objectContaining({
+          created: '2029-11-14T00:00:00.000Z',
+        }),
       }),
       'Rejected Stripe webhook because the event receipt envelope mismatched'
     );
@@ -202,6 +252,104 @@ describe('billingWebhookDispatcher', () => {
       .rejects.toMatchObject({ code: 'BILLING_WEBHOOK_MALFORMED_EVENT' });
 
     expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'failed', mockLog);
+  });
+
+  it('dispatches subscription delete events through the delete snapshot helper', async () => {
+    const subscription = {
+      id: 'sub_deleted_123',
+      customer: 'cus_delete_123',
+      cancel_at_period_end: true,
+    };
+    const event = createEvent({
+      type: 'customer.subscription.deleted',
+      data: {
+        object: subscription,
+      },
+    });
+
+    const result = await processBillingWebhookEvent(event, mockLog);
+
+    expect(mockMarkSubscriptionDeletedFromEvent).toHaveBeenCalledWith(
+      subscription,
+      {
+        eventCreated: 1889308800,
+        livemode: false,
+      },
+      mockLog
+    );
+    expect(mockSyncSubscriptionFromEvent).not.toHaveBeenCalled();
+    expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'processed', mockLog);
+    expect(result.receiptResult).toBe('processed');
+  });
+
+  it('records failed for malformed subscription delete events before calling the service', async () => {
+    const event = createEvent({
+      type: 'customer.subscription.deleted',
+      data: {
+        object: {
+          customer: 'cus_delete_123',
+        },
+      },
+    });
+
+    await expect(processBillingWebhookEvent(event, mockLog))
+      .rejects.toMatchObject({ code: 'BILLING_WEBHOOK_MALFORMED_EVENT' });
+
+    expect(mockMarkSubscriptionDeletedFromEvent).not.toHaveBeenCalled();
+    expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'failed', mockLog);
+  });
+
+  it('records failed for non-object subscription delete payloads before calling the service', async () => {
+    const event = createEvent({
+      type: 'customer.subscription.deleted',
+      data: {
+        object: 'sub_deleted_123',
+      },
+    });
+
+    await expect(processBillingWebhookEvent(event, mockLog))
+      .rejects.toMatchObject({
+        code: 'BILLING_WEBHOOK_MALFORMED_EVENT',
+        message: 'Stripe subscription delete webhook is missing a subscription object',
+      });
+
+    expect(mockMarkSubscriptionDeletedFromEvent).not.toHaveBeenCalled();
+    expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'failed', mockLog);
+  });
+
+  it('records processed when the delete helper ignores a non-current subscription', async () => {
+    mockMarkSubscriptionDeletedFromEvent.mockResolvedValue({
+      outcome: 'processed',
+      localSubscription: {
+        stripe_subscription_id: 'sub_active_123',
+        status: 'active',
+      },
+    });
+    const event = createEvent({
+      type: 'customer.subscription.deleted',
+      data: {
+        object: {
+          id: 'sub_old_123',
+          customer: 'cus_delete_123',
+        },
+      },
+    });
+
+    const result = await processBillingWebhookEvent(event, mockLog);
+
+    expect(mockMarkSubscriptionDeletedFromEvent).toHaveBeenCalledWith(
+      event.data.object,
+      {
+        eventCreated: 1889308800,
+        livemode: false,
+      },
+      mockLog
+    );
+    expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'processed', mockLog);
+    expect(result).toEqual(expect.objectContaining({
+      outcome: 'processed',
+      receiptResult: 'processed',
+    }));
   });
 
   it('terminalizes completed Checkout Sessions after safe handling without a subscription id', async () => {

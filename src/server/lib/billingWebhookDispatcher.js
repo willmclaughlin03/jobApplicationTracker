@@ -59,6 +59,48 @@ function getStripeEventEnvelope(event) {
 }
 
 /**
+ * Normalize Stripe's event-created value for mismatch log comparisons.
+ *
+ * Purpose: Stripe events usually carry integer seconds while receipt rows carry
+ * ISO strings, so envelope-mismatch logs should show comparable timestamps
+ * without changing the raw event validation or receipt comparison contract.
+ *
+ * @param {unknown} created
+ * @returns {string | unknown | null}
+ */
+function normalizeStripeEventCreatedForLog(created) {
+  if (created === null || created === undefined) {
+    return null;
+  }
+
+  const createdDate = typeof created === 'number'
+    || (typeof created === 'string' && /^\d+$/.test(created))
+    ? new Date(Number(created) * 1000)
+    : new Date(created);
+
+  return Number.isFinite(createdDate.getTime())
+    ? createdDate.toISOString()
+    : created;
+}
+
+/**
+ * Build a Stripe event log envelope with a human-readable created timestamp.
+ *
+ * Purpose: receipt-envelope mismatch logs need the same safe fields as normal
+ * webhook logs, plus a timestamp shape that operators can compare directly to
+ * the stored receipt row.
+ *
+ * @param {object} event
+ * @returns {{ id: string | null, type: string | null, livemode: boolean | null, created: string | unknown | null }}
+ */
+function getStripeEventEnvelopeForReceiptLog(event) {
+  return {
+    ...getStripeEventEnvelope(event),
+    created: normalizeStripeEventCreatedForLog(event?.created),
+  };
+}
+
+/**
  * Resolve a Stripe object id from string or expanded-object shapes.
  *
  * Purpose: Stripe webhook payload fields may contain either plain ids or
@@ -222,8 +264,26 @@ async function dispatchSubscriptionSyncEvent(event, log) {
  * @returns {Promise<object>}
  */
 async function dispatchSubscriptionDeletedEvent(event, log) {
+  const subscription = event?.data?.object;
+
+  if (!subscription || typeof subscription !== 'object' || Array.isArray(subscription)) {
+    throw createBillingWebhookError(
+      'Stripe subscription delete webhook is missing a subscription object',
+      'BILLING_WEBHOOK_MALFORMED_EVENT'
+    );
+  }
+
+  const subscriptionId = extractStripeId(subscription);
+
+  if (!subscriptionId) {
+    throw createBillingWebhookError(
+      'Stripe subscription delete webhook is missing a subscription id',
+      'BILLING_WEBHOOK_MALFORMED_EVENT'
+    );
+  }
+
   return markSubscriptionDeletedFromEvent(
-    event?.data?.object,
+    subscription,
     {
       eventCreated: event?.created,
       livemode: event?.livemode,
@@ -351,14 +411,31 @@ export async function processBillingWebhookEvent(event, log) {
     log,
   });
 
-  const existingReceipt = await getStripeEventReceiptForEvent(event, log);
+  let existingReceipt;
+
+  try {
+    existingReceipt = await getStripeEventReceiptForEvent(event, log);
+  } catch (error) {
+    if (error?.code === 'BILLING_EVENT_TIMESTAMP_IN_FUTURE') {
+      log.error(
+        {
+          err: error,
+          event: 'billing_webhook_future_timestamp_rejected',
+          stripeEvent,
+        },
+        'Rejected Stripe webhook because the event timestamp is too far in the future'
+      );
+    }
+
+    throw error;
+  }
 
   if (existingReceipt) {
     if (!hasMatchingStripeEventReceiptEnvelope(event, existingReceipt)) {
       log.error(
         {
           event: 'billing_event_receipt_envelope_mismatch',
-          stripeEvent,
+          stripeEvent: getStripeEventEnvelopeForReceiptLog(event),
           receipt: {
             eventId: formatStripeIdForLog(existingReceipt.eventId, 'error'),
             eventType: existingReceipt.eventType,

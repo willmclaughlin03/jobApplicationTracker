@@ -14,6 +14,16 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-05-18
 
+- `2026-05-20` - `Stripe webhook timestamp-string normalization`: Treated digit-only Stripe event `created` strings like epoch-second numbers in mismatch logs.
+  - impact: Receipt envelope mismatch logs now show comparable ISO timestamps when Stripe-created values arrive as numeric strings.
+- `2026-05-20` - `Stripe delete webhook payload validation`: Rejected non-object subscription delete payloads before the billing service receives them.
+  - impact: Malformed delete webhooks now fail closed without passing string payloads into subscription terminalization.
+- `2026-05-20` - `Stripe webhook dispatcher audit fixes`: Normalized malformed delete events onto the webhook malformed-event code, added future-timestamp rejection logging, made receipt mismatch timestamps comparable, and covered subscription-delete dispatcher paths.
+  - impact: Webhook failures now produce clearer operational signals while preserving fail-closed retry behavior.
+- `2026-05-20` - `Stripe Chunk 7 audit hardening`: Added kill-switch, rollback, backup/rebuild, portal, trial, dispute, downgrade, alert escalation, and live cutover gates to the Stripe rollout plan.
+  - impact: Paid billing launch now requires operator-ready recovery procedures and product-policy decisions before Checkout can be exposed.
+- `2026-05-20` - `Stripe Chunk 7 rollout gate`: Reworked Chunk 7 into a production readiness runbook with Stripe-side audits, explicit Dashboard webhook setup, local data checks, monitoring gates, staging drills, and residual-risk documentation.
+  - impact: Paid rollout now has concrete go/no-go evidence requirements instead of a loose operational checklist.
 - `2026-05-20` - `Billing receipt timestamp simplification`: Replaced a tautological receipt-merge `processed_at` CASE with a direct timestamp assignment.
   - impact: The billing receipt migration now expresses the validated state transition more clearly without changing runtime behavior.
 - `2026-05-19` - `Stripe Chunk 6 billing hardening follow-up`: Validated authenticated checkout emails, sanitized receipt envelope mismatch errors, and made billing migration integration coverage trackable.
