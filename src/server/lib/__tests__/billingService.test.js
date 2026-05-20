@@ -44,10 +44,12 @@ const {
   BILLING_WRITE_OUTCOMES,
   CHECKOUT_STATUS_STATES,
   canStartCheckout,
+  claimStripeEventReceiptProcessing,
   claimPendingCheckoutSession,
   failPendingCheckoutSession,
   finalizePendingCheckoutSession,
   getMintedCheckoutSessionForUser,
+  getStripeEventReceiptForEvent,
   STRIPE_EVENT_RECEIPT_RESULTS,
   classifyStripeStatus,
   formatStripeIdForLog,
@@ -55,10 +57,12 @@ const {
   getLocalBillingStatus,
   getLocalBillingStatusPrivileged,
   getOrCreateStripeCustomer,
+  hasMatchingStripeEventReceiptEnvelope,
   hasCanonicalBillingEntitlement,
   hashUserIdForIdempotency,
   hashUserIdForLog,
   loadBillingStatusOrThrow,
+  markMintedCheckoutSessionTerminalByStripeSessionId,
   markMintedCheckoutSessionTerminal,
   markSubscriptionDeletedFromEvent,
   mapCheckoutStatus,
@@ -579,6 +583,41 @@ describe('billingService', () => {
           mockLog
         )
       ).resolves.toBeNull();
+    });
+
+    it('marks an open minted checkout session terminal by Stripe session id for webhooks', async () => {
+      const adminClient = useAdminClient(createSupabaseClient({
+        billing_checkout_sessions: {
+          maybeSingle: {
+            data: {
+              ...openRow,
+              status: 'complete',
+            },
+            error: null,
+          },
+        },
+      }));
+
+      const result = await markMintedCheckoutSessionTerminalByStripeSessionId(
+        {
+          sessionId: 'cs_test_pending_123',
+          status: 'complete',
+        },
+        mockLog
+      );
+
+      expect(result).toEqual(expect.objectContaining({
+        userId,
+        stripeCheckoutSessionId: 'cs_test_pending_123',
+        status: 'complete',
+      }));
+      expect(adminClient.buildersByTable.billing_checkout_sessions[0].state.updatePayload).toEqual({
+        status: 'complete',
+      });
+      expect(adminClient.buildersByTable.billing_checkout_sessions[0].state.eqArgs).toEqual([
+        ['stripe_checkout_session_id', 'cs_test_pending_123'],
+        ['status', 'open'],
+      ]);
     });
 
     it('rejects invalid terminal checkout session statuses before database work', async () => {
@@ -1630,6 +1669,47 @@ describe('billingService', () => {
       );
     });
 
+    it('returns customer_not_found with a stable monitoring event when no local customer mapping exists', async () => {
+      useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: null,
+            error: null,
+          },
+        },
+        rpc: {},
+      }));
+      mockStripe.subscriptions.retrieve.mockResolvedValue({
+        id: 'sub_sync_123',
+        customer: 'cus_sync_123',
+        status: 'active',
+        livemode: false,
+        current_period_end: 1889827200,
+        cancel_at_period_end: false,
+        items: {
+          data: [{ price: { id: 'price_tailor_monthly' } }],
+        },
+      });
+
+      const result = await syncSubscriptionFromStripe(
+        'sub_sync_123',
+        { mode: BILLING_SYNC_MODES.EVENT, eventCreated: '2029-11-14T00:00:00.000Z' },
+        mockLog
+      );
+
+      expect(result.outcome).toBe(BILLING_WRITE_OUTCOMES.CUSTOMER_NOT_FOUND);
+      expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
+      expect(mockLog.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'billing_customer_not_found_sync',
+          operation: 'syncSubscriptionFromStripe',
+          stripeCustomerId: formatStripeIdForLog('cus_sync_123', 'warn'),
+          stripeSubscriptionId: formatStripeIdForLog('sub_sync_123', 'warn'),
+        }),
+        'Skipping Stripe subscription sync because no local customer mapping exists'
+      );
+    });
+
     it('rejects a supplied invalid eventCreated timestamp before Stripe work in authoritative mode', async () => {
       await expect(
         syncSubscriptionFromStripe(
@@ -1726,6 +1806,63 @@ describe('billingService', () => {
           stripeSubscriptionId: formatStripeIdForLog('sub_sync_123', 'info'),
         }),
         'Ignoring stale Stripe subscription event during sync'
+      );
+    });
+
+    it('ignores non-current subscription events without replacing the active local subscription', async () => {
+      useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: { user_id: userId, stripe_customer_id: 'cus_sync_123' },
+            error: null,
+          },
+        },
+        billing_subscriptions: {
+          maybeSingle: {
+            data: {
+              user_id: userId,
+              stripe_subscription_id: 'sub_active_123',
+              stripe_customer_id: 'cus_sync_123',
+              price_id: 'price_tailor_monthly',
+              status: 'active',
+              last_stripe_event_created: '2029-11-10T00:00:00.000Z',
+            },
+            error: null,
+          },
+        },
+        rpc: {},
+      }));
+      mockStripe.subscriptions.retrieve.mockResolvedValue({
+        id: 'sub_old_123',
+        customer: 'cus_sync_123',
+        status: 'active',
+        livemode: false,
+        current_period_end: 1889827200,
+        cancel_at_period_end: false,
+        items: {
+          data: [{ price: { id: 'price_tailor_monthly' } }],
+        },
+      });
+
+      const result = await syncSubscriptionFromStripe(
+        'sub_old_123',
+        { mode: BILLING_SYNC_MODES.EVENT, eventCreated: '2029-11-14T00:00:00.000Z' },
+        mockLog
+      );
+
+      expect(result.outcome).toBe(BILLING_WRITE_OUTCOMES.PROCESSED);
+      expect(result.localSubscription).toEqual(expect.objectContaining({
+        stripe_subscription_id: 'sub_active_123',
+      }));
+      expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
+      expect(mockLog.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'billing_non_current_subscription_event_ignored',
+          operation: 'syncSubscriptionFromStripe',
+          localSubscriptionId: formatStripeIdForLog('sub_active_123', 'warn'),
+          incomingSubscriptionId: formatStripeIdForLog('sub_old_123', 'warn'),
+        }),
+        'Ignored Stripe event for a non-current local subscription'
       );
     });
 
@@ -1827,6 +1964,157 @@ describe('billingService', () => {
   });
 
   describe('recordStripeEventReceipt', () => {
+    it('pre-reads an existing receipt and normalizes envelope comparison timestamps', async () => {
+      const adminClient = useAdminClient(createSupabaseClient({
+        stripe_event_receipts: {
+          maybeSingle: {
+            data: {
+              event_id: 'evt_existing_123',
+              event_type: 'invoice.paid',
+              livemode: false,
+              processed_at: '2029-11-14T00:00:01.000Z',
+              stripe_event_created: '2029-11-14T00:00:00+00:00',
+              result: STRIPE_EVENT_RECEIPT_RESULTS.PROCESSED,
+            },
+            error: null,
+          },
+        },
+      }));
+
+      const event = {
+        id: 'evt_existing_123',
+        type: 'invoice.paid',
+        livemode: false,
+        created: 1889308800,
+      };
+      const receipt = await getStripeEventReceiptForEvent(event, mockLog);
+
+      expect(receipt).toEqual(expect.objectContaining({
+        eventId: 'evt_existing_123',
+        eventType: 'invoice.paid',
+        result: STRIPE_EVENT_RECEIPT_RESULTS.PROCESSED,
+      }));
+      expect(hasMatchingStripeEventReceiptEnvelope(event, receipt)).toBe(true);
+      expect(adminClient.buildersByTable.stripe_event_receipts[0].state.eqArgs).toEqual([
+        ['event_id', 'evt_existing_123'],
+      ]);
+    });
+
+    it('claims an event receipt as processing before webhook dispatch', async () => {
+      const adminClient = useAdminClient(createSupabaseClient({
+        rpc: {
+          merge_stripe_event_receipt: {
+            data: {
+              outcome: 'recorded',
+              receipt: {
+                event_id: 'evt_processing_123',
+                event_type: 'invoice.paid',
+                livemode: false,
+                stripe_event_created: '2029-11-14T00:00:00.000Z',
+                result: STRIPE_EVENT_RECEIPT_RESULTS.PROCESSING,
+              },
+            },
+            error: null,
+          },
+        },
+      }));
+
+      const result = await claimStripeEventReceiptProcessing(
+        {
+          id: 'evt_processing_123',
+          type: 'invoice.paid',
+          livemode: false,
+          created: '2029-11-14T00:00:00.000Z',
+        },
+        mockLog
+      );
+
+      expect(result.outcome).toBe('recorded');
+      expect(adminClient.rpcCallsByName.merge_stripe_event_receipt[0].args).toEqual({
+        p_event_id: 'evt_processing_123',
+        p_event_type: 'invoice.paid',
+        p_livemode: false,
+        p_stripe_event_created: '2029-11-14T00:00:00.000Z',
+        p_result: STRIPE_EVENT_RECEIPT_RESULTS.PROCESSING,
+      });
+    });
+
+    it('rejects same-envelope in-flight processing receipts so Stripe retries', async () => {
+      useAdminClient(createSupabaseClient({
+        rpc: {
+          merge_stripe_event_receipt: {
+            data: {
+              outcome: 'processing_active',
+              receipt: {
+                event_id: 'evt_processing_123',
+                event_type: 'invoice.paid',
+                livemode: false,
+                stripe_event_created: '2029-11-14T00:00:00.000Z',
+                result: STRIPE_EVENT_RECEIPT_RESULTS.PROCESSING,
+              },
+            },
+            error: null,
+          },
+        },
+      }));
+
+      await expect(
+        claimStripeEventReceiptProcessing(
+          {
+            id: 'evt_processing_123',
+            type: 'invoice.paid',
+            livemode: false,
+            created: '2029-11-14T00:00:00.000Z',
+          },
+          mockLog
+        )
+      ).rejects.toMatchObject({ code: 'BILLING_WEBHOOK_PROCESSING_ACTIVE' });
+    });
+
+    it('sanitizes envelope mismatch RPC errors while claiming processing receipts', async () => {
+      mockStripeMode = 'live';
+      const rawEventId = 'evt_claim_sensitive_123456';
+      useAdminClient(createSupabaseClient({
+        rpc: {
+          merge_stripe_event_receipt: {
+            data: null,
+            error: {
+              code: 'P0001',
+              message: `stripe_event_receipts envelope mismatch for ${rawEventId}, existing=(invoice.paid, false, 2030-01-10), incoming=(invoice.payment_failed, false, 2030-01-10)`,
+            },
+          },
+        },
+      }));
+
+      await expect(
+        claimStripeEventReceiptProcessing(
+          {
+            id: rawEventId,
+            type: 'invoice.paid',
+            livemode: true,
+            created: '2029-11-14T00:00:00.000Z',
+          },
+          mockLog
+        )
+      ).rejects.toMatchObject({
+        code: 'BILLING_EVENT_RECEIPT_ENVELOPE_MISMATCH',
+        message: 'Stripe event receipt envelope mismatch',
+        billingAlreadyLogged: true,
+      });
+
+      expect(mockLog.error).toHaveBeenCalledTimes(1);
+      expect(mockLog.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'billing_event_receipt_envelope_mismatch',
+          operation: 'claimStripeEventReceiptProcessing',
+          stripeEventId: 'evt_***3456',
+        }),
+        'Rejected Stripe event receipt claim because the envelope mismatched'
+      );
+      expect(mockLog.error.mock.calls.some(([payload]) => payload.err)).toBe(false);
+      expect(JSON.stringify(mockLog.error.mock.calls)).not.toContain(rawEventId);
+    });
+
     it('validates receipt input before the RPC merge and returns the RPC result shape', async () => {
       const adminClient = useAdminClient(createSupabaseClient({
         rpc: {
@@ -1873,6 +2161,51 @@ describe('billingService', () => {
         p_stripe_event_created: '2029-11-14T00:00:00.000Z',
         p_result: STRIPE_EVENT_RECEIPT_RESULTS.STALE_IGNORED,
       });
+    });
+
+    it('sanitizes envelope mismatch RPC errors while recording terminal receipts', async () => {
+      mockStripeMode = 'live';
+      const rawEventId = 'evt_record_sensitive_654321';
+      useAdminClient(createSupabaseClient({
+        rpc: {
+          merge_stripe_event_receipt: {
+            data: null,
+            error: {
+              code: 'P0001',
+              message: `stripe_event_receipts envelope mismatch for ${rawEventId}, existing=(invoice.paid, false, 2030-01-10), incoming=(invoice.payment_failed, false, 2030-01-10)`,
+            },
+          },
+        },
+      }));
+
+      await expect(
+        recordStripeEventReceipt(
+          {
+            id: rawEventId,
+            type: 'invoice.paid',
+            livemode: true,
+            created: '2029-11-14T00:00:00.000Z',
+          },
+          STRIPE_EVENT_RECEIPT_RESULTS.PROCESSED,
+          mockLog
+        )
+      ).rejects.toMatchObject({
+        code: 'BILLING_EVENT_RECEIPT_ENVELOPE_MISMATCH',
+        message: 'Stripe event receipt envelope mismatch',
+        billingAlreadyLogged: true,
+      });
+
+      expect(mockLog.error).toHaveBeenCalledTimes(1);
+      expect(mockLog.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'billing_event_receipt_envelope_mismatch',
+          operation: 'recordStripeEventReceipt',
+          stripeEventId: 'evt_***4321',
+        }),
+        'Rejected Stripe event receipt write because the envelope mismatched'
+      );
+      expect(mockLog.error.mock.calls.some(([payload]) => payload.err)).toBe(false);
+      expect(JSON.stringify(mockLog.error.mock.calls)).not.toContain(rawEventId);
     });
 
     it('rejects livemode mismatches before the receipt RPC is called', async () => {
@@ -2064,6 +2397,91 @@ describe('billingService', () => {
           mockLog
         )
       ).rejects.toMatchObject({ code: 'BILLING_CUSTOMER_ID_MISSING' });
+    });
+
+    it('returns customer_not_found with a stable monitoring event when a delete has no local customer mapping', async () => {
+      useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: null,
+            error: null,
+          },
+        },
+        rpc: {},
+      }));
+
+      const result = await markSubscriptionDeletedFromEvent(
+        {
+          id: 'sub_delete_123',
+          customer: 'cus_delete_123',
+        },
+        { eventCreated: '2029-11-14T00:00:00.000Z', livemode: false },
+        mockLog
+      );
+
+      expect(result.outcome).toBe(BILLING_WRITE_OUTCOMES.CUSTOMER_NOT_FOUND);
+      expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
+      expect(mockLog.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'billing_customer_not_found_delete',
+          operation: 'markSubscriptionDeletedFromEvent',
+          stripeCustomerId: formatStripeIdForLog('cus_delete_123', 'warn'),
+          stripeSubscriptionId: formatStripeIdForLog('sub_delete_123', 'warn'),
+        }),
+        'Skipping delete snapshot because no local customer mapping exists'
+      );
+    });
+
+    it('ignores delete events for non-current subscriptions under the same customer', async () => {
+      useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: { user_id: userId, stripe_customer_id: 'cus_delete_123' },
+            error: null,
+          },
+        },
+        billing_subscriptions: {
+          maybeSingle: {
+            data: {
+              user_id: userId,
+              stripe_subscription_id: 'sub_active_123',
+              stripe_customer_id: 'cus_delete_123',
+              price_id: 'price_tailor_monthly',
+              status: 'active',
+              current_period_end: '2029-11-30T00:00:00.000Z',
+              cancel_at_period_end: false,
+              last_stripe_event_created: '2029-11-10T00:00:00.000Z',
+            },
+            error: null,
+          },
+        },
+        rpc: {},
+      }));
+
+      const result = await markSubscriptionDeletedFromEvent(
+        {
+          id: 'sub_old_123',
+          customer: 'cus_delete_123',
+        },
+        { eventCreated: '2029-11-14T00:00:00.000Z', livemode: false },
+        mockLog
+      );
+
+      expect(result.outcome).toBe(BILLING_WRITE_OUTCOMES.PROCESSED);
+      expect(result.localSubscription).toEqual(expect.objectContaining({
+        stripe_subscription_id: 'sub_active_123',
+        status: 'active',
+      }));
+      expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
+      expect(mockLog.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'billing_non_current_subscription_event_ignored',
+          operation: 'markSubscriptionDeletedFromEvent',
+          localSubscriptionId: formatStripeIdForLog('sub_active_123', 'warn'),
+          incomingSubscriptionId: formatStripeIdForLog('sub_old_123', 'warn'),
+        }),
+        'Ignored Stripe event for a non-current local subscription'
+      );
     });
 
     it('rejects delete-event timestamps that are too far in the future before any billing-table access', async () => {

@@ -39,10 +39,18 @@ const BILLING_CHECKOUT_SESSION_SELECT = [
   'created_at',
   'updated_at',
 ].join(', ');
+const STRIPE_EVENT_RECEIPT_SELECT = [
+  'event_id',
+  'event_type',
+  'livemode',
+  'processed_at',
+  'stripe_event_created',
+  'result',
+].join(', ');
 
 export const STRIPE_EVENT_RECEIPT_RESULTS = Object.freeze({
+  PROCESSING: 'processing',
   PROCESSED: 'processed',
-  DUPLICATE_IGNORED: 'duplicate_ignored',
   STALE_IGNORED: 'stale_ignored',
   FAILED: 'failed',
 });
@@ -91,10 +99,16 @@ const CHECKOUT_START_ALLOWED_STATUSES = new Set([
   BILLING_SUBSCRIPTION_STATUSES.CANCELED,
   BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED,
 ]);
+const TERMINAL_REPLACEABLE_SUBSCRIPTION_STATUSES = new Set([
+  BILLING_SUBSCRIPTION_STATUSES.CANCELED,
+  BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED,
+]);
 const FULL_BILLING_ID_LOG_LEVELS = new Set(['error', 'debug']);
 const MAX_EVENT_CREATED_FUTURE_MS = 5 * 60 * 1000;
 const PENDING_CHECKOUT_WAIT_ATTEMPTS = 9;
 const PENDING_CHECKOUT_WAIT_DELAY_MS = 250;
+const STRIPE_EVENT_RECEIPT_ENVELOPE_MISMATCH_PATTERN =
+  /stripe_event_receipts envelope mismatch/i;
 
 const nonEmptyStringSchema = z.string().trim().min(1);
 const billingPlanSchema = z.enum(BILLING_PLAN_VALUES);
@@ -117,6 +131,14 @@ const stripeReceiptEventSchema = z.object({
   created: z.union([z.number().finite(), z.string().trim().min(1), z.date()]),
 });
 const stripeReceiptResultSchema = z.enum(STRIPE_EVENT_RECEIPT_RESULT_VALUES);
+const stripeReceiptRowSchema = z.object({
+  event_id: nonEmptyStringSchema,
+  event_type: z.string().trim().min(1).max(255),
+  livemode: z.boolean(),
+  processed_at: nonEmptyStringSchema,
+  stripe_event_created: nonEmptyStringSchema,
+  result: stripeReceiptResultSchema,
+}).passthrough();
 const stripeDeleteEventMetaSchema = z.object({
   eventCreated: z.union([z.number().finite(), z.string().trim().min(1), z.date()]),
   livemode: z.boolean(),
@@ -158,6 +180,13 @@ const pendingCheckoutLookupInputSchema = z.object({
 });
 const pendingCheckoutTerminalInputSchema = z.object({
   userId: nonEmptyStringSchema,
+  sessionId: nonEmptyStringSchema,
+  status: z.enum([
+    PENDING_CHECKOUT_SESSION_STATUSES.COMPLETE,
+    PENDING_CHECKOUT_SESSION_STATUSES.EXPIRED,
+  ]),
+});
+const pendingCheckoutTerminalBySessionIdInputSchema = z.object({
   sessionId: nonEmptyStringSchema,
   status: z.enum([
     PENDING_CHECKOUT_SESSION_STATUSES.COMPLETE,
@@ -216,6 +245,51 @@ function createBillingRpcError(message) {
  */
 function createBillingOwnershipError(message) {
   return createBillingError(message, 'BILLING_OWNERSHIP_MISMATCH', { billingAlreadyLogged: true });
+}
+
+/**
+ * Detect the fixed database integrity error for mismatched receipt envelopes.
+ *
+ * Purpose: the RPC may return a database-native error object, so service
+ * callers need a narrow check that can replace it before generic catch blocks
+ * log raw SQL error metadata.
+ *
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+function isStripeEventReceiptEnvelopeMismatchError(error) {
+  return STRIPE_EVENT_RECEIPT_ENVELOPE_MISMATCH_PATTERN.test(error?.message ?? '');
+}
+
+/**
+ * Log and replace a receipt envelope mismatch with a safe coded error.
+ *
+ * Purpose: keep the structured monitoring signal while preventing raw
+ * database error details from flowing into route or dispatcher catch blocks.
+ *
+ * @param {object} log
+ * @param {{ operation: string, stripeEventId: string, message: string }} params
+ * @returns {Error & { code: string, billingAlreadyLogged?: boolean }}
+ */
+function createSanitizedStripeEventReceiptEnvelopeMismatchError(log, {
+  operation,
+  stripeEventId,
+  message,
+}) {
+  log.error(
+    {
+      event: 'billing_event_receipt_envelope_mismatch',
+      operation,
+      stripeEventId: formatStripeIdForLog(stripeEventId, 'error'),
+    },
+    message
+  );
+
+  return createBillingError(
+    'Stripe event receipt envelope mismatch',
+    'BILLING_EVENT_RECEIPT_ENVELOPE_MISMATCH',
+    { billingAlreadyLogged: true }
+  );
 }
 
 function normalizePriceId(priceId) {
@@ -579,6 +653,34 @@ function normalizePendingCheckoutSessionRow(row, message) {
 }
 
 /**
+ * Convert a stripe_event_receipts row into the service's camelCase shape.
+ *
+ * Purpose: webhook duplicate checks should not trust raw database payloads
+ * directly, especially because envelope comparison is an integrity boundary.
+ *
+ * @param {unknown} row
+ * @param {string} message
+ * @returns {object}
+ */
+function normalizeStripeEventReceiptRow(row, message) {
+  const parsedRow = stripeReceiptRowSchema.safeParse(row);
+
+  if (!parsedRow.success) {
+    throw createBillingRpcError(message);
+  }
+
+  return {
+    eventId: parsedRow.data.event_id,
+    eventType: parsedRow.data.event_type,
+    livemode: parsedRow.data.livemode,
+    processedAt: parsedRow.data.processed_at,
+    stripeEventCreated: parsedRow.data.stripe_event_created,
+    result: parsedRow.data.result,
+    row: parsedRow.data,
+  };
+}
+
+/**
  * Validate the pending-checkout claim RPC payload before routes trust it.
  *
  * Purpose: the database owns the race-sensitive claim decision, while this JS
@@ -882,6 +984,62 @@ function assertExpectedSyncUserMatch(input = {}) {
 }
 
 /**
+ * Decide whether an event-mode write targets a non-current subscription.
+ *
+ * Purpose: Stripe can deliver events for old or support-created subscriptions
+ * under the same customer. Those events must not replace an active canonical
+ * local subscription unless the local row is already terminal and replaceable.
+ *
+ * @param {object | null | undefined} localSubscription
+ * @param {string | null | undefined} incomingSubscriptionId
+ * @returns {boolean}
+ */
+function shouldIgnoreNonCurrentSubscriptionEvent(localSubscription, incomingSubscriptionId) {
+  const localSubscriptionId = normalizeString(localSubscription?.stripe_subscription_id);
+  const normalizedIncomingSubscriptionId = normalizeString(incomingSubscriptionId);
+
+  if (!localSubscriptionId || !normalizedIncomingSubscriptionId) {
+    return false;
+  }
+
+  if (localSubscriptionId === normalizedIncomingSubscriptionId) {
+    return false;
+  }
+
+  return !TERMINAL_REPLACEABLE_SUBSCRIPTION_STATUSES.has(
+    normalizeString(localSubscription?.status)
+  );
+}
+
+/**
+ * Emit the structured monitoring signal for ignored non-current events.
+ *
+ * Purpose: a safe ignore should be visible because it often means duplicate
+ * Stripe subscriptions exist for one customer and need operational cleanup.
+ *
+ * @param {object} log
+ * @param {{ operation: string, userId: string, localSubscriptionId?: string | null, incomingSubscriptionId?: string | null }} params
+ * @returns {void}
+ */
+function logNonCurrentSubscriptionEvent(log, {
+  operation,
+  userId,
+  localSubscriptionId,
+  incomingSubscriptionId,
+}) {
+  log.warn(
+    {
+      event: 'billing_non_current_subscription_event_ignored',
+      operation,
+      userIdHash: hashUserIdForLog(userId),
+      localSubscriptionId: formatStripeIdForLog(localSubscriptionId, 'warn'),
+      incomingSubscriptionId: formatStripeIdForLog(incomingSubscriptionId, 'warn'),
+    },
+    'Ignored Stripe event for a non-current local subscription'
+  );
+}
+
+/**
  * Build the fail-closed free-state shape returned when local billing cannot be
  * read or has not been established yet.
  *
@@ -1166,6 +1324,31 @@ async function loadOpenPendingCheckoutSession({ userId, plan }) {
     data,
     'Open pending checkout query returned an invalid session row'
   );
+}
+
+/**
+ * Read one Stripe event receipt through the privileged service client.
+ *
+ * Purpose: webhook duplicate suppression is server-owned and must not depend
+ * on request-scoped RLS clients or browser-visible billing state.
+ *
+ * @param {string} eventId
+ * @returns {Promise<object | null>}
+ */
+async function loadStripeEventReceiptById(eventId) {
+  const { data, error } = await supabaseAdmin
+    .from('stripe_event_receipts')
+    .select(STRIPE_EVENT_RECEIPT_SELECT)
+    .eq('event_id', eventId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data
+    ? normalizeStripeEventReceiptRow(data, 'Stripe event receipt query returned an invalid row')
+    : null;
 }
 
 /**
@@ -1841,6 +2024,60 @@ export async function markMintedCheckoutSessionTerminal(input, log = defaultLogg
 }
 
 /**
+ * Mark a locally minted Checkout Session terminal by Stripe Session id only.
+ *
+ * Purpose: webhook delivery may be the only observer of a completed Checkout
+ * Session, so it needs a service-role release path that does not derive
+ * entitlement from the pending-session row or require an authenticated user.
+ *
+ * @param {{ sessionId: string, status: 'complete' | 'expired' }} input
+ * @param {object} log
+ * @returns {Promise<object | null>}
+ */
+export async function markMintedCheckoutSessionTerminalByStripeSessionId(
+  input,
+  log = defaultLogger
+) {
+  const parsedInput = pendingCheckoutTerminalBySessionIdInputSchema.safeParse(input);
+
+  if (!parsedInput.success) {
+    throw createBillingError('Invalid pending checkout session terminal input');
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('billing_checkout_sessions')
+      .update({ status: parsedInput.data.status })
+      .eq('stripe_checkout_session_id', parsedInput.data.sessionId)
+      .eq('status', PENDING_CHECKOUT_SESSION_STATUSES.OPEN)
+      .select(BILLING_CHECKOUT_SESSION_SELECT)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    return data
+      ? normalizePendingCheckoutSessionRow(
+        data,
+        'Pending checkout terminal mark returned an invalid session row'
+      )
+      : null;
+  } catch (error) {
+    log.warn(
+      {
+        err: error,
+        operation: 'markMintedCheckoutSessionTerminalByStripeSessionId',
+        stripeCheckoutSessionId: formatStripeIdForLog(parsedInput.data.sessionId, 'warn'),
+        status: parsedInput.data.status,
+      },
+      'Failed to mark minted checkout session terminal from webhook'
+    );
+    throw error;
+  }
+}
+
+/**
  * Map canonical local billing state plus Stripe Checkout Session status into
  * the UI state consumed by the success-page polling flow.
  *
@@ -2205,6 +2442,7 @@ export async function syncSubscriptionFromStripe(
     if (!localCustomer?.user_id) {
       log.warn(
         {
+          event: 'billing_customer_not_found_sync',
           operation: 'syncSubscriptionFromStripe',
           stripeCustomerId: formatStripeIdForLog(stripeCustomerId, 'warn'),
           stripeSubscriptionId: formatStripeIdForLog(parsedSubscriptionId.data, 'warn'),
@@ -2227,6 +2465,34 @@ export async function syncSubscriptionFromStripe(
       log,
     });
 
+    let localSubscriptionForEvent = null;
+
+    if (parsedOptions.mode === BILLING_SYNC_MODES.EVENT) {
+      localSubscriptionForEvent = await loadBillingSubscriptionByUserId(
+        localCustomer.user_id,
+        supabaseAdmin
+      );
+
+      if (shouldIgnoreNonCurrentSubscriptionEvent(
+        localSubscriptionForEvent,
+        parsedSubscriptionId.data
+      )) {
+        logNonCurrentSubscriptionEvent(log, {
+          operation: 'syncSubscriptionFromStripe',
+          userId: localCustomer.user_id,
+          localSubscriptionId: localSubscriptionForEvent?.stripe_subscription_id,
+          incomingSubscriptionId: parsedSubscriptionId.data,
+        });
+
+        return {
+          outcome: BILLING_WRITE_OUTCOMES.PROCESSED,
+          userId: localCustomer.user_id,
+          subscription: stripeSubscription,
+          localSubscription: localSubscriptionForEvent,
+        };
+      }
+    }
+
     const classifiedStatus = classifyStripeStatus(stripeSubscription.status);
 
     if (!classifiedStatus.isSupported) {
@@ -2246,9 +2512,7 @@ export async function syncSubscriptionFromStripe(
     }
 
     if (parsedOptions.mode === BILLING_SYNC_MODES.EVENT) {
-      const localSubscription = await loadBillingSubscriptionByUserId(localCustomer.user_id, supabaseAdmin);
-
-      if (isOlderStripeEvent(localSubscription?.last_stripe_event_created, parsedOptions.eventCreated)) {
+      if (isOlderStripeEvent(localSubscriptionForEvent?.last_stripe_event_created, parsedOptions.eventCreated)) {
         log.info(
           {
             operation: 'syncSubscriptionFromStripe',
@@ -2261,7 +2525,7 @@ export async function syncSubscriptionFromStripe(
           outcome: BILLING_WRITE_OUTCOMES.STALE_IGNORED,
           userId: localCustomer.user_id,
           subscription: stripeSubscription,
-          localSubscription,
+          localSubscription: localSubscriptionForEvent,
         };
       }
 
@@ -2278,8 +2542,17 @@ export async function syncSubscriptionFromStripe(
         })
       );
 
+      if (!rpcResult.applied && rpcResult.reason === 'non_current_ignored') {
+        logNonCurrentSubscriptionEvent(log, {
+          operation: 'syncSubscriptionFromStripe',
+          userId: localCustomer.user_id,
+          localSubscriptionId: rpcResult.subscription?.stripe_subscription_id,
+          incomingSubscriptionId: stripeSubscription.id,
+        });
+      }
+
       return {
-        outcome: rpcResult.applied
+        outcome: rpcResult.applied || rpcResult.reason === 'non_current_ignored'
           ? BILLING_WRITE_OUTCOMES.PROCESSED
           : BILLING_WRITE_OUTCOMES.STALE_IGNORED,
         userId: localCustomer.user_id,
@@ -2324,6 +2597,207 @@ export async function syncSubscriptionFromStripe(
 }
 
 /**
+ * Reconcile a subscription from a verified Stripe event.
+ *
+ * Purpose: webhook dispatchers should not choose billing sync modes directly;
+ * this wrapper hardcodes EVENT mode and keeps authoritative reconciliation on
+ * authenticated route paths only.
+ *
+ * @param {string} subscriptionId
+ * @param {string | number | Date} eventCreated
+ * @param {object} log
+ * @returns {Promise<object>}
+ */
+export async function syncSubscriptionFromEvent(
+  subscriptionId,
+  eventCreated,
+  log = defaultLogger
+) {
+  return syncSubscriptionFromStripe(
+    subscriptionId,
+    {
+      mode: BILLING_SYNC_MODES.EVENT,
+      eventCreated,
+    },
+    log
+  );
+}
+
+/**
+ * Validate and normalize a Stripe event envelope for receipt writes.
+ *
+ * Purpose: receipt helpers share one boundary for event id/type/livemode and
+ * timestamp handling so duplicate checks and terminal writes compare the same
+ * canonical created timestamp.
+ *
+ * @param {object} event
+ * @returns {{ id: string, type: string, livemode: boolean, created: string }}
+ */
+function normalizeStripeReceiptEvent(event) {
+  const parsedEvent = stripeReceiptEventSchema.safeParse(event);
+
+  if (!parsedEvent.success) {
+    throw createBillingError('Invalid Stripe event receipt input');
+  }
+
+  const eventCreated = toIsoTimestamp(parsedEvent.data.created);
+
+  if (!eventCreated) {
+    throw createBillingError('Stripe event receipt is missing a valid created timestamp');
+  }
+
+  assertTimestampNotTooFarInFuture(
+    eventCreated,
+    'Stripe event receipt timestamp is too far in the future'
+  );
+
+  return {
+    id: parsedEvent.data.id,
+    type: parsedEvent.data.type,
+    livemode: parsedEvent.data.livemode,
+    created: eventCreated,
+  };
+}
+
+/**
+ * Compare a stored receipt row with a verified Stripe event envelope.
+ *
+ * Purpose: duplicate suppression is safe only when the event id maps to the
+ * exact same type, livemode, and Stripe-created timestamp.
+ *
+ * @param {object} event
+ * @param {object | null | undefined} receipt
+ * @returns {boolean}
+ */
+export function hasMatchingStripeEventReceiptEnvelope(event, receipt) {
+  const normalizedEvent = normalizeStripeReceiptEvent(event);
+  const normalizedReceiptEventCreated = toIsoTimestamp(
+    receipt?.stripeEventCreated ?? receipt?.stripe_event_created
+  );
+
+  if (!normalizedReceiptEventCreated) {
+    return false;
+  }
+
+  return (
+    normalizedEvent.id === (receipt?.eventId ?? receipt?.event_id)
+    && normalizedEvent.type === (receipt?.eventType ?? receipt?.event_type)
+    && normalizedEvent.livemode === (receipt?.livemode)
+    && new Date(normalizedEvent.created).getTime()
+      === new Date(normalizedReceiptEventCreated).getTime()
+  );
+}
+
+/**
+ * Pre-read a Stripe event receipt before webhook dispatch.
+ *
+ * Purpose: common duplicate deliveries can short-circuit before Stripe fetches
+ * or local billing writes, while first-delivery races still rely on the atomic
+ * processing claim RPC.
+ *
+ * @security Caller must verify the Stripe signature first and must not pass
+ * untrusted request bodies directly.
+ *
+ * @param {object} event
+ * @param {object} log
+ * @returns {Promise<object | null>}
+ */
+export async function getStripeEventReceiptForEvent(event, log = defaultLogger) {
+  const normalizedEvent = normalizeStripeReceiptEvent(event);
+
+  try {
+    return await loadStripeEventReceiptById(normalizedEvent.id);
+  } catch (error) {
+    log.error(
+      {
+        err: error,
+        operation: 'getStripeEventReceiptForEvent',
+        stripeEventId: formatStripeIdForLog(normalizedEvent.id, 'error'),
+      },
+      'Failed to pre-read Stripe event receipt'
+    );
+    throw error;
+  }
+}
+
+/**
+ * Atomically claim a Stripe event receipt for synchronous webhook processing.
+ *
+ * Purpose: first deliveries and retry attempts must mark the event as
+ * `processing` before dispatch starts so concurrent invocations do not both
+ * reconcile the same event as if it were unclaimed.
+ *
+ * @security Caller must verify the Stripe signature first.
+ *
+ * @param {object} event
+ * @param {object} log
+ * @returns {Promise<object>}
+ */
+export async function claimStripeEventReceiptProcessing(event, log = defaultLogger) {
+  const normalizedEvent = normalizeStripeReceiptEvent(event);
+
+  try {
+    assertStripeLivemode(normalizedEvent.livemode, {
+      operation: 'claimStripeEventReceiptProcessing',
+      stripeEventId: normalizedEvent.id,
+      log,
+    });
+
+    const rpcResult = await callStripeEventReceiptMergeRpc({
+      eventId: normalizedEvent.id,
+      eventType: normalizedEvent.type,
+      livemode: normalizedEvent.livemode,
+      stripeEventCreated: normalizedEvent.created,
+      result: STRIPE_EVENT_RECEIPT_RESULTS.PROCESSING,
+    });
+
+    if (rpcResult.outcome === 'processing_active') {
+      throw createBillingError(
+        'Stripe event receipt is already processing',
+        'BILLING_WEBHOOK_PROCESSING_ACTIVE'
+      );
+    }
+
+    if (rpcResult.outcome === 'reclaimed_processing') {
+      log.warn(
+        {
+          event: 'billing_webhook_processing_reclaimed',
+          operation: 'claimStripeEventReceiptProcessing',
+          stripeEventId: formatStripeIdForLog(normalizedEvent.id, 'warn'),
+        },
+        'Reclaimed a stale Stripe webhook processing receipt'
+      );
+    }
+
+    return rpcResult;
+  } catch (error) {
+    if (isStripeEventReceiptEnvelopeMismatchError(error)) {
+      throw createSanitizedStripeEventReceiptEnvelopeMismatchError(
+        log,
+        {
+          operation: 'claimStripeEventReceiptProcessing',
+          stripeEventId: normalizedEvent.id,
+          message: 'Rejected Stripe event receipt claim because the envelope mismatched',
+        }
+      );
+    }
+
+    if (error?.code !== 'BILLING_WEBHOOK_PROCESSING_ACTIVE' && !error?.billingAlreadyLogged) {
+      log.error(
+        {
+          err: error,
+          operation: 'claimStripeEventReceiptProcessing',
+          stripeEventId: formatStripeIdForLog(normalizedEvent.id, 'error'),
+        },
+        'Failed to claim Stripe event receipt for processing'
+      );
+    }
+
+    throw error;
+  }
+}
+
+/**
  * Record a canonical receipt row for one Stripe event after JS validation has
  * succeeded.
  *
@@ -2341,47 +2815,47 @@ export async function syncSubscriptionFromStripe(
  * @returns {Promise<object>}
  */
 export async function recordStripeEventReceipt(event, result, log = defaultLogger) {
-  const parsedEvent = stripeReceiptEventSchema.safeParse(event);
+  const normalizedEvent = normalizeStripeReceiptEvent(event);
   const parsedResult = stripeReceiptResultSchema.safeParse(result);
 
-  if (!parsedEvent.success || !parsedResult.success) {
+  if (!parsedResult.success) {
     throw createBillingError('Invalid Stripe event receipt input');
   }
 
-  const eventCreated = toIsoTimestamp(parsedEvent.data.created);
-
-  if (!eventCreated) {
-    throw createBillingError('Stripe event receipt is missing a valid created timestamp');
-  }
-
-  assertTimestampNotTooFarInFuture(
-    eventCreated,
-    'Stripe event receipt timestamp is too far in the future'
-  );
-
   try {
-    assertStripeLivemode(parsedEvent.data.livemode, {
+    assertStripeLivemode(normalizedEvent.livemode, {
       operation: 'recordStripeEventReceipt',
-      stripeEventId: parsedEvent.data.id,
+      stripeEventId: normalizedEvent.id,
       log,
     });
 
     const rpcResult = await callStripeEventReceiptMergeRpc({
-      eventId: parsedEvent.data.id,
-      eventType: parsedEvent.data.type,
-      livemode: parsedEvent.data.livemode,
-      stripeEventCreated: eventCreated,
+      eventId: normalizedEvent.id,
+      eventType: normalizedEvent.type,
+      livemode: normalizedEvent.livemode,
+      stripeEventCreated: normalizedEvent.created,
       result: parsedResult.data,
     });
 
     return rpcResult;
   } catch (error) {
+    if (isStripeEventReceiptEnvelopeMismatchError(error)) {
+      throw createSanitizedStripeEventReceiptEnvelopeMismatchError(
+        log,
+        {
+          operation: 'recordStripeEventReceipt',
+          stripeEventId: normalizedEvent.id,
+          message: 'Rejected Stripe event receipt write because the envelope mismatched',
+        }
+      );
+    }
+
     if (!error?.billingAlreadyLogged) {
       log.error(
         {
           err: error,
           operation: 'recordStripeEventReceipt',
-          stripeEventId: formatStripeIdForLog(parsedEvent.data.id, 'error'),
+          stripeEventId: formatStripeIdForLog(normalizedEvent.id, 'error'),
         },
         'Failed to record Stripe event receipt'
       );
@@ -2449,6 +2923,7 @@ export async function markSubscriptionDeletedFromEvent(
     if (!localCustomer?.user_id) {
       log.warn(
         {
+          event: 'billing_customer_not_found_delete',
           operation: 'markSubscriptionDeletedFromEvent',
           stripeCustomerId: formatStripeIdForLog(stripeCustomerId, 'warn'),
           stripeSubscriptionId: formatStripeIdForLog(subscriptionId.data, 'warn'),
@@ -2463,6 +2938,21 @@ export async function markSubscriptionDeletedFromEvent(
     }
 
     const localSubscription = await loadBillingSubscriptionByUserId(localCustomer.user_id, supabaseAdmin);
+
+    if (shouldIgnoreNonCurrentSubscriptionEvent(localSubscription, subscriptionId.data)) {
+      logNonCurrentSubscriptionEvent(log, {
+        operation: 'markSubscriptionDeletedFromEvent',
+        userId: localCustomer.user_id,
+        localSubscriptionId: localSubscription?.stripe_subscription_id,
+        incomingSubscriptionId: subscriptionId.data,
+      });
+
+      return {
+        outcome: BILLING_WRITE_OUTCOMES.PROCESSED,
+        userId: localCustomer.user_id,
+        localSubscription,
+      };
+    }
 
     if (isOlderStripeEvent(localSubscription?.last_stripe_event_created, eventCreatedIso)) {
       log.info(
