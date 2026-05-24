@@ -1,5 +1,5 @@
-import { attachRequestLogger } from '../../shared/logger.js';
-import { sendError } from '../../shared/response.js';
+import { withRateLimit } from '../../server/middleware/withRateLimit.js';
+import { OPERATIONS } from '../../shared/constants/tiers.js';
 import { getRedisClient } from '../../server/lib/redis.js';
 import { supabaseAdmin } from '../../server/lib/supabaseServer.js';
 
@@ -11,8 +11,9 @@ const HEALTH_CHECK_TIMEOUT_MS = 3000;
  * Purpose: Returns service health status for Redis and Supabase
  * Connects to: Axiom uptime monitors, external health checkers
  *
- * Intentionally excludes withRateLimit — uptime monitors must not be throttled.
- * Uses attachRequestLogger directly for request-id correlation.
+ * Rate-limited at 60 req/hour per IP via withRateLimit (OPERATIONS.HEALTH).
+ * Assumes uptime monitors poll every 60 seconds. Aggressive polling may
+ * receive 429 responses.
  *
  * This is the only place that pings Redis directly — rate-limit traffic
  * determines health everywhere else.
@@ -21,13 +22,6 @@ const HEALTH_CHECK_TIMEOUT_MS = 3000;
  * @param {import('next').NextApiResponse} res
  */
 async function handler(req, res) {
-  const requestId = attachRequestLogger(req);
-  res.setHeader('x-request-id', requestId);
-
-  if (req.method !== 'GET') {
-    return sendError(res, 405, 'METHOD_NOT_ALLOWED', 'Only GET is allowed');
-  }
-
   const withTimeout = (promise, label) =>
     Promise.race([
       promise,
@@ -46,7 +40,7 @@ async function handler(req, res) {
       'Redis'
     ),
     withTimeout(
-      supabaseAdmin.from('jobs').select('id', { count: 'exact', head: true }).limit(0),
+      supabaseAdmin.from('jobs').select('id').limit(1).maybeSingle(),
       'Supabase'
     ),
   ]);
@@ -72,4 +66,8 @@ async function handler(req, res) {
   return res.status(status === 'ok' ? 200 : 503).json(body);
 }
 
-export default handler;
+export default withRateLimit(handler, {
+  requireAuth: false,
+  allowedMethods: ['GET'],
+  operation: OPERATIONS.HEALTH,
+});

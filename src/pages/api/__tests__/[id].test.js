@@ -186,7 +186,7 @@ describe('[id] API handler', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(404);
-      expect(mockGetJobById).toHaveBeenCalledWith(validUUID, mockUser.id, undefined);
+      expect(mockGetJobById).toHaveBeenCalledWith(validUUID, mockUser.id, undefined, noopLog);
     });
 
     /**
@@ -202,7 +202,7 @@ describe('[id] API handler', () => {
 
       await handler(req, res);
 
-      expect(mockGetJobById).toHaveBeenCalledWith(validUUID, mockUser.id, mockClient);
+      expect(mockGetJobById).toHaveBeenCalledWith(validUUID, mockUser.id, mockClient, noopLog);
     });
 
     /**
@@ -306,7 +306,8 @@ describe('[id] API handler', () => {
         validUUID,
         { status: 'Interview' },
         mockUser.id,
-        undefined
+        undefined,
+        noopLog
       );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -334,7 +335,8 @@ describe('[id] API handler', () => {
         validUUID,
         { notes: 'Updated notes' },
         mockUser.id,
-        undefined
+        undefined,
+        noopLog
       );
     });
   });
@@ -356,7 +358,7 @@ describe('[id] API handler', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(404);
-      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, undefined);
+      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, undefined, noopLog);
     });
 
     /**
@@ -372,7 +374,7 @@ describe('[id] API handler', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, undefined);
+      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, undefined, noopLog);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           data: mockJob,

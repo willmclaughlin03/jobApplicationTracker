@@ -22,7 +22,7 @@
  * - Returns insert error when DB insert fails after limit check passes (edge case 1)
  * - Enforces limit dynamically from tier config, not a hardcoded value (edge case 2)
  * - Fails closed when maxJobs is undefined or null (edge case 3)
- * - Catches unexpected throw from getStorargeLimitForTier (edge case 4)
+ * - Catches unexpected throw from getStorageLimitForTier (edge case 4)
  * - supabaseAdmin count query works regardless of user session (bypasses RLS)
  *
  * getJobsByUserId:
@@ -68,8 +68,8 @@ jest.mock('../../../shared/logger.js', () => ({
 }));
 
 jest.mock('../../../shared/constants/tiers.js', () => ({
-  getStorargeLimitForTier: jest.fn().mockReturnValue({ maxJobs: 300 }),
-  TIERS: { FREE: 'free' },
+  getStorageLimitForTier: jest.fn().mockReturnValue({ maxJobs: 300 }),
+  TIERS: { FREE: 'free', PAID: 'paid' },
 }));
 
 const {
@@ -78,9 +78,10 @@ const {
   getJobById,
   updateJob,
   deleteJob,
+  StorageLimitExceededError,
 } = require('../jobService.js');
 
-const { getStorargeLimitForTier: mockGetStorageLimitForTier } = require('../../../shared/constants/tiers.js');
+const { getStorageLimitForTier: mockGetStorageLimitForTier } = require('../../../shared/constants/tiers.js');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -163,6 +164,7 @@ describe('createJob - storage limit enforcement', () => {
 
       expect(result.error).toBeNull();
       expect(result.data).toEqual([mockCreatedJob]);
+      expect(mockGetStorageLimitForTier).toHaveBeenCalledWith('free');
       expect(mockFrom).toHaveBeenCalledTimes(1);   // supabaseAdmin count only
       expect(mockClientFrom).toHaveBeenCalledTimes(1); // client insert
 
@@ -183,6 +185,7 @@ describe('createJob - storage limit enforcement', () => {
 
       expect(result.error).toBeNull();
       expect(result.data).toEqual([mockCreatedJob]);
+      expect(mockGetStorageLimitForTier).toHaveBeenCalledWith('free');
       expect(mockFrom).toHaveBeenCalledTimes(1);
       expect(mockClientFrom).toHaveBeenCalledTimes(1);
     });
@@ -195,7 +198,10 @@ describe('createJob - storage limit enforcement', () => {
       const result = await createJob(validJobData, userId, mockSupabaseClient);
 
       expect(result.data).toBeNull();
+      expect(result.error).toBeInstanceOf(StorageLimitExceededError);
+      expect(result.error.name).toBe('StorageLimitExceededError');
       expect(result.error.code).toBe('STORAGE_LIMIT_EXCEEDED');
+      expect(result.error.statusCode).toBe(409);
       expect(result.error.message).toContain('300');
       expect(mockFrom).toHaveBeenCalledTimes(1);
       expect(mockClientFrom).not.toHaveBeenCalled(); // insert must NOT run
@@ -259,6 +265,7 @@ describe('createJob - storage limit enforcement', () => {
 
       expect(result.data).toBeNull();
       expect(result.error.code).toBe('STORAGE_LIMIT_EXCEEDED');
+      expect(result.error.message).toContain('5');
       expect(mockClientFrom).not.toHaveBeenCalled();
     });
 
@@ -271,6 +278,30 @@ describe('createJob - storage limit enforcement', () => {
 
       expect(result.error).toBeNull();
       expect(result.data).toEqual([mockCreatedJob]);
+    });
+
+    it('uses the provided paid tier when resolving the storage limit', async () => {
+      mockGetStorageLimitForTier.mockReturnValueOnce({ maxJobs: 3000 });
+      mockFrom.mockReturnValueOnce(fakeQuery({ count: 2999, error: null }));
+      mockClientFrom.mockReturnValueOnce(fakeQuery({ data: [mockCreatedJob], error: null }));
+
+      const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, 'paid');
+
+      expect(result.error).toBeNull();
+      expect(result.data).toEqual([mockCreatedJob]);
+      expect(mockGetStorageLimitForTier).toHaveBeenCalledWith('paid');
+    });
+
+    it('includes the premium storage limit in the error message when paid users hit the cap', async () => {
+      mockGetStorageLimitForTier.mockReturnValueOnce({ maxJobs: 3000 });
+      mockFrom.mockReturnValueOnce(fakeQuery({ count: 3000, error: null }));
+
+      const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, 'paid');
+
+      expect(result.data).toBeNull();
+      expect(result.error.code).toBe('STORAGE_LIMIT_EXCEEDED');
+      expect(result.error.message).toContain('3000');
+      expect(mockClientFrom).not.toHaveBeenCalled();
     });
   });
 
@@ -298,7 +329,7 @@ describe('createJob - storage limit enforcement', () => {
     });
   });
 
-  describe('when getStorargeLimitForTier throws unexpectedly', () => {
+  describe('when getStorageLimitForTier throws unexpectedly', () => {
     it('catches the exception and returns an error without calling the database', async () => {
       mockGetStorageLimitForTier.mockImplementationOnce(() => {
         throw new Error('Config module failure');

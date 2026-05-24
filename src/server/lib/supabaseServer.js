@@ -26,12 +26,63 @@ if (!supabaseServiceKey) {
 
 export const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
+export const AUTH_ERROR_CODES = Object.freeze({
+  AUTH_INVALID: 'AUTH_INVALID',
+  AUTH_NOT_FOUND: 'AUTH_NOT_FOUND',
+  AUTH_UNAVAILABLE: 'AUTH_UNAVAILABLE',
+});
+
 /**
  * Authentication result object
  * @typedef {Object} AuthResult
  * @property {Object|null} user - The authenticated user or null
  * @property {string|null} error - Error message if authentication failed
+ * @property {'AUTH_INVALID'|'AUTH_NOT_FOUND'|'AUTH_UNAVAILABLE'|null} errorCode - Stable auth failure code
  */
+
+/**
+ * Classify Supabase auth errors into stable route-facing failure codes.
+ *
+ * Purpose: protected routes must distinguish invalid sessions from auth
+ * backend outages so retryable service failures return 503 instead of 401.
+ *
+ * @param {unknown} error
+ * @returns {'AUTH_INVALID' | 'AUTH_UNAVAILABLE'}
+ */
+export function classifyAuthError(error) {
+  const status = typeof error?.status === 'number' ? error.status : null;
+
+  if (status === 401 || status === 403) {
+    return AUTH_ERROR_CODES.AUTH_INVALID;
+  }
+
+  if (status === 429 || (status !== null && status >= 500)) {
+    return AUTH_ERROR_CODES.AUTH_UNAVAILABLE;
+  }
+
+  if (error?.name === 'AuthRetryableFetchError') {
+    return AUTH_ERROR_CODES.AUTH_UNAVAILABLE;
+  }
+
+  return AUTH_ERROR_CODES.AUTH_UNAVAILABLE;
+}
+
+/**
+ * Format non-sensitive auth error metadata for logs.
+ *
+ * Purpose: auth outage logs should be useful without including token, cookie,
+ * or session-bearing fields from provider error objects.
+ *
+ * @param {unknown} error
+ * @returns {{ name: unknown, status: unknown, code: unknown }}
+ */
+function sanitizeAuthErrorForLog(error) {
+  return {
+    name: error?.name,
+    status: error?.status,
+    code: error?.code,
+  };
+}
 
 /**
  * Extracts and validates user from request cookies
@@ -55,17 +106,44 @@ export async function getUserFromRequest(req, res) {
     const { data: { user }, error } = await supabase.auth.getUser();
 
     if (error) {
-      logger.error({ err: error, status: error.status }, 'Token validation failed');
-      return { user: null, error: 'Invalid or expired token', supabaseClient: null };
+      const errorCode = classifyAuthError(error);
+
+      if (errorCode === AUTH_ERROR_CODES.AUTH_UNAVAILABLE) {
+        logger.error(sanitizeAuthErrorForLog(error), 'Authentication service unavailable');
+        return {
+          user: null,
+          error: 'Authentication service unavailable',
+          errorCode,
+          supabaseClient: null,
+        };
+      }
+
+      logger.warn(sanitizeAuthErrorForLog(error), 'Token validation failed');
+      return {
+        user: null,
+        error: 'Invalid or expired token',
+        errorCode,
+        supabaseClient: null,
+      };
     }
 
     if (!user) {
-      return { user: null, error: 'User not found', supabaseClient: null };
+      return {
+        user: null,
+        error: 'User not found',
+        errorCode: AUTH_ERROR_CODES.AUTH_NOT_FOUND,
+        supabaseClient: null,
+      };
     }
 
-    return { user, error: null, supabaseClient: supabase };
+    return { user, error: null, errorCode: null, supabaseClient: supabase };
   } catch (err) {
-    logger.error({ err }, 'Unexpected authentication error');
-    return { user: null, error: 'Authentication service unavailable', supabaseClient: null };
+    logger.error(sanitizeAuthErrorForLog(err), 'Unexpected authentication error');
+    return {
+      user: null,
+      error: 'Authentication service unavailable',
+      errorCode: AUTH_ERROR_CODES.AUTH_UNAVAILABLE,
+      supabaseClient: null,
+    };
   }
 }

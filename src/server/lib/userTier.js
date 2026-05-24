@@ -1,0 +1,98 @@
+import { ENTITLED_BILLING_STATUSES } from '../../shared/constants/billing.js';
+import { OPERATIONS, TIERS } from '../../shared/constants/tiers.js';
+
+const BILLING_OPERATIONS = new Set([OPERATIONS.BILLING_READ, OPERATIONS.BILLING_WRITE]);
+
+/**
+ * Return the first non-nullish value from a list of possible auth payload
+ * locations.
+ *
+ * Purpose: Supabase auth metadata has historically arrived in slightly
+ * different shapes, and the rate-limit tier helper still needs to read those
+ * hints without duplicating the precedence order each time.
+ *
+ * @param {unknown[]} values
+ * @returns {unknown}
+ */
+function getFirstDefinedValue(values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Billing entitlements may come from multiple auth payload shapes.
+ * This auth-payload check is only for request-time hints like rate limiting.
+ * Canonical storage and billing authorization must come from local billing
+ * state on the server.
+ *
+ * @param {object | null | undefined} user
+ * @returns {boolean}
+ */
+export function hasBillingEntitlement(user) {
+  const subscribedFlag = getFirstDefinedValue([
+    user?.subscribed,
+    user?.billing?.subscribed,
+    user?.app_metadata?.billing?.subscribed,
+  ]);
+
+  if (typeof subscribedFlag === 'boolean') {
+    return subscribedFlag;
+  }
+
+  const subscriptionStatus = getFirstDefinedValue([
+    user?.subscription_status,
+    user?.subscriptionStatus,
+    user?.billing?.subscription_status,
+    user?.billing?.subscriptionStatus,
+    user?.app_metadata?.billing?.subscription_status,
+    user?.app_metadata?.billing?.subscriptionStatus,
+  ]);
+
+  return typeof subscriptionStatus === 'string'
+    && ENTITLED_BILLING_STATUSES.includes(subscriptionStatus);
+}
+
+/**
+ * Resolve the effective rate-limit tier for a specific operation.
+ *
+ * Purpose: this helper is intentionally limited to request-time throttling
+ * decisions. Canonical billing authorization still belongs to local billing
+ * state in billingService, not auth payload hints.
+ *
+ * @param {object | null | undefined} user
+ * @param {string} operation
+ * @returns {string}
+ */
+export function resolveRateLimitTier(user, operation) {
+  const isAdminOperation = operation === OPERATIONS.ADMIN_READ || operation === OPERATIONS.ADMIN_WRITE;
+  const isAdminUser = user?.app_metadata?.role === 'admin';
+
+  if (isAdminUser && isAdminOperation) {
+    return TIERS.ADMIN;
+  }
+
+  if (BILLING_OPERATIONS.has(operation) && hasBillingEntitlement(user)) {
+    return TIERS.PAID;
+  }
+
+  return TIERS.FREE;
+}
+
+/**
+ * @deprecated Storage entitlement must be resolved from canonical local
+ * billing state via billingService.resolveStorageEntitlement().
+ *
+ * This fallback remains only for older auth-hint call sites and should not be
+ * used for premium authorization decisions.
+ *
+ * @param {object | null | undefined} user
+ * @returns {string}
+ */
+export function resolveStorageTier(user) {
+  return hasBillingEntitlement(user) ? TIERS.PAID : TIERS.FREE;
+}

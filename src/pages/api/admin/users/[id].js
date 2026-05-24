@@ -7,6 +7,41 @@ import { sendSuccess, sendError } from '../../../../shared/response.js';
 import { ERROR_MESSAGES } from '../../../../shared/errors.js';
 import { OPERATIONS } from '../../../../shared/constants/tiers.js';
 
+const ADMIN_DELETE_BILLING_PREFLIGHT_TABLES = [
+    'billing_customers',
+    'billing_subscriptions',
+    'billing_checkout_sessions',
+];
+
+/**
+ * Count billing-owned rows that block destructive admin user deletion.
+ *
+ * Purpose: billing tables are audit and entitlement boundaries, so account
+ * deletion must stop before jobs/auth deletion whenever local billing state
+ * still exists for the target user.
+ *
+ * @param {string} targetId - Validated user UUID
+ * @returns {Promise<string[]>} Billing table names with at least one row
+ */
+async function getAdminDeleteBillingBlockers(targetId) {
+    const checks = await Promise.all(
+        ADMIN_DELETE_BILLING_PREFLIGHT_TABLES.map(async (tableName) => {
+            const { count, error } = await supabaseAdmin
+                .from(tableName)
+                .select('user_id', { count: 'exact', head: true })
+                .eq('user_id', targetId);
+
+            if (error) {
+                throw error;
+            }
+
+            return Number(count) > 0 ? tableName : null;
+        })
+    );
+
+    return checks.filter(Boolean);
+}
+
 /**
  * Handles GET /api/admin/users/[id] — single user profile and account activity
  *
@@ -77,11 +112,13 @@ async function handleGet(req, res, targetId) {
  *
  * Purpose: Allow admins to remove a user and all associated data
  * Connects to:
+ *   - supabaseAdmin billing preflight reads (service role) before destructive work
  *   - supabaseAdmin jobs delete (service role) — explicit delete before user removal
  *   - supabaseAdmin.auth.admin.deleteUser() — removes the auth record
  *
- * Order matters: jobs are deleted first. If user deletion subsequently fails,
- * the handler returns 500 and logs a partial failure for manual recovery.
+ * Order matters: billing rows block deletion before jobs are touched. If user
+ * deletion subsequently fails, the handler returns 503 and logs a partial
+ * failure for manual recovery.
  * Jobs belonging to other users are never touched (eq user_id filter).
  *
  * @param {import('next').NextApiRequest} req
@@ -91,6 +128,27 @@ async function handleGet(req, res, targetId) {
  */
 async function handleDelete(req, res, targetId, actorId) {
     if (!preventSelfAction(actorId, targetId, res)) return;
+
+    let billingBlockers;
+
+    try {
+        billingBlockers = await getAdminDeleteBillingBlockers(targetId);
+    } catch (error) {
+        req.log.error({ err: error, targetId }, 'Admin: failed to preflight billing rows before account deletion');
+        logAdminAction(req, { action: 'delete_user', targetUserId: targetId, result: 'error', meta: { reason: 'billing_preflight_failed' } });
+        return sendError(res, 503, 'ADMIN_DELETE_FAILED', ERROR_MESSAGES.ADMIN_DELETE_FAILED);
+    }
+
+    if (billingBlockers.length > 0) {
+        req.log.warn({ targetId, billingTables: billingBlockers }, 'Admin: blocked user deletion until billing teardown is complete');
+        logAdminAction(req, { action: 'delete_user', targetUserId: targetId, result: 'error', meta: { reason: 'billing_teardown_required', billingTables: billingBlockers } });
+        return sendError(
+            res,
+            409,
+            'ADMIN_BILLING_TEARDOWN_REQUIRED',
+            ERROR_MESSAGES.ADMIN_BILLING_TEARDOWN_REQUIRED
+        );
+    }
 
     // Step 1: delete the user's jobs (explicit, no reliance on DB cascade)
     const { error: jobsDeleteError } = await supabaseAdmin

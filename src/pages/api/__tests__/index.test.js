@@ -27,6 +27,11 @@ jest.mock('../../../server/services/jobService.js', () => ({
   createJob: mockCreateJob,
 }));
 
+const mockResolveStorageEntitlement = jest.fn();
+jest.mock('../../../server/lib/billingService.js', () => ({
+  resolveStorageEntitlement: mockResolveStorageEntitlement,
+}));
+
 // Mock jobSchema to avoid isomorphic-dompurify dependency issues
 const mockJobSchemaSafeParse = jest.fn();
 const mockGetQuerySchemaSafeParse = jest.fn();
@@ -64,11 +69,11 @@ describe('index API handler (/api/jobs)', () => {
    */
   const noopLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
 
-  const createMockRequest = (method, query = {}, body = {}) => ({
+  const createMockRequest = (method, query = {}, body = {}, user = mockUser) => ({
     method,
     query,
     body,
-    _rateLimitUser: mockUser,
+    _rateLimitUser: user,
     log: noopLog,
   });
 
@@ -82,6 +87,7 @@ describe('index API handler (/api/jobs)', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockResolveStorageEntitlement.mockResolvedValue('free');
   });
 
   describe('GET /api/jobs', () => {
@@ -99,7 +105,7 @@ describe('index API handler (/api/jobs)', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, {}, undefined);
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, {}, undefined, noopLog);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           data: { data: mockJobs, count: 2 },
@@ -120,7 +126,7 @@ describe('index API handler (/api/jobs)', () => {
 
       await handler(req, res);
 
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, { from: 0, to: 10 }, undefined);
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, { from: 0, to: 10 }, undefined, noopLog);
     });
 
     /**
@@ -136,7 +142,7 @@ describe('index API handler (/api/jobs)', () => {
 
       await handler(req, res);
 
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, { status: 'Applied' }, undefined);
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, { status: 'Applied' }, undefined, noopLog);
     });
 
     /**
@@ -156,7 +162,7 @@ describe('index API handler (/api/jobs)', () => {
         from: 0,
         to: 5,
         status: 'Applied',
-      }, undefined);
+      }, undefined, noopLog);
     });
 
     /**
@@ -208,7 +214,7 @@ describe('index API handler (/api/jobs)', () => {
 
       await handler(req, res);
 
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, {}, mockClient);
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, {}, mockClient, noopLog);
     });
 
     /**
@@ -248,19 +254,34 @@ describe('index API handler (/api/jobs)', () => {
       const createdJob = { id: 'new-job-1', ...validJobData, user_id: mockUser.id };
       mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
       mockCreateJob.mockResolvedValue({ data: createdJob, error: null });
+      const mockClient = { from: jest.fn() };
+
+      const req = { ...createMockRequest('POST', {}, validJobData), _supabaseClient: mockClient };
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      expect(mockResolveStorageEntitlement).toHaveBeenCalledWith(mockUser.id, mockClient, noopLog);
+      expect(mockCreateJob).toHaveBeenCalledWith(validJobData, mockUser.id, mockClient, noopLog, 'free');
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: createdJob,
+        })
+      );
+    });
+
+    it('should use the paid storage tier when local billing entitlement resolves paid', async () => {
+      mockResolveStorageEntitlement.mockResolvedValueOnce('paid');
+      mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
+      mockCreateJob.mockResolvedValue({ data: { id: 'new-job-2', ...validJobData, user_id: mockUser.id }, error: null });
 
       const req = createMockRequest('POST', {}, validJobData);
       const res = createMockResponse();
 
       await handler(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(201);
-      expect(mockCreateJob).toHaveBeenCalledWith(validJobData, mockUser.id, undefined);
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: createdJob,
-        })
-      );
+      expect(mockCreateJob).toHaveBeenCalledWith(validJobData, mockUser.id, undefined, noopLog, 'paid');
     });
 
     /**
@@ -280,6 +301,7 @@ describe('index API handler (/api/jobs)', () => {
 
       expect(res.status).toHaveBeenCalledWith(400);
       expect(mockCreateJob).not.toHaveBeenCalled();
+      expect(mockResolveStorageEntitlement).not.toHaveBeenCalled();
     });
 
     /**
@@ -318,7 +340,10 @@ describe('index API handler (/api/jobs)', () => {
       mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
       mockCreateJob.mockResolvedValue({
         data: null,
-        error: { code: 'STORAGE_LIMIT_EXCEEDED' },
+        error: {
+          code: 'STORAGE_LIMIT_EXCEEDED',
+          message: 'You have reached the maximum of 3000 job entries. Please delete some entries to add more.',
+        },
       });
 
       const req = createMockRequest('POST', {}, validJobData);
@@ -330,6 +355,7 @@ describe('index API handler (/api/jobs)', () => {
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           error: 'STORAGE_LIMIT_EXCEEDED',
+          message: 'You have reached the maximum of 3000 job entries. Please delete some entries to add more.',
         })
       );
     });

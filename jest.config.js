@@ -22,9 +22,15 @@ module.exports = {
   },
   // Transform ES modules to CommonJS for Jest
   transform: {
-    '^.+\\.(js|jsx)$': ['babel-jest', { presets: ['next/babel'] }],
+    '^.+\\.(js|jsx)$': ['babel-jest', {
+      presets: ['next/babel'],
+      plugins: [
+        '@babel/plugin-transform-private-methods',
+        'babel-plugin-transform-import-meta',
+      ],
+    }],
   },
   transformIgnorePatterns: [
-    '/node_modules/(?!(@supabase|isomorphic-dompurify|@exodus|html-encoding-sniffer|@upstash)/)',
+    '/node_modules/(?!(@supabase|isomorphic-dompurify|@exodus|html-encoding-sniffer|@upstash|@asamuzakjp)/)',
   ],
 };

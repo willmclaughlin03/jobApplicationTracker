@@ -3,5 +3,15 @@
 node_modules/
 .next/
 
-src/shared/
+scripts/*
+!scripts/
+!scripts/billing-drain-checkout-sessions.mjs
 
+# AI tailor feature — test fixtures contain canary strings (fake sk-/Bearer
+# tokens) used to verify the credential scanner. Keep them out of git so
+# secret scanners don't false-positive on the repo.
+src/server/ai/__tests__/
+src/server/db/__tests__/*
+!src/server/db/__tests__/
+!src/server/db/__tests__/billingMigrations.integration.test.js
+src/shared/schemas/__tests__/

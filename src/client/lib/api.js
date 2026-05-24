@@ -3,6 +3,10 @@ import { CSRF_COOKIE_NAME } from '../../shared/constants/csrf.js';
 
 const MAX_CLIENT_RETRIES = 2;
 const CLIENT_RETRY_DELAY_MS = 500;
+const EMPTY_API_RESPONSE_META = Object.freeze({
+    status: null,
+    retryAfterSeconds: null,
+});
 
 /**
  * Reads a cookie value by name from document.cookie.
@@ -35,6 +39,56 @@ async function refreshCsrfToken() {
 }
 
 /**
+ * Parse an HTTP Retry-After header into a non-negative second count.
+ *
+ * @param {string|null} headerValue
+ * @returns {number|null}
+ */
+function parseRetryAfterSeconds(headerValue) {
+    if (typeof headerValue !== 'string') {
+        return null;
+    }
+
+    const trimmedValue = headerValue.trim();
+
+    if (!trimmedValue) {
+        return null;
+    }
+
+    const numericSeconds = Number.parseInt(trimmedValue, 10);
+
+    if (Number.isFinite(numericSeconds)) {
+        return Math.max(0, numericSeconds);
+    }
+
+    const retryAtMs = Date.parse(trimmedValue);
+
+    if (Number.isNaN(retryAtMs)) {
+        return null;
+    }
+
+    return Math.max(0, Math.ceil((retryAtMs - Date.now()) / 1000));
+}
+
+/**
+ * Extract additive response metadata that callers can use without changing
+ * the established `{ data, error }` result contract.
+ *
+ * @param {Response|null|undefined} response
+ * @returns {{ status: number|null, retryAfterSeconds: number|null }}
+ */
+function buildApiResponseMeta(response) {
+    if (!response) {
+        return EMPTY_API_RESPONSE_META;
+    }
+
+    return {
+        status: typeof response.status === 'number' ? response.status : null,
+        retryAfterSeconds: parseRetryAfterSeconds(response.headers?.get?.('Retry-After') ?? null),
+    };
+}
+
+/**
  * Makes an authenticated API request using the current Supabase session.
  * For state-changing methods (POST/PUT/DELETE/PATCH), reads the CSRF token
  * from the non-httpOnly cookie and sends it as x-csrf-token.
@@ -48,7 +102,7 @@ async function refreshCsrfToken() {
  *
  * @param {string} endpoint - The API endpoint URL
  * @param {Object} options - Fetch options (method, body, headers, etc.)
- * @returns {Promise<{data: any, error: string|null}>}
+ * @returns {Promise<{data: any, error: string|null, meta: { status: number|null, retryAfterSeconds: number|null }}>}
  */
 export async function apiRequest(endpoint, options = {}) {
     const isStateChanging = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(options.method);
@@ -84,12 +138,14 @@ export async function apiRequest(endpoint, options = {}) {
             if (!isServiceUnavailable || attempt === MAX_CLIENT_RETRIES) break;
         }
 
+        const meta = buildApiResponseMeta(response);
+
         if (response.status === 401) {
-            return { data: null, error: ERROR_MESSAGES.UNAUTHORIZED };
+            return { data: null, error: ERROR_MESSAGES.UNAUTHORIZED, meta };
         }
 
         // Return parsed body as data so callers can inspect response?.error and response?.message
-        return { data, error: null };
+        return { data, error: null, meta };
     }
 
     try {
@@ -110,7 +166,7 @@ export async function apiRequest(endpoint, options = {}) {
 
         return result;
     } catch (error) {
-        return { data: null, error: ERROR_MESSAGES.FETCH_FAILED };
+        return { data: null, error: ERROR_MESSAGES.FETCH_FAILED, meta: EMPTY_API_RESPONSE_META };
     }
 }
 

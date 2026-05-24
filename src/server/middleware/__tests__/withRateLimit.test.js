@@ -16,6 +16,11 @@
 
 const mockGetUserFromRequest = jest.fn();
 jest.mock('../../lib/supabaseServer.js', () => ({
+    AUTH_ERROR_CODES: {
+        AUTH_INVALID: 'AUTH_INVALID',
+        AUTH_NOT_FOUND: 'AUTH_NOT_FOUND',
+        AUTH_UNAVAILABLE: 'AUTH_UNAVAILABLE',
+    },
     getUserFromRequest: mockGetUserFromRequest,
 }));
 
@@ -128,11 +133,11 @@ describe('withRateLimit middleware', () => {
         /**
          * Test: Valid IPv6 addresses are accepted
          * Edge case: Full hex colon-notation must pass the regex
-         * Note: x-real-ip only read when process.env.VERCEL is set
+         * Note: CloudFront-Viewer-Address only read when AWS_LAMBDA_FUNCTION_NAME is set
          */
         it('should accept valid IPv6 addresses', async () => {
-            process.env.VERCEL = '1';
-            const req = createMockRequest('GET', { 'x-real-ip': '2001:db8::1' });
+            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
+            const req = createMockRequest('GET', { 'cloudfront-viewer-address': '2001:db8::1:54321' });
             const res = createMockResponse();
             const handler = jest.fn();
 
@@ -143,18 +148,18 @@ describe('withRateLimit middleware', () => {
                 expect.any(String),
                 expect.any(String)
             );
-            delete process.env.VERCEL;
+            delete process.env.AWS_LAMBDA_FUNCTION_NAME;
         });
 
         /**
-         * Test: Arbitrary strings in x-real-ip are rejected
+         * Test: Arbitrary strings are rejected
          * Security: Prevents spoofed headers from creating arbitrary rate limit keys
          */
-        it('should reject non-IP strings from x-real-ip header', async () => {
+        it('should reject non-IP strings', async () => {
             const req = createMockRequest(
                 'GET',
-                { 'x-real-ip': "'; DROP TABLE users;--" },
-                { remoteAddress: undefined }
+                {},
+                { remoteAddress: "'; DROP TABLE users;--" }
             );
             const res = createMockResponse();
             const handler = jest.fn();
@@ -178,8 +183,8 @@ describe('withRateLimit middleware', () => {
             const longString = 'a'.repeat(46);
             const req = createMockRequest(
                 'GET',
-                { 'x-real-ip': longString },
-                { remoteAddress: undefined }
+                {},
+                { remoteAddress: longString }
             );
             const res = createMockResponse();
             const handler = jest.fn();
@@ -191,14 +196,34 @@ describe('withRateLimit middleware', () => {
         });
 
         /**
+         * Test: Malformed dotted-quad values are rejected
+         * Security: Regex-shaped IPv4 strings with invalid octets must not become rate-limit keys
+         */
+        it('should reject malformed IPv4 strings that only look like addresses', async () => {
+            const req = createMockRequest(
+                'GET',
+                {},
+                { remoteAddress: '999.999.999.999' }
+            );
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(403);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
          * Test: Empty strings are rejected
          * Edge case: Header present but empty value
          */
         it('should reject empty string IPs', async () => {
             const req = createMockRequest(
                 'GET',
-                { 'x-real-ip': '' },
-                { remoteAddress: undefined }
+                {},
+                { remoteAddress: '' }
             );
             const res = createMockResponse();
             const handler = jest.fn();
@@ -291,16 +316,15 @@ describe('withRateLimit middleware', () => {
         });
 
         /**
-         * Test: x-real-ip takes priority over socket.remoteAddress
-         * Verifies: Header is checked first (Vercel sets this)
-         * Note: x-real-ip only read when process.env.VERCEL is set
+         * Test: CloudFront-Viewer-Address takes priority on deployed environment
+         * Verifies: Trusted header is preferred over x-forwarded-for
          */
-        it('should prefer x-real-ip over socket.remoteAddress', async () => {
-            process.env.VERCEL = '1';
+        it('should prefer cloudfront-viewer-address on deployed Amplify', async () => {
+            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
             const req = createMockRequest(
                 'GET',
-                { 'x-real-ip': '203.0.113.1' },
-                { remoteAddress: '10.0.0.1' }
+                { 'cloudfront-viewer-address': '203.0.113.1:54321', 'x-forwarded-for': '10.0.0.1' },
+                { remoteAddress: '169.254.0.1' }
             );
             const res = createMockResponse();
             const handler = jest.fn();
@@ -312,33 +336,29 @@ describe('withRateLimit middleware', () => {
                 expect.any(String),
                 expect.any(String)
             );
-            delete process.env.VERCEL;
+            delete process.env.AWS_LAMBDA_FUNCTION_NAME;
         });
     });
 
     // =========================================================================
-    // Vercel IP extraction security (IS_VERCEL_DEPLOYED guard)
+    // Amplify/CloudFront IP extraction security
     // =========================================================================
-    describe('Vercel IP extraction security', () => {
+    describe('Amplify/CloudFront IP extraction security', () => {
         afterEach(() => {
-            delete process.env.VERCEL;
-            delete process.env.VERCEL_ENV;
+            delete process.env.AWS_LAMBDA_FUNCTION_NAME;
         });
 
         /**
-         * Test: Vercel production — missing x-real-ip returns 403, no socket fallback
-         * Security: socket.remoteAddress on Vercel is the internal load balancer IP.
-         * Falling back would bucket every client under the same key, bypassing rate limiting.
+         * Test: Deployed Amplify — no CloudFront headers returns 403, no socket fallback
+         * Security: socket.remoteAddress behind CloudFront is the internal Lambda IP.
          */
-        it('should return 403 on Vercel production when x-real-ip is absent', async () => {
-            process.env.VERCEL = '1';
-            process.env.VERCEL_ENV = 'production';
+        it('should return 403 on deployed Amplify when no CloudFront headers are present', async () => {
+            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
             const req = createMockRequest(
                 'GET',
                 {},
-                { remoteAddress: '10.10.10.1' } // Vercel internal IP — must NOT be used
+                { remoteAddress: '169.254.0.1' } // internal Lambda IP — must NOT be used
             );
-            delete req.headers['x-real-ip'];
             const res = createMockResponse();
             const handler = jest.fn();
 
@@ -353,19 +373,65 @@ describe('withRateLimit middleware', () => {
         });
 
         /**
-         * Test: Vercel preview — same strict behaviour as production
-         * Security: Preview deployments go through the same Vercel load balancer;
-         * socket.remoteAddress is equally unreliable.
+         * Test: CloudFront-Viewer-Address strips port suffix correctly
+         * Format from CloudFront is "ip:port"
          */
-        it('should return 403 on Vercel preview when x-real-ip is absent', async () => {
-            process.env.VERCEL = '1';
-            process.env.VERCEL_ENV = 'preview';
+        it('should strip port from cloudfront-viewer-address', async () => {
+            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
             const req = createMockRequest(
                 'GET',
-                {},
-                { remoteAddress: '10.10.10.1' }
+                { 'cloudfront-viewer-address': '198.51.100.42:12345' },
+                { remoteAddress: '169.254.0.1' }
             );
-            delete req.headers['x-real-ip'];
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'ip:198.51.100.42',
+                expect.any(String),
+                expect.any(String)
+            );
+            expect(handler).toHaveBeenCalled();
+        });
+
+        /**
+         * Test: Falls back to rightmost x-forwarded-for when CloudFront-Viewer-Address is absent
+         * Security: CloudFront appends viewer IP as the last entry in x-forwarded-for.
+         * Earlier entries may be client-spoofed, so only the last is trusted.
+         */
+        it('should use rightmost x-forwarded-for when cloudfront-viewer-address is absent', async () => {
+            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
+            const req = createMockRequest(
+                'GET',
+                { 'x-forwarded-for': '10.0.0.1, 192.168.1.1, 203.0.113.50' },
+                { remoteAddress: '169.254.0.1' }
+            );
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'ip:203.0.113.50',
+                expect.any(String),
+                expect.any(String)
+            );
+            expect(handler).toHaveBeenCalled();
+        });
+
+        /**
+         * Test: CloudFront-Viewer-Address still fails closed after port stripping
+         * Security: Values that look like "ip:port" but contain an invalid IP must be rejected
+         */
+        it('should reject malformed cloudfront-viewer-address values after stripping the port', async () => {
+            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
+            const req = createMockRequest(
+                'GET',
+                { 'cloudfront-viewer-address': '999.999.999.999:12345' },
+                { remoteAddress: '169.254.0.1' }
+            );
             const res = createMockResponse();
             const handler = jest.fn();
 
@@ -373,22 +439,104 @@ describe('withRateLimit middleware', () => {
 
             expect(res.status).toHaveBeenCalledWith(403);
             expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        it('should handle x-forwarded-for arrays without throwing and use the rightmost IP', async () => {
+            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
+            const req = createMockRequest(
+                'GET',
+                { 'x-forwarded-for': ['10.0.0.1, 192.168.1.1', '203.0.113.50'] },
+                { remoteAddress: '169.254.0.1' }
+            );
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'ip:203.0.113.50',
+                expect.any(String),
+                expect.any(String)
+            );
+            expect(handler).toHaveBeenCalled();
+        });
+
+        it('should reject malformed rightmost x-forwarded-for entries', async () => {
+            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
+            const req = createMockRequest(
+                'GET',
+                { 'x-forwarded-for': '10.0.0.1, 999.999.999.999' },
+                { remoteAddress: '169.254.0.1' }
+            );
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(403);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        it('should fail closed when cloudfront-viewer-address is repeated as an array', async () => {
+            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
+            const req = createMockRequest(
+                'GET',
+                { 'cloudfront-viewer-address': ['203.0.113.1:12345', '203.0.113.2:54321'] },
+                { remoteAddress: '169.254.0.1' }
+            );
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(403);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
         });
 
         /**
-         * Test: Vercel dev — socket.remoteAddress fallback is allowed
-         * Context: `vercel dev` sets VERCEL=1 but does not go through the load
-         * balancer, so socket.remoteAddress is the real client IP and is safe.
+         * Test: Spoofed x-forwarded-for prefix is ignored — only rightmost used
+         * Security: A client can prepend arbitrary IPs to x-forwarded-for.
+         * The rightmost entry is appended by CloudFront and is the only trusted one.
          */
-        it('should use socket.remoteAddress on Vercel dev when x-real-ip is absent', async () => {
-            process.env.VERCEL = '1';
-            process.env.VERCEL_ENV = 'development';
+        it('should ignore spoofed x-forwarded-for prefix entries', async () => {
+            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
             const req = createMockRequest(
                 'GET',
-                {},
+                { 'x-forwarded-for': '1.2.3.4, 203.0.113.99' },
+                { remoteAddress: '169.254.0.1' }
+            );
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            // Must use the rightmost (203.0.113.99), not the spoofed first (1.2.3.4)
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'ip:203.0.113.99',
+                expect.any(String),
+                expect.any(String)
+            );
+            expect(mockCheckRateLimit).not.toHaveBeenCalledWith(
+                'ip:1.2.3.4',
+                expect.any(String),
+                expect.any(String)
+            );
+        });
+
+        /**
+         * Test: Local dev (no AWS_LAMBDA_FUNCTION_NAME) uses socket.remoteAddress
+         * Context: No proxy in local dev, socket address is the real client.
+         */
+        it('should use socket.remoteAddress in local dev', async () => {
+            delete process.env.AWS_LAMBDA_FUNCTION_NAME;
+            const req = createMockRequest(
+                'GET',
+                { 'cloudfront-viewer-address': '203.0.113.1:54321' }, // present but must be ignored
                 { remoteAddress: '127.0.0.1' }
             );
-            delete req.headers['x-real-ip'];
             const res = createMockResponse();
             const handler = jest.fn();
 
@@ -399,28 +547,9 @@ describe('withRateLimit middleware', () => {
                 expect.any(String),
                 expect.any(String)
             );
-            expect(handler).toHaveBeenCalled();
-        });
-
-        /**
-         * Test: Vercel production — x-real-ip present → used correctly, no 403
-         * Verifies: The happy path still works after narrowing the guard.
-         */
-        it('should use x-real-ip on Vercel production when header is present', async () => {
-            process.env.VERCEL = '1';
-            process.env.VERCEL_ENV = 'production';
-            const req = createMockRequest(
-                'GET',
-                { 'x-real-ip': '203.0.113.42' },
-                { remoteAddress: '10.10.10.1' }
-            );
-            const res = createMockResponse();
-            const handler = jest.fn();
-
-            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
-
-            expect(mockCheckRateLimit).toHaveBeenCalledWith(
-                'ip:203.0.113.42',
+            // CloudFront header must NOT be used in local dev
+            expect(mockCheckRateLimit).not.toHaveBeenCalledWith(
+                'ip:203.0.113.1',
                 expect.any(String),
                 expect.any(String)
             );
@@ -428,46 +557,16 @@ describe('withRateLimit middleware', () => {
         });
 
         /**
-         * Test: VERCEL=1 with VERCEL_ENV unset → treated as deployed, returns 403 not socket fallback
-         * Edge case (gap 6a): When VERCEL_ENV is undefined, `undefined !== 'development'` is true,
-         * so IS_VERCEL_DEPLOYED is truthy. The guard must NOT silently fall back to
-         * socket.remoteAddress in this ambiguous state — 403 is the safe response.
+         * Test: CloudFront headers ignored in local dev — socket.remoteAddress used
+         * Security: In local dev, proxy headers could be from a different tool
+         * and should not override the direct socket connection.
          */
-        it('should return 403 when VERCEL=1 and VERCEL_ENV is unset and x-real-ip is absent', async () => {
-            process.env.VERCEL = '1';
-            // VERCEL_ENV deliberately not set — undefined !== 'development' → IS_VERCEL_DEPLOYED truthy
+        it('should ignore x-forwarded-for in local dev and use socket', async () => {
+            delete process.env.AWS_LAMBDA_FUNCTION_NAME;
             const req = createMockRequest(
                 'GET',
-                {},
-                { remoteAddress: '10.10.10.1' } // internal Vercel address — must NOT be used
-            );
-            delete req.headers['x-real-ip'];
-            const res = createMockResponse();
-            const handler = jest.fn();
-
-            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
-
-            expect(res.status).toHaveBeenCalledWith(403);
-            expect(res.json).toHaveBeenCalledWith(
-                expect.objectContaining({ error: 'UNIDENTIFIABLE_CLIENT' })
-            );
-            expect(mockCheckRateLimit).not.toHaveBeenCalled();
-            expect(handler).not.toHaveBeenCalled();
-        });
-
-        /**
-         * Test: x-real-ip header is ignored when VERCEL is not set (gap 6b)
-         * Security: Other deployment platforms (e.g. Render, Fly.io) can also set
-         * x-real-ip. Trusting it unconditionally would let a different proxy's header
-         * override the real socket address, breaking per-client isolation.
-         * Verifies: IS_VERCEL_DEPLOYED gate means x-real-ip is ONLY trusted on Vercel.
-         */
-        it('should ignore x-real-ip and use socket.remoteAddress when VERCEL is not set', async () => {
-            delete process.env.VERCEL; // guarantee non-Vercel environment
-            const req = createMockRequest(
-                'GET',
-                { 'x-real-ip': '203.0.113.99' }, // present but must be ignored
-                { remoteAddress: '10.0.0.7' }     // this is the authoritative source
+                { 'x-forwarded-for': '203.0.113.99' },
+                { remoteAddress: '10.0.0.7' }
             );
             const res = createMockResponse();
             const handler = jest.fn();
@@ -476,12 +575,6 @@ describe('withRateLimit middleware', () => {
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
                 'ip:10.0.0.7',
-                expect.any(String),
-                expect.any(String)
-            );
-            // x-real-ip value must NOT appear as the identifier
-            expect(mockCheckRateLimit).not.toHaveBeenCalledWith(
-                'ip:203.0.113.99',
                 expect.any(String),
                 expect.any(String)
             );
@@ -762,10 +855,10 @@ describe('withRateLimit middleware', () => {
         });
 
         /**
-         * Test: Auth service crash returns 401, does NOT fall back to IP
+         * Test: Auth service crash returns 503, does NOT fall back to IP
          * Verifies: Even when auth throws, protected routes don't degrade to IP
          */
-        it('should return 401 when getUserFromRequest throws on protected route', async () => {
+        it('should return 503 when getUserFromRequest throws on protected route', async () => {
             mockGetUserFromRequest.mockRejectedValue(new Error('Auth service down'));
             const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.99' });
             const res = createMockResponse();
@@ -773,9 +866,46 @@ describe('withRateLimit middleware', () => {
 
             await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
-            expect(res.status).toHaveBeenCalledWith(401);
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 5);
+            expect(res.json).toHaveBeenCalledWith(
+                expect.objectContaining({ error: 'SERVICE_UNAVAILABLE' })
+            );
             expect(mockCheckRateLimit).not.toHaveBeenCalled();
             expect(handler).not.toHaveBeenCalled();
+            expect(mockLog.error).toHaveBeenCalledWith(
+                expect.objectContaining({ event: 'auth_backend_unavailable', method: 'GET' }),
+                'Auth service error on protected route'
+            );
+        });
+
+        /**
+         * Test: Structured auth-unavailable results return 503 with Retry-After
+         * Verifies: Backend outages are not flattened into unauthenticated 401s
+         */
+        it('should return 503 when auth result is AUTH_UNAVAILABLE', async () => {
+            mockGetUserFromRequest.mockResolvedValue({
+                user: null,
+                error: 'Authentication service unavailable',
+                errorCode: 'AUTH_UNAVAILABLE',
+            });
+            const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.99' });
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 5);
+            expect(res.json).toHaveBeenCalledWith(
+                expect.objectContaining({ error: 'SERVICE_UNAVAILABLE' })
+            );
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+            expect(mockLog.error).toHaveBeenCalledWith(
+                expect.objectContaining({ event: 'auth_backend_unavailable', method: 'GET' }),
+                'Auth backend unavailable on protected route'
+            );
         });
 
         /**
@@ -1010,6 +1140,33 @@ describe('withRateLimit middleware', () => {
             expect(res.status).toHaveBeenCalledWith(503);
             expect(handler).not.toHaveBeenCalled();
         });
+
+        it('should let emergency handlers skip Redis-backed rate limit checks after auth and CSRF', async () => {
+            mockCheckRateLimit.mockRejectedValue(new Error('Redis connection failed'));
+            const req = createMockRequest('POST');
+            const res = createMockResponse();
+            const handler = jest.fn((innerReq, innerRes) => innerRes.status(503).json({
+                data: null,
+                error: 'BILLING_CHECKOUT_DISABLED',
+                message: 'Checkout is temporarily unavailable.',
+            }));
+
+            await withRateLimit(handler, {
+                allowedMethods: ['POST'],
+                operation: 'billing_write',
+                skipRateLimitWhen: () => true,
+            })(req, res);
+
+            expect(mockGetUserFromRequest).toHaveBeenCalled();
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).toHaveBeenCalledWith(req, res);
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(res.json).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    error: 'BILLING_CHECKOUT_DISABLED',
+                })
+            );
+        });
     });
 
     // =========================================================================
@@ -1178,6 +1335,61 @@ describe('withRateLimit middleware', () => {
                 'user:admin-2',
                 'free',
                 'read'
+            );
+        });
+
+        it('should use paid tier when a subscribed admin user calls billing_write', async () => {
+            mockGetUserFromRequest.mockResolvedValue({
+                user: {
+                    id: 'admin-3',
+                    app_metadata: { role: 'admin' },
+                    billing: { subscribed: true },
+                },
+                error: null,
+                supabaseClient: { auth: { getUser: jest.fn() } },
+            });
+            const req = createMockRequest('POST');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                allowedMethods: ['POST'],
+                operation: 'billing_write',
+                csrfProtect: false,
+            })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'user:admin-3',
+                'paid',
+                'billing_write'
+            );
+        });
+
+        /**
+         * Test: Admin users do not bypass billing_write into admin tier logic
+         * Billing routes must stay on the explicit billing quotas unless the
+         * operation is admin_read or admin_write.
+         */
+        it('should keep admin users on free tier behavior for billing_write operations', async () => {
+            mockGetUserFromRequest.mockResolvedValue({
+                user: { id: 'admin-3', app_metadata: { role: 'admin' } },
+                error: null,
+                supabaseClient: { auth: { getUser: jest.fn() } },
+            });
+            const req = createMockRequest('POST');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                allowedMethods: ['POST'],
+                operation: 'billing_write',
+                csrfProtect: false,
+            })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'user:admin-3',
+                'free',
+                'billing_write'
             );
         });
 

@@ -30,6 +30,19 @@
  * - Missing cookie or header rejected
  */
 
+// Must set CSRF_SECRET before requiring csrf.js.
+if (!process.env.CSRF_SECRET || process.env.CSRF_SECRET.length < 32) {
+    process.env.CSRF_SECRET = 'integration-test-secret-that-is-at-least-32-chars-long!!';
+}
+
+const originalSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const originalSupabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+process.env.NEXT_PUBLIC_SUPABASE_URL =
+    process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://test.supabase.co';
+process.env.SUPABASE_SERVICE_ROLE_KEY =
+    process.env.SUPABASE_SERVICE_ROLE_KEY || 'test-service-role-key';
+
 // ---------------------------------------------------------------------------
 // Mocks — HTTP boundary only
 // ---------------------------------------------------------------------------
@@ -158,6 +171,20 @@ describe('withRateLimit — integration', () => {
 
     afterEach(() => {
         jest.useRealTimers();
+    });
+
+    afterAll(() => {
+        if (originalSupabaseUrl === undefined) {
+            delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+        } else {
+            process.env.NEXT_PUBLIC_SUPABASE_URL = originalSupabaseUrl;
+        }
+
+        if (originalSupabaseServiceRoleKey === undefined) {
+            delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+        } else {
+            process.env.SUPABASE_SERVICE_ROLE_KEY = originalSupabaseServiceRoleKey;
+        }
     });
 
     // =======================================================================
