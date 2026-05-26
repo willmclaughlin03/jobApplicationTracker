@@ -11,12 +11,20 @@ const ORIGINAL_ENV = Object.fromEntries(
   STRIPE_ENV_VARS.map((envVarName) => [envVarName, process.env[envVarName]])
 );
 
+/**
+ * Clear Stripe-related env vars so each config test starts from a known baseline.
+ * Uses STRIPE_ENV_VARS and mutates process.env for isolated stripe.js loads.
+ */
 function resetStripeEnv() {
   for (const envVarName of STRIPE_ENV_VARS) {
     delete process.env[envVarName];
   }
 }
 
+/**
+ * Restore the Stripe env snapshot captured before the tests changed process.env.
+ * Uses ORIGINAL_ENV after resetStripeEnv so later tests inherit the original state.
+ */
 function restoreStripeEnv() {
   resetStripeEnv();
 
@@ -27,6 +35,10 @@ function restoreStripeEnv() {
   }
 }
 
+/**
+ * Seed the minimal valid Stripe config needed by happy-path module tests.
+ * Mutates process.env keys consumed by ../stripe.js and related runtime helpers.
+ */
 function setValidTestEnv() {
   process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test';
   process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
@@ -35,6 +47,10 @@ function setValidTestEnv() {
   process.env.STRIPE_WEBHOOK_SECRET_TEST = 'whsec_test_chunk2';
 }
 
+/**
+ * Load a fresh Stripe config module instance for isolated tests.
+ * Calls jest.resetModules() before requiring ../stripe.js so env changes are observed.
+ */
 function loadStripeModule() {
   jest.resetModules();
   return require('../stripe.js');
@@ -280,7 +296,9 @@ describe('stripe runtime foundation', () => {
       getActiveStripeWebhookSecret();
       throw new Error('Expected webhook secret lookup to fail closed');
     } catch (error) {
+      expect(error.name).toBe('WebhookVerifierNotConfiguredError');
       expect(error.code).toBe('WEBHOOK_VERIFIER_NOT_CONFIGURED');
+      expect(error.statusCode).toBe(503);
     }
   });
 });
@@ -371,7 +389,9 @@ describe('stripe runtime narrow module', () => {
 
     expect(firstError).toBeDefined();
     expect(secondError).toBe(firstError);
+    expect(firstError.name).toBe('StripeConfigError');
     expect(firstError.code).toBe('STRIPE_CONFIG_INVALID');
+    expect(firstError.statusCode).toBe(400);
     expect(firstError.message).toMatch(/missing STRIPE_SECRET_KEY/i);
 
     process.env.STRIPE_SECRET_KEY = 'sk_live_runtime_after_reset';
@@ -469,7 +489,9 @@ describe('stripe runtime narrow module', () => {
         });
         throw new Error('Expected webhook secret lookup to reject a malformed secret key');
       } catch (error) {
+        expect(error.name).toBe('StripeConfigError');
         expect(error.code).toBe('STRIPE_CONFIG_INVALID');
+        expect(error.statusCode).toBe(400);
         expect(error.message).toMatch(/invalid STRIPE_SECRET_KEY/i);
       }
     }

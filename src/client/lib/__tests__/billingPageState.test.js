@@ -20,6 +20,18 @@ describe('billingPageState', () => {
       });
     });
 
+    it('returns unavailable copy when a ready state has no billing status snapshot', () => {
+      expect(
+        getBillingStatusSummary({
+          billingStatus: null,
+          loadState: BILLING_PAGE_LOAD_STATES.READY,
+        })
+      ).toEqual({
+        title: 'Billing status unavailable',
+        description: 'We could not verify your local billing state right now. Refresh this page before starting checkout or opening the billing portal.',
+      });
+    });
+
     it('returns loading copy only while the billing status is still being fetched', () => {
       expect(
         getBillingStatusSummary({

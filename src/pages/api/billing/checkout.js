@@ -144,6 +144,19 @@ async function loadCheckoutCreationDependencies() {
   };
 }
 
+/**
+ * Handle authenticated billing Checkout creation requests.
+ *
+ * Purpose: validate the checkout body, confirm local billing eligibility, and
+ * create or reuse a Stripe-hosted Checkout Session for the requested plan.
+ * The body is parsed for plan and checkoutAttemptNonce before Stripe work.
+ *
+ * @param {import('next').NextApiRequest & { _rateLimitUser: { id: string, email?: string }, log: object }} req
+ * @param {import('next').NextApiResponse} res
+ *
+ * Side effects: claims and finalizes pending checkout rows, calls Stripe's
+ * Checkout Session API, and returns a redirect URL for the client to navigate.
+ */
 async function handler(req, res) {
   if (isBillingCheckoutDisabled()) {
     return sendError(

@@ -15,6 +15,14 @@ describe('/api/billing/status handler', () => {
   const mockClient = { from: jest.fn() };
   const mockLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
 
+  /**
+   * Create a mock billing-status GET request.
+   *
+   * Purpose: tests exercise the handler with Express-like request fields.
+   * Params/vars: no params; uses module-scoped mockUser, mockClient, and mockLog.
+   * Returns: request with method, _rateLimitUser, _supabaseClient, and log.
+   * Side effects/connections: relies on shared mocks reset by beforeEach.
+   */
   function createMockReq() {
     return {
       method: 'GET',
@@ -24,6 +32,15 @@ describe('/api/billing/status handler', () => {
     };
   }
 
+  /**
+   * Create a mock billing-status response.
+   *
+   * Purpose: tests assert response envelopes and cache headers without a real
+   * response object.
+   * Params/vars: no params; uses jest.fn() stubs and mockReturnThis() chaining.
+   * Returns: response with status, json, and setHeader mocks.
+   * Side effects/connections: mock calls are inspected by the status tests.
+   */
   function createMockRes() {
     return {
       status: jest.fn().mockReturnThis(),

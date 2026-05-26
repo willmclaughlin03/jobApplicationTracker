@@ -1,3 +1,4 @@
+const { EventEmitter } = require('events');
 const { Readable } = require('stream');
 
 const {
@@ -12,6 +13,24 @@ function createRequest(chunks) {
 }
 
 describe('readRawBody', () => {
+  it('rejects invalid request objects with a stable raw-body status code', async () => {
+    await expect(readRawBody(null)).rejects.toMatchObject({
+      name: 'RawBodyError',
+      code: 'RAW_BODY_REQUEST_INVALID',
+      statusCode: 400,
+    });
+  });
+
+  it('rejects invalid size caps with a stable raw-body status code', async () => {
+    const req = createRequest([]);
+
+    await expect(readRawBody(req, { maxBytes: 0 })).rejects.toMatchObject({
+      name: 'RawBodyError',
+      code: 'RAW_BODY_LIMIT_INVALID',
+      statusCode: 500,
+    });
+  });
+
   it('reads and caches the raw request body from a stream', async () => {
     const req = createRequest([Buffer.from('{"hello":"world"}')]);
 
@@ -35,6 +54,7 @@ describe('readRawBody', () => {
     req.rawBody = Buffer.alloc(6, 'a');
 
     await expect(readRawBody(req, { maxBytes: 5 })).rejects.toMatchObject({
+      name: 'RawBodyError',
       code: 'RAW_BODY_TOO_LARGE',
       maxBytes: 5,
       receivedBytes: 6,
@@ -71,6 +91,20 @@ describe('readRawBody', () => {
 
     expect(rawBody).toEqual(expectedBody);
     expect(req.rawBody).toEqual(expectedBody);
+  });
+
+  it('rejects aborted request streams with a stable raw-body status code', async () => {
+    const req = new EventEmitter();
+    req.headers = {};
+
+    const rawBodyPromise = readRawBody(req);
+    req.emit('aborted');
+
+    await expect(rawBodyPromise).rejects.toMatchObject({
+      name: 'RawBodyError',
+      code: 'RAW_BODY_ABORTED',
+      statusCode: 400,
+    });
   });
 
   it('uses the documented default body cap when no override is provided', () => {

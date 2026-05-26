@@ -36,6 +36,14 @@ describe('/api/billing/portal handler', () => {
   const mockClient = { from: jest.fn() };
   const mockLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
 
+  /**
+   * Create a mock billing-portal POST request.
+   *
+   * Purpose: tests exercise the handler with middleware-shaped request fields.
+   * No params; uses mockUser, mockClient, and mockLog from this suite.
+   *
+   * @returns {object} POST request with body, _rateLimitUser, _supabaseClient, and log.
+   */
   function createMockReq() {
     return {
       method: 'POST',
@@ -46,6 +54,14 @@ describe('/api/billing/portal handler', () => {
     };
   }
 
+  /**
+   * Create a chainable billing-portal response mock.
+   *
+   * Purpose: tests assert status/json response contracts without a real Next.js
+   * response object.
+   *
+   * @returns {object} response with jest.fn() status/json methods using mockReturnThis().
+   */
   function createMockRes() {
     return {
       status: jest.fn().mockReturnThis(),

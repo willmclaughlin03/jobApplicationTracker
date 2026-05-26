@@ -13,6 +13,23 @@ import {
   interpretCheckoutStatusPollResult,
 } from '../../client/lib/billingSuccessFlow.js';
 
+/**
+ * Normalize the Stripe Checkout Session query param from the router.
+ *
+ * Purpose: keep success-page polling tied to one session id string even when
+ * the query param is absent or repeated.
+ *
+ * Dependencies:
+ * - Next.js router query handling, where session_id may arrive as a string,
+ *   an array of strings, or undefined before router readiness settles.
+ *
+ * Params:
+ * - queryValue {string|string[]|undefined}: raw router.query.session_id value.
+ *
+ * Returns:
+ * - {string} the first session id value when present, otherwise an empty
+ *   string; no side effects.
+ */
 function getSessionId(queryValue) {
   if (Array.isArray(queryValue)) {
     return queryValue[0] ?? '';
@@ -21,6 +38,26 @@ function getSessionId(queryValue) {
   return typeof queryValue === 'string' ? queryValue : '';
 }
 
+/**
+ * Build the page copy for a billing success polling outcome.
+ *
+ * Purpose: centralize the rendered title, description, and support lines for
+ * each checkout-status outcome.
+ *
+ * Dependencies:
+ * - BILLING_SUCCESS_OUTCOMES defines the allowed outcome states.
+ * - checkoutState comes from checkout-status polling and determines whether
+ *   processing copy describes local billing lag or Stripe flow completion.
+ *
+ * Params:
+ * - outcome {string}: expected BILLING_SUCCESS_OUTCOMES value.
+ * - checkoutState {string}: current checkout state such as "pending", "free",
+ *   "active", or "error".
+ *
+ * Returns:
+ * - {{title: string, description?: string, supportLines?: string[]}} copy for
+ *   the current outcome; no side effects.
+ */
 function getOutcomeCopy(outcome, checkoutState) {
   switch (outcome) {
     case BILLING_SUCCESS_OUTCOMES.ACTIVE:
@@ -70,6 +107,29 @@ function getOutcomeCopy(outcome, checkoutState) {
   }
 }
 
+/**
+ * Render the authenticated billing success redirect page.
+ *
+ * Purpose: verify a Stripe Checkout redirect against local billing state before
+ * showing premium success or recovery copy.
+ *
+ * Dependencies:
+ * - useRouter supplies session_id from the query string and handles login
+ *   navigation for unauthenticated users.
+ * - useAuth gates polling until the caller is authenticated.
+ * - api posts to /api/billing/checkout-status, while billingSuccessFlow helpers
+ *   interpret checkoutState, retry delays, refresh cooldowns, and outcomes.
+ *
+ * Params:
+ * - none; this Next.js page reads auth, router query params, and polling state
+ *   from hooks rather than props.
+ *
+ * Returns:
+ * - JSX for the billing success, manual refresh, reauth, or recovery state.
+ * - side effects include redirecting unauthenticated users to /login, polling
+ *   checkout-status, updating checkoutState/outcome UI state, and managing
+ *   bounded retry/cooldown timers.
+ */
 export default function BillingSuccessPage() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();

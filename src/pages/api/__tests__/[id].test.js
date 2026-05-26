@@ -304,7 +304,10 @@ describe('[id] API handler', () => {
       expect(res.status).toHaveBeenCalledWith(200);
       expect(mockUpdateJob).toHaveBeenCalledWith(
         validUUID,
-        { status: 'Interview' },
+        expect.objectContaining({
+          status: 'Interview',
+          status_date: expect.any(String),
+        }),
         mockUser.id,
         undefined,
         noopLog

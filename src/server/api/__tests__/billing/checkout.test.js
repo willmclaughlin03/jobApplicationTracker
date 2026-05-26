@@ -88,6 +88,16 @@ describe('/api/billing/checkout handler', () => {
   };
   const defaultExpiresAtIso = '2030-03-16T00:00:00.000Z';
 
+  /**
+   * Build a mock HTTP POST request for Checkout route tests.
+   *
+   * Purpose: tests can vary the billing body or authenticated user while
+   * keeping the middleware-provided fields the handler expects.
+   *
+   * @param {object} body defaults to RESUME_TAILOR_MONTHLY plus checkoutAttemptNonce.
+   * @param {object} user defaults to mockUser.
+   * @returns {object} POST request with body, _rateLimitUser, _supabaseClient, and log.
+   */
   function createMockReq(
     body = {
       plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
@@ -104,6 +114,14 @@ describe('/api/billing/checkout handler', () => {
     };
   }
 
+  /**
+   * Create a chainable Checkout response mock.
+   *
+   * Purpose: tests assert status/json response contracts without a real Next.js
+   * response object.
+   *
+   * @returns {object} response with jest.fn() status/json methods using mockReturnThis().
+   */
   function createMockRes() {
     return {
       status: jest.fn().mockReturnThis(),

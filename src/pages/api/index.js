@@ -66,7 +66,7 @@ async function handlePost(req, res, user) {
         res,
         409,
         'STORAGE_LIMIT_EXCEEDED',
-        error.message || ERROR_MESSAGES.STORAGE_LIMIT_EXCEEDED
+        ERROR_MESSAGES.STORAGE_LIMIT_EXCEEDED
       );
     }
     return sendError(res, 400, 'ADD_FAILED', ERROR_MESSAGES.ADD_FAILED);

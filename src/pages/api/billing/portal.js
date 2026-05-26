@@ -7,6 +7,20 @@ import { buildAppUrl } from '../../../server/lib/appUrl.js';
 import { getBillingPortalConfigurationId } from '../../../server/lib/stripePortalConfig.js';
 import { getStripeClient } from '../../../server/lib/stripeRuntime.js';
 
+/**
+ * Handle authenticated billing portal session requests.
+ *
+ * Purpose: confirm local billing customer state and create a Stripe-hosted
+ * Billing Portal Session for the authenticated user. This route expects no
+ * request body fields beyond the authenticated request context.
+ *
+ * @param {import('next').NextApiRequest & { _rateLimitUser: { id: string }, _supabaseClient: object, log: object }} req
+ * @param {import('next').NextApiResponse} res
+ *
+ * Side effects: reads local billing state, calls Stripe's Billing Portal API,
+ * and returns either a redirect URL, 409 when no portal customer exists, or a
+ * fail-closed 503 response on local/Stripe failures.
+ */
 async function handler(req, res) {
   try {
     const billingStatus = await loadBillingStatusOrThrow(

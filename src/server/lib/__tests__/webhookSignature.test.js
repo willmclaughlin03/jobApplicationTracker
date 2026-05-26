@@ -13,12 +13,20 @@ const ORIGINAL_ENV = Object.fromEntries(
   STRIPE_ENV_VARS.map((envVarName) => [envVarName, process.env[envVarName]])
 );
 
+/**
+ * Clear Stripe-related env vars so webhook signature tests start from a known baseline.
+ * Uses STRIPE_ENV_VARS and mutates process.env before isolated module loads.
+ */
 function resetStripeEnv() {
   for (const envVarName of STRIPE_ENV_VARS) {
     delete process.env[envVarName];
   }
 }
 
+/**
+ * Restore the Stripe env snapshot captured before webhook signature tests changed it.
+ * Uses ORIGINAL_ENV after resetStripeEnv and mutates process.env for later test files.
+ */
 function restoreStripeEnv() {
   resetStripeEnv();
 
@@ -29,11 +37,19 @@ function restoreStripeEnv() {
   }
 }
 
+/**
+ * Seed the Stripe secrets required by webhook signature happy-path tests.
+ * Mutates process.env keys read by stripeRuntime and webhookSignature modules.
+ */
 function setValidTestEnv() {
   process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
   process.env.STRIPE_WEBHOOK_SECRET_TEST = 'whsec_test_chunk2';
 }
 
+/**
+ * Build a JSON Stripe event fixture for signature verification tests.
+ * overrides are merged into the event payload before it is stringified.
+ */
 function createEventPayload(overrides = {}) {
   return JSON.stringify({
     id: 'evt_chunk2',
@@ -51,6 +67,10 @@ function createEventPayload(overrides = {}) {
   });
 }
 
+/**
+ * Build a buffered request-like EventEmitter for raw-body signature tests.
+ * payload becomes rawBody and headers is set to an empty object.
+ */
 function createBufferedRequest(payload) {
   return Object.assign(new EventEmitter(), {
     headers: {},
@@ -58,12 +78,20 @@ function createBufferedRequest(payload) {
   });
 }
 
+/**
+ * Build a streaming request-like Readable for raw-body signature tests.
+ * payload is emitted as bytes; side effect: mutates req.headers to {}.
+ */
 function createStreamRequest(payload) {
   const req = Readable.from([Buffer.from(payload)]);
   req.headers = {};
   return req;
 }
 
+/**
+ * Load fresh Stripe runtime and webhook signature modules for env-isolated tests.
+ * Calls jest.resetModules() before requiring stripeRuntime and webhookSignature.
+ */
 function loadModules() {
   jest.resetModules();
 
@@ -171,7 +199,9 @@ describe('verifyWebhookSignature', () => {
     await expect(
       verifyWebhookSignature(createBufferedRequest(payload), { signature: 't=1,v1=invalid' })
     ).rejects.toMatchObject({
+      name: 'WebhookVerifierNotConfiguredError',
       code: 'WEBHOOK_VERIFIER_NOT_CONFIGURED',
+      statusCode: 503,
     });
   });
 

@@ -1,3 +1,13 @@
+/**
+ * Normalizes thrown values into a consistent Error-like object for UI handling.
+ *
+ * Purpose: Keeps client hooks and reporting callers working with a predictable
+ * { message, code, details } contract while preserving development diagnostics.
+ *
+ * @param {Error|Object|string|null|undefined} error - Thrown value or API error data.
+ * @param {string} fallbackMessage - Message used when error has no usable message.
+ * @returns {Object} Error-like object with message, code, and optional details.
+ */
 export function normalizeError(error, fallbackMessage) {
   if (!error) {
     return {
@@ -11,7 +21,7 @@ export function normalizeError(error, fallbackMessage) {
     message: error.message || fallbackMessage,
     code: error.code || null,
     details: process.env.NODE_ENV !== 'production'
-      ? { name: error.name, message: error.message, stack: error.stack }
+      ? { name: error.name, message: error.message || fallbackMessage }
       : null,
   };
 }
@@ -32,7 +42,7 @@ export const ERROR_MESSAGES = {
   VALIDATION_ERROR: 'Invalid request parameters.',
   RATE_LIMIT_EXCEEDED: 'Rate limit exceeded. Please try again later.',
   SERVICE_UNAVAILABLE: 'Service temporarily unavailable. Please try again later.',
-  STORAGE_LIMIT_EXCEEDED: 'You have reached the maximum of 300 job entries. Please delete some entries to add more.',
+  STORAGE_LIMIT_EXCEEDED: 'You have reached the maximum job entries for your plan. Please delete entries or upgrade to add more.',
   CSRF_VALIDATION_FAILED: 'Request validation failed. Please refresh and try again.',
   PASSWORD_RESET_SENT: 'If an account exists with that email, a password reset link has been sent.',
   PASSWORD_RESET_FAILED: 'Failed to reset password. Please try again.',

@@ -188,6 +188,34 @@ function setRateLimitHeaders(res, rateLimitResult){
 }
 
 /**
+ * Performs the rate-limit lookup for the resolved request identity.
+ *
+ * Purpose: keep admin-route probing fallback close to the limiter call while
+ * preserving route-level authorization checks such as requireAdmin().
+ *
+ * @param {import('next').NextApiRequest} req - Request carrying _rateLimitUser when authenticated
+ * @param {string} identifier - User or IP rate-limit key
+ * @param {string} operation - Normalized route operation
+ * @returns {Promise<object>} checkRateLimit() result or fail-closed unavailable sentinel
+ */
+async function performRateLimitCheck(req, identifier, operation) {
+    const isAdminOperation = operation === OPERATIONS.ADMIN_READ || operation === OPERATIONS.ADMIN_WRITE;
+    const isAdminUser = req._rateLimitUser?.app_metadata?.role === 'admin';
+    const tier = resolveRateLimitTier(req._rateLimitUser, operation);
+
+    // Non-admin probing an admin route: fall back to AUTH quota so repeated probing
+    // is throttled (FREE tier has no admin_read/admin_write limits).
+    // The 403 from requireAdmin() still blocks access; this adds rate-limit teeth.
+    const effectiveOperation = (isAdminOperation && !isAdminUser) ? OPERATIONS.AUTH : operation;
+
+    try {
+        return await checkRateLimit(identifier, tier, effectiveOperation);
+    } catch(error) {
+        return { success: false, unavailable: true };
+    }
+}
+
+/**
  * Rate limiting middleware wrapper for Next.js API handlers
  *
  * Applies per-user or per-IP rate limiting before handler execution.
@@ -340,20 +368,7 @@ export function withRateLimit(handler, options = {}){
             }
 
             if (!rateLimitResult?.skipped) {
-            const isAdminOperation = operation === OPERATIONS.ADMIN_READ || operation === OPERATIONS.ADMIN_WRITE;
-            const isAdminUser = req._rateLimitUser?.app_metadata?.role === 'admin';
-            const tier = resolveRateLimitTier(req._rateLimitUser, operation);
-
-            // Non-admin probing an admin route: fall back to AUTH quota so repeated probing
-            // is throttled (FREE tier has no admin_read/admin_write limits).
-            // The 403 from requireAdmin() still blocks access — this adds rate-limit teeth.
-            const effectiveOperation = (isAdminOperation && !isAdminUser) ? OPERATIONS.AUTH : operation;
-
-            try {
-                rateLimitResult = await checkRateLimit(identifier, tier, effectiveOperation);
-            } catch(error) {
-                rateLimitResult = { success: false, unavailable: true };
-            }
+                rateLimitResult = await performRateLimitCheck(req, identifier, operation);
             }
         } catch(error) {
             // Safety net for unexpected errors outside checkRateLimit (e.g. auth layer)

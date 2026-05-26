@@ -1,5 +1,24 @@
 import Link from 'next/link';
 
+/**
+ * Render the billing checkout cancel redirect page.
+ *
+ * Purpose: show a fail-closed cancellation state after Stripe sends a user
+ * back through /billing/cancel without granting entitlement from the redirect
+ * alone.
+ *
+ * Dependencies:
+ * - Next.js Link for route-safe navigation back to /billing and the dashboard.
+ * - /api/billing/checkout configures Stripe Checkout with this page as the
+ *   cancelUrl, so the copy stays tied to the billing redirect flow.
+ *
+ * Params:
+ * - none; this page component does not receive props or route params.
+ *
+ * Returns:
+ * - static JSX for the cancellation message and navigation links.
+ * - no API calls, auth context updates, or entitlement side effects.
+ */
 export default function BillingCancelPage() {
   return (
     <div className="min-h-screen bg-gray-100 flex items-center justify-center px-6 py-12">

@@ -150,7 +150,9 @@ function redactStripeId(id) {
  * Redact a single drain result before writing it to command output.
  *
  * Purpose: preserve row-level outcomes and local ids for incident accounting
- * while hiding full provider resource ids from durable command logs.
+ * while hiding full provider resource ids from durable command logs. Only
+ * allowlisted keys are emitted so future service fields are not printed by
+ * accident.
  *
  * @param {unknown} result
  * @returns {object}
@@ -163,8 +165,12 @@ function redactDrainResult(result) {
   }
 
   return {
-    ...result,
+    localCheckoutSessionId: result.localCheckoutSessionId ?? null,
     stripeCheckoutSessionId: redactStripeId(result.stripeCheckoutSessionId),
+    outcome: result.outcome ?? null,
+    localUpdated: result.localUpdated ?? null,
+    syncOutcome: result.syncOutcome ?? null,
+    errorCode: result.errorCode ?? null,
   };
 }
 

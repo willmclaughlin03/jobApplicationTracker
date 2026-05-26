@@ -138,6 +138,15 @@ const hasInfra = Boolean(
   && USER_B_EMAIL
 );
 
+/**
+ * Normalize exec_sql RPC payloads into row arrays.
+ *
+ * Purpose: the test-only SQL helper may return arrays, JSON strings, { rows },
+ * or a single object depending on database/helper shape.
+ *
+ * @param {unknown} data raw serviceClient.rpc('exec_sql') data.
+ * @returns {object[]} normalized result rows; no side effects.
+ */
 function normalizeExecSqlRows(data) {
   if (Array.isArray(data)) {
     return data;
@@ -163,6 +172,15 @@ function normalizeExecSqlRows(data) {
   return [];
 }
 
+/**
+ * Normalize billing RPC payloads that may be returned as JSON strings.
+ *
+ * Purpose: PostgREST/RPC responses can encode structured function results as
+ * text, so tests parse JSON when possible while preserving scalar values.
+ *
+ * @param {unknown} data raw RPC data from callBillingRpc.
+ * @returns {unknown} parsed JSON when valid, otherwise the original value.
+ */
 function normalizeRpcResult(data) {
   if (typeof data === 'string') {
     try {
@@ -223,6 +241,19 @@ function isExecSqlHelperMissingError(error) {
     && /schema cache|could not find the function|PGRST/i.test(message);
 }
 
+/**
+ * Sign in an integration test user with a Supabase magic-link token.
+ *
+ * Purpose: RLS assertions need real anon clients authenticated as seeded users,
+ * while setup still uses admin auth to mint the test login link.
+ *
+ * @param {Function} createClient Supabase client factory.
+ * @param {object} adminClient service-role client with auth.admin access.
+ * @param {string} email test user email to authenticate.
+ * @returns {Promise<object>} authenticated anon Supabase client.
+ * Side effects/connections: calls admin auth generateLink and verifyOtp against
+ * TEST_URL/TEST_ANON_KEY without persisting a browser session.
+ */
 async function signInAsUser(createClient, adminClient, email) {
   const { data: linkData, error: linkError } = await adminClient.auth.admin.generateLink({
     type: 'magiclink',
@@ -264,6 +295,18 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
   const cleanupEventIds = new Set();
   const cleanupUserIds = new Set();
 
+  /**
+   * Execute privileged SQL through the test-only exec_sql RPC.
+   *
+   * Purpose: migration setup and schema assertions need service-role SQL access
+   * while keeping helper result shapes normalized for callers.
+   *
+   * @param {string} query SQL statement or migration body to run.
+   * @returns {Promise<object[]>} normalized row array from normalizeExecSqlRows().
+   * Side effects/connections: uses serviceClient.rpc('exec_sql'), retries
+   * PostgREST schema-cache lag, waits between retries, and throws setup
+   * guidance when the helper RPC is missing.
+   */
   async function execSql(query) {
     let lastError = null;
 
@@ -537,6 +580,20 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
     expect(statusConstraintDefinition).not.toMatch(/trialing/i);
   }
 
+  /**
+   * Ensure the billing migration set required by this suite is installed.
+   *
+   * Purpose: the integration database may already have base tables, so setup
+   * applies only missing additive migrations or performs a full 005-013 apply.
+   *
+   * @returns {Promise<void>}
+   * Important vars: existingBaseTables gates partial-schema errors,
+   * missingAdditiveMigrations drives targeted applies, and appliedRpcMigration
+   * decides whether PostgREST schema reload is needed.
+   * Side effects/connections: reads migration SQL files, calls
+   * serviceClient.rpc('exec_sql'), reloads schema for RPC migrations, and
+   * asserts the installed billing shape.
+   */
   async function ensureBillingMigrationsApplied() {
     const tableState = await getBillingTableState();
     const existingBaseTables = [
@@ -639,10 +696,50 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
     expect(result.error).toBeNull();
   }
 
+  /**
+   * Remove billing rows owned by a test user.
+   *
+   * Purpose: baseline and temporary users need deterministic cleanup across all
+   * billing tables without deleting the auth user itself.
+   *
+   * @param {string} userId Supabase auth user id whose billing rows are removed.
+   * @returns {Promise<void>}
+   * Side effects/connections: deletes rows through serviceClient from
+   * billing_checkout_sessions, billing_subscriptions, and billing_customers;
+   * throws on cleanup errors or unexpected delete statuses so leaked state does
+   * not carry into later tests. Callers manage cleanupUserIds and admin auth
+   * deletion separately.
+   */
   async function cleanupBillingRowsForUser(userId) {
-    await serviceClient.from('billing_checkout_sessions').delete().eq('user_id', userId);
-    await serviceClient.from('billing_subscriptions').delete().eq('user_id', userId);
-    await serviceClient.from('billing_customers').delete().eq('user_id', userId);
+    const expectedDeleteStatuses = new Set([200, 204]);
+    const deleteResults = [
+      [
+        'billing_checkout_sessions',
+        await serviceClient.from('billing_checkout_sessions').delete().eq('user_id', userId),
+      ],
+      [
+        'billing_subscriptions',
+        await serviceClient.from('billing_subscriptions').delete().eq('user_id', userId),
+      ],
+      [
+        'billing_customers',
+        await serviceClient.from('billing_customers').delete().eq('user_id', userId),
+      ],
+    ];
+
+    for (const [tableName, result] of deleteResults) {
+      if (result.error) {
+        throw new Error(
+          `Failed to clean up ${tableName} rows for ${userId}: ${result.error.message}`
+        );
+      }
+
+      if (!expectedDeleteStatuses.has(result.status)) {
+        throw new Error(
+          `Unexpected cleanup status ${result.status} for ${tableName} rows owned by ${userId}`
+        );
+      }
+    }
   }
 
   async function clearBaselineRows() {

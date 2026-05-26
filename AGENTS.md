@@ -1,12 +1,18 @@
 # Claude Development Guidelines
 
+## Environment Notes
+- Current environment is pre-production only.
+- There are currently no paid users in this environment.
+- Current fail-closed local billing entitlement behavior does not create a live paid-user access or premium-storage regression in this environment.
+- Remaining Stripe work for Chunks 5, and repo-facing Chunk 6 is still required before any production rollout that serves paid users.
+
 ## 1. Code Organization
 - Small, focused modules with single responsibilities
 - Follow existing project structure, patterns, and naming conventions
 - Reuse existing utilities; analyze codebase before creating new files
 
 ## 2. Security
-- **NEVER read or Bash `.env` files directly** — assume `process.env` availability, always ask for permission
+- **NEVER read `.env` files directly** — assume `process.env` availability
 - **NEVER log environment variables or secrets**
 - Use parameterized queries (no string concatenation for SQL)
 - Sanitize all user input; validate and escape output
@@ -24,6 +30,7 @@
 
 ## 5. Documentation
 - Document important functions: purpose, connections/dependencies, params, returns
+- Every new function written must have a short comment block above it in the repo's existing style. Include what the function is for, why it exists, key params/vars, and important side effects or connections. Apply this to internal helpers too, not just exported functions.
 - Explain complex business logic and side effects
 - Use `docs/feature-memory.md` as a quick-running log of changes; briefly note the feature or what was added whenever work is completed
 - After every `git push`, update `docs/fixes.md` with a brief note covering the issue, the approach taken, and how it was fixed
@@ -31,6 +38,12 @@
 ## 6. Permission to Edit
 - **NEVER make edits without explicit permission**
 - Present proposed changes and rationale; wait for confirmation
+- Before making any file edits, provide:
+- the files that would be changed
+- a short summary of the planned edits
+- any tests or commands that would be run
+- Wait for explicit approval before editing files
+- If the scope changes after approval, stop and ask for approval again
 
 ## 7. Scalability
 - Design stateless, horizontally scalable services

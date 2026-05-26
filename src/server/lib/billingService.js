@@ -808,7 +808,6 @@ export function formatStripeIdForLog(id, level) {
   if (!normalizedId) {
     return null;
   }
-
   const normalizedLevel = normalizeLogLevel(level);
   const stripeMode = getConfiguredStripeMode();
   const allowFullIds =

@@ -1,10 +1,27 @@
 export const MAX_WEBHOOK_RAW_BODY_BYTES = 256 * 1024;
 
+const RAW_BODY_ERROR_STATUS_CODES = {
+  RAW_BODY_REQUEST_INVALID: 400,
+  RAW_BODY_LIMIT_INVALID: 500,
+  RAW_BODY_ABORTED: 400,
+};
+
+/**
+ * RawBodyError carries stable HTTP metadata for raw-body read failures.
+ * details are merged last so callers can override defaults such as statusCode.
+ */
+class RawBodyError extends Error {
+  constructor(message, code, details = {}) {
+    super(message);
+    this.name = 'RawBodyError';
+    this.code = code;
+    this.statusCode = RAW_BODY_ERROR_STATUS_CODES[code];
+    Object.assign(this, details);
+  }
+}
+
 function createRawBodyError(message, code, details = {}) {
-  const error = new Error(message);
-  error.code = code;
-  Object.assign(error, details);
-  return error;
+  return new RawBodyError(message, code, details);
 }
 
 /**

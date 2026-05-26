@@ -31,6 +31,8 @@
  */
 
 // Must set CSRF_SECRET before requiring csrf.js.
+const originalCsrfSecret = process.env.CSRF_SECRET;
+
 if (!process.env.CSRF_SECRET || process.env.CSRF_SECRET.length < 32) {
     process.env.CSRF_SECRET = 'integration-test-secret-that-is-at-least-32-chars-long!!';
 }
@@ -174,6 +176,12 @@ describe('withRateLimit — integration', () => {
     });
 
     afterAll(() => {
+        if (originalCsrfSecret === undefined) {
+            delete process.env.CSRF_SECRET;
+        } else {
+            process.env.CSRF_SECRET = originalCsrfSecret;
+        }
+
         if (originalSupabaseUrl === undefined) {
             delete process.env.NEXT_PUBLIC_SUPABASE_URL;
         } else {
