@@ -12,6 +12,7 @@ const mockLoadBillingStatusOrThrow = jest.fn();
 const mockWaitForPendingCheckoutSessionOpen = jest.fn();
 const mockBuildAppUrl = jest.fn((path) => `https://app.example.test${path}`);
 const mockGetPriceIdForPlan = jest.fn();
+const mockGetStripeClient = jest.fn();
 const mockCreateCheckoutSession = jest.fn();
 
 jest.mock('../../../lib/billingService.js', () => ({
@@ -30,9 +31,30 @@ jest.mock('../../../lib/billingService.js', () => ({
   waitForPendingCheckoutSessionOpen: mockWaitForPendingCheckoutSessionOpen,
 }));
 
+jest.mock('../../../lib/appUrl.js', () => ({
+  buildAppUrl: mockBuildAppUrl,
+}));
+
+jest.mock('../../../lib/stripeCheckoutConfig.js', () => ({
+  getPriceIdForPlan: mockGetPriceIdForPlan,
+}));
+
+jest.mock('../../../lib/stripeRuntime.js', () => ({
+  getStripeClient: mockGetStripeClient,
+}));
+
+mockGetStripeClient.mockReturnValue({
+  checkout: {
+    sessions: {
+      create: mockCreateCheckoutSession,
+    },
+  },
+});
+
 jest.mock('../../../lib/stripe.js', () => ({
   buildAppUrl: mockBuildAppUrl,
   getPriceIdForPlan: mockGetPriceIdForPlan,
+  getStripeClient: mockGetStripeClient,
   stripe: {
     checkout: {
       sessions: {
@@ -46,6 +68,7 @@ const { BILLING_PLANS } = require('../../../../shared/constants/billing.js');
 const handler = require('../../../../pages/api/billing/checkout.js').default;
 
 describe('/api/billing/checkout handler', () => {
+  const originalCheckoutDisabled = process.env.BILLING_CHECKOUT_DISABLED;
   const mockUser = { id: 'user-billing-checkout', email: 'test@example.com' };
   const mockClient = { from: jest.fn() };
   const mockLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
@@ -65,6 +88,16 @@ describe('/api/billing/checkout handler', () => {
   };
   const defaultExpiresAtIso = '2030-03-16T00:00:00.000Z';
 
+  /**
+   * Build a mock HTTP POST request for Checkout route tests.
+   *
+   * Purpose: tests can vary the billing body or authenticated user while
+   * keeping the middleware-provided fields the handler expects.
+   *
+   * @param {object} body defaults to RESUME_TAILOR_MONTHLY plus checkoutAttemptNonce.
+   * @param {object} user defaults to mockUser.
+   * @returns {object} POST request with body, _rateLimitUser, _supabaseClient, and log.
+   */
   function createMockReq(
     body = {
       plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
@@ -81,6 +114,14 @@ describe('/api/billing/checkout handler', () => {
     };
   }
 
+  /**
+   * Create a chainable Checkout response mock.
+   *
+   * Purpose: tests assert status/json response contracts without a real Next.js
+   * response object.
+   *
+   * @returns {object} response with jest.fn() status/json methods using mockReturnThis().
+   */
   function createMockRes() {
     return {
       status: jest.fn().mockReturnThis(),
@@ -90,6 +131,18 @@ describe('/api/billing/checkout handler', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    if (originalCheckoutDisabled === undefined) {
+      delete process.env.BILLING_CHECKOUT_DISABLED;
+    } else {
+      process.env.BILLING_CHECKOUT_DISABLED = originalCheckoutDisabled;
+    }
+    mockGetStripeClient.mockReturnValue({
+      checkout: {
+        sessions: {
+          create: mockCreateCheckoutSession,
+        },
+      },
+    });
     mockCanStartCheckout.mockReturnValue(true);
     mockClaimPendingCheckoutSession.mockResolvedValue({
       outcome: 'claimed',
@@ -110,8 +163,67 @@ describe('/api/billing/checkout handler', () => {
     mockHashUserIdForIdempotency.mockReturnValue('hash1234567890hash1234567890');
     mockLoadBillingStatusOrThrow.mockResolvedValue({ hasSubscription: false, status: null });
     mockWaitForPendingCheckoutSessionOpen.mockResolvedValue(null);
+    mockBuildAppUrl.mockImplementation((path) => `https://app.example.test${path}`);
     mockGetPriceIdForPlan.mockReturnValue('price_tailor_monthly');
     mockCreateCheckoutSession.mockResolvedValue(defaultCheckoutSession);
+  });
+
+  afterAll(() => {
+    if (originalCheckoutDisabled === undefined) {
+      delete process.env.BILLING_CHECKOUT_DISABLED;
+      return;
+    }
+
+    process.env.BILLING_CHECKOUT_DISABLED = originalCheckoutDisabled;
+  });
+
+  it('returns the emergency disabled response before request validation or billing work', async () => {
+    process.env.BILLING_CHECKOUT_DISABLED = 'true';
+    const req = createMockReq({
+      plan: 'bad-plan',
+      checkoutAttemptNonce: 'not-a-valid-nonce',
+    });
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockLoadBillingStatusOrThrow).not.toHaveBeenCalled();
+    expect(mockClaimPendingCheckoutSession).not.toHaveBeenCalled();
+    expect(mockGetOrCreateStripeCustomer).not.toHaveBeenCalled();
+    expect(mockGetPriceIdForPlan).not.toHaveBeenCalled();
+    expect(mockBuildAppUrl).not.toHaveBeenCalled();
+    expect(mockGetStripeClient).not.toHaveBeenCalled();
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'BILLING_CHECKOUT_DISABLED',
+      })
+    );
+  });
+
+  it('returns disabled even when Checkout-only config helpers would fail if called', async () => {
+    process.env.BILLING_CHECKOUT_DISABLED = 'true';
+    mockGetPriceIdForPlan.mockImplementation(() => {
+      throw Object.assign(new Error('missing price'), { code: 'STRIPE_CONFIG_INVALID' });
+    });
+    mockBuildAppUrl.mockImplementation(() => {
+      throw Object.assign(new Error('missing app url'), { code: 'STRIPE_CONFIG_INVALID' });
+    });
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockGetPriceIdForPlan).not.toHaveBeenCalled();
+    expect(mockBuildAppUrl).not.toHaveBeenCalled();
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'BILLING_CHECKOUT_DISABLED',
+      })
+    );
   });
 
   it('rejects invalid billing request bodies', async () => {
@@ -252,6 +364,7 @@ describe('/api/billing/checkout handler', () => {
       mode: 'subscription',
       customer: 'cus_checkout_123',
       client_reference_id: mockUser.id,
+      payment_method_types: ['card'],
       line_items: [
         {
           price: 'price_tailor_monthly',
@@ -277,6 +390,31 @@ describe('/api/billing/checkout handler', () => {
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
         data: { url: defaultCheckoutSession.url },
+      })
+    );
+  });
+
+  it('does not create a Stripe customer when Checkout config fails after a claim', async () => {
+    mockGetPriceIdForPlan.mockImplementation(() => {
+      throw Object.assign(new Error('missing price'), { code: 'STRIPE_CONFIG_INVALID' });
+    });
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockClaimPendingCheckoutSession).toHaveBeenCalled();
+    expect(mockGetOrCreateStripeCustomer).not.toHaveBeenCalled();
+    expect(mockGetStripeClient).not.toHaveBeenCalled();
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+    expect(mockFailPendingCheckoutSession).toHaveBeenCalledWith(
+      { userId: mockUser.id, id: defaultPendingSession.id },
+      mockLog
+    );
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'CHECKOUT_SESSION_FAILED',
       })
     );
   });

@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "billing:drain-checkout": "node scripts/billing-drain-checkout-sessions.mjs",
     "start": "next start",
     "test": "jest",
     "test:watch": "jest --watch",

@@ -8,13 +8,13 @@ describe('billingPageActions', () => {
   it('normalizes redirect responses into a redirect URL or a concrete error message', () => {
     expect(
       resolveBillingRedirectResult({
-        result: { data: { data: { url: 'https://billing.example.test' } }, error: null },
+        result: { data: { data: { url: 'https://billing.stripe.com/session_123' } }, error: null },
         requestFailureMessage: 'request failed',
         fallbackApiFailureMessage: 'api failed',
         missingUrlMessage: 'missing url',
       })
     ).toEqual({
-      redirectUrl: 'https://billing.example.test',
+      redirectUrl: 'https://billing.stripe.com/session_123',
       errorMessage: null,
     });
 
@@ -31,6 +31,44 @@ describe('billingPageActions', () => {
     });
   });
 
+  it('rejects unsafe redirect URLs before returning them to callers', () => {
+    expect(
+      resolveBillingRedirectResult({
+        result: { data: { data: { url: 'javascript:alert(1)' } }, error: null },
+        requestFailureMessage: 'request failed',
+        fallbackApiFailureMessage: 'api failed',
+        missingUrlMessage: 'missing url',
+      })
+    ).toEqual({
+      redirectUrl: null,
+      errorMessage: 'missing url',
+    });
+
+    expect(
+      resolveBillingRedirectResult({
+        result: { data: { data: { url: 'https://checkout.stripe.example/session_123' } }, error: null },
+        requestFailureMessage: 'request failed',
+        fallbackApiFailureMessage: 'api failed',
+        missingUrlMessage: 'missing url',
+      })
+    ).toEqual({
+      redirectUrl: null,
+      errorMessage: 'missing url',
+    });
+
+    expect(
+      resolveBillingRedirectResult({
+        result: { data: { data: { url: 'http://checkout.stripe.com/session_123' } }, error: null },
+        requestFailureMessage: 'request failed',
+        fallbackApiFailureMessage: 'api failed',
+        missingUrlMessage: 'missing url',
+      })
+    ).toEqual({
+      redirectUrl: null,
+      errorMessage: 'missing url',
+    });
+  });
+
   it('keeps checkout loading active while redirect handoff is attempted successfully', async () => {
     const setActionLoading = jest.fn();
     const setErrorMessage = jest.fn();
@@ -38,7 +76,7 @@ describe('billingPageActions', () => {
 
     await runBillingPageRedirectAction({
       action: BILLING_PAGE_ACTIONS.CHECKOUT,
-      request: async () => ({ data: { data: { url: 'https://checkout.example.test' } }, error: null }),
+      request: async () => ({ data: { data: { url: 'https://checkout.stripe.com/session_123' } }, error: null }),
       setActionLoading,
       setErrorMessage,
       requestFailureMessage: 'Checkout request failed',
@@ -51,7 +89,7 @@ describe('billingPageActions', () => {
     expect(setActionLoading).toHaveBeenNthCalledWith(1, BILLING_PAGE_ACTIONS.CHECKOUT);
     expect(setActionLoading).not.toHaveBeenCalledWith('');
     expect(setErrorMessage).toHaveBeenCalledWith('');
-    expect(navigate).toHaveBeenCalledWith('https://checkout.example.test');
+    expect(navigate).toHaveBeenCalledWith('https://checkout.stripe.com/session_123');
   });
 
   it('keeps portal loading active while redirect handoff is attempted successfully', async () => {
@@ -61,7 +99,7 @@ describe('billingPageActions', () => {
 
     await runBillingPageRedirectAction({
       action: BILLING_PAGE_ACTIONS.PORTAL,
-      request: async () => ({ data: { data: { url: 'https://portal.example.test' } }, error: null }),
+      request: async () => ({ data: { data: { url: 'https://billing.stripe.com/session_123' } }, error: null }),
       setActionLoading,
       setErrorMessage,
       requestFailureMessage: 'Portal request failed',
@@ -74,7 +112,29 @@ describe('billingPageActions', () => {
     expect(setActionLoading).toHaveBeenNthCalledWith(1, BILLING_PAGE_ACTIONS.PORTAL);
     expect(setActionLoading).not.toHaveBeenCalledWith('');
     expect(setErrorMessage).toHaveBeenCalledWith('');
-    expect(navigate).toHaveBeenCalledWith('https://portal.example.test');
+    expect(navigate).toHaveBeenCalledWith('https://billing.stripe.com/session_123');
+  });
+
+  it('clears loading and skips navigation for rejected redirect URLs', async () => {
+    const setActionLoading = jest.fn();
+    const setErrorMessage = jest.fn();
+    const navigate = jest.fn();
+
+    await runBillingPageRedirectAction({
+      action: BILLING_PAGE_ACTIONS.CHECKOUT,
+      request: async () => ({ data: { data: { url: 'https://evil.example.test/session_123' } }, error: null }),
+      setActionLoading,
+      setErrorMessage,
+      requestFailureMessage: 'Checkout request failed',
+      fallbackApiFailureMessage: 'Checkout API failed',
+      missingUrlMessage: 'Checkout missing URL',
+      navigationFailedMessage: 'Checkout navigation failed',
+      navigate,
+    });
+
+    expect(setActionLoading).toHaveBeenCalledWith('');
+    expect(setErrorMessage).toHaveBeenCalledWith('Checkout missing URL');
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it('clears loading for request failures, API failures, and missing redirect URLs', async () => {
@@ -128,7 +188,7 @@ describe('billingPageActions', () => {
 
     await runBillingPageRedirectAction({
       action: BILLING_PAGE_ACTIONS.PORTAL,
-      request: async () => ({ data: { data: { url: 'https://portal.example.test' } }, error: null }),
+      request: async () => ({ data: { data: { url: 'https://billing.stripe.com/session_123' } }, error: null }),
       setActionLoading,
       setErrorMessage,
       requestFailureMessage: 'Portal request failed',

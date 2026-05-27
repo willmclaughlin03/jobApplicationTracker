@@ -7,7 +7,7 @@
  *
  * Connects to: src/server/lib/csrf.js, src/shared/constants/csrf.js
  *
- * Requires: CSRF_SECRET env var (loaded from .env via jest.setup.js),
+ * Requires: CSRF_SECRET env var or the deterministic fallback below,
  *           NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY env vars
  * Run with: npm run test:integration
  *

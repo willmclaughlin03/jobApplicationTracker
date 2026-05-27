@@ -17,6 +17,25 @@ import {
 import { BILLING_PLANS } from '../../shared/constants/billing.js';
 import { ERROR_MESSAGES } from '../../shared/errors.js';
 
+/**
+ * Format a billing period timestamp for display in the billing summary.
+ *
+ * Purpose: keep nullable or malformed billing dates from rendering as invalid
+ * dates in the page UI.
+ *
+ * Dependencies:
+ * - JavaScript Date and toLocaleString() for browser-local date formatting.
+ * - BillingPage uses this helper when rendering currentPeriodEnd from
+ *   /api/billing/status.
+ *
+ * Params:
+ * - value {string|number|Date|null|undefined}: raw billing timestamp from the
+ *   local billing status response.
+ *
+ * Returns:
+ * - {string} formatted local date text, or "Not set" when the value is absent
+ *   or cannot be parsed as a date.
+ */
 function formatDate(value) {
   if (!value) {
     return 'Not set';
@@ -56,6 +75,31 @@ function createCheckoutAttemptNonce() {
   throw new Error('Secure checkout nonce generation is unavailable');
 }
 
+/**
+ * Render the authenticated billing management page.
+ *
+ * Purpose: show the caller's canonical local billing status and route checkout
+ * or portal actions through server-created billing redirects.
+ *
+ * Dependencies:
+ * - useAuth for auth state and sign-out handling, useRouter for login
+ *   navigation, and ProfileDropdown for the signed-in page header.
+ * - api calls /api/billing/status, /api/billing/checkout, and
+ *   /api/billing/portal; billingPageState and billingPageActions keep page
+ *   copy, capability checks, and redirect safety centralized.
+ * - BILLING_PLANS and ERROR_MESSAGES provide the checkout plan id and shared
+ *   failure copy.
+ *
+ * Params:
+ * - none; this Next.js page reads auth, router, and billing state from hooks
+ *   and API responses rather than props.
+ *
+ * Returns:
+ * - JSX for the billing status, checkout, and portal controls.
+ * - side effects include redirecting unauthenticated users to /login, loading
+ *   billing status, signing out unauthorized sessions, and handing successful
+ *   checkout or portal actions to the backend-provided redirect URL.
+ */
 export default function BillingPage() {
   const router = useRouter();
   const { user, loading: authLoading, signOut } = useAuth();
@@ -87,41 +131,53 @@ export default function BillingPage() {
       setLoading(true);
       setLoadState(BILLING_PAGE_LOAD_STATES.LOADING);
       setErrorMessage('');
-      const result = await api.get('/api/billing/status');
 
-      if (isCancelled) {
-        return;
-      }
+      try {
+        const result = await api.get('/api/billing/status');
 
-      if (
-        result.error === ERROR_MESSAGES.UNAUTHORIZED
-        || result.meta?.status === 401
-        || (result.data?.error === 'UNAUTHORIZED' && result.data?.status === 401)
-      ) {
-        await signOut();
-        router.replace('/login');
-        return;
-      }
+        if (isCancelled) {
+          return;
+        }
 
-      if (result.error) {
+        if (
+          result.error === ERROR_MESSAGES.UNAUTHORIZED
+          || result.meta?.status === 401
+          || (result.data?.error === 'UNAUTHORIZED' && result.data?.status === 401)
+        ) {
+          await signOut();
+          router.replace('/login');
+          return;
+        }
+
+        if (result.error) {
+          setBillingStatus(null);
+          setLoadState(BILLING_PAGE_LOAD_STATES.ERROR);
+          setErrorMessage(ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+          setLoading(false);
+          return;
+        }
+
+        if (result.data?.error) {
+          setBillingStatus(null);
+          setLoadState(BILLING_PAGE_LOAD_STATES.ERROR);
+          setErrorMessage(result.data.message || 'Failed to load billing status.');
+          setLoading(false);
+          return;
+        }
+
+        setBillingStatus(result.data?.data ?? null);
+        setLoadState(BILLING_PAGE_LOAD_STATES.READY);
+        setLoading(false);
+      } catch {
+        if (isCancelled) {
+          return;
+        }
+
         setBillingStatus(null);
         setLoadState(BILLING_PAGE_LOAD_STATES.ERROR);
         setErrorMessage(ERROR_MESSAGES.SERVICE_UNAVAILABLE);
         setLoading(false);
-        return;
       }
-
-      if (result.data?.error) {
-        setBillingStatus(null);
-        setLoadState(BILLING_PAGE_LOAD_STATES.ERROR);
-        setErrorMessage(result.data.message || 'Failed to load billing status.');
-        setLoading(false);
-        return;
-      }
-
-      setBillingStatus(result.data?.data ?? null);
-      setLoadState(BILLING_PAGE_LOAD_STATES.READY);
-      setLoading(false);
     }
 
     loadBillingStatus();

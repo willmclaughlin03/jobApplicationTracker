@@ -15,9 +15,24 @@ import {
   PENDING_CHECKOUT_SESSION_OUTCOMES,
   waitForPendingCheckoutSessionOpen,
 } from '../../../server/lib/billingService.js';
-import { buildAppUrl, getPriceIdForPlan, stripe } from '../../../server/lib/stripe.js';
 
 const authenticatedBillingEmailSchema = z.string().trim().email().max(320);
+const BILLING_CHECKOUT_DISABLED_ENV_VAR = 'BILLING_CHECKOUT_DISABLED';
+
+/**
+ * Decide whether new Checkout Session creation is emergency-disabled.
+ *
+ * Purpose: operators need a deploy/env-level halt that short-circuits before
+ * body validation, local billing reads, pending-session claims, customer
+ * creation, Checkout price resolution, or Stripe Checkout API calls.
+ *
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {boolean}
+ */
+function isBillingCheckoutDisabled(env = process.env) {
+  return typeof env?.[BILLING_CHECKOUT_DISABLED_ENV_VAR] === 'string'
+    && env[BILLING_CHECKOUT_DISABLED_ENV_VAR].trim().toLowerCase() === 'true';
+}
 
 /**
  * Normalize Stripe's Checkout Session expiry into the local timestamptz shape.
@@ -101,7 +116,57 @@ async function failPendingClaimQuietly(pendingSessionId, userId, log) {
   }
 }
 
+/**
+ * Load Checkout creation-only dependencies after halt and claim guards pass.
+ *
+ * Purpose: the emergency Checkout halt must be able to return before
+ * Checkout-only price, app URL, or Stripe client modules are loaded. Keeping
+ * these literal dynamic imports in one helper preserves a narrow boundary while
+ * still letting the enabled creation path fail closed on bad config.
+ *
+ * @returns {Promise<{ buildAppUrl: Function, getPriceIdForPlan: Function, getStripeClient: Function }>}
+ */
+async function loadCheckoutCreationDependencies() {
+  const [
+    appUrlModule,
+    checkoutConfigModule,
+    stripeRuntimeModule,
+  ] = await Promise.all([
+    import('../../../server/lib/appUrl.js'),
+    import('../../../server/lib/stripeCheckoutConfig.js'),
+    import('../../../server/lib/stripeRuntime.js'),
+  ]);
+
+  return {
+    buildAppUrl: appUrlModule.buildAppUrl,
+    getPriceIdForPlan: checkoutConfigModule.getPriceIdForPlan,
+    getStripeClient: stripeRuntimeModule.getStripeClient,
+  };
+}
+
+/**
+ * Handle authenticated billing Checkout creation requests.
+ *
+ * Purpose: validate the checkout body, confirm local billing eligibility, and
+ * create or reuse a Stripe-hosted Checkout Session for the requested plan.
+ * The body is parsed for plan and checkoutAttemptNonce before Stripe work.
+ *
+ * @param {import('next').NextApiRequest & { _rateLimitUser: { id: string, email?: string }, log: object }} req
+ * @param {import('next').NextApiResponse} res
+ *
+ * Side effects: claims and finalizes pending checkout rows, calls Stripe's
+ * Checkout Session API, and returns a redirect URL for the client to navigate.
+ */
 async function handler(req, res) {
+  if (isBillingCheckoutDisabled()) {
+    return sendError(
+      res,
+      503,
+      'BILLING_CHECKOUT_DISABLED',
+      ERROR_MESSAGES.BILLING_CHECKOUT_DISABLED
+    );
+  }
+
   const validationResult = billingCheckoutSchema.safeParse(req.body);
 
   if (!validationResult.success) {
@@ -179,24 +244,35 @@ async function handler(req, res) {
     claimedPendingSessionId = pendingCheckoutClaim.session.id;
     claimedPendingSessionUserId = req._rateLimitUser.id;
 
+    const {
+      buildAppUrl,
+      getPriceIdForPlan,
+      getStripeClient,
+    } = await loadCheckoutCreationDependencies();
+    const priceId = getPriceIdForPlan(plan);
+    const successUrl = buildAppUrl('/billing/success?session_id={CHECKOUT_SESSION_ID}');
+    const cancelUrl = buildAppUrl('/billing/cancel');
+    const stripeClient = getStripeClient();
+
     const { stripeCustomerId } = await getOrCreateStripeCustomer(
       req._rateLimitUser.id,
       authenticatedBillingEmail,
       req.log
     );
     const userHash = hashUserIdForIdempotency(req._rateLimitUser.id);
-    const checkoutSession = await stripe.checkout.sessions.create({
+    const checkoutSession = await stripeClient.checkout.sessions.create({
       mode: 'subscription',
       customer: stripeCustomerId,
       client_reference_id: req._rateLimitUser.id,
+      payment_method_types: ['card'],
       line_items: [
         {
-          price: getPriceIdForPlan(plan),
+          price: priceId,
           quantity: 1,
         },
       ],
-      success_url: buildAppUrl('/billing/success?session_id={CHECKOUT_SESSION_ID}'),
-      cancel_url: buildAppUrl('/billing/cancel'),
+      success_url: successUrl,
+      cancel_url: cancelUrl,
     }, {
       idempotencyKey: `billing_checkout_${userHash.slice(0, 24)}_${plan}_${checkoutAttemptNonce}`,
     });
@@ -244,4 +320,5 @@ export default withRateLimit(handler, {
   requireAuth: true,
   operation: OPERATIONS.BILLING_WRITE,
   allowedMethods: ['POST'],
+  skipRateLimitWhen: () => isBillingCheckoutDisabled(),
 });

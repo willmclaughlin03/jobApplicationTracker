@@ -14,7 +14,7 @@ import {
   mapCheckoutStatus,
   syncSubscriptionFromStripe,
 } from '../../../server/lib/billingService.js';
-import { stripe } from '../../../server/lib/stripe.js';
+import { getStripeClient } from '../../../server/lib/stripeRuntime.js';
 
 const RETRYABLE_CHECKOUT_STATUS_ERROR_TYPES = new Set([
   'StripeAPIError',
@@ -231,7 +231,7 @@ async function handler(req, res) {
   }
 
   try {
-    checkoutSession = await stripe.checkout.sessions.retrieve(validationResult.data.sessionId);
+    checkoutSession = await getStripeClient().checkout.sessions.retrieve(validationResult.data.sessionId);
   } catch (error) {
     if (error?.type === 'StripeInvalidRequestError' || error?.statusCode === 404) {
       return sendError(

@@ -1,6 +1,6 @@
 /**
  * User subscription tiers and their associated limits
- * 
+ *
  * Rate limits use fixed window algorithm via Upstash Redis
  * Storage limits enforced at database layer
  */
@@ -118,7 +118,7 @@ export const TIER_LIMITS = {
 
 /**
  * Window duration in seconds for rate limiting
- * 
+ *
  */
 
 export const WINDOWS = {
@@ -159,11 +159,11 @@ export const METHOD_TO_OPERATIONS ={
 
 
 /**
- * Gets limits for specific tiers and operations performed 
+ * Gets limits for specific tiers and operations performed
  * @param {string} tier - User Tier {free/paid}
- * @param {string} operation - Operation type 
+ * @param {string} operation - Operation type
  * @returns {object} { Hourly: number|null, daily: number|null}
- * 
+ *
  */
 
 export function getLimitsForOperations(tier, operation) {

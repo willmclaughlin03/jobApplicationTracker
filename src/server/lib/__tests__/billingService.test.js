@@ -77,6 +77,10 @@ const {
   waitForPendingCheckoutSessionOpen,
 } = require('../billingService.js');
 
+/**
+ * Build a Supabase query-builder mock so billing tests can script terminal responses.
+ * plan maps terminal methods to payloads/errors/functions; returns { query, state } with captured args/payloads.
+ */
 function createQueryBuilder(plan = {}) {
   const state = {
     selectArgs: [],
@@ -135,6 +139,10 @@ function createQueryBuilder(plan = {}) {
   return { query, state };
 }
 
+/**
+ * Build a Supabase client mock from table/rpc plans so billing tests can replay service calls.
+ * config queues table builders and rpcCallsByName by call order, returning the client plus captured calls.
+ */
 function createSupabaseClient(config = {}) {
   const tablePlansSource = config.tables
     ?? Object.fromEntries(Object.entries(config).filter(([key]) => key !== 'rpc'));
@@ -204,12 +212,20 @@ function createSupabaseClient(config = {}) {
   };
 }
 
+/**
+ * Attach a prepared Supabase test client to mockSupabaseAdmin for billing service calls.
+ * Returns the same client; side effect: replaces mockSupabaseAdmin from/rpc implementations.
+ */
 function useAdminClient(client) {
   mockSupabaseAdmin.from.mockImplementation(client.from);
   mockSupabaseAdmin.rpc.mockImplementation(client.rpc);
   return client;
 }
 
+/**
+ * Build the expected user-id log hash for billing redaction assertions.
+ * userId is HMACed with TEST_BILLING_LOG_HASH_SECRET to mirror billingService output.
+ */
 function buildExpectedLogHash(userId) {
   return crypto
     .createHmac('sha256', TEST_BILLING_LOG_HASH_SECRET)
@@ -217,6 +233,10 @@ function buildExpectedLogHash(userId) {
     .digest('hex');
 }
 
+/**
+ * Build the expected normalized email fingerprint for Stripe sync assertions.
+ * email is trimmed/lowercased and HMACed with TEST_BILLING_EMAIL_FINGERPRINT_SECRET.
+ */
 function buildExpectedEmailFingerprint(email) {
   return crypto
     .createHmac('sha256', TEST_BILLING_EMAIL_FINGERPRINT_SECRET)

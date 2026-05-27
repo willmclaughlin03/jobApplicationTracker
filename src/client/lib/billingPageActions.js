@@ -3,6 +3,67 @@ export const BILLING_PAGE_ACTIONS = Object.freeze({
   PORTAL: 'portal',
 });
 
+const BILLING_REDIRECT_ALLOWED_STRIPE_HOSTS = new Set([
+  'checkout.stripe.com',
+  'billing.stripe.com',
+]);
+const BILLING_REDIRECT_ALLOWED_PROTOCOLS = new Set(['http:', 'https:']);
+
+/**
+ * Parse and allowlist a billing redirect URL before browser navigation.
+ *
+ * Purpose: checkout and portal redirects are backend-created but still cross an
+ * untrusted network boundary before reaching the browser, so client navigation
+ * is limited to current-origin URLs or known Stripe billing hosts.
+ *
+ * @param {unknown} rawUrl
+ * @returns {string | null}
+ */
+function getAllowedBillingRedirectUrl(rawUrl) {
+  if (typeof rawUrl !== 'string') {
+    return null;
+  }
+
+  const trimmedUrl = rawUrl.trim();
+
+  if (!trimmedUrl) {
+    return null;
+  }
+
+  const browserLocation = typeof window !== 'undefined' ? window.location : null;
+  const baseOrigin = typeof browserLocation?.origin === 'string'
+    ? browserLocation.origin
+    : undefined;
+
+  let parsedUrl;
+
+  try {
+    parsedUrl = baseOrigin
+      ? new URL(trimmedUrl, baseOrigin)
+      : new URL(trimmedUrl);
+  } catch (error) {
+    return null;
+  }
+
+  if (!BILLING_REDIRECT_ALLOWED_PROTOCOLS.has(parsedUrl.protocol)) {
+    return null;
+  }
+
+  const isCurrentOrigin = typeof browserLocation?.origin === 'string'
+    && parsedUrl.origin === browserLocation.origin;
+  const isStripeBillingHost = BILLING_REDIRECT_ALLOWED_STRIPE_HOSTS.has(parsedUrl.host);
+
+  if (!isCurrentOrigin && !isStripeBillingHost) {
+    return null;
+  }
+
+  if (isStripeBillingHost && parsedUrl.protocol !== 'https:') {
+    return null;
+  }
+
+  return parsedUrl.href;
+}
+
 /**
  * Resolve a shared-client billing redirect response into either a redirect URL
  * or a user-facing error message.
@@ -40,8 +101,9 @@ export function resolveBillingRedirectResult({
   const redirectUrl = typeof result?.data?.data?.url === 'string'
     ? result.data.data.url
     : null;
+  const safeRedirectUrl = getAllowedBillingRedirectUrl(redirectUrl);
 
-  if (!redirectUrl) {
+  if (!safeRedirectUrl) {
     return {
       redirectUrl: null,
       errorMessage: missingUrlMessage,
@@ -49,7 +111,7 @@ export function resolveBillingRedirectResult({
   }
 
   return {
-    redirectUrl,
+    redirectUrl: safeRedirectUrl,
     errorMessage: null,
   };
 }
@@ -111,9 +173,16 @@ export async function runBillingPageRedirectAction({
   }
 
   const performNavigation = navigate ?? ((url) => window.location.assign(url));
+  const safeRedirectUrl = getAllowedBillingRedirectUrl(redirectResult.redirectUrl);
+
+  if (!safeRedirectUrl) {
+    setActionLoading('');
+    setErrorMessage(missingUrlMessage);
+    return;
+  }
 
   try {
-    performNavigation(redirectResult.redirectUrl);
+    performNavigation(safeRedirectUrl);
   } catch (error) {
     setActionLoading('');
     setErrorMessage(navigationFailedMessage);

@@ -55,6 +55,7 @@ jest.mock('../../../shared/logger.js', () => ({
 }));
 
 const handler = require('../index.js').default;
+const { ERROR_MESSAGES } = require('../../../shared/errors.js');
 
 describe('index API handler (/api/jobs)', () => {
   const mockUser = { id: 'user-123', email: 'test@example.com' };
@@ -342,7 +343,7 @@ describe('index API handler (/api/jobs)', () => {
         data: null,
         error: {
           code: 'STORAGE_LIMIT_EXCEEDED',
-          message: 'You have reached the maximum of 3000 job entries. Please delete some entries to add more.',
+          message: 'Internal storage limit detail: paid tier max 3000',
         },
       });
 
@@ -355,9 +356,10 @@ describe('index API handler (/api/jobs)', () => {
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           error: 'STORAGE_LIMIT_EXCEEDED',
-          message: 'You have reached the maximum of 3000 job entries. Please delete some entries to add more.',
+          message: ERROR_MESSAGES.STORAGE_LIMIT_EXCEEDED,
         })
       );
+      expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('paid tier max 3000');
     });
 
     /**

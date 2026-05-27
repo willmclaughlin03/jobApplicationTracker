@@ -258,6 +258,23 @@ describe('BillingPage', () => {
     expect(el.textContent).toContain(ERROR_MESSAGES.SERVICE_UNAVAILABLE);
   });
 
+  it('shows service unavailable when the billing status request rejects', async () => {
+    const signOut = jest.fn().mockResolvedValue({ error: null });
+    mockUseAuth.mockReturnValue({
+      user: { id: 'user-123', email: 'billing@example.com' },
+      loading: false,
+      signOut,
+    });
+    mockApiGet.mockRejectedValue(new Error('network unavailable'));
+
+    const el = await renderBillingPage();
+
+    expect(signOut).not.toHaveBeenCalled();
+    expect(mockRouter.replace).not.toHaveBeenCalled();
+    expect(el.textContent).toContain(ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+    expect(el.textContent).not.toContain('Loading...');
+  });
+
   it('prevents duplicate checkout submissions while the redirect action is in flight', async () => {
     const deferredPost = createDeferred();
     mockApiPost.mockImplementation(() => deferredPost.promise);

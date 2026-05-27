@@ -2,6 +2,7 @@ const STRIPE_ENV_VARS = [
   'NEXT_PUBLIC_APP_URL',
   'STRIPE_SECRET_KEY',
   'STRIPE_PRICE_RESUME_TAILOR_MONTHLY',
+  'STRIPE_BILLING_PORTAL_CONFIGURATION_ID',
   'STRIPE_WEBHOOK_SECRET_TEST',
   'STRIPE_WEBHOOK_SECRET_LIVE',
 ];
@@ -10,12 +11,20 @@ const ORIGINAL_ENV = Object.fromEntries(
   STRIPE_ENV_VARS.map((envVarName) => [envVarName, process.env[envVarName]])
 );
 
+/**
+ * Clear Stripe-related env vars so each config test starts from a known baseline.
+ * Uses STRIPE_ENV_VARS and mutates process.env for isolated stripe.js loads.
+ */
 function resetStripeEnv() {
   for (const envVarName of STRIPE_ENV_VARS) {
     delete process.env[envVarName];
   }
 }
 
+/**
+ * Restore the Stripe env snapshot captured before the tests changed process.env.
+ * Uses ORIGINAL_ENV after resetStripeEnv so later tests inherit the original state.
+ */
 function restoreStripeEnv() {
   resetStripeEnv();
 
@@ -26,13 +35,22 @@ function restoreStripeEnv() {
   }
 }
 
+/**
+ * Seed the minimal valid Stripe config needed by happy-path module tests.
+ * Mutates process.env keys consumed by ../stripe.js and related runtime helpers.
+ */
 function setValidTestEnv() {
   process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test';
   process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
   process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+  process.env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID = 'bpc_test_chunk2';
   process.env.STRIPE_WEBHOOK_SECRET_TEST = 'whsec_test_chunk2';
 }
 
+/**
+ * Load a fresh Stripe config module instance for isolated tests.
+ * Calls jest.resetModules() before requiring ../stripe.js so env changes are observed.
+ */
 function loadStripeModule() {
   jest.resetModules();
   return require('../stripe.js');
@@ -78,18 +96,21 @@ describe('stripe runtime foundation', () => {
     const {
       BILLING_PLANS,
       STRIPE_API_VERSION,
-      STRIPE_MODE,
       buildAppUrl,
+      getBillingPortalConfigurationId,
       getAppOrigin,
+      getConfiguredStripeMode,
       getPriceIdForPlan,
-      stripe,
+      getStripeClient,
     } = loadStripeModule();
 
     expect(STRIPE_API_VERSION).toBe('2026-02-25.clover');
-    expect(STRIPE_MODE).toBe('test');
+    expect(getConfiguredStripeMode()).toBe('test');
     expect(getAppOrigin()).toBe('https://app.example.test');
     expect(buildAppUrl('/billing/success')).toBe('https://app.example.test/billing/success');
     expect(getPriceIdForPlan(BILLING_PLANS.RESUME_TAILOR_MONTHLY)).toBe('price_tailor_monthly');
+    expect(getBillingPortalConfigurationId()).toBe('bpc_test_chunk2');
+    const stripe = getStripeClient();
     expect(stripe.getApiField('timeout')).toBe(10000);
     expect(stripe.getApiField('maxNetworkRetries')).toBe(2);
     expect(typeof stripe.webhooks.constructEvent).toBe('function');
@@ -124,33 +145,42 @@ describe('stripe runtime foundation', () => {
     }
   });
 
-  it('fails fast when STRIPE_SECRET_KEY is missing', () => {
+  it('does not validate runtime secrets when the Stripe barrel is only imported', () => {
     process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test';
     process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
 
-    expect(() => loadStripeModule()).toThrow(/missing STRIPE_SECRET_KEY/i);
+    const { getConfiguredStripeMode } = loadStripeModule();
+
+    expect(() => getConfiguredStripeMode()).toThrow(/missing STRIPE_SECRET_KEY/i);
   });
 
-  it('fails fast when the allowlisted price id env var is missing', () => {
+  it('fails closed when the allowlisted price id env var is missing at call time', () => {
     process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test';
     process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
 
-    expect(() => loadStripeModule()).toThrow(/missing STRIPE_PRICE_RESUME_TAILOR_MONTHLY/i);
+    const { BILLING_PLANS, getPriceIdForPlan } = loadStripeModule();
+
+    expect(() => getPriceIdForPlan(BILLING_PLANS.RESUME_TAILOR_MONTHLY))
+      .toThrow(/missing STRIPE_PRICE_RESUME_TAILOR_MONTHLY/i);
   });
 
-  it('fails fast when STRIPE_SECRET_KEY is malformed', () => {
+  it('fails closed when STRIPE_SECRET_KEY is malformed at runtime call time', () => {
     process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test';
     process.env.STRIPE_SECRET_KEY = 'pk_test_not_a_secret';
     process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
 
-    expect(() => loadStripeModule()).toThrow(/invalid STRIPE_SECRET_KEY/i);
+    const { getConfiguredStripeMode } = loadStripeModule();
+
+    expect(() => getConfiguredStripeMode()).toThrow(/invalid STRIPE_SECRET_KEY/i);
   });
 
-  it('fails fast when NEXT_PUBLIC_APP_URL is missing', () => {
+  it('fails closed when NEXT_PUBLIC_APP_URL is missing at app-url call time', () => {
     process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
     process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
 
-    expect(() => loadStripeModule()).toThrow(/missing NEXT_PUBLIC_APP_URL/i);
+    const { getAppOrigin } = loadStripeModule();
+
+    expect(() => getAppOrigin()).toThrow(/missing NEXT_PUBLIC_APP_URL/i);
   });
 
   it('rejects non-origin NEXT_PUBLIC_APP_URL values', () => {
@@ -158,7 +188,9 @@ describe('stripe runtime foundation', () => {
     process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
     process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
 
-    expect(() => loadStripeModule()).toThrow(/invalid NEXT_PUBLIC_APP_URL/i);
+    const { getAppOrigin } = loadStripeModule();
+
+    expect(() => getAppOrigin()).toThrow(/invalid NEXT_PUBLIC_APP_URL/i);
   });
 
   it('rejects NEXT_PUBLIC_APP_URL values with embedded credentials', () => {
@@ -166,7 +198,9 @@ describe('stripe runtime foundation', () => {
     process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
     process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
 
-    expect(() => loadStripeModule()).toThrow(/invalid NEXT_PUBLIC_APP_URL/i);
+    const { getAppOrigin } = loadStripeModule();
+
+    expect(() => getAppOrigin()).toThrow(/invalid NEXT_PUBLIC_APP_URL/i);
   });
 
   it('rejects insecure non-local development origins outside production', () => {
@@ -174,7 +208,9 @@ describe('stripe runtime foundation', () => {
     process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
     process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
 
-    expect(() => loadStripeModule()).toThrow(/invalid NEXT_PUBLIC_APP_URL/i);
+    const { getAppOrigin } = loadStripeModule();
+
+    expect(() => getAppOrigin()).toThrow(/invalid NEXT_PUBLIC_APP_URL/i);
   });
 
   it('allows localhost http origins outside production', () => {
@@ -204,7 +240,29 @@ describe('stripe runtime foundation', () => {
     process.env.STRIPE_SECRET_KEY = 'sk_live_chunk2';
     process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
 
-    expect(() => loadStripeModule()).toThrow(/invalid NEXT_PUBLIC_APP_URL/i);
+    const { getAppOrigin } = loadStripeModule();
+
+    expect(() => getAppOrigin()).toThrow(/invalid NEXT_PUBLIC_APP_URL/i);
+  });
+
+  it('fails closed when the pinned portal configuration id is missing', () => {
+    setValidTestEnv();
+    delete process.env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID;
+
+    const { getBillingPortalConfigurationId } = loadStripeModule();
+
+    expect(() => getBillingPortalConfigurationId())
+      .toThrow(/missing STRIPE_BILLING_PORTAL_CONFIGURATION_ID/i);
+  });
+
+  it('fails closed when the pinned portal configuration id is malformed', () => {
+    setValidTestEnv();
+    process.env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID = 'pc_bad';
+
+    const { getBillingPortalConfigurationId } = loadStripeModule();
+
+    expect(() => getBillingPortalConfigurationId())
+      .toThrow(/invalid STRIPE_BILLING_PORTAL_CONFIGURATION_ID/i);
   });
 
   it('returns the active webhook secret for test mode', () => {
@@ -221,9 +279,9 @@ describe('stripe runtime foundation', () => {
     process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
     process.env.STRIPE_WEBHOOK_SECRET_LIVE = 'whsec_live_chunk2';
 
-    const { STRIPE_MODE, getActiveStripeWebhookSecret } = loadStripeModule();
+    const { getConfiguredStripeMode, getActiveStripeWebhookSecret } = loadStripeModule();
 
-    expect(STRIPE_MODE).toBe('live');
+    expect(getConfiguredStripeMode()).toBe('live');
     expect(getActiveStripeWebhookSecret()).toBe('whsec_live_chunk2');
   });
 
@@ -238,7 +296,9 @@ describe('stripe runtime foundation', () => {
       getActiveStripeWebhookSecret();
       throw new Error('Expected webhook secret lookup to fail closed');
     } catch (error) {
+      expect(error.name).toBe('WebhookVerifierNotConfiguredError');
       expect(error.code).toBe('WEBHOOK_VERIFIER_NOT_CONFIGURED');
+      expect(error.statusCode).toBe(503);
     }
   });
 });
@@ -329,7 +389,9 @@ describe('stripe runtime narrow module', () => {
 
     expect(firstError).toBeDefined();
     expect(secondError).toBe(firstError);
+    expect(firstError.name).toBe('StripeConfigError');
     expect(firstError.code).toBe('STRIPE_CONFIG_INVALID');
+    expect(firstError.statusCode).toBe(400);
     expect(firstError.message).toMatch(/missing STRIPE_SECRET_KEY/i);
 
     process.env.STRIPE_SECRET_KEY = 'sk_live_runtime_after_reset';
@@ -427,7 +489,9 @@ describe('stripe runtime narrow module', () => {
         });
         throw new Error('Expected webhook secret lookup to reject a malformed secret key');
       } catch (error) {
+        expect(error.name).toBe('StripeConfigError');
         expect(error.code).toBe('STRIPE_CONFIG_INVALID');
+        expect(error.statusCode).toBe(400);
         expect(error.message).toMatch(/invalid STRIPE_SECRET_KEY/i);
       }
     }

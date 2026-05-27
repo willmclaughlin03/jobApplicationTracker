@@ -21,6 +21,32 @@ let cachedStripeConfigError = null;
 let cachedStripeClient = null;
 let cachedStripeClientError = null;
 
+/**
+ * StripeConfigError carries stable HTTP metadata for Stripe runtime config failures.
+ * Centralized handlers can map the code/statusCode without parsing messages.
+ */
+class StripeConfigError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'StripeConfigError';
+    this.code = 'STRIPE_CONFIG_INVALID';
+    this.statusCode = 400;
+  }
+}
+
+/**
+ * WebhookVerifierNotConfiguredError marks server-side webhook verifier setup failures.
+ * Callers use the code/statusCode to distinguish config outages from bad signatures.
+ */
+class WebhookVerifierNotConfiguredError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'WebhookVerifierNotConfiguredError';
+    this.code = 'WEBHOOK_VERIFIER_NOT_CONFIGURED';
+    this.statusCode = 503;
+  }
+}
+
 const StripeConfigSchema = z.object({
   [STRIPE_SECRET_KEY_ENV_VAR]: z.preprocess(
     normalizeStripeConfigValue,
@@ -49,9 +75,7 @@ const StripeConfigSchema = z.object({
  * @returns {Error & { code: string }}
  */
 function createStripeConfigError(message) {
-  const error = new Error(message);
-  error.code = 'STRIPE_CONFIG_INVALID';
-  return error;
+  return new StripeConfigError(message);
 }
 
 /**
@@ -83,9 +107,7 @@ function createStripeConfigSchemaError(error) {
  * @returns {Error & { code: string }}
  */
 function createWebhookConfigError(message) {
-  const error = new Error(message);
-  error.code = 'WEBHOOK_VERIFIER_NOT_CONFIGURED';
-  return error;
+  return new WebhookVerifierNotConfiguredError(message);
 }
 
 /**

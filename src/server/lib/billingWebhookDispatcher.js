@@ -17,7 +17,9 @@ const SUBSCRIPTION_UPDATED = 'customer.subscription.updated';
 const SUBSCRIPTION_DELETED = 'customer.subscription.deleted';
 const INVOICE_PAID = 'invoice.paid';
 const INVOICE_PAYMENT_FAILED = 'invoice.payment_failed';
+const INVOICE_PAYMENT_ACTION_REQUIRED = 'invoice.payment_action_required';
 const CHECKOUT_SESSION_COMPLETED = 'checkout.session.completed';
+const CHECKOUT_SESSION_EXPIRED = 'checkout.session.expired';
 
 const TERMINAL_SUCCESS_RECEIPT_RESULTS = new Set([
   STRIPE_EVENT_RECEIPT_RESULTS.PROCESSED,
@@ -197,15 +199,16 @@ async function recordFailedReceiptBestEffort(event, originalError, log) {
 /**
  * Terminalize a locally minted Checkout Session after safe webhook handling.
  *
- * Purpose: completed Checkout webhooks can release a pending local checkout
- * row even when the browser never returns to the success polling route, but
+ * Purpose: terminal Checkout webhooks can release a pending local checkout row
+ * even when the browser never returns to the success polling route, but
  * entitlement still comes only from canonical billing subscription state.
  *
  * @param {string | null} sessionId
+ * @param {'complete' | 'expired'} status
  * @param {object} log
  * @returns {Promise<void>}
  */
-async function terminalizeCheckoutSessionQuietly(sessionId, log) {
+async function terminalizeCheckoutSessionQuietly(sessionId, status, log) {
   if (!sessionId) {
     return;
   }
@@ -214,7 +217,7 @@ async function terminalizeCheckoutSessionQuietly(sessionId, log) {
     await markMintedCheckoutSessionTerminalByStripeSessionId(
       {
         sessionId,
-        status: 'complete',
+        status,
       },
       log
     );
@@ -224,6 +227,7 @@ async function terminalizeCheckoutSessionQuietly(sessionId, log) {
         err: error,
         event: 'billing_checkout_session_terminalize_failed',
         stripeCheckoutSessionId: formatStripeIdForLog(sessionId, 'warn'),
+        status,
       },
       'Failed to terminalize pending Checkout Session after webhook handling'
     );
@@ -316,6 +320,29 @@ async function dispatchInvoiceEvent(event, log) {
 }
 
 /**
+ * Monitor and sync invoices that require customer payment authentication.
+ *
+ * Purpose: action-required invoices should be visible as a recovery signal and
+ * should refresh local subscription state without granting entitlement directly
+ * from the invoice payload.
+ *
+ * @param {object} event
+ * @param {object} log
+ * @returns {Promise<object>}
+ */
+async function dispatchInvoicePaymentActionRequiredEvent(event, log) {
+  log.warn(
+    {
+      event: 'billing_invoice_payment_action_required',
+      stripeEvent: getStripeEventEnvelope(event),
+    },
+    'Stripe invoice requires payment action'
+  );
+
+  return dispatchInvoiceEvent(event, log);
+}
+
+/**
  * Sync completed subscription Checkout Sessions and release pending rows.
  *
  * Purpose: the webhook can reconcile canonical billing state and then release
@@ -345,9 +372,38 @@ async function dispatchCheckoutSessionCompletedEvent(event, log) {
       reason: 'checkout_subscription_missing',
     };
 
-  await terminalizeCheckoutSessionQuietly(checkoutSessionId, log);
+  await terminalizeCheckoutSessionQuietly(checkoutSessionId, 'complete', log);
 
   return syncResult;
+}
+
+/**
+ * Release a local pending Checkout Session after Stripe expires it.
+ *
+ * Purpose: expiration events make abandoned or emergency-expired Checkout URLs
+ * terminal locally without granting entitlement from the pending-session row.
+ *
+ * @param {object} event
+ * @param {object} log
+ * @returns {Promise<object>}
+ */
+async function dispatchCheckoutSessionExpiredEvent(event, log) {
+  const checkoutSession = event?.data?.object;
+  const checkoutSessionId = extractStripeId(checkoutSession);
+
+  if (!checkoutSessionId) {
+    throw createBillingWebhookError(
+      'Stripe checkout.session.expired webhook is missing a session id',
+      'BILLING_WEBHOOK_MALFORMED_EVENT'
+    );
+  }
+
+  await terminalizeCheckoutSessionQuietly(checkoutSessionId, 'expired', log);
+
+  return {
+    outcome: BILLING_WRITE_OUTCOMES.PROCESSED,
+    reason: 'checkout_session_expired',
+  };
 }
 
 /**
@@ -373,8 +429,14 @@ async function dispatchStripeBillingEvent(event, log) {
     case INVOICE_PAYMENT_FAILED:
       return dispatchInvoiceEvent(event, log);
 
+    case INVOICE_PAYMENT_ACTION_REQUIRED:
+      return dispatchInvoicePaymentActionRequiredEvent(event, log);
+
     case CHECKOUT_SESSION_COMPLETED:
       return dispatchCheckoutSessionCompletedEvent(event, log);
+
+    case CHECKOUT_SESSION_EXPIRED:
+      return dispatchCheckoutSessionExpiredEvent(event, log);
 
     default:
       log.warn(

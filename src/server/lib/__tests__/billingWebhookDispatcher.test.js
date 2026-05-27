@@ -377,6 +377,70 @@ describe('billingWebhookDispatcher', () => {
     expect(result.receiptResult).toBe('processed');
   });
 
+  it('terminalizes expired Checkout Sessions without syncing entitlement from the row', async () => {
+    const event = createEvent({
+      type: 'checkout.session.expired',
+      data: {
+        object: {
+          id: 'cs_test_expired_123',
+        },
+      },
+    });
+
+    const result = await processBillingWebhookEvent(event, mockLog);
+
+    expect(mockSyncSubscriptionFromEvent).not.toHaveBeenCalled();
+    expect(mockMarkMintedCheckoutSessionTerminalByStripeSessionId).toHaveBeenCalledWith(
+      {
+        sessionId: 'cs_test_expired_123',
+        status: 'expired',
+      },
+      mockLog
+    );
+    expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'processed', mockLog);
+    expect(result).toEqual(expect.objectContaining({
+      outcome: 'processed',
+      receiptResult: 'processed',
+    }));
+  });
+
+  it('records failed for malformed checkout session expired events', async () => {
+    const event = createEvent({
+      type: 'checkout.session.expired',
+      data: {
+        object: {},
+      },
+    });
+
+    await expect(processBillingWebhookEvent(event, mockLog))
+      .rejects.toMatchObject({ code: 'BILLING_WEBHOOK_MALFORMED_EVENT' });
+
+    expect(mockMarkMintedCheckoutSessionTerminalByStripeSessionId).not.toHaveBeenCalled();
+    expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'failed', mockLog);
+  });
+
+  it('monitors payment-action-required invoices through invoice subscription sync', async () => {
+    const event = createEvent({
+      type: 'invoice.payment_action_required',
+    });
+
+    const result = await processBillingWebhookEvent(event, mockLog);
+
+    expect(mockSyncSubscriptionFromEvent).toHaveBeenCalledWith(
+      'sub_webhook_123',
+      1889308800,
+      mockLog
+    );
+    expect(mockLog.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'billing_invoice_payment_action_required',
+      }),
+      'Stripe invoice requires payment action'
+    );
+    expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'processed', mockLog);
+    expect(result.receiptResult).toBe('processed');
+  });
+
   it('logs and records unknown event types as processed safe-ignores', async () => {
     const event = createEvent({
       type: 'customer.created',

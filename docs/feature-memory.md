@@ -12,8 +12,75 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-05-25
+
+- `2026-05-26` - `Stripe Chunk 7 PR cleanup`: Merged Chunk 7 operational readiness onto latest main and carried forward the reviewed fix layer.
+  - impact: The readiness PR now centers on Chunk 7 and follow-up fixes instead of an outdated broad diff.
+- `2026-05-26` - `Stripe runtime error status metadata`: Added dedicated Stripe runtime config error classes with stable HTTP status codes.
+  - impact: Stripe config and webhook verifier failures are easier for centralized handlers to map consistently.
+- `2026-05-26` - `Raw body error status mapping`: Added a dedicated raw-body error type with stable HTTP status metadata.
+  - impact: Webhook raw-body failures carry predictable status codes for downstream error handling.
+- `2026-05-26` - `Webhook signature test helper docs`: Documented Stripe env, payload, request, and module-loading helpers.
+  - impact: Webhook signature tests are easier to audit without changing runtime behavior.
+- `2026-05-26` - `Stripe test helper docs`: Documented Stripe env setup and module-loading helpers used by config tests.
+  - impact: Stripe config tests are easier to audit without changing runtime behavior.
+- `2026-05-26` - `Billing service test helper docs`: Documented Supabase client/query mocks and expected billing hash helpers.
+  - impact: The billing service unit-test harness is easier to audit without changing runtime behavior.
+- `2026-05-26` - `Billing migration cleanup failure surfacing`: Made billing migration test cleanup throw when billing row deletes return errors or unexpected statuses.
+  - impact: Integration runs stop on cleanup failures instead of silently carrying leaked billing state into later tests.
+- `2026-05-26` - `Billing migration test helper docs`: Documented integration-test helper functions for RPC normalization, auth sign-in, migration setup, SQL execution, and billing row cleanup.
+  - impact: The billing migration integration harness is easier to audit without changing runtime behavior.
+- `2026-05-26` - `Billing status test helper docs`: Documented request and response mock helpers used by billing status route tests.
+  - impact: The billing status test harness is easier to audit without changing runtime behavior.
+- `2026-05-26` - `Portal route test helper docs`: Documented request and response mock helpers used by portal route tests.
+  - impact: The portal test harness is easier to audit without changing runtime behavior.
+- `2026-05-26` - `Checkout route test helper docs`: Documented request and response mock helpers used by Checkout route tests.
+  - impact: The Checkout test harness is easier to audit without changing runtime behavior.
+- `2026-05-26` - `Checkout-status test helper docs`: Documented request and response mock helpers used by checkout-status route tests.
+  - impact: The checkout-status test harness is easier to audit without changing runtime behavior.
+- `2026-05-26` - `Billing success page function docs`: Documented the success-page session id helper, outcome copy helper, and page component dependencies, params, returns, and side effects.
+  - impact: Billing success redirect behavior is easier to audit without changing runtime behavior.
+
 ### Week of 2026-05-18
 
+- `2026-05-24` - `Billing status rejection handling`: Handled rejected billing status loads and covered the outage UI fallback.
+  - impact: Billing no longer stays stuck loading when the status request rejects.
+- `2026-05-24` - `Billing page function docs`: Documented the billing page date formatter and main page component dependencies, params, returns, and side effects.
+  - impact: Billing page behavior and redirect connections are easier to audit without changing runtime behavior.
+- `2026-05-24` - `Billing cancel page docs`: Documented the cancel redirect page's purpose, routing dependencies, params, and side-effect-free return.
+  - impact: Billing cancel redirect behavior is easier to audit without changing runtime behavior.
+- `2026-05-24` - `Storage-limit API message sanitization`: Stopped returning service-layer storage-limit details from the jobs create endpoint.
+  - impact: Storage-limit responses now use the shared public-safe message.
+- `2026-05-24` - `Portal route handler docs`: Documented the billing portal API handler's purpose, authenticated inputs, and Stripe response side effects.
+  - impact: The portal route is easier to compare with checkout handler safety docs.
+- `2026-05-24` - `Checkout route handler docs`: Documented the billing Checkout API handler's purpose, inputs, and Stripe/local state side effects.
+  - impact: The checkout route is easier to review against billing safety expectations without changing behavior.
+- `2026-05-24` - `Billing success helper docs`: Added focused comments for checkout-status poll interpretation, exhaustion handling, and poll-delay calculation.
+  - impact: The billing success polling helpers are easier to audit without changing runtime behavior.
+- `2026-05-24` - `Billing ready-null summary fallback`: Treated missing billing data in a ready page state as unavailable instead of no subscription.
+  - impact: Billing copy now distinguishes absent local billing data from a confirmed free account.
+- `2026-05-24` - `Billing redirect URL allowlist`: Validated billing checkout and portal redirect URLs on the client before navigation.
+  - impact: Billing page redirects now reject unexpected schemes or hosts before handing control to the browser.
+- `2026-05-24` - `Checkout drain output allowlist`: Limited drain CLI row output to explicit safe fields while continuing to redact Stripe Checkout Session ids.
+  - impact: Operator drain logs are less likely to expose future sensitive service fields.
+- `2026-05-24` - `Rate-limit check extraction`: Moved tier resolution, admin-route probing fallback, and limiter failure handling into a focused middleware helper.
+  - impact: Rate-limit behavior stays easier to audit while preserving fail-closed handling.
+- `2026-05-24` - `Stripe Chunk 7 operator readiness`: Added the Checkout drain operator command, Chunk 7 billing monitoring signals, route-boundary webhook coverage, and harder disabled-import coverage.
+  - impact: Paid rollout now has a runnable emergency drain path and stronger evidence that new webhook events and Checkout halt boundaries stay wired correctly.
+- `2026-05-22` - `Checkout halt and Jest env isolation`: Moved Checkout creation config behind the enabled path and removed global dotenv loading from Jest setup.
+  - impact: Emergency Checkout disables can return without loading Checkout config modules, and focused tests no longer silently read local `.env` secrets.
+- `2026-05-22` - `Stripe Chunk 7 operational hardening`: Implemented the Checkout emergency halt, lazy Stripe config boundaries, card-only Checkout, pinned portal configuration, open Checkout Session drain support, expired/action-required webhook handling, and admin billing delete preflight.
+  - impact: Paid rollout now has stronger emergency controls and deletion safeguards while keeping tax collection behind the required dated owner decision before live Checkout.
+- `2026-05-22` - `Stripe Chunk 7 emergency and refund policy`: Added already-minted Checkout Session expiration, payment-wins race handling, tax/payment-action gates, and cancel-at-period-end no-automatic-refund launch policy to the rollout plan.
+  - impact: Paid rollout now has clearer incident controls and a simpler customer cancellation policy before public Checkout is enabled.
+- `2026-05-22` - `Stripe Chunk 7 gap research brief`: Added a handoff brief for deeper review of open Checkout URL expiration, tax/invoice compliance, payment-action recovery, and refund policy gaps.
+  - impact: The next billing reviewer has a sourced map of the remaining rollout questions before Chunk 7 is edited again.
+- `2026-05-22` - `Stripe Chunk 7 best-option rollout plan`: Tightened Chunk 7 around config-independent Checkout halt behavior, card-only Checkout, pinned portal configuration, scheduled drift audit, rollback runbooks, and live logging enforcement.
+  - impact: Paid rollout now points implementers toward the safest launch path instead of treating weaker operational checks as equivalent substitutes.
+- `2026-05-22` - `Stripe Chunk 7 review hardening plan`: Added config-independent Checkout halt, portal independence, complete billing deletion preflight, payment-method drift control, and portal configuration drift control to the rollout gate.
+  - impact: Chunk 7 now blocks paid rollout on the verified code and Stripe-configuration gaps that could otherwise cause partial deletion, broken rollback, or entitlement drift.
+- `2026-05-21` - `Stripe Chunk 7 blocker implementation plan`: Added route-level Checkout halt, admin deletion preflight, delayed-payment policy, webhook mode mapping, and portal config pinning tasks to the Chunk 7 rollout gate.
+  - impact: Paid rollout now names the concrete implementation and evidence needed to close verified billing readiness gaps.
 - `2026-05-20` - `Stripe webhook timestamp-string normalization`: Treated digit-only Stripe event `created` strings like epoch-second numbers in mismatch logs.
   - impact: Receipt envelope mismatch logs now show comparable ISO timestamps when Stripe-created values arrive as numeric strings.
 - `2026-05-20` - `Stripe delete webhook payload validation`: Rejected non-object subscription delete payloads before the billing service receives them.

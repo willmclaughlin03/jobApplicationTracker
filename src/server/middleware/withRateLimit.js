@@ -188,6 +188,34 @@ function setRateLimitHeaders(res, rateLimitResult){
 }
 
 /**
+ * Performs the rate-limit lookup for the resolved request identity.
+ *
+ * Purpose: keep admin-route probing fallback close to the limiter call while
+ * preserving route-level authorization checks such as requireAdmin().
+ *
+ * @param {import('next').NextApiRequest} req - Request carrying _rateLimitUser when authenticated
+ * @param {string} identifier - User or IP rate-limit key
+ * @param {string} operation - Normalized route operation
+ * @returns {Promise<object>} checkRateLimit() result or fail-closed unavailable sentinel
+ */
+async function performRateLimitCheck(req, identifier, operation) {
+    const isAdminOperation = operation === OPERATIONS.ADMIN_READ || operation === OPERATIONS.ADMIN_WRITE;
+    const isAdminUser = req._rateLimitUser?.app_metadata?.role === 'admin';
+    const tier = resolveRateLimitTier(req._rateLimitUser, operation);
+
+    // Non-admin probing an admin route: fall back to AUTH quota so repeated probing
+    // is throttled (FREE tier has no admin_read/admin_write limits).
+    // The 403 from requireAdmin() still blocks access; this adds rate-limit teeth.
+    const effectiveOperation = (isAdminOperation && !isAdminUser) ? OPERATIONS.AUTH : operation;
+
+    try {
+        return await checkRateLimit(identifier, tier, effectiveOperation);
+    } catch(error) {
+        return { success: false, unavailable: true };
+    }
+}
+
+/**
  * Rate limiting middleware wrapper for Next.js API handlers
  *
  * Applies per-user or per-IP rate limiting before handler execution.
@@ -222,6 +250,9 @@ function setRateLimitHeaders(res, rateLimitResult){
  * @param {string[]} [options.allowedMethods=null] - HTTP methods this route accepts (e.g. ['GET', 'POST']).
  *                                                   If omitted, all requests return 405 (fail-closed).
  * @param {boolean} [options.csrfProtect] - Override the default CSRF behavior for protected routes.
+ * @param {(req: import('next').NextApiRequest) => boolean | Promise<boolean>} [options.skipRateLimitWhen]
+ *        Optional emergency predicate that runs after method/auth/CSRF checks
+ *        and before Redis-backed quota checks.
  * @returns {Function} Wrapped handler with rate limiting applied
  */
 export function withRateLimit(handler, options = {}){
@@ -231,6 +262,7 @@ export function withRateLimit(handler, options = {}){
         operationByMethod = null,
         allowedMethods = null,
         csrfProtect,
+        skipRateLimitWhen,
     } = options;
 
     // Default: protected routes (requireAuth: true) get CSRF protection.
@@ -331,19 +363,12 @@ export function withRateLimit(handler, options = {}){
                 }
             }
 
-            const isAdminOperation = operation === OPERATIONS.ADMIN_READ || operation === OPERATIONS.ADMIN_WRITE;
-            const isAdminUser = req._rateLimitUser?.app_metadata?.role === 'admin';
-            const tier = resolveRateLimitTier(req._rateLimitUser, operation);
+            if (typeof skipRateLimitWhen === 'function' && await skipRateLimitWhen(req)) {
+                rateLimitResult = { success: true, skipped: true };
+            }
 
-            // Non-admin probing an admin route: fall back to AUTH quota so repeated probing
-            // is throttled (FREE tier has no admin_read/admin_write limits).
-            // The 403 from requireAdmin() still blocks access — this adds rate-limit teeth.
-            const effectiveOperation = (isAdminOperation && !isAdminUser) ? OPERATIONS.AUTH : operation;
-
-            try {
-                rateLimitResult = await checkRateLimit(identifier, tier, effectiveOperation);
-            } catch(error) {
-                rateLimitResult = { success: false, unavailable: true };
+            if (!rateLimitResult?.skipped) {
+                rateLimitResult = await performRateLimitCheck(req, identifier, operation);
             }
         } catch(error) {
             // Safety net for unexpected errors outside checkRateLimit (e.g. auth layer)
@@ -357,6 +382,19 @@ export function withRateLimit(handler, options = {}){
         }
 
         // block req on redis down — one-time log already fired in redis.js
+        if(rateLimitResult?.skipped){
+            try {
+                return await handler(req, res);
+            } catch(handlerError) {
+                req.log.error({ err: handlerError, method: req.method, operation }, 'Unhandled handler error');
+                if (res.headersSent) {
+                    res.end();
+                    return;
+                }
+                return sendError(res, 500, 'INTERNAL_SERVER_ERROR', ERROR_MESSAGES.INTERNAL_SERVER_ERROR);
+            }
+        }
+
         if(rateLimitResult.unavailable){
             return sendError(
                 res,

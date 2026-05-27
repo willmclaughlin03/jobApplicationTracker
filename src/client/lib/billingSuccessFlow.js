@@ -80,6 +80,16 @@ export function isBillingSuccessRefreshDisabled(cooldownRemainingSeconds) {
   return getPositiveRetryAfterSeconds(cooldownRemainingSeconds) !== null;
 }
 
+/**
+ * Interpret one checkout-status API poll into a success-page outcome.
+ *
+ * Purpose: centralize mapping of shared-client errors, API errors, and
+ * checkout states to BILLING_SUCCESS_OUTCOMES for the success-page poll loop.
+ * Uses result.meta.retryAfterSeconds when present to carry cooldowns forward.
+ *
+ * @param {{ data?: any, error?: string | null, meta?: object } | null | undefined} result
+ * @returns {{ outcome: string, retryAfterSeconds?: number, checkoutState?: string }}
+ */
 export function interpretCheckoutStatusPollResult(result) {
   const retryAfterSeconds = getPositiveRetryAfterSeconds(result?.meta?.retryAfterSeconds);
 
@@ -129,6 +139,15 @@ export function interpretCheckoutStatusPollResult(result) {
   return { outcome: BILLING_SUCCESS_OUTCOMES.ERROR };
 }
 
+/**
+ * Resolve the terminal outcome when automatic checkout-status polling ends.
+ *
+ * Purpose: pending/free checkout states should move to manual refresh, while
+ * unknown or terminal states fail closed through BILLING_SUCCESS_OUTCOMES.
+ *
+ * @param {string | null | undefined} checkoutState
+ * @returns {string}
+ */
 export function getExhaustedPollingOutcome(checkoutState) {
   if (checkoutState === 'pending' || checkoutState === 'free') {
     return BILLING_SUCCESS_OUTCOMES.MANUAL_REFRESH;
@@ -137,6 +156,16 @@ export function getExhaustedPollingOutcome(checkoutState) {
   return BILLING_SUCCESS_OUTCOMES.ERROR;
 }
 
+/**
+ * Calculate the delay before the next scheduled checkout-status poll.
+ *
+ * Purpose: keep poll-schedule indexing tied to
+ * BILLING_SUCCESS_POLL_SCHEDULE_MS and return null once the bounded schedule is
+ * exhausted.
+ *
+ * @param {number} currentIndex
+ * @returns {number | null}
+ */
 export function getNextPollDelayMs(currentIndex) {
   if (currentIndex < 0 || currentIndex >= BILLING_SUCCESS_POLL_SCHEDULE_MS.length - 1) {
     return null;

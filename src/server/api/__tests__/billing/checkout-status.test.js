@@ -9,6 +9,7 @@ const mockLoadBillingStatusOrThrow = jest.fn();
 const mockMarkMintedCheckoutSessionTerminal = jest.fn();
 const mockMapCheckoutStatus = jest.fn();
 const mockSyncSubscriptionFromStripe = jest.fn();
+const mockGetStripeClient = jest.fn();
 const mockRetrieveCheckoutSession = jest.fn();
 
 jest.mock('../../../lib/billingService.js', () => ({
@@ -29,14 +30,8 @@ jest.mock('../../../lib/billingService.js', () => ({
   syncSubscriptionFromStripe: mockSyncSubscriptionFromStripe,
 }));
 
-jest.mock('../../../lib/stripe.js', () => ({
-  stripe: {
-    checkout: {
-      sessions: {
-        retrieve: mockRetrieveCheckoutSession,
-      },
-    },
-  },
+jest.mock('../../../lib/stripeRuntime.js', () => ({
+  getStripeClient: mockGetStripeClient,
 }));
 
 const handler = require('../../../../pages/api/billing/checkout-status.js').default;
@@ -46,6 +41,15 @@ describe('/api/billing/checkout-status handler', () => {
   const mockClient = { from: jest.fn() };
   const mockLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
 
+  /**
+   * Create an authenticated checkout-status request mock.
+   *
+   * Purpose: tests can vary the request body while preserving the middleware
+   * fields the handler reads.
+   *
+   * @param {object} body defaults to a valid sessionId payload.
+   * @returns {object} request with _rateLimitUser, _supabaseClient, and log attached.
+   */
   function createMockReq(body = { sessionId: 'cs_test_a1Ae6ClgOkjygKwrf9B3L6IT' }) {
     return {
       method: 'POST',
@@ -56,6 +60,14 @@ describe('/api/billing/checkout-status handler', () => {
     };
   }
 
+  /**
+   * Create a chainable checkout-status response mock.
+   *
+   * Purpose: tests assert status/json response contracts without a real Next.js
+   * response object.
+   *
+   * @returns {object} response with chainable mocked status and json functions.
+   */
   function createMockRes() {
     return {
       status: jest.fn().mockReturnThis(),
@@ -72,6 +84,14 @@ describe('/api/billing/checkout-status handler', () => {
     mockSyncSubscriptionFromStripe.mockReset();
     mockGetMintedCheckoutSessionForUser.mockReset();
     mockRetrieveCheckoutSession.mockReset();
+    mockGetStripeClient.mockReset();
+    mockGetStripeClient.mockReturnValue({
+      checkout: {
+        sessions: {
+          retrieve: mockRetrieveCheckoutSession,
+        },
+      },
+    });
     mockGetMintedCheckoutSessionForUser.mockResolvedValue({
       id: 42,
       userId: mockUser.id,

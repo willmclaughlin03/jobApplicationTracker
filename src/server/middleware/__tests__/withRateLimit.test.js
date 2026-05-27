@@ -1140,6 +1140,33 @@ describe('withRateLimit middleware', () => {
             expect(res.status).toHaveBeenCalledWith(503);
             expect(handler).not.toHaveBeenCalled();
         });
+
+        it('should let emergency handlers skip Redis-backed rate limit checks after auth and CSRF', async () => {
+            mockCheckRateLimit.mockRejectedValue(new Error('Redis connection failed'));
+            const req = createMockRequest('POST');
+            const res = createMockResponse();
+            const handler = jest.fn((innerReq, innerRes) => innerRes.status(503).json({
+                data: null,
+                error: 'BILLING_CHECKOUT_DISABLED',
+                message: 'Checkout is temporarily unavailable.',
+            }));
+
+            await withRateLimit(handler, {
+                allowedMethods: ['POST'],
+                operation: 'billing_write',
+                skipRateLimitWhen: () => true,
+            })(req, res);
+
+            expect(mockGetUserFromRequest).toHaveBeenCalled();
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).toHaveBeenCalledWith(req, res);
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(res.json).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    error: 'BILLING_CHECKOUT_DISABLED',
+                })
+            );
+        });
     });
 
     // =========================================================================

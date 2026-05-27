@@ -22,7 +22,7 @@ export function getBillingStatusSummary(input = {}) {
   const billingStatus = input?.billingStatus ?? null;
   const hasPortalCustomer = Boolean(billingStatus?.hasPortalCustomer);
 
-  if (loadState === BILLING_PAGE_LOAD_STATES.ERROR) {
+  if (loadState === BILLING_PAGE_LOAD_STATES.ERROR || (loadState === BILLING_PAGE_LOAD_STATES.READY && !billingStatus)) {
     return {
       title: 'Billing status unavailable',
       description: 'We could not verify your local billing state right now. Refresh this page before starting checkout or opening the billing portal.',
