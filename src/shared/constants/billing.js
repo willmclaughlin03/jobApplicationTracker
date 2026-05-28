@@ -5,7 +5,7 @@
  * statuses consistent before any schema or route work begins.
  */
 export const BILLING_PLANS = {
-  RESUME_TAILOR_MONTHLY: 'resume_tailor_monthly',
+  PREMIUM_MONTHLY: 'premium_monthly',
 };
 
 /**
@@ -13,11 +13,11 @@ export const BILLING_PLANS = {
  * entitlement checks and Stripe runtime setup reference the same allowlist.
  */
 export const BILLING_PLAN_PRICE_ENV_VARS = {
-  [BILLING_PLANS.RESUME_TAILOR_MONTHLY]: 'STRIPE_PRICE_RESUME_TAILOR_MONTHLY',
+  [BILLING_PLANS.PREMIUM_MONTHLY]: 'STRIPE_PRICE_PREMIUM_MONTHLY',
 };
 
 export const BILLING_ENTITLEMENTS = {
-  AI_TAILOR: 'ai_tailor',
+  PREMIUM: 'premium',
 };
 
 export const BILLING_SUBSCRIPTION_STATUSES = {

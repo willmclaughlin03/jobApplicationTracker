@@ -10,20 +10,20 @@ describe('billingSchema', () => {
   describe('billingCheckoutSchema', () => {
     it('accepts the supported billing plan and checkout attempt nonce', () => {
       const result = billingCheckoutSchema.safeParse({
-        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        plan: BILLING_PLANS.PREMIUM_MONTHLY,
         checkoutAttemptNonce: validCheckoutAttemptNonce,
       });
 
       expect(result.success).toBe(true);
       expect(result.data).toEqual({
-        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        plan: BILLING_PLANS.PREMIUM_MONTHLY,
         checkoutAttemptNonce: validCheckoutAttemptNonce,
       });
     });
 
     it('normalizes uppercase checkout attempt nonces', () => {
       const result = billingCheckoutSchema.safeParse({
-        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        plan: BILLING_PLANS.PREMIUM_MONTHLY,
         checkoutAttemptNonce: 'ABCDEFABCDEFABCDEFABCDEFABCDEFAB',
       });
 
@@ -50,7 +50,7 @@ describe('billingSchema', () => {
 
     it('rejects missing checkout attempt nonces', () => {
       const result = billingCheckoutSchema.safeParse({
-        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        plan: BILLING_PLANS.PREMIUM_MONTHLY,
       });
 
       expect(result.success).toBe(false);
@@ -58,7 +58,7 @@ describe('billingSchema', () => {
 
     it('rejects malformed checkout attempt nonces', () => {
       const result = billingCheckoutSchema.safeParse({
-        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        plan: BILLING_PLANS.PREMIUM_MONTHLY,
         checkoutAttemptNonce: 'not-a-valid-nonce',
       });
 
@@ -67,7 +67,7 @@ describe('billingSchema', () => {
 
     it('rejects checkout request fields outside the strict nonce-backed contract', () => {
       const result = billingCheckoutSchema.safeParse({
-        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        plan: BILLING_PLANS.PREMIUM_MONTHLY,
         checkoutAttemptNonce: validCheckoutAttemptNonce,
         clientSessionId: 'extra-session-field',
       });

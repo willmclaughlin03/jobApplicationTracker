@@ -579,10 +579,23 @@ function extractStripeCustomerId(customer) {
  * `plan.id` fallback remains for older Stripe response shapes and test data.
  *
  * @param {object | null | undefined} subscription
+ * @param {string | null | undefined} preferredPriceId trusted local price id
+ * to prefer when it still exists in the Stripe item snapshot.
  * @returns {string | null}
  */
-function extractStripePriceId(subscription) {
+function extractStripePriceId(subscription, preferredPriceId = null) {
   const items = Array.isArray(subscription?.items?.data) ? subscription.items.data : [];
+  const preferred = normalizePriceId(preferredPriceId);
+
+  if (
+    preferred
+    && items.some((item) => (
+      normalizePriceId(item?.price?.id) === preferred
+      || normalizePriceId(item?.plan?.id) === preferred
+    ))
+  ) {
+    return preferred;
+  }
 
   for (const item of items) {
     const priceId = normalizePriceId(item?.price?.id);
@@ -593,6 +606,44 @@ function extractStripePriceId(subscription) {
   }
 
   return normalizePriceId(subscription?.items?.data?.[0]?.plan?.id) || null;
+}
+
+/**
+ * Resolve a subscription's current period end across Stripe API shapes.
+ *
+ * Purpose: Stripe API versions from 2025-03-31.basil onward expose period
+ * fields on subscription items instead of the parent subscription. Local
+ * renewal sweeps and monitoring still need a populated timestamp, so prefer
+ * the item that owns the persisted price id before falling back to legacy
+ * top-level data.
+ *
+ * @param {object | null | undefined} subscription
+ * @param {string | null | undefined} preferredPriceId trusted local price id
+ * to prefer when matching the period-owning Stripe item.
+ * @returns {string | null}
+ */
+function extractStripeCurrentPeriodEnd(subscription, preferredPriceId = null) {
+  const items = Array.isArray(subscription?.items?.data) ? subscription.items.data : [];
+  const priceId = extractStripePriceId(subscription, preferredPriceId);
+  const matchingItem = priceId
+    ? items.find((item) => (
+      normalizePriceId(item?.price?.id) === priceId
+      || normalizePriceId(item?.plan?.id) === priceId
+    ))
+    : null;
+  const orderedItems = matchingItem
+    ? [matchingItem, ...items.filter((item) => item !== matchingItem)]
+    : items;
+
+  for (const item of orderedItems) {
+    const itemCurrentPeriodEnd = toIsoTimestamp(item?.current_period_end);
+
+    if (itemCurrentPeriodEnd) {
+      return itemCurrentPeriodEnd;
+    }
+  }
+
+  return toIsoTimestamp(subscription?.current_period_end);
 }
 
 function normalizeStripeStatus(status) {
@@ -1092,7 +1143,7 @@ function buildBillingStatus(customer, subscription) {
     hasCustomerMapping: !!customer,
     hasSubscription: !!subscription,
     entitled,
-    entitlement: entitled ? BILLING_ENTITLEMENTS.AI_TAILOR : null,
+    entitlement: entitled ? BILLING_ENTITLEMENTS.PREMIUM : null,
     tier: entitled ? TIERS.PAID : TIERS.FREE,
     stripeCustomerId,
     stripeSubscriptionId,
@@ -2148,7 +2199,7 @@ export async function resolveStorageEntitlementPrivileged(userId, log = defaultL
 }
 
 /**
- * Resolve access to the AI tailor feature from canonical local billing state
+ * Resolve premium access from canonical local billing state
  * using a request-scoped Supabase client.
  *
  * Missing/invalid clients or read failures fail closed to a non-entitled
@@ -2159,7 +2210,7 @@ export async function resolveStorageEntitlementPrivileged(userId, log = defaultL
  * @param {object} log
  * @returns {Promise<object>}
  */
-export async function resolveTailorEntitlement(
+export async function resolvePremiumEntitlement(
   userId,
   supabaseClient,
   log = defaultLogger
@@ -2169,7 +2220,7 @@ export async function resolveTailorEntitlement(
   if (billingStatus.entitled) {
     return {
       entitled: true,
-      entitlement: BILLING_ENTITLEMENTS.AI_TAILOR,
+      entitlement: BILLING_ENTITLEMENTS.PREMIUM,
       code: null,
       message: null,
       billingStatus,
@@ -2216,15 +2267,15 @@ export async function resolveTailorEntitlement(
 }
 
 /**
- * Intentionally bypass RLS for server-controlled AI tailor entitlement checks
+ * Intentionally bypass RLS for server-controlled premium entitlement checks
  * by routing through supabaseAdmin.
  *
  * @param {string} userId
  * @param {object} log
  * @returns {Promise<object>}
  */
-export async function resolveTailorEntitlementPrivileged(userId, log = defaultLogger) {
-  return resolveTailorEntitlement(userId, supabaseAdmin, log);
+export async function resolvePremiumEntitlementPrivileged(userId, log = defaultLogger) {
+  return resolvePremiumEntitlement(userId, supabaseAdmin, log);
 }
 
 /**
@@ -2533,9 +2584,12 @@ export async function syncSubscriptionFromStripe(
           userId: localCustomer.user_id,
           stripeSubscriptionId: stripeSubscription.id,
           stripeCustomerId,
-          priceId: extractStripePriceId(stripeSubscription),
+          priceId: extractStripePriceId(stripeSubscription, localSubscriptionForEvent?.price_id),
           status: classifiedStatus.normalizedStatus,
-          currentPeriodEnd: toIsoTimestamp(stripeSubscription.current_period_end),
+          currentPeriodEnd: extractStripeCurrentPeriodEnd(
+            stripeSubscription,
+            localSubscriptionForEvent?.price_id
+          ),
           cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end,
           eventCreated: parsedOptions.eventCreated,
         })
@@ -2567,7 +2621,7 @@ export async function syncSubscriptionFromStripe(
         stripeCustomerId,
         priceId: extractStripePriceId(stripeSubscription),
         status: classifiedStatus.normalizedStatus,
-        currentPeriodEnd: toIsoTimestamp(stripeSubscription.current_period_end),
+        currentPeriodEnd: extractStripeCurrentPeriodEnd(stripeSubscription),
         cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end,
         lastStripeEventCreated: parsedOptions.eventCreated,
       })
@@ -2969,7 +3023,7 @@ export async function markSubscriptionDeletedFromEvent(
       };
     }
 
-    const currentPeriodEnd = toIsoTimestamp(subscription?.current_period_end);
+    const currentPeriodEnd = extractStripeCurrentPeriodEnd(subscription, localSubscription?.price_id);
     const hasCancelAtPeriodEnd = typeof subscription?.cancel_at_period_end === 'boolean';
 
     if (!currentPeriodEnd || !hasCancelAtPeriodEnd) {
@@ -2991,7 +3045,7 @@ export async function markSubscriptionDeletedFromEvent(
         userId: localCustomer.user_id,
         stripeSubscriptionId: subscriptionId.data,
         stripeCustomerId,
-        priceId: extractStripePriceId(subscription) ?? null,
+        priceId: extractStripePriceId(subscription, localSubscription?.price_id) ?? null,
         status: BILLING_SUBSCRIPTION_STATUSES.CANCELED,
         currentPeriodEnd,
         cancelAtPeriodEnd: hasCancelAtPeriodEnd ? subscription.cancel_at_period_end : false,

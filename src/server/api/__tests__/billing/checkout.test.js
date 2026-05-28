@@ -76,7 +76,7 @@ describe('/api/billing/checkout handler', () => {
   const defaultPendingSession = {
     id: 42,
     userId: mockUser.id,
-    plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+    plan: BILLING_PLANS.PREMIUM_MONTHLY,
     status: 'creating',
     checkoutUrl: null,
     expiresAt: null,
@@ -94,13 +94,13 @@ describe('/api/billing/checkout handler', () => {
    * Purpose: tests can vary the billing body or authenticated user while
    * keeping the middleware-provided fields the handler expects.
    *
-   * @param {object} body defaults to RESUME_TAILOR_MONTHLY plus checkoutAttemptNonce.
+   * @param {object} body defaults to PREMIUM_MONTHLY plus checkoutAttemptNonce.
    * @param {object} user defaults to mockUser.
    * @returns {object} POST request with body, _rateLimitUser, _supabaseClient, and log.
    */
   function createMockReq(
     body = {
-      plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+      plan: BILLING_PLANS.PREMIUM_MONTHLY,
       checkoutAttemptNonce: defaultCheckoutAttemptNonce,
     },
     user = mockUser
@@ -164,7 +164,7 @@ describe('/api/billing/checkout handler', () => {
     mockLoadBillingStatusOrThrow.mockResolvedValue({ hasSubscription: false, status: null });
     mockWaitForPendingCheckoutSessionOpen.mockResolvedValue(null);
     mockBuildAppUrl.mockImplementation((path) => `https://app.example.test${path}`);
-    mockGetPriceIdForPlan.mockReturnValue('price_tailor_monthly');
+    mockGetPriceIdForPlan.mockReturnValue('price_premium_monthly');
     mockCreateCheckoutSession.mockResolvedValue(defaultCheckoutSession);
   });
 
@@ -247,7 +247,7 @@ describe('/api/billing/checkout handler', () => {
 
   it('rejects invalid checkout attempt nonces before billing reads', async () => {
     const req = createMockReq({
-      plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+      plan: BILLING_PLANS.PREMIUM_MONTHLY,
       checkoutAttemptNonce: 'not-a-valid-nonce',
     });
     const res = createMockRes();
@@ -267,7 +267,7 @@ describe('/api/billing/checkout handler', () => {
   it('rejects checkout before local billing or Stripe work when the authenticated user has no email', async () => {
     const req = createMockReq(
       {
-        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        plan: BILLING_PLANS.PREMIUM_MONTHLY,
         checkoutAttemptNonce: defaultCheckoutAttemptNonce,
       },
       { id: mockUser.id, email: '   ' }
@@ -294,7 +294,7 @@ describe('/api/billing/checkout handler', () => {
   ])('rejects checkout before local billing or Stripe work when the authenticated email is %s', async (_label, email) => {
     const req = createMockReq(
       {
-        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        plan: BILLING_PLANS.PREMIUM_MONTHLY,
         checkoutAttemptNonce: defaultCheckoutAttemptNonce,
       },
       { id: mockUser.id, email }
@@ -318,7 +318,7 @@ describe('/api/billing/checkout handler', () => {
   it('trims a valid authenticated billing email before resolving the Stripe customer', async () => {
     const req = createMockReq(
       {
-        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        plan: BILLING_PLANS.PREMIUM_MONTHLY,
         checkoutAttemptNonce: defaultCheckoutAttemptNonce,
       },
       { id: mockUser.id, email: '  test@example.com  ' }
@@ -346,7 +346,7 @@ describe('/api/billing/checkout handler', () => {
     expect(mockClaimPendingCheckoutSession).toHaveBeenCalledWith(
       {
         userId: mockUser.id,
-        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        plan: BILLING_PLANS.PREMIUM_MONTHLY,
         checkoutAttemptNonce: defaultCheckoutAttemptNonce,
       },
       mockLog
@@ -359,7 +359,7 @@ describe('/api/billing/checkout handler', () => {
       mockUser.email,
       mockLog
     );
-    expect(mockGetPriceIdForPlan).toHaveBeenCalledWith(BILLING_PLANS.RESUME_TAILOR_MONTHLY);
+    expect(mockGetPriceIdForPlan).toHaveBeenCalledWith(BILLING_PLANS.PREMIUM_MONTHLY);
     expect(mockCreateCheckoutSession).toHaveBeenCalledWith({
       mode: 'subscription',
       customer: 'cus_checkout_123',
@@ -367,14 +367,14 @@ describe('/api/billing/checkout handler', () => {
       payment_method_types: ['card'],
       line_items: [
         {
-          price: 'price_tailor_monthly',
+          price: 'price_premium_monthly',
           quantity: 1,
         },
       ],
       success_url: 'https://app.example.test/billing/success?session_id={CHECKOUT_SESSION_ID}',
       cancel_url: 'https://app.example.test/billing/cancel',
     }, {
-      idempotencyKey: `billing_checkout_hash1234567890hash123456_resume_tailor_monthly_${defaultCheckoutAttemptNonce}`,
+      idempotencyKey: `billing_checkout_hash1234567890hash123456_premium_monthly_${defaultCheckoutAttemptNonce}`,
     });
     expect(mockFinalizePendingCheckoutSession).toHaveBeenCalledWith(
       {
@@ -462,7 +462,7 @@ describe('/api/billing/checkout handler', () => {
     expect(mockWaitForPendingCheckoutSessionOpen).toHaveBeenCalledWith(
       {
         userId: mockUser.id,
-        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        plan: BILLING_PLANS.PREMIUM_MONTHLY,
       },
       mockLog
     );
@@ -493,12 +493,12 @@ describe('/api/billing/checkout handler', () => {
       checkoutUrl: defaultCheckoutSession.url,
     });
     const firstReq = createMockReq({
-      plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+      plan: BILLING_PLANS.PREMIUM_MONTHLY,
       checkoutAttemptNonce: firstNonce,
     });
     const firstRes = createMockRes();
     const secondReq = createMockReq({
-      plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+      plan: BILLING_PLANS.PREMIUM_MONTHLY,
       checkoutAttemptNonce: secondNonce,
     });
     const secondRes = createMockRes();
@@ -533,14 +533,14 @@ describe('/api/billing/checkout handler', () => {
 
     const firstReq = createMockReq(
       {
-        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        plan: BILLING_PLANS.PREMIUM_MONTHLY,
         checkoutAttemptNonce: defaultCheckoutAttemptNonce,
       },
       { id: 'user-a', email: 'a@example.com' }
     );
     const secondReq = createMockReq(
       {
-        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        plan: BILLING_PLANS.PREMIUM_MONTHLY,
         checkoutAttemptNonce: defaultCheckoutAttemptNonce,
       },
       { id: 'user-b', email: 'b@example.com' }
@@ -563,12 +563,12 @@ describe('/api/billing/checkout handler', () => {
     const firstNonce = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     const secondNonce = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
     const firstReq = createMockReq({
-      plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+      plan: BILLING_PLANS.PREMIUM_MONTHLY,
       checkoutAttemptNonce: firstNonce,
     });
     const firstRes = createMockRes();
     const secondReq = createMockReq({
-      plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+      plan: BILLING_PLANS.PREMIUM_MONTHLY,
       checkoutAttemptNonce: secondNonce,
     });
     const secondRes = createMockRes();
@@ -577,10 +577,10 @@ describe('/api/billing/checkout handler', () => {
     await handler(secondReq, secondRes);
 
     expect(mockCreateCheckoutSession.mock.calls[0][1].idempotencyKey).toBe(
-      `billing_checkout_hash1234567890hash123456_resume_tailor_monthly_${firstNonce}`
+      `billing_checkout_hash1234567890hash123456_premium_monthly_${firstNonce}`
     );
     expect(mockCreateCheckoutSession.mock.calls[1][1].idempotencyKey).toBe(
-      `billing_checkout_hash1234567890hash123456_resume_tailor_monthly_${secondNonce}`
+      `billing_checkout_hash1234567890hash123456_premium_monthly_${secondNonce}`
     );
   });
 

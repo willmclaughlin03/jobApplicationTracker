@@ -3,7 +3,7 @@ const { Readable } = require('stream');
 
 const STRIPE_ENV_VARS = [
   'STRIPE_SECRET_KEY',
-  'STRIPE_PRICE_RESUME_TAILOR_MONTHLY',
+  'STRIPE_PRICE_PREMIUM_MONTHLY',
   'STRIPE_WEBHOOK_SECRET_TEST',
   'STRIPE_WEBHOOK_SECRET_LIVE',
   'NEXT_PUBLIC_APP_URL',
@@ -208,7 +208,7 @@ describe('verifyWebhookSignature', () => {
   it('does not require checkout-only app URL or price env vars', async () => {
     setValidTestEnv();
     delete process.env.NEXT_PUBLIC_APP_URL;
-    delete process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY;
+    delete process.env.STRIPE_PRICE_PREMIUM_MONTHLY;
 
     const payload = createEventPayload({ id: 'evt_runtime_only' });
     const { getStripeClient, verifyWebhookSignature } = loadModules();

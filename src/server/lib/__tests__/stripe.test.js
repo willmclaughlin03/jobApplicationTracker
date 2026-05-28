@@ -1,7 +1,7 @@
 const STRIPE_ENV_VARS = [
   'NEXT_PUBLIC_APP_URL',
   'STRIPE_SECRET_KEY',
-  'STRIPE_PRICE_RESUME_TAILOR_MONTHLY',
+  'STRIPE_PRICE_PREMIUM_MONTHLY',
   'STRIPE_BILLING_PORTAL_CONFIGURATION_ID',
   'STRIPE_WEBHOOK_SECRET_TEST',
   'STRIPE_WEBHOOK_SECRET_LIVE',
@@ -42,7 +42,7 @@ function restoreStripeEnv() {
 function setValidTestEnv() {
   process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test';
   process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
-  process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+  process.env.STRIPE_PRICE_PREMIUM_MONTHLY = 'price_premium_monthly';
   process.env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID = 'bpc_test_chunk2';
   process.env.STRIPE_WEBHOOK_SECRET_TEST = 'whsec_test_chunk2';
 }
@@ -104,11 +104,11 @@ describe('stripe runtime foundation', () => {
       getStripeClient,
     } = loadStripeModule();
 
-    expect(STRIPE_API_VERSION).toBe('2026-02-25.clover');
+    expect(STRIPE_API_VERSION).toBe('2026-04-22.dahlia');
     expect(getConfiguredStripeMode()).toBe('test');
     expect(getAppOrigin()).toBe('https://app.example.test');
     expect(buildAppUrl('/billing/success')).toBe('https://app.example.test/billing/success');
-    expect(getPriceIdForPlan(BILLING_PLANS.RESUME_TAILOR_MONTHLY)).toBe('price_tailor_monthly');
+    expect(getPriceIdForPlan(BILLING_PLANS.PREMIUM_MONTHLY)).toBe('price_premium_monthly');
     expect(getBillingPortalConfigurationId()).toBe('bpc_test_chunk2');
     const stripe = getStripeClient();
     expect(stripe.getApiField('timeout')).toBe(10000);
@@ -147,7 +147,7 @@ describe('stripe runtime foundation', () => {
 
   it('does not validate runtime secrets when the Stripe barrel is only imported', () => {
     process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test';
-    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+    process.env.STRIPE_PRICE_PREMIUM_MONTHLY = 'price_premium_monthly';
 
     const { getConfiguredStripeMode } = loadStripeModule();
 
@@ -160,14 +160,14 @@ describe('stripe runtime foundation', () => {
 
     const { BILLING_PLANS, getPriceIdForPlan } = loadStripeModule();
 
-    expect(() => getPriceIdForPlan(BILLING_PLANS.RESUME_TAILOR_MONTHLY))
-      .toThrow(/missing STRIPE_PRICE_RESUME_TAILOR_MONTHLY/i);
+    expect(() => getPriceIdForPlan(BILLING_PLANS.PREMIUM_MONTHLY))
+      .toThrow(/missing STRIPE_PRICE_PREMIUM_MONTHLY/i);
   });
 
   it('fails closed when STRIPE_SECRET_KEY is malformed at runtime call time', () => {
     process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test';
     process.env.STRIPE_SECRET_KEY = 'pk_test_not_a_secret';
-    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+    process.env.STRIPE_PRICE_PREMIUM_MONTHLY = 'price_premium_monthly';
 
     const { getConfiguredStripeMode } = loadStripeModule();
 
@@ -176,7 +176,7 @@ describe('stripe runtime foundation', () => {
 
   it('fails closed when NEXT_PUBLIC_APP_URL is missing at app-url call time', () => {
     process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
-    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+    process.env.STRIPE_PRICE_PREMIUM_MONTHLY = 'price_premium_monthly';
 
     const { getAppOrigin } = loadStripeModule();
 
@@ -186,7 +186,7 @@ describe('stripe runtime foundation', () => {
   it('rejects non-origin NEXT_PUBLIC_APP_URL values', () => {
     process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test/billing';
     process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
-    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+    process.env.STRIPE_PRICE_PREMIUM_MONTHLY = 'price_premium_monthly';
 
     const { getAppOrigin } = loadStripeModule();
 
@@ -196,7 +196,7 @@ describe('stripe runtime foundation', () => {
   it('rejects NEXT_PUBLIC_APP_URL values with embedded credentials', () => {
     process.env.NEXT_PUBLIC_APP_URL = 'https://user:pass@app.example.test';
     process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
-    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+    process.env.STRIPE_PRICE_PREMIUM_MONTHLY = 'price_premium_monthly';
 
     const { getAppOrigin } = loadStripeModule();
 
@@ -206,7 +206,7 @@ describe('stripe runtime foundation', () => {
   it('rejects insecure non-local development origins outside production', () => {
     process.env.NEXT_PUBLIC_APP_URL = 'http://staging.example.test';
     process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
-    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+    process.env.STRIPE_PRICE_PREMIUM_MONTHLY = 'price_premium_monthly';
 
     const { getAppOrigin } = loadStripeModule();
 
@@ -216,7 +216,7 @@ describe('stripe runtime foundation', () => {
   it('allows localhost http origins outside production', () => {
     process.env.NEXT_PUBLIC_APP_URL = 'http://localhost:3000';
     process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
-    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+    process.env.STRIPE_PRICE_PREMIUM_MONTHLY = 'price_premium_monthly';
     process.env.STRIPE_WEBHOOK_SECRET_TEST = 'whsec_test_chunk2';
 
     const { getAppOrigin } = loadStripeModule();
@@ -238,7 +238,7 @@ describe('stripe runtime foundation', () => {
     process.env.NODE_ENV = 'production';
     process.env.NEXT_PUBLIC_APP_URL = 'http://localhost:3000';
     process.env.STRIPE_SECRET_KEY = 'sk_live_chunk2';
-    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+    process.env.STRIPE_PRICE_PREMIUM_MONTHLY = 'price_premium_monthly';
 
     const { getAppOrigin } = loadStripeModule();
 
@@ -276,7 +276,7 @@ describe('stripe runtime foundation', () => {
   it('returns the active webhook secret for live mode', () => {
     process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test';
     process.env.STRIPE_SECRET_KEY = 'sk_live_chunk2';
-    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+    process.env.STRIPE_PRICE_PREMIUM_MONTHLY = 'price_premium_monthly';
     process.env.STRIPE_WEBHOOK_SECRET_LIVE = 'whsec_live_chunk2';
 
     const { getConfiguredStripeMode, getActiveStripeWebhookSecret } = loadStripeModule();
@@ -288,7 +288,7 @@ describe('stripe runtime foundation', () => {
   it('fails closed when the active webhook secret is missing', () => {
     process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test';
     process.env.STRIPE_SECRET_KEY = 'sk_test_chunk2';
-    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+    process.env.STRIPE_PRICE_PREMIUM_MONTHLY = 'price_premium_monthly';
 
     const { getActiveStripeWebhookSecret } = loadStripeModule();
 

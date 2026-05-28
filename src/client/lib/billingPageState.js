@@ -48,7 +48,7 @@ export function getBillingStatusSummary(input = {}) {
   if (!billingStatus?.hasSubscription) {
     return {
       title: 'No active subscription',
-      description: 'Start checkout to enable premium access for resume tailoring.',
+      description: 'Start checkout to enable premium access.',
     };
   }
 

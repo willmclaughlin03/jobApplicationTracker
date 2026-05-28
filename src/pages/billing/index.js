@@ -212,7 +212,7 @@ export default function BillingPage() {
     await runBillingPageRedirectAction({
       action: BILLING_PAGE_ACTIONS.CHECKOUT,
       request: () => api.post('/api/billing/checkout', {
-        plan: BILLING_PLANS.RESUME_TAILOR_MONTHLY,
+        plan: BILLING_PLANS.PREMIUM_MONTHLY,
         checkoutAttemptNonce,
       }),
       setActionLoading,
@@ -277,7 +277,7 @@ export default function BillingPage() {
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="text-sm uppercase tracking-wide text-blue-600 font-semibold">
-                Resume Tailor Premium
+                Premium
               </p>
               <h2 className="text-2xl font-semibold text-gray-900 mt-1">{summary.title}</h2>
               <p className="text-gray-600 mt-2 max-w-2xl">{summary.description}</p>

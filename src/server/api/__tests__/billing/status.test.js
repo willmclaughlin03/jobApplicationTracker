@@ -56,7 +56,7 @@ describe('/api/billing/status handler', () => {
   it('returns canonical local billing fields with cache-hardening headers', async () => {
     mockLoadBillingStatusOrThrow.mockResolvedValue({
       entitled: true,
-      entitlement: 'ai_tailor',
+      entitlement: 'premium',
       status: 'active',
       currentPeriodEnd: '2026-06-01T00:00:00.000Z',
       cancelAtPeriodEnd: false,
@@ -79,7 +79,7 @@ describe('/api/billing/status handler', () => {
       expect.objectContaining({
         data: {
           entitled: true,
-          entitlement: 'ai_tailor',
+          entitlement: 'premium',
           status: 'active',
           currentPeriodEnd: '2026-06-01T00:00:00.000Z',
           cancelAtPeriodEnd: false,
