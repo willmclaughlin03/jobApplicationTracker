@@ -71,8 +71,8 @@ const {
   redactStripeId,
   resolveStorageEntitlement,
   resolveStorageEntitlementPrivileged,
-  resolveTailorEntitlement,
-  resolveTailorEntitlementPrivileged,
+  resolvePremiumEntitlement,
+  resolvePremiumEntitlementPrivileged,
   syncSubscriptionFromStripe,
   waitForPendingCheckoutSessionOpen,
 } = require('../billingService.js');
@@ -265,7 +265,7 @@ describe('billingService', () => {
     mockSupabaseAdmin.rpc.mockReset();
     mockStripeMode = 'test';
     delete process.env.LOG_FULL_BILLING_IDS;
-    process.env.STRIPE_PRICE_RESUME_TAILOR_MONTHLY = 'price_tailor_monthly';
+    process.env.STRIPE_PRICE_PREMIUM_MONTHLY = 'price_premium_monthly';
     process.env.BILLING_EMAIL_FINGERPRINT_SECRET = TEST_BILLING_EMAIL_FINGERPRINT_SECRET;
   });
 
@@ -296,15 +296,15 @@ describe('billingService', () => {
   describe('getEntitledPriceIdAllowlist', () => {
     it('returns configured Stripe price ids for canonical entitlement checks', () => {
       const allowlist = getEntitledPriceIdAllowlist({
-        STRIPE_PRICE_RESUME_TAILOR_MONTHLY: 'price_tailor_monthly',
+        STRIPE_PRICE_PREMIUM_MONTHLY: 'price_premium_monthly',
       });
 
-      expect(allowlist).toEqual(new Set(['price_tailor_monthly']));
+      expect(allowlist).toEqual(new Set(['price_premium_monthly']));
     });
 
     it('ignores missing or blank env values', () => {
       const allowlist = getEntitledPriceIdAllowlist({
-        STRIPE_PRICE_RESUME_TAILOR_MONTHLY: '   ',
+        STRIPE_PRICE_PREMIUM_MONTHLY: '   ',
       });
 
       expect(allowlist.size).toBe(0);
@@ -315,8 +315,8 @@ describe('billingService', () => {
     it('returns true for an allowlisted active subscription', () => {
       expect(
         hasCanonicalBillingEntitlement(
-          { price_id: 'price_tailor_monthly', status: 'active' },
-          new Set(['price_tailor_monthly'])
+          { price_id: 'price_premium_monthly', status: 'active' },
+          new Set(['price_premium_monthly'])
         )
       ).toBe(true);
     });
@@ -325,7 +325,7 @@ describe('billingService', () => {
       expect(
         hasCanonicalBillingEntitlement(
           { price_id: 'price_other', status: 'active' },
-          new Set(['price_tailor_monthly'])
+          new Set(['price_premium_monthly'])
         )
       ).toBe(false);
     });
@@ -383,7 +383,7 @@ describe('billingService', () => {
 
   describe('pending checkout session helpers', () => {
     const userId = 'user-pending-checkout';
-    const plan = 'resume_tailor_monthly';
+    const plan = 'premium_monthly';
     const checkoutAttemptNonce = '0123456789abcdef0123456789abcdef';
     const pendingRow = {
       id: 42,
@@ -763,7 +763,7 @@ describe('billingService', () => {
               user_id: userId,
               stripe_subscription_id: 'sub_local_123',
               stripe_customer_id: 'cus_local_123',
-              price_id: 'price_tailor_monthly',
+              price_id: 'price_premium_monthly',
               status: 'active',
               current_period_end: '2026-05-01T00:00:00.000Z',
               cancel_at_period_end: false,
@@ -780,11 +780,11 @@ describe('billingService', () => {
           hasCustomerMapping: true,
           hasSubscription: true,
           entitled: true,
-          entitlement: BILLING_ENTITLEMENTS.AI_TAILOR,
+          entitlement: BILLING_ENTITLEMENTS.PREMIUM,
           tier: TIERS.PAID,
           stripeCustomerId: 'cus_local_123',
           stripeSubscriptionId: 'sub_local_123',
-          priceId: 'price_tailor_monthly',
+          priceId: 'price_premium_monthly',
           status: 'active',
         })
       );
@@ -846,7 +846,7 @@ describe('billingService', () => {
               user_id: userId,
               stripe_subscription_id: 'sub_privileged',
               stripe_customer_id: 'cus_privileged',
-              price_id: 'price_tailor_monthly',
+              price_id: 'price_premium_monthly',
               status: 'active',
               cancel_at_period_end: false,
             },
@@ -879,7 +879,7 @@ describe('billingService', () => {
               user_id: userId,
               stripe_subscription_id: 'sub_strict_123',
               stripe_customer_id: 'cus_strict_123',
-              price_id: 'price_tailor_monthly',
+              price_id: 'price_premium_monthly',
               status: 'active',
               cancel_at_period_end: false,
             },
@@ -1032,7 +1032,7 @@ describe('billingService', () => {
         },
         billing_subscriptions: {
           maybeSingle: {
-            data: { price_id: 'price_tailor_monthly', status: 'active' },
+            data: { price_id: 'price_premium_monthly', status: 'active' },
             error: null,
           },
         },
@@ -1058,7 +1058,7 @@ describe('billingService', () => {
         },
         billing_subscriptions: {
           maybeSingle: {
-            data: { price_id: 'price_tailor_monthly', status },
+            data: { price_id: 'price_premium_monthly', status },
             error: null,
           },
         },
@@ -1105,21 +1105,21 @@ describe('billingService', () => {
     });
   });
 
-  describe('resolveTailorEntitlement', () => {
-    const userId = 'user-tailor';
+  describe('resolvePremiumEntitlement', () => {
+    const userId = 'user-premium';
 
-    it('returns the AI tailor entitlement for an allowlisted active subscription', async () => {
+    it('returns the premium entitlement for an allowlisted active subscription', async () => {
       const client = createSupabaseClient({
         billing_customers: {
-          maybeSingle: { data: { user_id: userId, stripe_customer_id: 'cus_tailor' }, error: null },
+          maybeSingle: { data: { user_id: userId, stripe_customer_id: 'cus_premium' }, error: null },
         },
         billing_subscriptions: {
           maybeSingle: {
             data: {
               user_id: userId,
-              stripe_subscription_id: 'sub_tailor',
-              stripe_customer_id: 'cus_tailor',
-              price_id: 'price_tailor_monthly',
+              stripe_subscription_id: 'sub_premium',
+              stripe_customer_id: 'cus_premium',
+              price_id: 'price_premium_monthly',
               status: 'active',
               cancel_at_period_end: false,
             },
@@ -1128,12 +1128,12 @@ describe('billingService', () => {
         },
       });
 
-      const result = await resolveTailorEntitlement(userId, client, mockLog);
+      const result = await resolvePremiumEntitlement(userId, client, mockLog);
 
       expect(result).toEqual(
         expect.objectContaining({
           entitled: true,
-          entitlement: BILLING_ENTITLEMENTS.AI_TAILOR,
+          entitlement: BILLING_ENTITLEMENTS.PREMIUM,
           code: null,
           message: null,
         })
@@ -1143,15 +1143,15 @@ describe('billingService', () => {
     it('returns payment recovery guidance for past_due subscriptions', async () => {
       const client = createSupabaseClient({
         billing_customers: {
-          maybeSingle: { data: { user_id: userId, stripe_customer_id: 'cus_tailor' }, error: null },
+          maybeSingle: { data: { user_id: userId, stripe_customer_id: 'cus_premium' }, error: null },
         },
         billing_subscriptions: {
           maybeSingle: {
             data: {
               user_id: userId,
-              stripe_subscription_id: 'sub_tailor',
-              stripe_customer_id: 'cus_tailor',
-              price_id: 'price_tailor_monthly',
+              stripe_subscription_id: 'sub_premium',
+              stripe_customer_id: 'cus_premium',
+              price_id: 'price_premium_monthly',
               status: 'past_due',
             },
             error: null,
@@ -1159,7 +1159,7 @@ describe('billingService', () => {
         },
       });
 
-      const result = await resolveTailorEntitlement(userId, client, mockLog);
+      const result = await resolvePremiumEntitlement(userId, client, mockLog);
 
       expect(result).toEqual(
         expect.objectContaining({
@@ -1173,14 +1173,14 @@ describe('billingService', () => {
     it('has a privileged wrapper that explicitly routes through supabaseAdmin', async () => {
       useAdminClient(createSupabaseClient({
         billing_customers: {
-          maybeSingle: { data: { user_id: userId, stripe_customer_id: 'cus_tailor' }, error: null },
+          maybeSingle: { data: { user_id: userId, stripe_customer_id: 'cus_premium' }, error: null },
         },
         billing_subscriptions: {
           maybeSingle: { data: null, error: null },
         },
       }));
 
-      const result = await resolveTailorEntitlementPrivileged(userId, mockLog);
+      const result = await resolvePremiumEntitlementPrivileged(userId, mockLog);
 
       expect(result).toEqual(
         expect.objectContaining({
@@ -1515,7 +1515,7 @@ describe('billingService', () => {
                 user_id: userId,
                 stripe_subscription_id: 'sub_sync_123',
                 stripe_customer_id: 'cus_sync_123',
-                price_id: 'price_tailor_monthly',
+                price_id: 'price_premium_monthly',
                 status: 'active',
                 current_period_end: '2029-11-23T00:00:00.000Z',
                 cancel_at_period_end: false,
@@ -1531,10 +1531,12 @@ describe('billingService', () => {
         customer: 'cus_sync_123',
         status: 'active',
         livemode: false,
-        current_period_end: 1889827200,
         cancel_at_period_end: false,
         items: {
-          data: [{ price: { id: 'price_tailor_monthly' } }],
+          data: [{
+            price: { id: 'price_premium_monthly' },
+            current_period_end: 1889827200,
+          }],
         },
       });
 
@@ -1558,7 +1560,7 @@ describe('billingService', () => {
           user_id: userId,
           stripe_subscription_id: 'sub_sync_123',
           stripe_customer_id: 'cus_sync_123',
-          price_id: 'price_tailor_monthly',
+          price_id: 'price_premium_monthly',
           status: 'active',
           current_period_end: '2029-11-20T00:00:00.000Z',
           cancel_at_period_end: false,
@@ -1582,7 +1584,7 @@ describe('billingService', () => {
                 user_id: userId,
                 stripe_subscription_id: 'sub_sync_123',
                 stripe_customer_id: 'cus_sync_123',
-                price_id: 'price_tailor_monthly',
+                price_id: 'price_premium_monthly',
                 status: 'active',
                 current_period_end: '2029-11-23T00:00:00.000Z',
                 cancel_at_period_end: false,
@@ -1598,10 +1600,12 @@ describe('billingService', () => {
         customer: 'cus_sync_123',
         status: 'active',
         livemode: false,
-        current_period_end: 1889827200,
         cancel_at_period_end: false,
         items: {
-          data: [{ price: { id: 'price_tailor_monthly' } }],
+          data: [{
+            price: { id: 'price_premium_monthly' },
+            current_period_end: 1889827200,
+          }],
         },
       });
 
@@ -1622,7 +1626,7 @@ describe('billingService', () => {
           user_id: userId,
           stripe_subscription_id: 'sub_sync_123',
           stripe_customer_id: 'cus_sync_123',
-          price_id: 'price_tailor_monthly',
+          price_id: 'price_premium_monthly',
           status: 'active',
           current_period_end: '2029-11-20T00:00:00.000Z',
           cancel_at_period_end: false,
@@ -1657,7 +1661,7 @@ describe('billingService', () => {
         current_period_end: 1889827200,
         cancel_at_period_end: false,
         items: {
-          data: [{ price: { id: 'price_tailor_monthly' } }],
+          data: [{ price: { id: 'price_premium_monthly' } }],
         },
       });
 
@@ -1707,7 +1711,7 @@ describe('billingService', () => {
         current_period_end: 1889827200,
         cancel_at_period_end: false,
         items: {
-          data: [{ price: { id: 'price_tailor_monthly' } }],
+          data: [{ price: { id: 'price_premium_monthly' } }],
         },
       });
 
@@ -1791,7 +1795,7 @@ describe('billingService', () => {
               user_id: userId,
               stripe_subscription_id: 'sub_sync_123',
               stripe_customer_id: 'cus_sync_123',
-              price_id: 'price_tailor_monthly',
+              price_id: 'price_premium_monthly',
               status: 'active',
               last_stripe_event_created: '2029-11-15T00:00:00.000Z',
             },
@@ -1808,7 +1812,7 @@ describe('billingService', () => {
         current_period_end: 1889827200,
         cancel_at_period_end: false,
         items: {
-          data: [{ price: { id: 'price_tailor_monthly' } }],
+          data: [{ price: { id: 'price_premium_monthly' } }],
         },
       });
 
@@ -1843,7 +1847,7 @@ describe('billingService', () => {
               user_id: userId,
               stripe_subscription_id: 'sub_active_123',
               stripe_customer_id: 'cus_sync_123',
-              price_id: 'price_tailor_monthly',
+              price_id: 'price_premium_monthly',
               status: 'active',
               last_stripe_event_created: '2029-11-10T00:00:00.000Z',
             },
@@ -1860,7 +1864,7 @@ describe('billingService', () => {
         current_period_end: 1889827200,
         cancel_at_period_end: false,
         items: {
-          data: [{ price: { id: 'price_tailor_monthly' } }],
+          data: [{ price: { id: 'price_premium_monthly' } }],
         },
       });
 
@@ -1904,7 +1908,7 @@ describe('billingService', () => {
         current_period_end: 1889827200,
         cancel_at_period_end: false,
         items: {
-          data: [{ price: { id: 'price_tailor_monthly' } }],
+          data: [{ price: { id: 'price_premium_monthly' } }],
         },
       });
 
@@ -1938,7 +1942,7 @@ describe('billingService', () => {
         current_period_end: 1889827200,
         cancel_at_period_end: false,
         items: {
-          data: [{ price: { id: 'price_tailor_monthly' } }],
+          data: [{ price: { id: 'price_premium_monthly' } }],
         },
       });
 
@@ -1970,7 +1974,7 @@ describe('billingService', () => {
         customer: { id: 'cus_deleted_123', deleted: true },
         status: 'active',
         livemode: false,
-        items: { data: [{ price: { id: 'price_tailor_monthly' } }] },
+        items: { data: [{ price: { id: 'price_premium_monthly' } }] },
       });
 
       await expect(
@@ -2307,7 +2311,7 @@ describe('billingService', () => {
               user_id: userId,
               stripe_subscription_id: 'sub_delete_123',
               stripe_customer_id: 'cus_delete_123',
-              price_id: 'price_tailor_monthly',
+              price_id: 'price_premium_monthly',
               status: 'active',
               current_period_end: '2029-11-30T00:00:00.000Z',
               cancel_at_period_end: false,
@@ -2324,7 +2328,7 @@ describe('billingService', () => {
                 user_id: userId,
                 stripe_subscription_id: 'sub_delete_123',
                 stripe_customer_id: 'cus_delete_123',
-                price_id: 'price_tailor_monthly',
+                price_id: 'price_premium_monthly',
                 status: 'canceled',
                 current_period_end: '2029-11-30T00:00:00.000Z',
                 cancel_at_period_end: true,
@@ -2379,6 +2383,89 @@ describe('billingService', () => {
           hasCancelAtPeriodEnd: true,
         }),
         'Stripe subscription delete event omitted one or more snapshot fields'
+      );
+    });
+
+    it('uses the matching subscription item current_period_end for Dahlia-shaped delete snapshots', async () => {
+      const adminClient = useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: { user_id: userId, stripe_customer_id: 'cus_delete_123' },
+            error: null,
+          },
+        },
+        billing_subscriptions: {
+          maybeSingle: {
+            data: {
+              user_id: userId,
+              stripe_subscription_id: 'sub_delete_123',
+              stripe_customer_id: 'cus_delete_123',
+              price_id: 'price_premium_monthly',
+              status: 'active',
+              current_period_end: '2029-11-01T00:00:00.000Z',
+              cancel_at_period_end: false,
+              last_stripe_event_created: '2029-11-10T00:00:00.000Z',
+            },
+            error: null,
+          },
+        },
+        rpc: {
+          upsert_billing_subscription_if_newer_or_equal: {
+            data: {
+              applied: true,
+              subscription: {
+                user_id: userId,
+                stripe_subscription_id: 'sub_delete_123',
+                stripe_customer_id: 'cus_delete_123',
+                price_id: 'price_premium_monthly',
+                status: 'canceled',
+                current_period_end: '2029-11-30T00:00:00.000Z',
+                cancel_at_period_end: true,
+                last_stripe_event_created: '2029-11-14T00:00:00.000Z',
+              },
+            },
+            error: null,
+          },
+        },
+      }));
+
+      const result = await markSubscriptionDeletedFromEvent(
+        {
+          id: 'sub_delete_123',
+          customer: 'cus_delete_123',
+          cancel_at_period_end: true,
+          items: {
+            data: [{
+              price: { id: 'price_premium_monthly' },
+              current_period_end: 1890691200,
+            }],
+          },
+        },
+        { eventCreated: '2029-11-14T00:00:00.000Z', livemode: false },
+        mockLog
+      );
+
+      expect(result).toEqual(expect.objectContaining({
+        outcome: BILLING_WRITE_OUTCOMES.PROCESSED,
+        userId,
+      }));
+      expect(adminClient.rpcCallsByName.upsert_billing_subscription_if_newer_or_equal[0].args).toEqual({
+        payload: {
+          user_id: userId,
+          stripe_subscription_id: 'sub_delete_123',
+          stripe_customer_id: 'cus_delete_123',
+          price_id: 'price_premium_monthly',
+          status: 'canceled',
+          current_period_end: '2029-11-30T00:00:00.000Z',
+          cancel_at_period_end: true,
+          last_stripe_event_created: '2029-11-14T00:00:00.000Z',
+        },
+      });
+      expect(mockLog.warn).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'billing_delete_event_partial',
+        }),
+        expect.any(String)
       );
     });
 
@@ -2466,7 +2553,7 @@ describe('billingService', () => {
               user_id: userId,
               stripe_subscription_id: 'sub_active_123',
               stripe_customer_id: 'cus_delete_123',
-              price_id: 'price_tailor_monthly',
+              price_id: 'price_premium_monthly',
               status: 'active',
               current_period_end: '2029-11-30T00:00:00.000Z',
               cancel_at_period_end: false,

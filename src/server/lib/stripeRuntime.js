@@ -1,7 +1,7 @@
 import Stripe from 'stripe';
 import { z } from 'zod';
 
-export const STRIPE_API_VERSION = '2026-02-25.clover';
+export const STRIPE_API_VERSION = '2026-04-22.dahlia';
 export const STRIPE_WEBHOOK_SECRET_ENV_VARS = Object.freeze({
   test: 'STRIPE_WEBHOOK_SECRET_TEST',
   live: 'STRIPE_WEBHOOK_SECRET_LIVE',

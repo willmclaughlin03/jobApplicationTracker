@@ -12,9 +12,10 @@
  *   - 011_billing_concurrency_guards.sql
  *   - 012_billing_customer_email_fingerprint.sql
  *   - 013_billing_checkout_sessions.sql
+ *   - 014_billing_checkout_premium_plan_rename.sql
  *
  * Notes:
- *   1. This suite may apply 005-013 when the billing tables are absent, or
+ *   1. This suite may apply 005-014 when the billing tables are absent, or
  *      apply additive follow-ups alone when the base tables exist without the
  *      follow-up migrations.
  *   2. That is not the same as a full fresh-schema replay for the project.
@@ -49,6 +50,7 @@ const BILLING_MIGRATION_FILES = [
   '011_billing_concurrency_guards.sql',
   '012_billing_customer_email_fingerprint.sql',
   '013_billing_checkout_sessions.sql',
+  '014_billing_checkout_premium_plan_rename.sql',
 ];
 
 const BASE_BILLING_TABLE_NAMES = [
@@ -85,6 +87,8 @@ const STRIPE_EVENT_RECEIPT_MERGE_FUNCTION =
   'merge_stripe_event_receipt';
 const BILLING_CHECKOUT_SESSION_CLAIM_FUNCTION =
   'claim_billing_checkout_session';
+const BILLING_CHECKOUT_SESSION_PLAN_ALLOWED_CONSTRAINT =
+  'billing_checkout_sessions_plan_allowed_check';
 
 const BILLING_RPC_FUNCTIONS = [
   BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
@@ -127,6 +131,10 @@ const ADDITIVE_BILLING_MIGRATIONS = [
       shape.tables.has('billing_checkout_sessions')
       && shape.functions.has(BILLING_CHECKOUT_SESSION_CLAIM_FUNCTION)
     ),
+  },
+  {
+    filename: '014_billing_checkout_premium_plan_rename.sql',
+    isApplied: isPremiumCheckoutPlanRenameApplied,
   },
 ];
 
@@ -219,6 +227,28 @@ function expectPermissionOrNullData(result) {
   }
 
   expect(result.data === null || (Array.isArray(result.data) && result.data.length === 0)).toBe(true);
+}
+
+/**
+ * Check whether the installed Checkout claim boundary uses premium plan names.
+ *
+ * Purpose: already-applied integration databases can have the 013 table/RPC
+ * shape while still enforcing the old resume-tailor plan value, so additive
+ * setup must inspect definitions instead of only checking object existence.
+ *
+ * @param {object} shape installed billing schema shape from introspection.
+ * @returns {boolean}
+ */
+function isPremiumCheckoutPlanRenameApplied(shape) {
+  const constraintDefinition =
+    shape.constraintDefinitions.get(BILLING_CHECKOUT_SESSION_PLAN_ALLOWED_CONSTRAINT) ?? '';
+  const functionDefinition =
+    shape.functionDefinitions.get(BILLING_CHECKOUT_SESSION_CLAIM_FUNCTION) ?? '';
+
+  return constraintDefinition.includes('premium_monthly')
+    && !/resume_tailor_monthly/i.test(constraintDefinition)
+    && functionDefinition.includes('premium_monthly')
+    && !/resume_tailor_monthly/i.test(functionDefinition);
 }
 
 function isRpcSchemaCacheError(error) {
@@ -401,7 +431,11 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
           )
       `),
       execSql(`
-        SELECT proname, coalesce(proconfig, ARRAY[]::text[]) AS proconfig, prosecdef
+        SELECT
+          proname,
+          coalesce(proconfig, ARRAY[]::text[]) AS proconfig,
+          prosecdef,
+          pg_catalog.pg_get_functiondef(oid) AS function_definition
         FROM pg_catalog.pg_proc
         WHERE pronamespace = 'public'::pg_catalog.regnamespace
           AND proname IN (
@@ -477,6 +511,9 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
       functions: new Set(functionRows.map((row) => row.proname)),
       functionConfigs: new Map(functionRows.map((row) => [row.proname, row.proconfig ?? []])),
       functionSecurity: new Map(functionRows.map((row) => [row.proname, row.prosecdef])),
+      functionDefinitions: new Map(
+        functionRows.map((row) => [row.proname, row.function_definition || ''])
+      ),
       triggers: new Set(triggerRows.map((row) => row.tgname)),
       policies: policyRows,
       indexes: new Set(indexRows.map((row) => row.indexname)),
@@ -538,7 +575,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
       'stripe_event_receipts_event_type_length_check',
       'billing_checkout_sessions_pkey',
       'billing_checkout_sessions_plan_format_check',
-      'billing_checkout_sessions_plan_allowed_check',
+      BILLING_CHECKOUT_SESSION_PLAN_ALLOWED_CONSTRAINT,
       'billing_checkout_sessions_status_check',
       'billing_checkout_sessions_stripe_session_id_format_check',
       'billing_checkout_sessions_open_fields_check',
@@ -578,6 +615,16 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
       shape.constraintDefinitions.get(BILLING_SUBSCRIPTIONS_STATUS_CHECK) ?? '';
     expect(statusConstraintDefinition).toContain('active');
     expect(statusConstraintDefinition).not.toMatch(/trialing/i);
+
+    const checkoutPlanConstraintDefinition =
+      shape.constraintDefinitions.get(BILLING_CHECKOUT_SESSION_PLAN_ALLOWED_CONSTRAINT) ?? '';
+    expect(checkoutPlanConstraintDefinition).toContain('premium_monthly');
+    expect(checkoutPlanConstraintDefinition).not.toMatch(/resume_tailor_monthly/i);
+
+    const checkoutClaimFunctionDefinition =
+      shape.functionDefinitions.get(BILLING_CHECKOUT_SESSION_CLAIM_FUNCTION) ?? '';
+    expect(checkoutClaimFunctionDefinition).toContain('premium_monthly');
+    expect(checkoutClaimFunctionDefinition).not.toMatch(/resume_tailor_monthly/i);
   }
 
   /**
@@ -622,6 +669,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
           if (
             migration.filename === '011_billing_concurrency_guards.sql'
             || migration.filename === '013_billing_checkout_sessions.sql'
+            || migration.filename === '014_billing_checkout_premium_plan_rename.sql'
           ) {
             appliedRpcMigration = true;
           }
@@ -656,6 +704,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
       if (
         filename === '011_billing_concurrency_guards.sql'
         || filename === '013_billing_checkout_sessions.sql'
+        || filename === '014_billing_checkout_premium_plan_rename.sql'
       ) {
         appliedRpcMigration = true;
       }
@@ -2041,7 +2090,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
 
     const claim = await callServiceBillingRpc(BILLING_CHECKOUT_SESSION_CLAIM_FUNCTION, {
       p_user_id: rpcUserId,
-      p_plan: 'resume_tailor_monthly',
+      p_plan: 'premium_monthly',
     });
 
     expect(claim.error).toBeNull();
@@ -2049,7 +2098,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
       action: 'claimed',
       session: expect.objectContaining({
         user_id: rpcUserId,
-        plan: 'resume_tailor_monthly',
+        plan: 'premium_monthly',
         status: 'creating',
       }),
     }));
@@ -2058,13 +2107,13 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
   test('B34: authenticated and anon clients cannot execute claim_billing_checkout_session', async () => {
     const authAttempt = await callBillingRpc(clientA, BILLING_CHECKOUT_SESSION_CLAIM_FUNCTION, {
       p_user_id: userAId,
-      p_plan: 'resume_tailor_monthly',
+      p_plan: 'premium_monthly',
     });
     expectPermissionError(authAttempt.error);
 
     const anonAttempt = await callBillingRpc(anonClient, BILLING_CHECKOUT_SESSION_CLAIM_FUNCTION, {
       p_user_id: userAId,
-      p_plan: 'resume_tailor_monthly',
+      p_plan: 'premium_monthly',
     });
     expectPermissionError(anonAttempt.error);
   });
@@ -2074,14 +2123,14 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
 
     const first = await serviceClient.from('billing_checkout_sessions').insert({
       user_id: checkoutUserId,
-      plan: 'resume_tailor_monthly',
+      plan: 'premium_monthly',
       status: 'creating',
     });
     expect(first.error).toBeNull();
 
     const second = await serviceClient.from('billing_checkout_sessions').insert({
       user_id: checkoutUserId,
-      plan: 'resume_tailor_monthly',
+      plan: 'premium_monthly',
       status: 'creating',
     });
     expect(second.error).toBeTruthy();
@@ -2095,7 +2144,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
       .from('billing_checkout_sessions')
       .insert({
         user_id: checkoutUserId,
-        plan: 'resume_tailor_monthly',
+        plan: 'premium_monthly',
         status: 'creating',
         updated_at: new Date(Date.now() - 10 * 60_000).toISOString(),
       })
@@ -2105,7 +2154,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
 
     const claim = await callServiceBillingRpc(BILLING_CHECKOUT_SESSION_CLAIM_FUNCTION, {
       p_user_id: checkoutUserId,
-      p_plan: 'resume_tailor_monthly',
+      p_plan: 'premium_monthly',
     });
     expect(claim.error).toBeNull();
     expect(claim.data.action).toBe('claimed');
@@ -2127,7 +2176,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
       .from('billing_checkout_sessions')
       .insert({
         user_id: checkoutUserId,
-        plan: 'resume_tailor_monthly',
+        plan: 'premium_monthly',
         stripe_checkout_session_id: checkoutSessionId,
         checkout_url: `https://checkout.stripe.test/${checkoutSessionId}`,
         status: 'open',
@@ -2139,7 +2188,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
 
     const claim = await callServiceBillingRpc(BILLING_CHECKOUT_SESSION_CLAIM_FUNCTION, {
       p_user_id: checkoutUserId,
-      p_plan: 'resume_tailor_monthly',
+      p_plan: 'premium_monthly',
     });
     expect(claim.error).toBeNull();
     expect(claim.data.action).toBe('claimed');
@@ -2160,7 +2209,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
 
     const openInsert = await serviceClient.from('billing_checkout_sessions').insert({
       user_id: checkoutUserId,
-      plan: 'resume_tailor_monthly',
+      plan: 'premium_monthly',
       stripe_checkout_session_id: checkoutSessionId,
       checkout_url: checkoutUrl,
       status: 'open',
@@ -2170,14 +2219,14 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
 
     const claim = await callServiceBillingRpc(BILLING_CHECKOUT_SESSION_CLAIM_FUNCTION, {
       p_user_id: checkoutUserId,
-      p_plan: 'resume_tailor_monthly',
+      p_plan: 'premium_monthly',
     });
     expect(claim.error).toBeNull();
     expect(claim.data).toEqual(expect.objectContaining({
       action: 'reused',
       session: expect.objectContaining({
         user_id: checkoutUserId,
-        plan: 'resume_tailor_monthly',
+        plan: 'premium_monthly',
         stripe_checkout_session_id: checkoutSessionId,
         checkout_url: checkoutUrl,
         status: 'open',
@@ -2203,6 +2252,27 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
     const insert = await serviceClient.from('billing_checkout_sessions').insert({
       user_id: checkoutUserId,
       plan: 'unsupported_plan',
+      status: 'creating',
+    });
+
+    expect(insert.error).toBeTruthy();
+    expect(buildPermissionMessage(insert.error)).toMatch(/check|constraint|23514/i);
+  });
+
+  test('B41: checkout session boundaries reject the legacy resume-tailor plan name', async () => {
+    const checkoutUserId = await createTempUser('billing-checkout-legacy-plan');
+
+    const claim = await callServiceBillingRpc(BILLING_CHECKOUT_SESSION_CLAIM_FUNCTION, {
+      p_user_id: checkoutUserId,
+      p_plan: 'resume_tailor_monthly',
+    });
+
+    expect(claim.error).toBeTruthy();
+    expect(buildPermissionMessage(claim.error)).toMatch(/unsupported billing plan|22023/i);
+
+    const insert = await serviceClient.from('billing_checkout_sessions').insert({
+      user_id: checkoutUserId,
+      plan: 'resume_tailor_monthly',
       status: 'creating',
     });
 

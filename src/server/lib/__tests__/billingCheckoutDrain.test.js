@@ -72,7 +72,7 @@ describe('billingCheckoutDrain', () => {
     return {
       id: 42,
       user_id: 'user-drain-123',
-      plan: 'resume_tailor_monthly',
+      plan: 'premium_monthly',
       stripe_checkout_session_id: 'cs_test_open_123',
       status: 'open',
       ...overrides,

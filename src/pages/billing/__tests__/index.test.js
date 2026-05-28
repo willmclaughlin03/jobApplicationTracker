@@ -289,7 +289,7 @@ describe('BillingPage', () => {
 
     expect(mockApiPost).toHaveBeenCalledTimes(1);
     expect(mockApiPost).toHaveBeenCalledWith('/api/billing/checkout', expect.objectContaining({
-      plan: 'resume_tailor_monthly',
+      plan: 'premium_monthly',
       checkoutAttemptNonce,
     }));
   });
