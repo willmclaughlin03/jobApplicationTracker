@@ -579,10 +579,23 @@ function extractStripeCustomerId(customer) {
  * `plan.id` fallback remains for older Stripe response shapes and test data.
  *
  * @param {object | null | undefined} subscription
+ * @param {string | null | undefined} preferredPriceId trusted local price id
+ * to prefer when it still exists in the Stripe item snapshot.
  * @returns {string | null}
  */
-function extractStripePriceId(subscription) {
+function extractStripePriceId(subscription, preferredPriceId = null) {
   const items = Array.isArray(subscription?.items?.data) ? subscription.items.data : [];
+  const preferred = normalizePriceId(preferredPriceId);
+
+  if (
+    preferred
+    && items.some((item) => (
+      normalizePriceId(item?.price?.id) === preferred
+      || normalizePriceId(item?.plan?.id) === preferred
+    ))
+  ) {
+    return preferred;
+  }
 
   for (const item of items) {
     const priceId = normalizePriceId(item?.price?.id);
@@ -605,11 +618,13 @@ function extractStripePriceId(subscription) {
  * top-level data.
  *
  * @param {object | null | undefined} subscription
+ * @param {string | null | undefined} preferredPriceId trusted local price id
+ * to prefer when matching the period-owning Stripe item.
  * @returns {string | null}
  */
-function extractStripeCurrentPeriodEnd(subscription) {
+function extractStripeCurrentPeriodEnd(subscription, preferredPriceId = null) {
   const items = Array.isArray(subscription?.items?.data) ? subscription.items.data : [];
-  const priceId = extractStripePriceId(subscription);
+  const priceId = extractStripePriceId(subscription, preferredPriceId);
   const matchingItem = priceId
     ? items.find((item) => (
       normalizePriceId(item?.price?.id) === priceId
@@ -2569,9 +2584,12 @@ export async function syncSubscriptionFromStripe(
           userId: localCustomer.user_id,
           stripeSubscriptionId: stripeSubscription.id,
           stripeCustomerId,
-          priceId: extractStripePriceId(stripeSubscription),
+          priceId: extractStripePriceId(stripeSubscription, localSubscriptionForEvent?.price_id),
           status: classifiedStatus.normalizedStatus,
-          currentPeriodEnd: extractStripeCurrentPeriodEnd(stripeSubscription),
+          currentPeriodEnd: extractStripeCurrentPeriodEnd(
+            stripeSubscription,
+            localSubscriptionForEvent?.price_id
+          ),
           cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end,
           eventCreated: parsedOptions.eventCreated,
         })
@@ -3005,7 +3023,7 @@ export async function markSubscriptionDeletedFromEvent(
       };
     }
 
-    const currentPeriodEnd = extractStripeCurrentPeriodEnd(subscription);
+    const currentPeriodEnd = extractStripeCurrentPeriodEnd(subscription, localSubscription?.price_id);
     const hasCancelAtPeriodEnd = typeof subscription?.cancel_at_period_end === 'boolean';
 
     if (!currentPeriodEnd || !hasCancelAtPeriodEnd) {
@@ -3027,7 +3045,7 @@ export async function markSubscriptionDeletedFromEvent(
         userId: localCustomer.user_id,
         stripeSubscriptionId: subscriptionId.data,
         stripeCustomerId,
-        priceId: extractStripePriceId(subscription) ?? null,
+        priceId: extractStripePriceId(subscription, localSubscription?.price_id) ?? null,
         status: BILLING_SUBSCRIPTION_STATUSES.CANCELED,
         currentPeriodEnd,
         cancelAtPeriodEnd: hasCancelAtPeriodEnd ? subscription.cancel_at_period_end : false,

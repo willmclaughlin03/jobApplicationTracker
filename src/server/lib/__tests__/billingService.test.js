@@ -1569,6 +1569,82 @@ describe('billingService', () => {
       });
     });
 
+    it('uses the persisted local price when event item periods include multiple prices', async () => {
+      const adminClient = useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: { user_id: userId, stripe_customer_id: 'cus_sync_123' },
+            error: null,
+          },
+        },
+        billing_subscriptions: {
+          maybeSingle: {
+            data: {
+              user_id: userId,
+              stripe_subscription_id: 'sub_sync_123',
+              stripe_customer_id: 'cus_sync_123',
+              price_id: 'price_premium_monthly',
+              status: 'active',
+              current_period_end: '2029-11-01T00:00:00.000Z',
+              cancel_at_period_end: false,
+              last_stripe_event_created: '2029-11-10T00:00:00.000Z',
+            },
+            error: null,
+          },
+        },
+        rpc: {
+          upsert_billing_subscription_if_newer_or_equal: {
+            data: {
+              applied: true,
+              subscription: {
+                user_id: userId,
+                stripe_subscription_id: 'sub_sync_123',
+                stripe_customer_id: 'cus_sync_123',
+                price_id: 'price_premium_monthly',
+                status: 'active',
+                current_period_end: '2029-11-20T00:00:00.000Z',
+                cancel_at_period_end: false,
+                last_stripe_event_created: '2029-11-14T00:00:00.000Z',
+              },
+            },
+            error: null,
+          },
+        },
+      }));
+      mockStripe.subscriptions.retrieve.mockResolvedValue({
+        id: 'sub_sync_123',
+        customer: 'cus_sync_123',
+        status: 'active',
+        livemode: false,
+        cancel_at_period_end: false,
+        items: {
+          data: [
+            {
+              price: { id: 'price_addon_monthly' },
+              current_period_end: 1890777600,
+            },
+            {
+              price: { id: 'price_premium_monthly' },
+              current_period_end: 1889827200,
+            },
+          ],
+        },
+      });
+
+      await syncSubscriptionFromStripe(
+        'sub_sync_123',
+        { mode: BILLING_SYNC_MODES.EVENT, eventCreated: '2029-11-14T00:00:00.000Z' },
+        mockLog
+      );
+
+      expect(adminClient.rpcCallsByName.upsert_billing_subscription_if_newer_or_equal[0].args).toEqual({
+        payload: expect.objectContaining({
+          price_id: 'price_premium_monthly',
+          current_period_end: '2029-11-20T00:00:00.000Z',
+        }),
+      });
+    });
+
     it('reconciles authoritative subscription updates through the authoritative RPC', async () => {
       const adminClient = useAdminClient(createSupabaseClient({
         billing_customers: {
@@ -2435,10 +2511,16 @@ describe('billingService', () => {
           customer: 'cus_delete_123',
           cancel_at_period_end: true,
           items: {
-            data: [{
-              price: { id: 'price_premium_monthly' },
-              current_period_end: 1890691200,
-            }],
+            data: [
+              {
+                price: { id: 'price_addon_monthly' },
+                current_period_end: 1890777600,
+              },
+              {
+                price: { id: 'price_premium_monthly' },
+                current_period_end: 1890691200,
+              },
+            ],
           },
         },
         { eventCreated: '2029-11-14T00:00:00.000Z', livemode: false },
