@@ -10,6 +10,7 @@ const TEST_BILLING_LOG_HASH_SECRET = 'billing-log-secret-test';
 const TEST_BILLING_EMAIL_FINGERPRINT_SECRET = 'billing-email-fingerprint-secret-test';
 const originalBillingLogHashSecret = process.env.BILLING_LOG_HASH_SECRET;
 const originalBillingEmailFingerprintSecret = process.env.BILLING_EMAIL_FINGERPRINT_SECRET;
+const originalStripePricePremiumMonthly = process.env.STRIPE_PRICE_PREMIUM_MONTHLY;
 process.env.BILLING_LOG_HASH_SECRET = TEST_BILLING_LOG_HASH_SECRET;
 process.env.BILLING_EMAIL_FINGERPRINT_SECRET = TEST_BILLING_EMAIL_FINGERPRINT_SECRET;
 
@@ -271,6 +272,12 @@ describe('billingService', () => {
 
   afterEach(() => {
     dateNowSpy.mockRestore();
+
+    if (originalStripePricePremiumMonthly === undefined) {
+      delete process.env.STRIPE_PRICE_PREMIUM_MONTHLY;
+    } else {
+      process.env.STRIPE_PRICE_PREMIUM_MONTHLY = originalStripePricePremiumMonthly;
+    }
   });
 
   afterAll(() => {
