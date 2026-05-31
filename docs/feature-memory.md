@@ -14,6 +14,22 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-05-25
 
+- `2026-05-31` - `Stripe event RPC ambiguity fix`: Added a forward billing migration that repairs the event-driven subscription upsert RPC variable/column name collision.
+  - impact: Real Stripe webhook reconciliation can stamp `last_stripe_event_created` instead of failing receipts with ambiguous-column database errors.
+- `2026-05-28` - `Stripe premium plan migration`: Added a forward billing migration that updates existing pending-checkout database constraints and RPC plan guards from `resume_tailor_monthly` to `premium_monthly`.
+  - impact: Checkout claims now stay aligned with the app-level premium plan contract after the plan rename is deployed.
+- `2026-05-27` - `Stripe premium plan naming`: Renamed the Stripe billing plan/env contract from resume-tailor-specific names to generic premium monthly access.
+  - impact: Billing setup no longer depends on an unlaunched resume-tailor product surface while preserving the same premium subscription flow.
+- `2026-05-27` - `Stripe local integration harness hardening`: Added paginated Stripe Event lookup, bounded webhook-state polling, temporary fixture receipt cleanup, and a remote Supabase fixture-write opt-in gate.
+  - impact: Local billing drills are less flaky on delayed webhook delivery and avoid leaving persistent fixture receipts in shared databases.
+- `2026-05-27` - `Stripe local integration harness`: Added a safety-gated `billing:test-stripe-local` command for process-env preflight checks, signed webhook fixtures, and post-Checkout DB/receipt assertions.
+  - impact: Operators can now execute the local Stripe integration plan without reading `.env` files or risking live-mode charges.
+- `2026-05-27` - `Stripe local integration runbook`: Added the local Stripe CLI integration runbook with env-shape preflight, auth/CSRF harnessing, Dahlia payload checks, webhook replay/failure drills, and staging deployment gates.
+  - impact: Billing rollout evidence now has concrete operator checks for real Stripe payloads, local entitlement rows, and deployment-only webhook risks.
+- `2026-05-27` - `Stripe subscription item period sync`: Read subscription period end from Stripe Subscription Items before falling back to the legacy parent Subscription field.
+  - impact: Dahlia-shaped subscription syncs keep `billing_subscriptions.current_period_end` populated for renewal sweeps and monitoring.
+- `2026-05-27` - `Stripe API version alignment`: Updated the pinned Stripe API version to `2026-04-22.dahlia` to match the currently available webhook endpoint version in Stripe Workbench.
+  - impact: App-created Stripe requests and Dashboard webhook event versioning can be validated against the same Dahlia API release.
 - `2026-05-26` - `Stripe Chunk 7 PR cleanup`: Merged Chunk 7 operational readiness onto latest main and carried forward the reviewed fix layer.
   - impact: The readiness PR now centers on Chunk 7 and follow-up fixes instead of an outdated broad diff.
 - `2026-05-26` - `Stripe runtime error status metadata`: Added dedicated Stripe runtime config error classes with stable HTTP status codes.
