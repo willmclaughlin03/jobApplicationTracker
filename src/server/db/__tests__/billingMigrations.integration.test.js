@@ -13,9 +13,10 @@
  *   - 012_billing_customer_email_fingerprint.sql
  *   - 013_billing_checkout_sessions.sql
  *   - 014_billing_checkout_premium_plan_rename.sql
+ *   - 015_fix_billing_subscription_event_rpc_ambiguity.sql
  *
  * Notes:
- *   1. This suite may apply 005-014 when the billing tables are absent, or
+ *   1. This suite may apply 005-015 when the billing tables are absent, or
  *      apply additive follow-ups alone when the base tables exist without the
  *      follow-up migrations.
  *   2. That is not the same as a full fresh-schema replay for the project.
@@ -51,6 +52,7 @@ const BILLING_MIGRATION_FILES = [
   '012_billing_customer_email_fingerprint.sql',
   '013_billing_checkout_sessions.sql',
   '014_billing_checkout_premium_plan_rename.sql',
+  '015_fix_billing_subscription_event_rpc_ambiguity.sql',
 ];
 
 const BASE_BILLING_TABLE_NAMES = [
@@ -135,6 +137,10 @@ const ADDITIVE_BILLING_MIGRATIONS = [
   {
     filename: '014_billing_checkout_premium_plan_rename.sql',
     isApplied: isPremiumCheckoutPlanRenameApplied,
+  },
+  {
+    filename: '015_fix_billing_subscription_event_rpc_ambiguity.sql',
+    isApplied: isBillingSubscriptionEventRpcAmbiguityFixApplied,
   },
 ];
 
@@ -249,6 +255,26 @@ function isPremiumCheckoutPlanRenameApplied(shape) {
     && !/resume_tailor_monthly/i.test(constraintDefinition)
     && functionDefinition.includes('premium_monthly')
     && !/resume_tailor_monthly/i.test(functionDefinition);
+}
+
+/**
+ * Check whether the installed event upsert RPC has the ambiguity fix.
+ *
+ * Purpose: databases can already have the 011 RPC installed while still
+ * carrying the broken body, so additive migration setup must inspect the
+ * function definition instead of checking only for RPC existence.
+ *
+ * @param {object} shape installed billing schema shape from introspection.
+ * @returns {boolean}
+ */
+function isBillingSubscriptionEventRpcAmbiguityFixApplied(shape) {
+  const functionDefinition =
+    shape.functionDefinitions.get(BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION) ?? '';
+
+  return /v_applied\s+boolean/i.test(functionDefinition)
+    && /result_applied/i.test(functionDefinition)
+    && !/\bapplied\s+boolean\s*;/i.test(functionDefinition)
+    && !/INTO\s+applied\s*,\s*subscription\s*,\s*reason/i.test(functionDefinition);
 }
 
 function isRpcSchemaCacheError(error) {
@@ -625,13 +651,15 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
       shape.functionDefinitions.get(BILLING_CHECKOUT_SESSION_CLAIM_FUNCTION) ?? '';
     expect(checkoutClaimFunctionDefinition).toContain('premium_monthly');
     expect(checkoutClaimFunctionDefinition).not.toMatch(/resume_tailor_monthly/i);
+
+    expect(isBillingSubscriptionEventRpcAmbiguityFixApplied(shape)).toBe(true);
   }
 
   /**
    * Ensure the billing migration set required by this suite is installed.
    *
    * Purpose: the integration database may already have base tables, so setup
-   * applies only missing additive migrations or performs a full 005-013 apply.
+   * applies only missing additive migrations or performs a full 005-015 apply.
    *
    * @returns {Promise<void>}
    * Important vars: existingBaseTables gates partial-schema errors,
@@ -670,6 +698,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
             migration.filename === '011_billing_concurrency_guards.sql'
             || migration.filename === '013_billing_checkout_sessions.sql'
             || migration.filename === '014_billing_checkout_premium_plan_rename.sql'
+            || migration.filename === '015_fix_billing_subscription_event_rpc_ambiguity.sql'
           ) {
             appliedRpcMigration = true;
           }
@@ -705,6 +734,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
         filename === '011_billing_concurrency_guards.sql'
         || filename === '013_billing_checkout_sessions.sql'
         || filename === '014_billing_checkout_premium_plan_rename.sql'
+        || filename === '015_fix_billing_subscription_event_rpc_ambiguity.sql'
       ) {
         appliedRpcMigration = true;
       }
@@ -855,7 +885,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
     }
   });
 
-  test('B1: local/session billing migration files 005 through 013 exist in the repo-root migrations folder', () => {
+  test('B1: local/session billing migration files 005 through 015 exist in the repo-root migrations folder', () => {
     for (const filename of BILLING_MIGRATION_FILES) {
       expect(existsSync(join(MIGRATIONS_DIR, filename))).toBe(true);
     }
