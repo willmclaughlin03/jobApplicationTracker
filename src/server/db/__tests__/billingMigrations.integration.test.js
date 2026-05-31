@@ -67,8 +67,10 @@ const ALL_BILLING_TABLE_NAMES = [
 
 const BILLING_SUBSCRIPTIONS_CUSTOMER_FK =
   'billing_subscriptions_billing_customers_user_id_fkey';
-const BILLING_CUSTOMERS_EMAIL_FINGERPRINT_CONSTRAINT =
-  'billing_customers_last_synced_stripe_email_fingerprint_format_check';
+const BILLING_CUSTOMERS_EMAIL_FINGERPRINT_COLUMN =
+  'last_synced_stripe_email_fingerprint';
+const BILLING_CUSTOMERS_EMAIL_FINGERPRINT_FORMAT_PATTERN =
+  /\^\[0-9a-f\]\{64\}\$/i;
 
 const BILLING_STATUS_CHANGED_AT_FUNCTION =
   'touch_billing_status_changed_at';
@@ -125,7 +127,7 @@ const ADDITIVE_BILLING_MIGRATIONS = [
   },
   {
     filename: '012_billing_customer_email_fingerprint.sql',
-    isApplied: (shape) => shape.constraints.has(BILLING_CUSTOMERS_EMAIL_FINGERPRINT_CONSTRAINT),
+    isApplied: hasBillingCustomerEmailFingerprintConstraint,
   },
   {
     filename: '013_billing_checkout_sessions.sql',
@@ -255,6 +257,23 @@ function isPremiumCheckoutPlanRenameApplied(shape) {
     && !/resume_tailor_monthly/i.test(constraintDefinition)
     && functionDefinition.includes('premium_monthly')
     && !/resume_tailor_monthly/i.test(functionDefinition);
+}
+
+/**
+ * Check whether the installed customer email fingerprint guard exists.
+ *
+ * Purpose: Postgres truncates identifiers beyond 63 bytes, so the migration
+ * detector must validate the durable CHECK definition instead of the overlong
+ * source constraint name from 012.
+ *
+ * @param {object} shape installed billing schema shape from introspection.
+ * @returns {boolean}
+ */
+function hasBillingCustomerEmailFingerprintConstraint(shape) {
+  return [...shape.constraintDefinitions.values()].some((definition) => (
+    definition.includes(BILLING_CUSTOMERS_EMAIL_FINGERPRINT_COLUMN)
+    && BILLING_CUSTOMERS_EMAIL_FINGERPRINT_FORMAT_PATTERN.test(definition)
+  ));
 }
 
 /**
@@ -586,7 +605,6 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
     const expectedConstraintNames = [
       'billing_customers_pkey',
       'billing_customers_stripe_customer_id_format_check',
-      BILLING_CUSTOMERS_EMAIL_FINGERPRINT_CONSTRAINT,
       'billing_customers_user_id_fkey',
       'billing_subscriptions_pkey',
       BILLING_SUBSCRIPTIONS_CUSTOMER_FK,
@@ -636,6 +654,8 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
     for (const constraintName of expectedConstraintNames) {
       expect(shape.constraints.has(constraintName)).toBe(true);
     }
+
+    expect(hasBillingCustomerEmailFingerprintConstraint(shape)).toBe(true);
 
     const statusConstraintDefinition =
       shape.constraintDefinitions.get(BILLING_SUBSCRIPTIONS_STATUS_CHECK) ?? '';
