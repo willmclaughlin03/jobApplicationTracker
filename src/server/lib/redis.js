@@ -1,6 +1,8 @@
 import { Redis } from '@upstash/redis';
 import { logger } from '../../shared/logger.js';
 
+const REDIS_REQUEST_TIMEOUT_MS = 1_500;
+
 /**
  * Upstash Redis client singleton
  *
@@ -23,6 +25,19 @@ let redisDownLogged = false;
 // null means "no calls yet" (cold start), not "unknown health."
 let lastCallSucceeded = null;
 let lastCallTime = null;
+
+
+/**
+ * Builds a fresh abort signal for each Upstash Redis REST request.
+ *
+ * Purpose: bound Redis-backed rate-limit latency at the HTTP client layer so
+ * slow Redis calls throw and flow through the app's fail-closed middleware path.
+ *
+ * @returns {AbortSignal} Request-scoped timeout signal
+ */
+function createRedisRequestSignal() {
+    return AbortSignal.timeout(REDIS_REQUEST_TIMEOUT_MS);
+}
 
 
 /**
@@ -114,7 +129,8 @@ export function getRedisClient() {
     try {
         redisClient = new Redis({
             url,
-            token
+            token,
+            signal: createRedisRequestSignal
         });
 
         logger.debug('Upstash Redis client initialized');

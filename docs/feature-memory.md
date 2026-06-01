@@ -12,8 +12,15 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-06-01
+
+- `2026-06-01` - `Redis rate-limit timeout fail-closed fix`: Disabled Upstash Ratelimit's fail-open timeout, added a Redis HTTP request timeout, and covered timeout-shaped limiter responses with focused tests.
+  - impact: Slow Redis rate-limit checks now follow the app's intended fail-closed path instead of allowing requests after the library timeout.
+
 ### Week of 2026-05-25
 
+- `2026-05-31` - `Billing migration fingerprint detector`: Updated the billing migration integration harness to detect the customer email fingerprint CHECK by definition so Postgres identifier truncation does not cause false migration replays.
+  - impact: Focused billing migration validation can run against already-applied Supabase schemas where Postgres truncated the long constraint name.
 - `2026-05-31` - `Stripe event RPC ambiguity fix`: Added a forward billing migration that repairs the event-driven subscription upsert RPC variable/column name collision.
   - impact: Real Stripe webhook reconciliation can stamp `last_stripe_event_created` instead of failing receipts with ambiguous-column database errors.
 - `2026-05-28` - `Stripe premium plan migration`: Added a forward billing migration that updates existing pending-checkout database constraints and RPC plan guards from `resume_tailor_monthly` to `premium_monthly`.

@@ -227,6 +227,30 @@ describe('checkRateLimit', () => {
         });
 
         /**
+         * Test: Upstash Ratelimit timeout responses fail closed
+         *
+         * Why: Upstash's built-in limiter timeout is fail-open and returns
+         * success with reason "timeout". The app must treat that as Redis
+         * unavailable rather than a trustworthy quota pass.
+         */
+        it('should return unavailable when limiter returns a timeout reason', async () => {
+            mockLimit.mockResolvedValue({
+                success: true,
+                limit: 0,
+                remaining: 0,
+                reset: 0,
+                reason: 'timeout',
+            });
+
+            const result = await checkRateLimit('user:abc', 'free', 'read');
+
+            expect(result.success).toBe(false);
+            expect(result.unavailable).toBe(true);
+            expect(mockLogRedisDownOnce).toHaveBeenCalledWith({ reason: 'timeout' });
+            expect(mockSetLastCallStatus).toHaveBeenCalledWith(false);
+        });
+
+        /**
          * Test: Successful check calls setLastCallStatus(true)
          */
         it('should record success status on successful check', async () => {
@@ -518,6 +542,21 @@ describe('checkRateLimit', () => {
 
             // Should have created a new Ratelimit instance
             expect(callsAfterSecond).toBeGreaterThan(callsAfterFirst);
+        });
+
+        /**
+         * Test: Upstash Ratelimit's fail-open timeout is disabled.
+         *
+         * Why: timeout: 0 prevents the library from returning success when Redis
+         * is slow; the Redis HTTP client timeout owns latency control instead.
+         */
+        it('should disable the Upstash Ratelimit fail-open timeout', async () => {
+            await freshCheckRateLimit('user:abc', 'free', 'insert');
+
+            expect(freshRatelimit).toHaveBeenCalledTimes(2);
+            for (const [config] of freshRatelimit.mock.calls) {
+                expect(config).toEqual(expect.objectContaining({ timeout: 0 }));
+            }
         });
     });
 
