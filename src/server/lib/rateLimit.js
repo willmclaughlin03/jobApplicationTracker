@@ -15,6 +15,20 @@ const WARN_THROTTLE_MS = 60_000;
 const limiterCache = new Map()
 
 /**
+ * Detects Upstash Ratelimit's availability timeout response.
+ *
+ * Purpose: the library's built-in timeout is fail-open by default, returning
+ * success with `reason: "timeout"`. This app treats that as untrusted Redis
+ * availability and fails closed instead.
+ *
+ * @param {object | null | undefined} result - Raw limiter result
+ * @returns {boolean} True when the limiter timed out before Redis answered
+ */
+function isLimiterTimeoutResult(result) {
+    return result?.reason === 'timeout';
+}
+
+/**
  * Resolve or create the cached Upstash limiter for one tier/operation/window.
  *
  * Purpose: avoid rebuilding limiter objects on every request while still
@@ -47,7 +61,8 @@ function getOrCreateLimiter(tier, operation, windowType){
     const limiter = new Ratelimit({
         redis : redis,
         limiter : Ratelimit.fixedWindow(limit,duration),
-        prefix: `rl:${key}`
+        prefix: `rl:${key}`,
+        timeout: 0
     })
 
     limiterCache.set(key, { limiter, redis })
@@ -114,6 +129,11 @@ export async function checkRateLimit(identifier, tier, operation){
         // Check daily (broader) window FIRST to avoid draining the smaller hourly bucket
         if (dailyLimiter) {
             const daily = await dailyLimiter.limit(identifier);
+            if (isLimiterTimeoutResult(daily)) {
+                logRedisDownOnce({ reason: 'timeout' });
+                setLastCallStatus(false);
+                return { success: false, unavailable: true };
+            }
             if (!daily.success) {
                 setLastCallStatus(true);
                 return { success: false, limit: daily.limit, remaining: 0, reset: daily.reset, window: 'daily' };
@@ -123,6 +143,11 @@ export async function checkRateLimit(identifier, tier, operation){
 
         if (hourlyLimiter) {
             const hourly = await hourlyLimiter.limit(identifier);
+            if (isLimiterTimeoutResult(hourly)) {
+                logRedisDownOnce({ reason: 'timeout' });
+                setLastCallStatus(false);
+                return { success: false, unavailable: true };
+            }
             if (!hourly.success) {
                 setLastCallStatus(true);
                 return { success: false, limit: hourly.limit, remaining: 0, reset: hourly.reset, window: 'hourly' };

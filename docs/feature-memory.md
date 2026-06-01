@@ -12,6 +12,11 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-06-01
+
+- `2026-06-01` - `Redis rate-limit timeout fail-closed fix`: Disabled Upstash Ratelimit's fail-open timeout, added a Redis HTTP request timeout, and covered timeout-shaped limiter responses with focused tests.
+  - impact: Slow Redis rate-limit checks now follow the app's intended fail-closed path instead of allowing requests after the library timeout.
+
 ### Week of 2026-05-25
 
 - `2026-05-31` - `Billing migration fingerprint detector`: Updated the billing migration integration harness to detect the customer email fingerprint CHECK by definition so Postgres identifier truncation does not cause false migration replays.
