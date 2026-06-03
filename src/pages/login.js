@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import { useAuth } from '../client/contexts/AuthContext';
+import AuthSessionUnavailable from '../client/components/AuthSessionUnavailable';
 
 export default function Login() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const { signInWithOAuth, user, loading: authLoading } = useAuth();
+  const { signInWithOAuth, user, loading: authLoading, sessionError, retrySessionCheck } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
@@ -32,6 +33,10 @@ export default function Login() {
       setLoading(false);
     }
   };
+
+  if (sessionError) {
+    return <AuthSessionUnavailable sessionError={sessionError} onRetry={retrySessionCheck} />;
+  }
 
   if (authLoading) {
     return (

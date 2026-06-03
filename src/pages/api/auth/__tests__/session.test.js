@@ -10,16 +10,18 @@
  * tested in withRateLimit.test.js. These tests focus on handler logic only.
  *
  * Test coverage:
- * - Returns 200 with user {id, email} when authenticated
+ * - Returns 200 with user {id, email, role} when authenticated
  * - Returns 200 with {user: null} when not authenticated
- * - Returns 200 with {user: null} when getUser returns an error
+ * - Returns 200 with {user: null} when getUser returns a known invalid-session error
+ * - Returns 503 when getUser returns an ambiguous or retryable auth error
  * - Sets Cache-Control: no-store header
  * - Returns 503 when Supabase client throws
  * - Never leaks tokens or full user object in response
  */
 
+const mockWithRateLimit = jest.fn((handler) => handler);
 jest.mock('../../../../server/middleware/withRateLimit.js', () => ({
-  withRateLimit: (handler) => handler,
+  withRateLimit: mockWithRateLimit,
 }));
 
 const mockGetUser = jest.fn();
@@ -39,6 +41,7 @@ jest.mock('../../../../shared/logger.js', () => ({
 }));
 
 const handler = require('../session.js').default;
+const wrappedSessionOptions = mockWithRateLimit.mock.calls[0]?.[1];
 
 describe('/api/auth/session handler', () => {
   const noopLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
@@ -70,9 +73,25 @@ describe('/api/auth/session handler', () => {
   });
 
   /**
-   * Happy path: authenticated user gets their id and email
+   * Route wiring: session is the only public auth route opted into IP cooldown.
    */
-  it('returns 200 with user id and email when authenticated', async () => {
+  it('wraps the session route with the auth-session IP cooldown policy', () => {
+    expect(wrappedSessionOptions).toEqual(expect.objectContaining({
+      requireAuth: false,
+      operation: 'auth',
+      allowedMethods: ['GET'],
+      ipCooldown: expect.objectContaining({
+        cooldownSeconds: 1800,
+        violationWindowSeconds: 600,
+        violationThreshold: 3,
+      }),
+    }));
+  });
+
+  /**
+   * Happy path: authenticated user gets their id, email, and client role
+   */
+  it('returns 200 with user id, email, and role when authenticated', async () => {
     mockGetUser.mockResolvedValue({ data: { user: mockUser }, error: null });
     const req = createMockReq();
     const res = createMockRes();
@@ -82,7 +101,7 @@ describe('/api/auth/session handler', () => {
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { user: { id: 'user-session-123', email: 'test@example.com' } },
+        data: { user: { id: 'user-session-123', email: 'test@example.com', role: 'user' } },
         error: null,
       })
     );
@@ -105,12 +124,12 @@ describe('/api/auth/session handler', () => {
   });
 
   /**
-   * Supabase returns an error (e.g. expired token, invalid JWT)
+   * Supabase returns a known invalid-session error (e.g. expired token, invalid JWT)
    */
-  it('returns 200 with user: null when getUser returns an error', async () => {
+  it('returns 200 with user: null when getUser returns a realistic invalid-session error', async () => {
     mockGetUser.mockResolvedValue({
       data: { user: null },
-      error: { message: 'invalid JWT' },
+      error: { message: 'invalid JWT', status: 401 },
     });
     const req = createMockReq();
     const res = createMockRes();
@@ -120,6 +139,46 @@ describe('/api/auth/session handler', () => {
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({ data: { user: null } })
+    );
+  });
+
+  /**
+   * Ambiguous auth errors fail closed so temporary provider failures do not
+   * become confirmed signed-out client state.
+   */
+  it('returns 503 when getUser returns an ambiguous auth error shape', async () => {
+    mockGetUser.mockResolvedValue({
+      data: { user: null },
+      error: { message: 'unexpected auth failure' },
+    });
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 5);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: 'SERVICE_UNAVAILABLE' })
+    );
+  });
+
+  /**
+   * Supabase retryable fetch errors indicate provider/network unavailability.
+   */
+  it('returns 503 when getUser returns a retryable auth fetch error', async () => {
+    mockGetUser.mockResolvedValue({
+      data: { user: null },
+      error: { name: 'AuthRetryableFetchError', message: 'Auth service unavailable', status: 503 },
+    });
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: 'SERVICE_UNAVAILABLE' })
     );
   });
 
@@ -165,18 +224,18 @@ describe('/api/auth/session handler', () => {
     const responseBody = res.json.mock.calls[0][0];
     const serialized = JSON.stringify(responseBody);
 
-    // Must not contain sensitive fields
+    // Must not contain sensitive metadata or tokens
     expect(serialized).not.toContain('app_metadata');
     expect(serialized).not.toContain('user_metadata');
     expect(serialized).not.toContain('aud');
-    expect(serialized).not.toContain('role');
     expect(serialized).not.toContain('access_token');
     expect(serialized).not.toContain('refresh_token');
 
-    // Must only contain id and email
+    // Must only contain the client-facing session fields
     expect(responseBody.data.user).toEqual({
       id: 'user-session-123',
       email: 'test@example.com',
+      role: 'user',
     });
   });
 });

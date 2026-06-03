@@ -1,5 +1,6 @@
 import { AUTH_ERROR_CODES, getUserFromRequest } from '../lib/supabaseServer.js';
 import { checkRateLimit } from '../lib/rateLimit.js';
+import { checkIpCooldown, recordIpCooldownViolation } from '../lib/ipCooldown.js';
 import { validateCsrfToken } from '../lib/csrf.js';
 import { METHOD_TO_OPERATIONS, OPERATIONS } from '../../shared/constants/tiers.js';
 import { resolveRateLimitTier } from '../lib/userTier.js';
@@ -65,6 +66,42 @@ function formatRateLimitMessage(seconds) {
     if (seconds < 60) return `Rate limit exceeded. Try again in ${seconds} second${seconds === 1 ? '' : 's'}.`;
     const minutes = Math.ceil(seconds / 60);
     return `Rate limit exceeded. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`;
+}
+
+/**
+ * Resolves Retry-After seconds from a rate-limit result.
+ *
+ * Purpose: keep normal fixed-window 429s and cooldown-triggered 429s using the
+ * same fallback behavior while allowing cooldowns to override retry timing.
+ *
+ * @param {object} rateLimitResult - Result from rate limiting/cooldown checks
+ * @returns {number} Retry delay in whole seconds
+ */
+function getRetryAfterSeconds(rateLimitResult) {
+    if (rateLimitResult.retryAfterSeconds !== null && rateLimitResult.retryAfterSeconds !== undefined) {
+        return rateLimitResult.retryAfterSeconds;
+    }
+
+    return rateLimitResult.reset
+        ? Math.max(0, Math.ceil((rateLimitResult.reset - Date.now()) / 1000))
+        : 60;
+}
+
+/**
+ * Resolves the optional IP cooldown policy for this route.
+ *
+ * Purpose: keep IP cooldowns explicitly opt-in at the route wrapper boundary so
+ * public routes such as signout and health are not cooled down accidentally.
+ *
+ * @param {boolean|object|null|undefined} ipCooldown - Route cooldown option
+ * @returns {object|null} Policy object or null when disabled
+ */
+function resolveIpCooldownPolicy(ipCooldown) {
+    if (!ipCooldown) {
+        return null;
+    }
+
+    return typeof ipCooldown === 'object' ? ipCooldown : null;
 }
 
 /**
@@ -250,6 +287,7 @@ async function performRateLimitCheck(req, identifier, operation) {
  * @param {string[]} [options.allowedMethods=null] - HTTP methods this route accepts (e.g. ['GET', 'POST']).
  *                                                   If omitted, all requests return 405 (fail-closed).
  * @param {boolean} [options.csrfProtect] - Override the default CSRF behavior for protected routes.
+ * @param {object|false} [options.ipCooldown=false] - Optional public-route IP cooldown policy.
  * @param {(req: import('next').NextApiRequest) => boolean | Promise<boolean>} [options.skipRateLimitWhen]
  *        Optional emergency predicate that runs after method/auth/CSRF checks
  *        and before Redis-backed quota checks.
@@ -262,12 +300,14 @@ export function withRateLimit(handler, options = {}){
         operationByMethod = null,
         allowedMethods = null,
         csrfProtect,
+        ipCooldown = false,
         skipRateLimitWhen,
     } = options;
 
     // Default: protected routes (requireAuth: true) get CSRF protection.
     // Pass csrfProtect: false explicitly to opt out (e.g., the csrf.js endpoint itself).
     const shouldCsrfProtect = csrfProtect !== undefined ? csrfProtect : requireAuth;
+    const ipCooldownPolicy = resolveIpCooldownPolicy(ipCooldown);
 
     return async(req, res) => {
         // Attach a child logger with requestId for request-scoped correlation
@@ -367,8 +407,26 @@ export function withRateLimit(handler, options = {}){
                 rateLimitResult = { success: true, skipped: true };
             }
 
+            if (!rateLimitResult?.skipped && !requireAuth && ipCooldownPolicy) {
+                const cooldownResult = await checkIpCooldown(identifier, operation, ipCooldownPolicy);
+
+                if (cooldownResult.unavailable) {
+                    rateLimitResult = { success: false, unavailable: true };
+                } else if (cooldownResult.active) {
+                    rateLimitResult = {
+                        success: false,
+                        cooldownActive: true,
+                        retryAfterSeconds: cooldownResult.retryAfterSeconds,
+                        limit: null,
+                        remaining: 0,
+                        reset: Date.now() + (cooldownResult.retryAfterSeconds * 1000),
+                        window: 'cooldown',
+                    };
+                }
+            }
+
             if (!rateLimitResult?.skipped) {
-                rateLimitResult = await performRateLimitCheck(req, identifier, operation);
+                rateLimitResult = rateLimitResult || await performRateLimitCheck(req, identifier, operation);
             }
         } catch(error) {
             // Safety net for unexpected errors outside checkRateLimit (e.g. auth layer)
@@ -403,18 +461,66 @@ export function withRateLimit(handler, options = {}){
                 ERROR_MESSAGES.SERVICE_UNAVAILABLE
             );
         }
+
+        if(!rateLimitResult.success && !rateLimitResult.cooldownActive && !requireAuth && ipCooldownPolicy){
+            const violationResult = await recordIpCooldownViolation(identifier, operation, ipCooldownPolicy);
+
+            if (violationResult.unavailable) {
+                req.log.warn({ event: 'ip_rate_limit_cooldown_redis_unavailable', operation, identifierType: 'ip' }, 'IP cooldown Redis unavailable');
+                return sendError(
+                    res,
+                    503,
+                    'SERVICE_UNAVAILABLE',
+                    ERROR_MESSAGES.SERVICE_UNAVAILABLE
+                );
+            }
+
+            req.log.debug(
+                {
+                    event: 'ip_rate_limit_violation_recorded',
+                    operation,
+                    identifierType: 'ip',
+                    violationCount: violationResult.violationCount,
+                    violationThreshold: ipCooldownPolicy.violationThreshold,
+                },
+                'IP rate-limit violation recorded'
+            );
+
+            if (violationResult.cooldownStarted) {
+                const fixedWindowRetryAfterSeconds = getRetryAfterSeconds(rateLimitResult);
+
+                rateLimitResult.cooldownStarted = true;
+                rateLimitResult.retryAfterSeconds = Math.max(
+                    fixedWindowRetryAfterSeconds,
+                    violationResult.cooldownSeconds || 0
+                );
+                req.log.warn(
+                    {
+                        event: 'ip_rate_limit_cooldown_started',
+                        operation,
+                        identifierType: 'ip',
+                        violationCount: violationResult.violationCount,
+                        violationThreshold: ipCooldownPolicy.violationThreshold,
+                        cooldownSeconds: violationResult.cooldownSeconds,
+                        retryAfterSeconds: rateLimitResult.retryAfterSeconds,
+                    },
+                    'IP rate-limit cooldown started'
+                );
+            }
+        }
         // set limit headers on all res
         setRateLimitHeaders(res, rateLimitResult);
 
         // rate limit exceeded
         if(!rateLimitResult.success){
-            const retryAfterSeconds = rateLimitResult.reset
-            ? Math.max(0, Math.ceil((rateLimitResult.reset - Date.now()) / 1000)) : 60;
+            const retryAfterSeconds = getRetryAfterSeconds(rateLimitResult);
 
             res.setHeader('Retry-After', retryAfterSeconds);
 
             const rateLimitLogData = { operation, window: rateLimitResult.window, limit: rateLimitResult.limit, retryAfterSeconds };
-            if (QUIET_429_OPERATIONS.has(operation)) {
+            if (rateLimitResult.cooldownActive) {
+                req.log.debug({ ...rateLimitLogData, event: 'ip_rate_limit_cooldown_active', identifierType: 'ip' }, 'IP rate-limit cooldown active');
+            } else if (QUIET_429_OPERATIONS.has(operation)) {
                 req.log.debug(rateLimitLogData, 'Rate limit exceeded (quiet operation)');
             } else {
                 req.log.warn(rateLimitLogData, 'Rate limit exceeded');

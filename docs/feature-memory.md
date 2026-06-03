@@ -14,6 +14,11 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-06-01
 
+- `2026-06-03` - `Auth session recovery fixes`: Split retryable auth-session failures from confirmed signed-out state, added bounded client recovery without 429 auto-retry, and scaffolded live Redis cooldown integration coverage.
+- `2026-06-03` - `Auth session outage terminal state`: Added a guarded-page fallback UI and manual retry path for prolonged `/api/auth/session` outages after bounded client retries are exhausted.
+- `2026-06-03` - `Auth session IP cooldown handoff`: Added a reviewer handoff covering the session-only cooldown implementation, review focus areas, and live integration-test options.
+- `2026-06-03` - `Auth session IP cooldown`: Added a Redis-backed, session-only IP cooldown for repeated over-limit public session checks, kept signout/health/webhook outside generic cooldowns, and preserved client auth state on temporary session-check failures.
+  - impact: Repeated abuse of `/api/auth/session` can be cooled down without making active users appear signed out or blocking stale-cookie cleanup.
 - `2026-06-01` - `Redis rate-limit timeout fail-closed fix`: Disabled Upstash Ratelimit's fail-open timeout, added a Redis HTTP request timeout, and covered timeout-shaped limiter responses with focused tests.
   - impact: Slow Redis rate-limit checks now follow the app's intended fail-closed path instead of allowing requests after the library timeout.
 

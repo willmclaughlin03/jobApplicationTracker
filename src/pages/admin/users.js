@@ -6,15 +6,20 @@ import AdminUserTable from '../../client/components/admin/AdminUserTable';
 import AdminDeleteUserModal from '../../client/components/admin/AdminDeleteUserModal';
 import ProfileDropdown from '../../client/components/ProfileDropdown';
 import Spinner from '../../client/components/Spinner';
+import AuthSessionUnavailable from '../../client/components/AuthSessionUnavailable';
 
 export default function AdminUsersPage() {
-  const { user, loading: authLoading, signOut } = useAuth();
+  const { user, loading: authLoading, sessionError, retrySessionCheck, signOut } = useAuth();
   const router = useRouter();
 
   const { users, loading, error, page, setPage, hasMore, deleting, deleteUser, clearError } = useAdminUsers({ enabled: !authLoading && user?.role === 'admin' });
   const [userToDelete, setUserToDelete] = useState(null);
 
   // Auth guard — redirect unauthenticated users
+  if (sessionError) {
+    return <AuthSessionUnavailable sessionError={sessionError} onRetry={retrySessionCheck} />;
+  }
+
   if (!authLoading && !user) {
     router.replace('/login');
     return null;

@@ -9,6 +9,14 @@
  * session cookies and calls getUser() with no arguments.
  */
 
+const originalSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const originalSupabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+process.env.NEXT_PUBLIC_SUPABASE_URL =
+  process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://test.supabase.co';
+process.env.SUPABASE_SERVICE_ROLE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY || 'test-service-role-key';
+
 // Create a shared mock instance that will be used by the module
 const mockGetUser = jest.fn();
 
@@ -55,6 +63,20 @@ describe('supabaseServer', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  afterAll(() => {
+    if (originalSupabaseUrl === undefined) {
+      delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+    } else {
+      process.env.NEXT_PUBLIC_SUPABASE_URL = originalSupabaseUrl;
+    }
+
+    if (originalSupabaseServiceRoleKey === undefined) {
+      delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    } else {
+      process.env.SUPABASE_SERVICE_ROLE_KEY = originalSupabaseServiceRoleKey;
+    }
   });
 
   describe('getUserFromRequest', () => {
@@ -221,12 +243,13 @@ describe('supabaseServer', () => {
 
     /**
      * Test: No cookies present (unauthenticated request)
-     * Expected: createApiRouteClient still called, getUser returns error
+     * Expected: createApiRouteClient still called, getUser returns Supabase's
+     * missing-session error shape and the route treats it as invalid auth
      */
     it('should handle missing cookies gracefully', async () => {
       mockGetUser.mockResolvedValue({
         data: { user: null },
-        error: { message: 'No session found', status: 401 },
+        error: { name: 'AuthSessionMissingError', message: 'Auth session missing!', status: 400 },
       });
 
       const req = { headers: {} };
@@ -288,6 +311,9 @@ describe('supabaseServer', () => {
     it.each([
       [{ status: 401 }, AUTH_ERROR_CODES.AUTH_INVALID],
       [{ status: 403 }, AUTH_ERROR_CODES.AUTH_INVALID],
+      [{ name: 'AuthSessionMissingError', status: 400 }, AUTH_ERROR_CODES.AUTH_INVALID],
+      [{ status: 400, message: 'Auth session missing!' }, AUTH_ERROR_CODES.AUTH_INVALID],
+      [{ status: 400, message: 'Unexpected auth client error' }, AUTH_ERROR_CODES.AUTH_UNAVAILABLE],
       [{ status: 503 }, AUTH_ERROR_CODES.AUTH_UNAVAILABLE],
       [{ status: 429 }, AUTH_ERROR_CODES.AUTH_UNAVAILABLE],
       [{ name: 'AuthRetryableFetchError' }, AUTH_ERROR_CODES.AUTH_UNAVAILABLE],

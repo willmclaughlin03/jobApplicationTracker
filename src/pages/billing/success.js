@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
+import AuthSessionUnavailable from '../../client/components/AuthSessionUnavailable';
 import { useAuth } from '../../client/contexts/AuthContext';
 import { api } from '../../client/lib/api.js';
 import {
@@ -132,7 +133,7 @@ function getOutcomeCopy(outcome, checkoutState) {
  */
 export default function BillingSuccessPage() {
   const router = useRouter();
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, sessionError, retrySessionCheck } = useAuth();
   const [outcome, setOutcome] = useState(BILLING_SUCCESS_OUTCOMES.CONTINUE);
   const [checkoutState, setCheckoutState] = useState('pending');
   const [refreshPending, setRefreshPending] = useState(false);
@@ -330,6 +331,10 @@ export default function BillingSuccessPage() {
       window.clearTimeout(timer);
     };
   }, [rateLimitCooldownSeconds]);
+
+  if (sessionError) {
+    return <AuthSessionUnavailable sessionError={sessionError} onRetry={retrySessionCheck} />;
+  }
 
   if (authLoading) {
     return (
