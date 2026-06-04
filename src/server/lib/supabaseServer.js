@@ -11,6 +11,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { logger } from '../../shared/logger.js';
 import { createApiRouteClient } from './supabaseApiRoute.js';
+import { AUTH_ERROR_CODES, classifyAuthError } from './authErrorClassifier.js';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -26,11 +27,7 @@ if (!supabaseServiceKey) {
 
 export const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
-export const AUTH_ERROR_CODES = Object.freeze({
-  AUTH_INVALID: 'AUTH_INVALID',
-  AUTH_NOT_FOUND: 'AUTH_NOT_FOUND',
-  AUTH_UNAVAILABLE: 'AUTH_UNAVAILABLE',
-});
+export { AUTH_ERROR_CODES, classifyAuthError };
 
 /**
  * Authentication result object
@@ -39,33 +36,6 @@ export const AUTH_ERROR_CODES = Object.freeze({
  * @property {string|null} error - Error message if authentication failed
  * @property {'AUTH_INVALID'|'AUTH_NOT_FOUND'|'AUTH_UNAVAILABLE'|null} errorCode - Stable auth failure code
  */
-
-/**
- * Classify Supabase auth errors into stable route-facing failure codes.
- *
- * Purpose: protected routes must distinguish invalid sessions from auth
- * backend outages so retryable service failures return 503 instead of 401.
- *
- * @param {unknown} error
- * @returns {'AUTH_INVALID' | 'AUTH_UNAVAILABLE'}
- */
-export function classifyAuthError(error) {
-  const status = typeof error?.status === 'number' ? error.status : null;
-
-  if (status === 401 || status === 403) {
-    return AUTH_ERROR_CODES.AUTH_INVALID;
-  }
-
-  if (status === 429 || (status !== null && status >= 500)) {
-    return AUTH_ERROR_CODES.AUTH_UNAVAILABLE;
-  }
-
-  if (error?.name === 'AuthRetryableFetchError') {
-    return AUTH_ERROR_CODES.AUTH_UNAVAILABLE;
-  }
-
-  return AUTH_ERROR_CODES.AUTH_UNAVAILABLE;
-}
 
 /**
  * Format non-sensitive auth error metadata for logs.

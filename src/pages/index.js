@@ -14,9 +14,10 @@ import Spinner from '../client/components/Spinner';
 import DashboardSkeleton from '../client/components/skeletons/DashboardSkeleton';
 import InfoTooltip from '../client/components/InfoTooltip';
 import ActivityDrawer from '../client/components/ActivityDrawer';
+import AuthSessionUnavailable from '../client/components/AuthSessionUnavailable';
 
 export default function Dashboard() {
-  const { user, loading: authLoading, signOut } = useAuth();
+  const { user, loading: authLoading, sessionError, retrySessionCheck, signOut } = useAuth();
   const router = useRouter();
   const [statusFilter, setStatusFilter] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -69,6 +70,10 @@ export default function Dashboard() {
     openEditForm,
     closeEditForm,
   } = useJobFormModal();
+
+  if (sessionError) {
+    return <AuthSessionUnavailable sessionError={sessionError} onRetry={retrySessionCheck} />;
+  }
 
   if (!authLoading && !user) {
     router.push('/login');

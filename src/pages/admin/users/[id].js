@@ -7,9 +7,10 @@ import AdminActivitySummary from '../../../client/components/admin/AdminActivity
 import AdminDeleteUserModal from '../../../client/components/admin/AdminDeleteUserModal';
 import ProfileDropdown from '../../../client/components/ProfileDropdown';
 import Spinner from '../../../client/components/Spinner';
+import AuthSessionUnavailable from '../../../client/components/AuthSessionUnavailable';
 
 export default function AdminUserDetailPage() {
-  const { user: currentUser, loading: authLoading, signOut } = useAuth();
+  const { user: currentUser, loading: authLoading, sessionError, retrySessionCheck, signOut } = useAuth();
   const router = useRouter();
   const { id } = router.query;
 
@@ -18,6 +19,10 @@ export default function AdminUserDetailPage() {
   const [roleError, setRoleError] = useState(null);
 
   // Auth guard
+  if (sessionError) {
+    return <AuthSessionUnavailable sessionError={sessionError} onRetry={retrySessionCheck} />;
+  }
+
   if (!authLoading && !currentUser) {
     router.replace('/login');
     return null;

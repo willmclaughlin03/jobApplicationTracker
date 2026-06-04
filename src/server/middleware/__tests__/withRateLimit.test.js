@@ -29,6 +29,21 @@ jest.mock('../../lib/rateLimit.js', () => ({
     checkRateLimit: mockCheckRateLimit,
 }));
 
+const mockCheckIpCooldown = jest.fn();
+const mockRecordIpCooldownViolation = jest.fn();
+const mockAuthSessionCooldownPolicy = {
+    cooldownSeconds: 1800,
+    violationWindowSeconds: 600,
+    violationThreshold: 3,
+};
+jest.mock('../../lib/ipCooldown.js', () => ({
+    IP_COOLDOWN_POLICIES: {
+        AUTH_SESSION: mockAuthSessionCooldownPolicy,
+    },
+    checkIpCooldown: mockCheckIpCooldown,
+    recordIpCooldownViolation: mockRecordIpCooldownViolation,
+}));
+
 // Stub out csrf.js so the module-level CSRF_SECRET check doesn't throw.
 // CSRF behaviour is tested separately in withRateLimit.csrf.test.js.
 jest.mock('../../lib/csrf.js', () => ({
@@ -86,6 +101,11 @@ describe('withRateLimit middleware', () => {
             remaining: 19,
             reset: Date.now() + 3600000,
             window: 'hourly',
+        });
+        mockCheckIpCooldown.mockResolvedValue({ active: false });
+        mockRecordIpCooldownViolation.mockResolvedValue({
+            violationCount: 1,
+            cooldownStarted: false,
         });
     });
 
@@ -789,6 +809,202 @@ describe('withRateLimit middleware', () => {
             await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 0);
+        });
+    });
+
+    // =========================================================================
+    // Public-route IP cooldowns
+    // =========================================================================
+    describe('public-route IP cooldowns', () => {
+        /**
+         * Test: Active cooldown blocks before normal limiter or handler work.
+         *
+         * Why: Cooled-down IPs should avoid spending the fixed-window limiter and
+         * route handler work while still returning a clear Retry-After value.
+         */
+        it('should return 429 with Retry-After when an active IP cooldown exists', async () => {
+            mockCheckIpCooldown.mockResolvedValue({
+                active: true,
+                retryAfterSeconds: 1800,
+            });
+            const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.5' });
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                operation: 'auth',
+                ipCooldown: mockAuthSessionCooldownPolicy,
+            })(req, res);
+
+            expect(mockCheckIpCooldown).toHaveBeenCalledWith('ip:10.0.0.5', 'auth', mockAuthSessionCooldownPolicy);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+            expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 1800);
+            expect(res.status).toHaveBeenCalledWith(429);
+            expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: 'RATE_LIMIT_EXCEEDED' }));
+        });
+
+        /**
+         * Test: Over-limit public route records a cooldown violation.
+         *
+         * Why: cooldown should be triggered by continued over-limit behavior, not
+         * by merely consuming the allowed quota quickly.
+         */
+        it('should record a violation when an opted-in public route is over limit', async () => {
+            mockCheckRateLimit.mockResolvedValue({
+                success: false,
+                limit: 15,
+                remaining: 0,
+                reset: Date.now() + 60_000,
+                window: 'hourly',
+            });
+            const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.5' });
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                operation: 'auth',
+                ipCooldown: mockAuthSessionCooldownPolicy,
+            })(req, res);
+
+            expect(mockRecordIpCooldownViolation).toHaveBeenCalledWith('ip:10.0.0.5', 'auth', mockAuthSessionCooldownPolicy);
+            expect(res.status).toHaveBeenCalledWith(429);
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Test: Newly started cooldown uses the larger Retry-After value.
+         *
+         * Why: if the fixed-window reset is shorter than the cooldown TTL, the
+         * client should receive the cooldown TTL instead of retrying too early.
+         */
+        it('should use cooldown TTL for Retry-After when a violation starts cooldown', async () => {
+            mockCheckRateLimit.mockResolvedValue({
+                success: false,
+                limit: 15,
+                remaining: 0,
+                reset: Date.now() + 60_000,
+                window: 'hourly',
+            });
+            mockRecordIpCooldownViolation.mockResolvedValue({
+                violationCount: 3,
+                cooldownStarted: true,
+                cooldownSeconds: 1800,
+            });
+            const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.5' });
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                operation: 'auth',
+                ipCooldown: mockAuthSessionCooldownPolicy,
+            })(req, res);
+
+            expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 1800);
+            expect(res.status).toHaveBeenCalledWith(429);
+        });
+
+        /**
+         * Test: Cooldown Redis failure fails closed.
+         *
+         * Why: cooldown state is part of the Redis-backed rate-limit boundary, so
+         * unavailable cooldown checks must not silently allow public traffic.
+         */
+        it('should return 503 when active cooldown check is unavailable', async () => {
+            mockCheckIpCooldown.mockResolvedValue({
+                active: false,
+                unavailable: true,
+            });
+            const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.5' });
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                operation: 'auth',
+                ipCooldown: mockAuthSessionCooldownPolicy,
+            })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Test: Violation-recording failure also fails closed.
+         */
+        it('should return 503 when violation recording is unavailable', async () => {
+            mockCheckRateLimit.mockResolvedValue({
+                success: false,
+                limit: 15,
+                remaining: 0,
+                reset: Date.now() + 60_000,
+                window: 'hourly',
+            });
+            mockRecordIpCooldownViolation.mockResolvedValue({ unavailable: true });
+            const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.5' });
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                operation: 'auth',
+                ipCooldown: mockAuthSessionCooldownPolicy,
+            })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Test: Public auth routes without opt-in stay cooldown-free.
+         *
+         * Why: /api/auth/signout must remain reachable to clear httpOnly cookies,
+         * so cooldown behavior must not be inferred from operation alone.
+         */
+        it('should not apply IP cooldown to public auth routes unless explicitly configured', async () => {
+            const req = createMockRequest('POST', {}, { remoteAddress: '10.0.0.5' });
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['POST'],
+                operation: 'auth',
+            })(req, res);
+
+            expect(mockCheckIpCooldown).not.toHaveBeenCalled();
+            expect(mockRecordIpCooldownViolation).not.toHaveBeenCalled();
+            expect(handler).toHaveBeenCalledWith(req, res);
+        });
+
+        /**
+         * Test: Emergency skip bypasses all Redis-backed limiter work.
+         */
+        it('should skip IP cooldowns when skipRateLimitWhen returns true', async () => {
+            const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.5' });
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                operation: 'auth',
+                ipCooldown: mockAuthSessionCooldownPolicy,
+                skipRateLimitWhen: () => true,
+            })(req, res);
+
+            expect(mockCheckIpCooldown).not.toHaveBeenCalled();
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).toHaveBeenCalledWith(req, res);
         });
     });
 

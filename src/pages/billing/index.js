@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
+import AuthSessionUnavailable from '../../client/components/AuthSessionUnavailable';
 import ProfileDropdown from '../../client/components/ProfileDropdown';
 import { useAuth } from '../../client/contexts/AuthContext';
 import { api } from '../../client/lib/api.js';
@@ -102,7 +103,7 @@ function createCheckoutAttemptNonce() {
  */
 export default function BillingPage() {
   const router = useRouter();
-  const { user, loading: authLoading, signOut } = useAuth();
+  const { user, loading: authLoading, sessionError, retrySessionCheck, signOut } = useAuth();
   const [billingStatus, setBillingStatus] = useState(null);
   const [loadState, setLoadState] = useState(BILLING_PAGE_LOAD_STATES.LOADING);
   const [loading, setLoading] = useState(true);
@@ -243,6 +244,10 @@ export default function BillingPage() {
       navigationFailedMessage: 'Billing portal redirect failed. Please try again.',
     });
   };
+
+  if (sessionError) {
+    return <AuthSessionUnavailable sessionError={sessionError} onRetry={retrySessionCheck} />;
+  }
 
   if (authLoading) {
     return (
