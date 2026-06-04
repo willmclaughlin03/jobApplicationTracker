@@ -56,6 +56,7 @@ async function handler(req, res) {
     });
   } catch (err) {
     req.log.error({ err }, 'Session check failed');
+    res.setHeader('Retry-After', AUTH_UNAVAILABLE_RETRY_AFTER_SECONDS);
     return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
   }
 }

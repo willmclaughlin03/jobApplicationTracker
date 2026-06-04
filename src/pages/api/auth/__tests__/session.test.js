@@ -177,6 +177,7 @@ describe('/api/auth/session handler', () => {
     await handler(req, res);
 
     expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 5);
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({ error: 'SERVICE_UNAVAILABLE' })
     );

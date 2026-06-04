@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-06-01
 
+- `2026-06-04` - `Auth session thrown outage retry header`: Added `Retry-After` to thrown `/api/auth/session` outage responses so 503s match classified auth-unavailable failures.
 - `2026-06-03` - `Auth session recovery fixes`: Split retryable auth-session failures from confirmed signed-out state, added bounded client recovery without 429 auto-retry, and scaffolded live Redis cooldown integration coverage.
 - `2026-06-03` - `Auth session outage terminal state`: Added a guarded-page fallback UI and manual retry path for prolonged `/api/auth/session` outages after bounded client retries are exhausted.
 - `2026-06-03` - `Auth session IP cooldown handoff`: Added a reviewer handoff covering the session-only cooldown implementation, review focus areas, and live integration-test options.
