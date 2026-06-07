@@ -9,6 +9,9 @@ import {
   BILLING_SUBSCRIPTION_STATUSES,
   ENTITLED_BILLING_STATUSES,
   PAYMENT_RECOVERY_BILLING_STATUSES,
+  STORAGE_CREATE_ACTIONS,
+  STORAGE_CREATE_ERROR_CODES,
+  STORAGE_STATUSES,
 } from '../../shared/constants/billing.js';
 import { TIERS } from '../../shared/constants/tiers.js';
 import { getConfiguredStripeMode, getStripeClient } from './stripeRuntime.js';
@@ -98,6 +101,16 @@ const PENDING_CHECKOUT_SESSION_OUTCOME_VALUES = Object.values(PENDING_CHECKOUT_S
 const CHECKOUT_START_ALLOWED_STATUSES = new Set([
   BILLING_SUBSCRIPTION_STATUSES.CANCELED,
   BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED,
+]);
+const TERMINAL_FREE_BILLING_STATUSES = new Set([
+  BILLING_SUBSCRIPTION_STATUSES.CANCELED,
+]);
+const SYNC_PENDING_BILLING_STATUSES = new Set([
+  BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE,
+]);
+const STORAGE_RETRYABLE_STATUSES = new Set([
+  STORAGE_STATUSES.BILLING_RECONCILIATION_PENDING,
+  STORAGE_STATUSES.BILLING_UNAVAILABLE,
 ]);
 const TERMINAL_REPLACEABLE_SUBSCRIPTION_STATUSES = new Set([
   BILLING_SUBSCRIPTION_STATUSES.CANCELED,
@@ -1748,6 +1761,274 @@ export async function loadBillingStatusOrThrow(
     billingError.cause = error;
     throw billingError;
   }
+}
+
+/**
+ * Determine whether a canceling subscription still has paid storage time left.
+ *
+ * Purpose: premium_canceling users stay Premium until the paid period actually
+ * ends; missing or invalid period-end data cannot prove that entitlement.
+ *
+ * @param {string | null | undefined} currentPeriodEnd
+ * @param {Date} now
+ * @returns {boolean}
+ */
+function hasFutureCurrentPeriodEnd(currentPeriodEnd, now) {
+  const periodEnd = new Date(currentPeriodEnd ?? '');
+  const comparisonTime = now instanceof Date ? now.getTime() : Date.now();
+
+  if (Number.isNaN(periodEnd.getTime()) || Number.isNaN(comparisonTime)) {
+    return false;
+  }
+
+  return periodEnd.getTime() > comparisonTime;
+}
+
+/**
+ * Classify a trusted local billing status into the storage-policy vocabulary.
+ *
+ * Purpose: keep storage decisions from relying on `tier === "free"` by naming
+ * confirmed Free, retryable billing ambiguity, dunning, sync, and Premium
+ * cancellation states separately. Callers should pass a status loaded by
+ * loadBillingStatusOrThrow() or an equivalent strict billing read.
+ *
+ * @param {object | null | undefined} billingStatus
+ * @param {{ now?: Date }} [options]
+ * @returns {string}
+ */
+export function classifyConfirmedBillingStatusForStorage(billingStatus, options = {}) {
+  if (!billingStatus || typeof billingStatus !== 'object') {
+    return STORAGE_STATUSES.BILLING_UNAVAILABLE;
+  }
+
+  const now = options.now instanceof Date ? options.now : new Date();
+  const subscriptionStatus = normalizeString(billingStatus.status);
+  const hasSubscription = Boolean(billingStatus.hasSubscription);
+  const hasCustomerMapping = Boolean(billingStatus.hasCustomerMapping);
+
+  if (
+    billingStatus.entitled
+    && subscriptionStatus === BILLING_SUBSCRIPTION_STATUSES.ACTIVE
+  ) {
+    if (billingStatus.cancelAtPeriodEnd) {
+      return hasFutureCurrentPeriodEnd(billingStatus.currentPeriodEnd, now)
+        ? STORAGE_STATUSES.PREMIUM_CANCELING
+        : STORAGE_STATUSES.BILLING_RECONCILIATION_PENDING;
+    }
+
+    return STORAGE_STATUSES.PREMIUM_ACTIVE;
+  }
+
+  if (PAYMENT_RECOVERY_BILLING_STATUSES.includes(subscriptionStatus)) {
+    return STORAGE_STATUSES.PAYMENT_RECOVERY;
+  }
+
+  if (!hasSubscription) {
+    return hasCustomerMapping
+      ? STORAGE_STATUSES.SYNC_PENDING
+      : STORAGE_STATUSES.TERMINAL_FREE;
+  }
+
+  if (SYNC_PENDING_BILLING_STATUSES.has(subscriptionStatus)) {
+    return STORAGE_STATUSES.SYNC_PENDING;
+  }
+
+  if (TERMINAL_FREE_BILLING_STATUSES.has(subscriptionStatus)) {
+    return STORAGE_STATUSES.TERMINAL_FREE;
+  }
+
+  return STORAGE_STATUSES.NON_ENTITLED_NON_TERMINAL;
+}
+
+/**
+ * Identify storage statuses whose storage-gated actions should be retried.
+ *
+ * Purpose: centralize the contract that billing_unavailable and stale
+ * period-end reconciliation are service-state problems, not confirmed Free
+ * downgrade evidence.
+ *
+ * @param {string} storageStatus
+ * @returns {boolean}
+ */
+export function isStorageStatusRetryable(storageStatus) {
+  return STORAGE_RETRYABLE_STATUSES.has(storageStatus);
+}
+
+/**
+ * Decide whether automatic overflow locking may run for a storage status.
+ *
+ * Purpose: make the v1 lock allowlist explicit so fail-closed Free fallbacks,
+ * payment recovery, sync pending, and reconciliation states cannot lock rows.
+ *
+ * @param {string | { status?: string }} storageStatus
+ * @returns {boolean}
+ */
+export function isAutomaticOverflowLockEligible(storageStatus) {
+  const status = typeof storageStatus === 'object'
+    ? storageStatus?.status
+    : storageStatus;
+
+  return status === STORAGE_STATUSES.TERMINAL_FREE;
+}
+
+/**
+ * Map a storage status into the create-flow policy later API chunks consume.
+ *
+ * Purpose: separate Premium limits, confirmed-Free limits, retryable billing
+ * outages, dunning, sync pending, and billing-review states before create-time
+ * quota enforcement is made atomic in a later chunk.
+ *
+ * @param {string | { status?: string }} storageStatus
+ * @returns {object}
+ */
+export function classifyStorageCreateFlow(storageStatus) {
+  const status = typeof storageStatus === 'object'
+    ? storageStatus?.status
+    : storageStatus;
+
+  switch (status) {
+    case STORAGE_STATUSES.PREMIUM_ACTIVE:
+    case STORAGE_STATUSES.PREMIUM_CANCELING:
+      return {
+        action: STORAGE_CREATE_ACTIONS.APPLY_PREMIUM_LIMIT,
+        limitTier: TIERS.PAID,
+        code: null,
+        retryable: false,
+        mayUseFreeQuotaCopy: false,
+      };
+
+    case STORAGE_STATUSES.TERMINAL_FREE:
+      return {
+        action: STORAGE_CREATE_ACTIONS.APPLY_FREE_LIMIT,
+        limitTier: TIERS.FREE,
+        code: STORAGE_CREATE_ERROR_CODES.STORAGE_LIMIT_EXCEEDED,
+        retryable: false,
+        mayUseFreeQuotaCopy: true,
+      };
+
+    case STORAGE_STATUSES.BILLING_RECONCILIATION_PENDING:
+      return {
+        action: STORAGE_CREATE_ACTIONS.BLOCK_RETRYABLE,
+        limitTier: null,
+        code: STORAGE_CREATE_ERROR_CODES.BILLING_RECONCILIATION_PENDING,
+        retryable: true,
+        mayUseFreeQuotaCopy: false,
+      };
+
+    case STORAGE_STATUSES.PAYMENT_RECOVERY:
+      return {
+        action: STORAGE_CREATE_ACTIONS.BLOCK_PAYMENT_RECOVERY,
+        limitTier: null,
+        code: STORAGE_CREATE_ERROR_CODES.PAYMENT_METHOD_UPDATE_REQUIRED,
+        retryable: false,
+        mayUseFreeQuotaCopy: false,
+      };
+
+    case STORAGE_STATUSES.SYNC_PENDING:
+      return {
+        action: STORAGE_CREATE_ACTIONS.BLOCK_SYNC_PENDING,
+        limitTier: null,
+        code: STORAGE_CREATE_ERROR_CODES.BILLING_SYNC_PENDING,
+        retryable: true,
+        mayUseFreeQuotaCopy: false,
+      };
+
+    case STORAGE_STATUSES.NON_ENTITLED_NON_TERMINAL:
+      return {
+        action: STORAGE_CREATE_ACTIONS.BLOCK_BILLING_STATE_REVIEW,
+        limitTier: null,
+        code: STORAGE_CREATE_ERROR_CODES.BILLING_STATE_REVIEW_REQUIRED,
+        retryable: false,
+        mayUseFreeQuotaCopy: false,
+      };
+
+    case STORAGE_STATUSES.BILLING_UNAVAILABLE:
+    default:
+      return {
+        action: STORAGE_CREATE_ACTIONS.BLOCK_RETRYABLE,
+        limitTier: null,
+        code: STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+        retryable: true,
+        mayUseFreeQuotaCopy: false,
+      };
+  }
+}
+
+/**
+ * Build the storage-status result returned by request-scoped resolvers.
+ *
+ * Purpose: keep later route and service chunks on one result shape with the
+ * status, lock eligibility, retryability, and create-flow policy precomputed.
+ *
+ * @param {string} status
+ * @param {object | null} billingStatus
+ * @param {string | null} unavailableCode
+ * @returns {object}
+ */
+function buildStorageStatusResult(status, billingStatus = null, unavailableCode = null) {
+  return {
+    status,
+    billingStatus,
+    retryable: isStorageStatusRetryable(status),
+    lockEligible: isAutomaticOverflowLockEligible(status),
+    unavailableCode,
+    createFlow: classifyStorageCreateFlow(status),
+  };
+}
+
+/**
+ * Resolve storage policy status from canonical local billing state.
+ *
+ * Purpose: use the strict billing reader so billing read failures become
+ * billing_unavailable instead of a Free-shaped fallback that could deny paid
+ * storage headroom or trigger downgrade behavior.
+ *
+ * @param {string} userId
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient
+ * @param {object} log
+ * @param {{ now?: Date }} [options]
+ * @returns {Promise<object>}
+ */
+export async function resolveStorageStatus(
+  userId,
+  supabaseClient,
+  log = defaultLogger,
+  options = {}
+) {
+  let billingStatus;
+
+  try {
+    billingStatus = await loadBillingStatusOrThrow(userId, supabaseClient, log);
+  } catch (error) {
+    return buildStorageStatusResult(
+      STORAGE_STATUSES.BILLING_UNAVAILABLE,
+      null,
+      error?.code ?? STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE
+    );
+  }
+
+  const status = classifyConfirmedBillingStatusForStorage(billingStatus, options);
+  return buildStorageStatusResult(status, billingStatus);
+}
+
+/**
+ * Resolve storage policy status through the server-controlled billing client.
+ *
+ * Purpose: provide a deliberate privileged counterpart for background jobs and
+ * future storage repair flows while keeping the same strict-unavailable result
+ * contract as request-scoped resolution.
+ *
+ * @param {string} userId
+ * @param {object} log
+ * @param {{ now?: Date }} [options]
+ * @returns {Promise<object>}
+ */
+export async function resolveStorageStatusPrivileged(
+  userId,
+  log = defaultLogger,
+  options = {}
+) {
+  return resolveStorageStatus(userId, supabaseAdmin, log, options);
 }
 
 /**
