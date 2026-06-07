@@ -4,6 +4,9 @@ const { ERROR_MESSAGES } = require('../../../shared/errors.js');
 const {
   BILLING_ENTITLEMENTS,
   BILLING_SUBSCRIPTION_STATUSES,
+  STORAGE_CREATE_ACTIONS,
+  STORAGE_CREATE_ERROR_CODES,
+  STORAGE_STATUSES,
 } = require('../../../shared/constants/billing.js');
 
 const TEST_BILLING_LOG_HASH_SECRET = 'billing-log-secret-test';
@@ -53,6 +56,8 @@ const {
   getStripeEventReceiptForEvent,
   STRIPE_EVENT_RECEIPT_RESULTS,
   classifyStripeStatus,
+  classifyConfirmedBillingStatusForStorage,
+  classifyStorageCreateFlow,
   formatStripeIdForLog,
   getEntitledPriceIdAllowlist,
   getLocalBillingStatus,
@@ -74,8 +79,12 @@ const {
   resolveStorageEntitlementPrivileged,
   resolvePremiumEntitlement,
   resolvePremiumEntitlementPrivileged,
+  resolveStorageStatus,
+  resolveStorageStatusPrivileged,
   syncSubscriptionFromStripe,
   waitForPendingCheckoutSessionOpen,
+  isAutomaticOverflowLockEligible,
+  isStorageStatusRetryable,
 } = require('../billingService.js');
 
 /**
@@ -221,6 +230,34 @@ function useAdminClient(client) {
   mockSupabaseAdmin.from.mockImplementation(client.from);
   mockSupabaseAdmin.rpc.mockImplementation(client.rpc);
   return client;
+}
+
+/**
+ * Build a trusted local billing-status fixture for storage policy tests.
+ *
+ * Purpose: keep the storage-status matrix focused on policy differences while
+ * preserving the shape returned by loadBillingStatusOrThrow().
+ *
+ * @param {object} [overrides]
+ * @returns {object}
+ */
+function buildBillingStatusFixture(overrides = {}) {
+  return {
+    customer: null,
+    subscription: null,
+    hasCustomerMapping: false,
+    hasSubscription: false,
+    entitled: false,
+    entitlement: null,
+    tier: TIERS.FREE,
+    stripeCustomerId: null,
+    stripeSubscriptionId: null,
+    priceId: null,
+    status: null,
+    currentPeriodEnd: null,
+    cancelAtPeriodEnd: false,
+    ...overrides,
+  };
 }
 
 /**
@@ -951,6 +988,407 @@ describe('billingService', () => {
         }),
         'Failed to load local billing status'
       );
+    });
+  });
+
+  describe('classifyConfirmedBillingStatusForStorage', () => {
+    const now = new Date('2026-06-07T12:00:00.000Z');
+
+    it('classifies a non-canceling active Premium subscription as premium_active', () => {
+      const status = classifyConfirmedBillingStatusForStorage(
+        buildBillingStatusFixture({
+          hasCustomerMapping: true,
+          hasSubscription: true,
+          entitled: true,
+          status: BILLING_SUBSCRIPTION_STATUSES.ACTIVE,
+          cancelAtPeriodEnd: false,
+        }),
+        { now }
+      );
+
+      expect(status).toBe(STORAGE_STATUSES.PREMIUM_ACTIVE);
+    });
+
+    it('keeps a canceling Premium subscription Premium until the paid period ends', () => {
+      const status = classifyConfirmedBillingStatusForStorage(
+        buildBillingStatusFixture({
+          hasCustomerMapping: true,
+          hasSubscription: true,
+          entitled: true,
+          status: BILLING_SUBSCRIPTION_STATUSES.ACTIVE,
+          cancelAtPeriodEnd: true,
+          currentPeriodEnd: '2026-06-08T00:00:00.000Z',
+        }),
+        { now }
+      );
+
+      expect(status).toBe(STORAGE_STATUSES.PREMIUM_CANCELING);
+    });
+
+    it.each([
+      ['past period end', '2026-06-06T00:00:00.000Z'],
+      ['missing period end', null],
+      ['malformed period end', 'not-a-date'],
+    ])('classifies canceling Premium with %s as reconciliation pending', (_label, currentPeriodEnd) => {
+      const status = classifyConfirmedBillingStatusForStorage(
+        buildBillingStatusFixture({
+          hasCustomerMapping: true,
+          hasSubscription: true,
+          entitled: true,
+          status: BILLING_SUBSCRIPTION_STATUSES.ACTIVE,
+          cancelAtPeriodEnd: true,
+          currentPeriodEnd,
+        }),
+        { now }
+      );
+
+      expect(status).toBe(STORAGE_STATUSES.BILLING_RECONCILIATION_PENDING);
+    });
+
+    it.each([
+      BILLING_SUBSCRIPTION_STATUSES.PAST_DUE,
+      BILLING_SUBSCRIPTION_STATUSES.UNPAID,
+    ])('classifies %s as payment_recovery', (statusValue) => {
+      const status = classifyConfirmedBillingStatusForStorage(
+        buildBillingStatusFixture({
+          hasCustomerMapping: true,
+          hasSubscription: true,
+          status: statusValue,
+        }),
+        { now }
+      );
+
+      expect(status).toBe(STORAGE_STATUSES.PAYMENT_RECOVERY);
+    });
+
+    it.each([
+      [
+        'confirmed account with no billing rows',
+        buildBillingStatusFixture(),
+      ],
+      [
+        'canceled subscription',
+        buildBillingStatusFixture({
+          hasCustomerMapping: true,
+          hasSubscription: true,
+          status: BILLING_SUBSCRIPTION_STATUSES.CANCELED,
+        }),
+      ],
+    ])('classifies %s as terminal_free', (_label, billingStatus) => {
+      expect(
+        classifyConfirmedBillingStatusForStorage(billingStatus, { now })
+      ).toBe(STORAGE_STATUSES.TERMINAL_FREE);
+    });
+
+    it.each([
+      [
+        'customer mapping without a subscription row',
+        buildBillingStatusFixture({ hasCustomerMapping: true }),
+      ],
+      [
+        'incomplete subscription',
+        buildBillingStatusFixture({
+          hasCustomerMapping: true,
+          hasSubscription: true,
+          status: BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE,
+        }),
+      ],
+    ])('classifies %s as sync_pending', (_label, billingStatus) => {
+      expect(
+        classifyConfirmedBillingStatusForStorage(billingStatus, { now })
+      ).toBe(STORAGE_STATUSES.SYNC_PENDING);
+    });
+
+    it.each([
+      BILLING_SUBSCRIPTION_STATUSES.PAUSED,
+      BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED,
+      BILLING_SUBSCRIPTION_STATUSES.ACTIVE,
+      'trialing',
+      null,
+    ])('classifies non-terminal non-entitled subscription status %s separately', (statusValue) => {
+      const status = classifyConfirmedBillingStatusForStorage(
+        buildBillingStatusFixture({
+          hasCustomerMapping: true,
+          hasSubscription: true,
+          entitled: false,
+          status: statusValue,
+        }),
+        { now }
+      );
+
+      expect(status).toBe(STORAGE_STATUSES.NON_ENTITLED_NON_TERMINAL);
+    });
+
+    it('classifies malformed trusted input as billing_unavailable instead of terminal_free', () => {
+      expect(classifyConfirmedBillingStatusForStorage(null, { now }))
+        .toBe(STORAGE_STATUSES.BILLING_UNAVAILABLE);
+    });
+  });
+
+  describe('storage status policy helpers', () => {
+    it('allows automatic overflow locking only for terminal_free', () => {
+      for (const status of Object.values(STORAGE_STATUSES)) {
+        expect(isAutomaticOverflowLockEligible(status))
+          .toBe(status === STORAGE_STATUSES.TERMINAL_FREE);
+      }
+
+      expect(isAutomaticOverflowLockEligible({ status: STORAGE_STATUSES.TERMINAL_FREE }))
+        .toBe(true);
+    });
+
+    it('marks only billing-unavailable and reconciliation-pending storage states retryable', () => {
+      for (const status of Object.values(STORAGE_STATUSES)) {
+        expect(isStorageStatusRetryable(status)).toBe(
+          status === STORAGE_STATUSES.BILLING_UNAVAILABLE
+          || status === STORAGE_STATUSES.BILLING_RECONCILIATION_PENDING
+        );
+      }
+    });
+  });
+
+  describe('classifyStorageCreateFlow', () => {
+    it.each([
+      [
+        STORAGE_STATUSES.PREMIUM_ACTIVE,
+        {
+          action: STORAGE_CREATE_ACTIONS.APPLY_PREMIUM_LIMIT,
+          limitTier: TIERS.PAID,
+          code: null,
+          retryable: false,
+          mayUseFreeQuotaCopy: false,
+        },
+      ],
+      [
+        STORAGE_STATUSES.PREMIUM_CANCELING,
+        {
+          action: STORAGE_CREATE_ACTIONS.APPLY_PREMIUM_LIMIT,
+          limitTier: TIERS.PAID,
+          code: null,
+          retryable: false,
+          mayUseFreeQuotaCopy: false,
+        },
+      ],
+      [
+        STORAGE_STATUSES.TERMINAL_FREE,
+        {
+          action: STORAGE_CREATE_ACTIONS.APPLY_FREE_LIMIT,
+          limitTier: TIERS.FREE,
+          code: STORAGE_CREATE_ERROR_CODES.STORAGE_LIMIT_EXCEEDED,
+          retryable: false,
+          mayUseFreeQuotaCopy: true,
+        },
+      ],
+      [
+        STORAGE_STATUSES.BILLING_RECONCILIATION_PENDING,
+        {
+          action: STORAGE_CREATE_ACTIONS.BLOCK_RETRYABLE,
+          limitTier: null,
+          code: STORAGE_CREATE_ERROR_CODES.BILLING_RECONCILIATION_PENDING,
+          retryable: true,
+          mayUseFreeQuotaCopy: false,
+        },
+      ],
+      [
+        STORAGE_STATUSES.BILLING_UNAVAILABLE,
+        {
+          action: STORAGE_CREATE_ACTIONS.BLOCK_RETRYABLE,
+          limitTier: null,
+          code: STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+          retryable: true,
+          mayUseFreeQuotaCopy: false,
+        },
+      ],
+      [
+        STORAGE_STATUSES.PAYMENT_RECOVERY,
+        {
+          action: STORAGE_CREATE_ACTIONS.BLOCK_PAYMENT_RECOVERY,
+          limitTier: null,
+          code: STORAGE_CREATE_ERROR_CODES.PAYMENT_METHOD_UPDATE_REQUIRED,
+          retryable: false,
+          mayUseFreeQuotaCopy: false,
+        },
+      ],
+      [
+        STORAGE_STATUSES.SYNC_PENDING,
+        {
+          action: STORAGE_CREATE_ACTIONS.BLOCK_SYNC_PENDING,
+          limitTier: null,
+          code: STORAGE_CREATE_ERROR_CODES.BILLING_SYNC_PENDING,
+          retryable: false,
+          mayUseFreeQuotaCopy: false,
+        },
+      ],
+      [
+        STORAGE_STATUSES.NON_ENTITLED_NON_TERMINAL,
+        {
+          action: STORAGE_CREATE_ACTIONS.BLOCK_BILLING_STATE_REVIEW,
+          limitTier: null,
+          code: STORAGE_CREATE_ERROR_CODES.BILLING_STATE_REVIEW_REQUIRED,
+          retryable: false,
+          mayUseFreeQuotaCopy: false,
+        },
+      ],
+    ])('classifies %s create behavior', (storageStatus, expectedFlow) => {
+      expect(classifyStorageCreateFlow(storageStatus)).toEqual(expectedFlow);
+    });
+
+    it('fails unknown create-flow statuses to billing_unavailable instead of Free quota copy', () => {
+      expect(classifyStorageCreateFlow('future_status')).toEqual({
+        action: STORAGE_CREATE_ACTIONS.BLOCK_RETRYABLE,
+        limitTier: null,
+        code: STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+        retryable: true,
+        mayUseFreeQuotaCopy: false,
+      });
+    });
+  });
+
+  describe('resolveStorageStatus', () => {
+    const userId = 'user-storage-status';
+    const now = new Date('2026-06-07T12:00:00.000Z');
+
+    it('distinguishes confirmed terminal_free from billing-unavailable fallback', async () => {
+      const client = createSupabaseClient({
+        billing_customers: {
+          maybeSingle: { data: null, error: null },
+        },
+        billing_subscriptions: {
+          maybeSingle: { data: null, error: null },
+        },
+      });
+
+      const result = await resolveStorageStatus(userId, client, mockLog, { now });
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: STORAGE_STATUSES.TERMINAL_FREE,
+          retryable: false,
+          lockEligible: true,
+          unavailableCode: null,
+        })
+      );
+      expect(result.createFlow).toEqual(
+        expect.objectContaining({
+          action: STORAGE_CREATE_ACTIONS.APPLY_FREE_LIMIT,
+          mayUseFreeQuotaCopy: true,
+        })
+      );
+    });
+
+    it('returns billing_unavailable when strict billing reads cannot run', async () => {
+      const result = await resolveStorageStatus(userId, null, mockLog, { now });
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: STORAGE_STATUSES.BILLING_UNAVAILABLE,
+          retryable: true,
+          lockEligible: false,
+          unavailableCode: STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+        })
+      );
+      expect(result.createFlow).toEqual(
+        expect.objectContaining({
+          action: STORAGE_CREATE_ACTIONS.BLOCK_RETRYABLE,
+          mayUseFreeQuotaCopy: false,
+        })
+      );
+      expect(mockLog.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operation: 'loadBillingStatusOrThrow',
+          hasSupabaseClient: false,
+        }),
+        'Billing status resolver is missing a request-scoped Supabase client'
+      );
+    });
+
+    it('returns billing_unavailable when a billing table read fails', async () => {
+      const dbError = new Error('storage status read failed');
+      const client = createSupabaseClient({
+        billing_customers: {
+          maybeSingle: { data: { user_id: userId, stripe_customer_id: 'cus_123' }, error: null },
+        },
+        billing_subscriptions: {
+          maybeSingle: { data: null, error: dbError },
+        },
+      });
+
+      const result = await resolveStorageStatus(userId, client, mockLog, { now });
+
+      expect(result.status).toBe(STORAGE_STATUSES.BILLING_UNAVAILABLE);
+      expect(result.lockEligible).toBe(false);
+      expect(result.createFlow.mayUseFreeQuotaCopy).toBe(false);
+      expect(mockLog.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          err: dbError,
+          operation: 'loadBillingStatusOrThrow',
+          userIdHash: buildExpectedLogHash(userId),
+        }),
+        'Failed to load local billing status'
+      );
+    });
+
+    it('classifies stale canceling Premium as reconciliation pending through the strict resolver', async () => {
+      const client = createSupabaseClient({
+        billing_customers: {
+          maybeSingle: { data: { user_id: userId, stripe_customer_id: 'cus_123' }, error: null },
+        },
+        billing_subscriptions: {
+          maybeSingle: {
+            data: {
+              user_id: userId,
+              stripe_subscription_id: 'sub_123',
+              stripe_customer_id: 'cus_123',
+              price_id: 'price_premium_monthly',
+              status: BILLING_SUBSCRIPTION_STATUSES.ACTIVE,
+              current_period_end: '2026-06-06T00:00:00.000Z',
+              cancel_at_period_end: true,
+            },
+            error: null,
+          },
+        },
+      });
+
+      const result = await resolveStorageStatus(userId, client, mockLog, { now });
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: STORAGE_STATUSES.BILLING_RECONCILIATION_PENDING,
+          retryable: true,
+          lockEligible: false,
+        })
+      );
+      expect(result.createFlow).toEqual(
+        expect.objectContaining({
+          code: STORAGE_CREATE_ERROR_CODES.BILLING_RECONCILIATION_PENDING,
+          mayUseFreeQuotaCopy: false,
+        })
+      );
+    });
+
+    it('has a privileged wrapper that routes through supabaseAdmin', async () => {
+      const adminClient = useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: { data: { user_id: userId, stripe_customer_id: 'cus_privileged' }, error: null },
+        },
+        billing_subscriptions: {
+          maybeSingle: {
+            data: {
+              user_id: userId,
+              stripe_subscription_id: 'sub_privileged',
+              stripe_customer_id: 'cus_privileged',
+              price_id: 'price_premium_monthly',
+              status: BILLING_SUBSCRIPTION_STATUSES.ACTIVE,
+              cancel_at_period_end: false,
+            },
+            error: null,
+          },
+        },
+      }));
+
+      const result = await resolveStorageStatusPrivileged(userId, mockLog, { now });
+
+      expect(result.status).toBe(STORAGE_STATUSES.PREMIUM_ACTIVE);
+      expect(adminClient.from).toHaveBeenCalled();
     });
   });
 
