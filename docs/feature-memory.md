@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-06-01
 
+- `2026-06-07` - `Premium sync-pending create retry contract`: Aligned sync-pending storage create-flow retryability with the top-level storage retryability contract.
 - `2026-06-07` - `Premium downgrade storage status contract`: Added the canonical storage-policy status vocabulary, strict billing-aware storage resolver, lock eligibility contract, and create-flow classification tests for paid-to-free degradation.
 - `2026-06-01` - `Redis rate-limit timeout fail-closed fix`: Disabled Upstash Ratelimit's fail-open timeout, added a Redis HTTP request timeout, and covered timeout-shaped limiter responses with focused tests.
   - impact: Slow Redis rate-limit checks now follow the app's intended fail-closed path instead of allowing requests after the library timeout.

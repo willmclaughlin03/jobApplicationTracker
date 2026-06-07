@@ -1929,7 +1929,7 @@ export function classifyStorageCreateFlow(storageStatus) {
         action: STORAGE_CREATE_ACTIONS.BLOCK_SYNC_PENDING,
         limitTier: null,
         code: STORAGE_CREATE_ERROR_CODES.BILLING_SYNC_PENDING,
-        retryable: true,
+        retryable: false,
         mayUseFreeQuotaCopy: false,
       };
 
