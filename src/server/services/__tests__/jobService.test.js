@@ -20,6 +20,7 @@
  * - Returns generic error if count query fails
  * - Treats null count as 0, allows insert
  * - Returns insert error when DB insert fails after limit check passes (edge case 1)
+ * - Strips server-controlled fields before admin inserts
  * - Enforces limit dynamically from tier config, not a hardcoded value (edge case 2)
  * - Fails closed when maxJobs is undefined or null (edge case 3)
  * - Catches unexpected throw from getStorageLimitForTier (edge case 4)
@@ -253,6 +254,33 @@ describe('createJob - storage limit enforcement', () => {
 
       expect(result.data).toBeNull();
       expect(result.error).toBe(insertError);
+    });
+  });
+
+  describe('server-controlled field sanitization', () => {
+    it('strips server-controlled fields before inserting through the admin client', async () => {
+      const countQ = fakeQuery({ count: 0, error: null });
+      const insertQ = fakeQuery({ data: [mockCreatedJob], error: null });
+      mockFrom.mockReturnValueOnce(countQ);
+      mockFrom.mockReturnValueOnce(insertQ);
+
+      const result = await createJob(
+        {
+          ...validJobData,
+          id: 'attacker-job',
+          user_id: 'attacker-user',
+          storage_state: 'locked_over_plan_limit',
+          locked_at: '2026-06-08T00:00:00.000Z',
+          locked_reason: 'premium_to_free_over_plan_limit',
+          locked_policy_version: 'v1',
+        },
+        userId,
+        mockSupabaseClient
+      );
+
+      expect(result.error).toBeNull();
+      expect(insertQ._calls.insert).toEqual([[{ ...validJobData, user_id: userId }]]);
+      expect(mockClientFrom).not.toHaveBeenCalled();
     });
   });
 

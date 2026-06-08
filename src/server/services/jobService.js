@@ -49,25 +49,25 @@ function createStorageLimitExceededError(maxJobs) {
 }
 
 /**
- * Removes server-owned fields from ordinary job update payloads.
+ * Removes server-owned fields from ordinary job write payloads.
  *
  * Purpose: after job CRUD moves behind service-role access, route validation
  * should not be the only guard preventing ownership or storage-policy field
- * mutation through updateJob().
+ * mutation through createJob() or updateJob().
  *
- * @param {Object} updateData - Validated or caller-provided job update fields.
- * @returns {Object} Update payload with server-controlled fields removed.
+ * @param {Object} jobData - Validated or caller-provided job write fields.
+ * @returns {Object} Job payload with server-controlled fields removed.
  */
-function stripServerControlledJobFields(updateData) {
-  const sanitizedUpdate = {};
+function stripServerControlledJobFields(jobData) {
+  const sanitizedJobData = {};
 
-  for (const [key, value] of Object.entries(updateData || {})) {
+  for (const [key, value] of Object.entries(jobData || {})) {
     if (!SERVER_CONTROLLED_JOB_FIELDS.has(key)) {
-      sanitizedUpdate[key] = value;
+      sanitizedJobData[key] = value;
     }
   }
 
-  return sanitizedUpdate;
+  return sanitizedJobData;
 }
 
 /**
@@ -176,6 +176,8 @@ export async function getJobById(jobId, userId, supabaseClient, log = defaultLog
  */
 export async function createJob(jobData, userId, supabaseClient, log = defaultLogger, effectiveTier = TIERS.FREE) {
   try {
+    const sanitizedJobData = stripServerControlledJobFields(jobData);
+
     // Check storage limit before inserting
     const { maxJobs } = getStorageLimitForTier(effectiveTier) || {};
 
@@ -215,7 +217,7 @@ export async function createJob(jobData, userId, supabaseClient, log = defaultLo
 
     const { data, error } = await supabaseAdmin
       .from('jobs')
-      .insert({ ...jobData, user_id: userId })
+      .insert({ ...sanitizedJobData, user_id: userId })
       .select();
 
     if (error) {

@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-06-01
 
+- `2026-06-08` - `Job create server-field sanitization`: Stripped server-controlled job fields from create payloads before admin inserts and covered the guard with focused job service tests.
 - `2026-06-08` - `Premium downgrade storage schema boundary`: Added the jobs storage-state migration, CHECK constraints, storage-state indexes, service-owned jobs access boundary, and direct-access integration evidence for locked overflow rows.
 - `2026-06-01` - `Redis rate-limit timeout fail-closed fix`: Disabled Upstash Ratelimit's fail-open timeout, added a Redis HTTP request timeout, and covered timeout-shaped limiter responses with focused tests.
   - impact: Slow Redis rate-limit checks now follow the app's intended fail-closed path instead of allowing requests after the library timeout.
