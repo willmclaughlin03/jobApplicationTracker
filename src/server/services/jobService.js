@@ -3,17 +3,29 @@
  *
  * Purpose: Encapsulate all job-related database operations with error handling
  * Connects to:
- * - supabaseAdmin for privileged operations (storage limit count — bypasses RLS)
- * - supabaseClient (per-request SSR client) for user-scoped queries (respects RLS)
+ * - supabaseAdmin for server-owned job reads/writes after direct table access
+ *   is narrowed at the database layer
+ * - supabaseClient remains accepted for route compatibility and future
+ *   request-scoped dependencies
  * - Per-request logger (req.log) for structured error logging with requestId correlation;
  *   falls back to module-level logger singleton if callers omit the log argument
  *
- * Security: All operations validate user ownership via user_id matching (app layer)
- * and are further enforced by RLS policies on the jobs table (database layer).
+ * Security: All operations validate user ownership via user_id matching and
+ * must keep server-derived owner filters because service-role access bypasses
+ * direct authenticated table permissions.
  */
 import { supabaseAdmin } from '../lib/supabaseServer.js';
 import { logger as defaultLogger } from '../../shared/logger.js';
 import { getStorageLimitForTier, TIERS } from '../../shared/constants/tiers.js';
+
+const SERVER_CONTROLLED_JOB_FIELDS = new Set([
+  'id',
+  'user_id',
+  'storage_state',
+  'locked_at',
+  'locked_reason',
+  'locked_policy_version',
+]);
 
 export class StorageLimitExceededError extends Error {
   constructor(maxJobs) {
@@ -37,6 +49,28 @@ function createStorageLimitExceededError(maxJobs) {
 }
 
 /**
+ * Removes server-owned fields from ordinary job write payloads.
+ *
+ * Purpose: after job CRUD moves behind service-role access, route validation
+ * should not be the only guard preventing ownership or storage-policy field
+ * mutation through createJob() or updateJob().
+ *
+ * @param {Object} jobData - Validated or caller-provided job write fields.
+ * @returns {Object} Job payload with server-controlled fields removed.
+ */
+function stripServerControlledJobFields(jobData) {
+  const sanitizedJobData = {};
+
+  for (const [key, value] of Object.entries(jobData || {})) {
+    if (!SERVER_CONTROLLED_JOB_FIELDS.has(key)) {
+      sanitizedJobData[key] = value;
+    }
+  }
+
+  return sanitizedJobData;
+}
+
+/**
  * Retrieves jobs for a specific user with optional pagination and filtering
  *
  * @param {string} userId - The user's ID
@@ -44,16 +78,16 @@ function createStorageLimitExceededError(maxJobs) {
  * @param {number} options.from - Start index for pagination
  * @param {number} options.to - End index for pagination
  * @param {string} options.status - Filter by job status
- * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Per-request SSR client (respects RLS)
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Accepted for route compatibility; jobs are queried through supabaseAdmin.
  * @returns {Promise<{data: Array|null, count: number, error: Error|null}>}
  *
- * Security: Only returns jobs where user_id matches the authenticated user (app + RLS)
+ * Security: Only returns jobs where user_id matches the authenticated user.
  */
 export async function getJobsByUserId(userId, options = {}, supabaseClient, log = defaultLogger) {
   try {
     const { from, to, status } = options;
 
-    let query = supabaseClient
+    let query = supabaseAdmin
       .from('jobs')
       .select('*', { count: 'exact' })
       .eq('user_id', userId);
@@ -86,19 +120,19 @@ export async function getJobsByUserId(userId, options = {}, supabaseClient, log 
  * Retrieves a single job by ID for a specific user
  *
  * Purpose: Fetch a specific job application by its UUID
- * Connects to: supabaseClient for database queries (respects RLS)
+ * Connects to: supabaseAdmin for server-owned database queries.
  *
  * @param {string} jobId - The job's UUID
  * @param {string} userId - The user's ID
- * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Per-request SSR client (respects RLS)
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Accepted for route compatibility; jobs are queried through supabaseAdmin.
  * @returns {Promise<{data: Object|null, error: Error|null}>}
  *
- * Security: Enforces user ownership by requiring user_id match (app + RLS)
+ * Security: Enforces user ownership by requiring user_id match.
  * - Returns null if job doesn't exist OR user doesn't own it (prevents enumeration)
  */
 export async function getJobById(jobId, userId, supabaseClient, log = defaultLogger) {
   try {
-    const { data, error } = await supabaseClient
+    const { data, error } = await supabaseAdmin
       .from('jobs')
       .select('*')
       .eq('id', jobId)
@@ -127,22 +161,23 @@ export async function getJobById(jobId, userId, supabaseClient, log = defaultLog
  *
  * Purpose: Insert a new job application, enforcing the per-user storage limit
  * Connects to:
- * - supabaseAdmin for count query (bypasses RLS — tamper-proof storage limit check)
- * - supabaseClient for insert (respects RLS)
+ * - supabaseAdmin for count and insert through the server-owned job boundary
  * - getStorageLimitForTier to retrieve the maxJobs limit for the user's tier
  *
  * @param {Object} jobData - The job data to insert (validated by jobSchema)
  * @param {string} userId - The user's ID
- * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Per-request SSR client (respects RLS)
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Accepted for route compatibility; jobs are inserted through supabaseAdmin.
  * @param {object} log - Request-scoped logger
  * @param {string} effectiveTier - Resolved storage tier for the authenticated user
  * @returns {Promise<{data: Object|null, error: Error|null}>}
  *
- * Security: Associates job with user_id to enforce ownership (app + RLS)
+ * Security: Associates job with server-derived user_id to enforce ownership.
  * Storage: Rejects insert if user is at or over their tier's maxJobs limit
  */
 export async function createJob(jobData, userId, supabaseClient, log = defaultLogger, effectiveTier = TIERS.FREE) {
   try {
+    const sanitizedJobData = stripServerControlledJobFields(jobData);
+
     // Check storage limit before inserting
     const { maxJobs } = getStorageLimitForTier(effectiveTier) || {};
 
@@ -180,9 +215,9 @@ export async function createJob(jobData, userId, supabaseClient, log = defaultLo
       return { data: null, error: limitError };
     }
 
-    const { data, error } = await supabaseClient
+    const { data, error } = await supabaseAdmin
       .from('jobs')
-      .insert({ ...jobData, user_id: userId })
+      .insert({ ...sanitizedJobData, user_id: userId })
       .select();
 
     if (error) {
@@ -205,17 +240,19 @@ export async function createJob(jobData, userId, supabaseClient, log = defaultLo
  * @param {string} jobId - The job ID to update
  * @param {Object} updateData - The fields to update (validated by jobUpdateSchema)
  * @param {string} userId - The user's ID
- * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Per-request SSR client (respects RLS)
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Accepted for route compatibility; jobs are updated through supabaseAdmin.
  * @returns {Promise<{data: Object|null, error: Error|null}>}
  *
- * Security: Enforces user ownership by requiring user_id match (app + RLS)
+ * Security: Enforces user ownership by requiring user_id match.
  * - This prevents users from updating jobs they don't own
  */
 export async function updateJob(jobId, updateData, userId, supabaseClient, log = defaultLogger) {
   try {
-    const { data, error } = await supabaseClient
+    const sanitizedUpdateData = stripServerControlledJobFields(updateData);
+
+    const { data, error } = await supabaseAdmin
       .from('jobs')
-      .update(updateData)
+      .update(sanitizedUpdateData)
       .eq('id', jobId)
       .eq('user_id', userId)
       .select('*');
@@ -243,15 +280,15 @@ export async function updateJob(jobId, updateData, userId, supabaseClient, log =
  *
  * @param {string} jobId - The job ID to delete
  * @param {string} userId - The user's ID
- * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Per-request SSR client (respects RLS)
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Accepted for route compatibility; jobs are deleted through supabaseAdmin.
  * @returns {Promise<{data: Object|null, error: Error|null}>}
  *
- * Security: Enforces user ownership by requiring user_id match (app + RLS)
+ * Security: Enforces user ownership by requiring user_id match.
  * - This prevents users from deleting jobs they don't own
  */
 export async function deleteJob(jobId, userId, supabaseClient, log = defaultLogger) {
   try {
-    const { data, error } = await supabaseClient
+    const { data, error } = await supabaseAdmin
       .from('jobs')
       .delete()
       .eq('id', jobId)

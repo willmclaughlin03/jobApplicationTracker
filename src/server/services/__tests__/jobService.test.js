@@ -2,15 +2,15 @@
  * Tests for jobService - database operations for jobs
  *
  * Purpose: Verify correct behaviour of all jobService functions including
- * ownership enforcement, storage limit, and RLS-compatible client injection.
+ * ownership enforcement, storage limit, and server-owned job access.
  *
  * Connects to: server/services/jobService.js
  *
- * Architecture note after RLS refactor:
- * - supabaseAdmin (mockFrom) is only used inside createJob for the COUNT query
- *   (bypasses RLS — tamper-proof storage limit check)
- * - All other queries use the injected supabaseClient (mockClientFrom)
- *   (respects RLS — user-scoped)
+ * Architecture note after the storage-state boundary:
+ * - supabaseAdmin (mockFrom) is used for all job table reads/writes, with
+ *   explicit user_id filters on owner-scoped operations.
+ * - The injected supabaseClient (mockClientFrom) remains accepted for route
+ *   compatibility but must not be used for job rows.
  *
  * Test coverage:
  * createJob:
@@ -20,10 +20,11 @@
  * - Returns generic error if count query fails
  * - Treats null count as 0, allows insert
  * - Returns insert error when DB insert fails after limit check passes (edge case 1)
+ * - Strips server-controlled fields before admin inserts
  * - Enforces limit dynamically from tier config, not a hardcoded value (edge case 2)
  * - Fails closed when maxJobs is undefined or null (edge case 3)
  * - Catches unexpected throw from getStorageLimitForTier (edge case 4)
- * - supabaseAdmin count query works regardless of user session (bypasses RLS)
+ * - supabaseAdmin queries keep owner filters after direct table access is narrowed
  *
  * getJobsByUserId:
  * - Returns jobs for valid user via injected client
@@ -42,15 +43,15 @@
  * - Returns deleted job via injected client
  * - Returns not-found error when no rows affected
  *
- * RLS behaviour:
- * - Unauthenticated/expired-session client returns empty data, not an info-leaking error
+ * Owner-filter behaviour:
+ * - Missing owner-scoped rows return empty data or generic not-found responses
  */
 
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
 
-const mockFrom = jest.fn(); // supabaseAdmin — used only for createJob count
+const mockFrom = jest.fn(); // supabaseAdmin - server-owned jobs boundary
 
 jest.mock('../../lib/supabaseServer.js', () => ({
   supabaseAdmin: {
@@ -89,7 +90,7 @@ const { getStorageLimitForTier: mockGetStorageLimitForTier } = require('../../..
 
 const mockClientFrom = jest.fn();
 
-/** Per-request SSR client mock (respects RLS in production) */
+/** Per-request SSR client mock, retained for route-compatible signatures. */
 const mockSupabaseClient = { from: mockClientFrom };
 
 /**
@@ -158,15 +159,15 @@ describe('createJob - storage limit enforcement', () => {
       const countQ = fakeQuery({ count: 0, error: null });
       const insertQ = fakeQuery({ data: [mockCreatedJob], error: null });
       mockFrom.mockReturnValueOnce(countQ);
-      mockClientFrom.mockReturnValueOnce(insertQ);
+      mockFrom.mockReturnValueOnce(insertQ);
 
       const result = await createJob(validJobData, userId, mockSupabaseClient);
 
       expect(result.error).toBeNull();
       expect(result.data).toEqual([mockCreatedJob]);
       expect(mockGetStorageLimitForTier).toHaveBeenCalledWith('free');
-      expect(mockFrom).toHaveBeenCalledTimes(1);   // supabaseAdmin count only
-      expect(mockClientFrom).toHaveBeenCalledTimes(1); // client insert
+      expect(mockFrom).toHaveBeenCalledTimes(2);
+      expect(mockClientFrom).not.toHaveBeenCalled();
 
       // Verify the count query was built correctly
       expect(countQ._calls.select).toEqual([['*', { count: 'exact', head: true }]]);
@@ -179,15 +180,15 @@ describe('createJob - storage limit enforcement', () => {
 
     it('allows insert when user has 299 existing entries', async () => {
       mockFrom.mockReturnValueOnce(fakeQuery({ count: 299, error: null }));
-      mockClientFrom.mockReturnValueOnce(fakeQuery({ data: [mockCreatedJob], error: null }));
+      mockFrom.mockReturnValueOnce(fakeQuery({ data: [mockCreatedJob], error: null }));
 
       const result = await createJob(validJobData, userId, mockSupabaseClient);
 
       expect(result.error).toBeNull();
       expect(result.data).toEqual([mockCreatedJob]);
       expect(mockGetStorageLimitForTier).toHaveBeenCalledWith('free');
-      expect(mockFrom).toHaveBeenCalledTimes(1);
-      expect(mockClientFrom).toHaveBeenCalledTimes(1);
+      expect(mockFrom).toHaveBeenCalledTimes(2);
+      expect(mockClientFrom).not.toHaveBeenCalled();
     });
   });
 
@@ -234,7 +235,7 @@ describe('createJob - storage limit enforcement', () => {
   describe('when the count is null (no rows in DB)', () => {
     it('treats null count as 0 and allows insert', async () => {
       mockFrom.mockReturnValueOnce(fakeQuery({ count: null, error: null }));
-      mockClientFrom.mockReturnValueOnce(fakeQuery({ data: [mockCreatedJob], error: null }));
+      mockFrom.mockReturnValueOnce(fakeQuery({ data: [mockCreatedJob], error: null }));
 
       const result = await createJob(validJobData, userId, mockSupabaseClient);
 
@@ -247,12 +248,39 @@ describe('createJob - storage limit enforcement', () => {
     it('returns the insert error and does not return data', async () => {
       const insertError = new Error('DB constraint violation');
       mockFrom.mockReturnValueOnce(fakeQuery({ count: 0, error: null }));
-      mockClientFrom.mockReturnValueOnce(fakeQuery({ data: null, error: insertError }));
+      mockFrom.mockReturnValueOnce(fakeQuery({ data: null, error: insertError }));
 
       const result = await createJob(validJobData, userId, mockSupabaseClient);
 
       expect(result.data).toBeNull();
       expect(result.error).toBe(insertError);
+    });
+  });
+
+  describe('server-controlled field sanitization', () => {
+    it('strips server-controlled fields before inserting through the admin client', async () => {
+      const countQ = fakeQuery({ count: 0, error: null });
+      const insertQ = fakeQuery({ data: [mockCreatedJob], error: null });
+      mockFrom.mockReturnValueOnce(countQ);
+      mockFrom.mockReturnValueOnce(insertQ);
+
+      const result = await createJob(
+        {
+          ...validJobData,
+          id: 'attacker-job',
+          user_id: 'attacker-user',
+          storage_state: 'locked_over_plan_limit',
+          locked_at: '2026-06-08T00:00:00.000Z',
+          locked_reason: 'premium_to_free_over_plan_limit',
+          locked_policy_version: 'v1',
+        },
+        userId,
+        mockSupabaseClient
+      );
+
+      expect(result.error).toBeNull();
+      expect(insertQ._calls.insert).toEqual([[{ ...validJobData, user_id: userId }]]);
+      expect(mockClientFrom).not.toHaveBeenCalled();
     });
   });
 
@@ -272,7 +300,7 @@ describe('createJob - storage limit enforcement', () => {
     it('allows insert when count is below the custom limit', async () => {
       mockGetStorageLimitForTier.mockReturnValueOnce({ maxJobs: 5 });
       mockFrom.mockReturnValueOnce(fakeQuery({ count: 4, error: null }));
-      mockClientFrom.mockReturnValueOnce(fakeQuery({ data: [mockCreatedJob], error: null }));
+      mockFrom.mockReturnValueOnce(fakeQuery({ data: [mockCreatedJob], error: null }));
 
       const result = await createJob(validJobData, userId, mockSupabaseClient);
 
@@ -283,7 +311,7 @@ describe('createJob - storage limit enforcement', () => {
     it('uses the provided paid tier when resolving the storage limit', async () => {
       mockGetStorageLimitForTier.mockReturnValueOnce({ maxJobs: 3000 });
       mockFrom.mockReturnValueOnce(fakeQuery({ count: 2999, error: null }));
-      mockClientFrom.mockReturnValueOnce(fakeQuery({ data: [mockCreatedJob], error: null }));
+      mockFrom.mockReturnValueOnce(fakeQuery({ data: [mockCreatedJob], error: null }));
 
       const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, 'paid');
 
@@ -344,21 +372,23 @@ describe('createJob - storage limit enforcement', () => {
     });
   });
 
-  describe('RLS — supabaseAdmin count bypasses RLS', () => {
-    it('count query uses supabaseAdmin (not the client) so RLS cannot suppress it', async () => {
+  describe('storage boundary - supabaseAdmin owns job writes', () => {
+    it('count and insert both use supabaseAdmin so direct table grants can be narrowed', async () => {
       const countQ = fakeQuery({ count: 0, error: null });
       const insertQ = fakeQuery({ data: [mockCreatedJob], error: null });
       mockFrom.mockReturnValueOnce(countQ);
-      mockClientFrom.mockReturnValueOnce(insertQ);
+      mockFrom.mockReturnValueOnce(insertQ);
 
       await createJob(validJobData, userId, mockSupabaseClient);
 
-      // supabaseAdmin.from() called for count; client.from() called for insert
-      expect(mockFrom).toHaveBeenCalledWith('jobs');
-      expect(mockClientFrom).toHaveBeenCalledWith('jobs');
+      expect(mockFrom).toHaveBeenCalledTimes(2);
+      expect(mockFrom).toHaveBeenNthCalledWith(1, 'jobs');
+      expect(mockFrom).toHaveBeenNthCalledWith(2, 'jobs');
+      expect(mockClientFrom).not.toHaveBeenCalled();
 
       // Verify count query uses head: true (count-only, no row data)
       expect(countQ._calls.select).toEqual([['*', { count: 'exact', head: true }]]);
+      expect(insertQ._calls.insert).toEqual([[{ ...validJobData, user_id: userId }]]);
     });
   });
 });
@@ -376,12 +406,13 @@ describe('updateJob - empty update payload', () => {
    */
   it('sends empty update to Supabase without crashing', async () => {
     const query = fakeQuery({ data: [mockCreatedJob], error: null });
-    mockClientFrom.mockReturnValueOnce(query);
+    mockFrom.mockReturnValueOnce(query);
 
     const result = await updateJob(jobId, {}, userId, mockSupabaseClient);
 
     expect(result.error).toBeNull();
     expect(result.data).toEqual([mockCreatedJob]);
+    expect(mockClientFrom).not.toHaveBeenCalled();
 
     // Verify an empty object was passed to .update()
     expect(query._calls.update).toEqual([[{}]]);
@@ -392,7 +423,7 @@ describe('updateJob - empty update payload', () => {
    * Test: Empty update returning no rows still produces not-found error
    */
   it('returns not-found when empty update matches no rows', async () => {
-    mockClientFrom.mockReturnValueOnce(fakeQuery({ data: [], error: null }));
+    mockFrom.mockReturnValueOnce(fakeQuery({ data: [], error: null }));
 
     const result = await updateJob(jobId, {}, userId, mockSupabaseClient);
 
@@ -411,14 +442,14 @@ describe('getJobsByUserId', () => {
   it('returns jobs for a valid user', async () => {
     const jobs = [mockCreatedJob];
     const query = fakeQuery({ data: jobs, count: 1, error: null });
-    mockClientFrom.mockReturnValueOnce(query);
+    mockFrom.mockReturnValueOnce(query);
 
     const result = await getJobsByUserId(userId, {}, mockSupabaseClient);
 
     expect(result.error).toBeNull();
     expect(result.data).toEqual(jobs);
-    expect(mockClientFrom).toHaveBeenCalledWith('jobs');
-    expect(mockFrom).not.toHaveBeenCalled(); // supabaseAdmin must not be used
+    expect(mockFrom).toHaveBeenCalledWith('jobs');
+    expect(mockClientFrom).not.toHaveBeenCalled();
 
     // Verify query was built correctly
     expect(query._calls.select).toEqual([['*', { count: 'exact' }]]);
@@ -428,7 +459,7 @@ describe('getJobsByUserId', () => {
 
   it('returns error on DB failure', async () => {
     const dbError = new Error('DB down');
-    mockClientFrom.mockReturnValueOnce(fakeQuery({ data: null, count: 0, error: dbError }));
+    mockFrom.mockReturnValueOnce(fakeQuery({ data: null, count: 0, error: dbError }));
 
     const result = await getJobsByUserId(userId, {}, mockSupabaseClient);
 
@@ -438,7 +469,7 @@ describe('getJobsByUserId', () => {
 
   it('applies status filter when provided', async () => {
     const query = fakeQuery({ data: [], count: 0, error: null });
-    mockClientFrom.mockReturnValueOnce(query);
+    mockFrom.mockReturnValueOnce(query);
 
     await getJobsByUserId(userId, { status: 'applied' }, mockSupabaseClient);
 
@@ -451,7 +482,7 @@ describe('getJobsByUserId', () => {
 
   it('applies pagination range when from/to are provided', async () => {
     const query = fakeQuery({ data: [], count: 0, error: null });
-    mockClientFrom.mockReturnValueOnce(query);
+    mockFrom.mockReturnValueOnce(query);
 
     await getJobsByUserId(userId, { from: 0, to: 9 }, mockSupabaseClient);
 
@@ -468,13 +499,14 @@ describe('getJobById', () => {
 
   it('returns the job for a valid user+id', async () => {
     const query = fakeQuery({ data: mockCreatedJob, error: null });
-    mockClientFrom.mockReturnValueOnce(query);
+    mockFrom.mockReturnValueOnce(query);
 
     const result = await getJobById(jobId, userId, mockSupabaseClient);
 
     expect(result.error).toBeNull();
     expect(result.data).toEqual(mockCreatedJob);
-    expect(mockFrom).not.toHaveBeenCalled();
+    expect(mockFrom).toHaveBeenCalledWith('jobs');
+    expect(mockClientFrom).not.toHaveBeenCalled();
 
     // Verify the query filters by both id and user_id, then calls .single()
     expect(query._calls.select).toEqual([['*']]);
@@ -483,7 +515,7 @@ describe('getJobById', () => {
   });
 
   it('returns not-found error for PGRST116 (no rows)', async () => {
-    mockClientFrom.mockReturnValueOnce(
+    mockFrom.mockReturnValueOnce(
       fakeQuery({ data: null, error: { code: 'PGRST116', message: 'no rows' } })
     );
 
@@ -495,7 +527,7 @@ describe('getJobById', () => {
 
   it('returns error on other DB failures', async () => {
     const dbError = { code: 'PGRST500', message: 'internal error' };
-    mockClientFrom.mockReturnValueOnce(fakeQuery({ data: null, error: dbError }));
+    mockFrom.mockReturnValueOnce(fakeQuery({ data: null, error: dbError }));
 
     const result = await getJobById(jobId, userId, mockSupabaseClient);
 
@@ -514,13 +546,14 @@ describe('updateJob', () => {
   it('returns updated job on success', async () => {
     const updated = { ...mockCreatedJob, status: 'interviewing' };
     const query = fakeQuery({ data: [updated], error: null });
-    mockClientFrom.mockReturnValueOnce(query);
+    mockFrom.mockReturnValueOnce(query);
 
     const result = await updateJob(jobId, { status: 'interviewing' }, userId, mockSupabaseClient);
 
     expect(result.error).toBeNull();
     expect(result.data).toEqual([updated]);
-    expect(mockFrom).not.toHaveBeenCalled();
+    expect(mockFrom).toHaveBeenCalledWith('jobs');
+    expect(mockClientFrom).not.toHaveBeenCalled();
 
     // Verify correct update payload and ownership filters
     expect(query._calls.update).toEqual([[{ status: 'interviewing' }]]);
@@ -529,12 +562,35 @@ describe('updateJob', () => {
   });
 
   it('returns not-found error when no rows were affected', async () => {
-    mockClientFrom.mockReturnValueOnce(fakeQuery({ data: [], error: null }));
+    mockFrom.mockReturnValueOnce(fakeQuery({ data: [], error: null }));
 
     const result = await updateJob(jobId, { status: 'interviewing' }, userId, mockSupabaseClient);
 
     expect(result.data).toBeNull();
     expect(result.error.message).toMatch(/not found/i);
+  });
+
+  it('strips server-controlled fields before updating through the admin client', async () => {
+    const query = fakeQuery({ data: [{ ...mockCreatedJob, status: 'interviewing' }], error: null });
+    mockFrom.mockReturnValueOnce(query);
+
+    const result = await updateJob(
+      jobId,
+      {
+        status: 'interviewing',
+        user_id: 'attacker-user',
+        storage_state: 'active',
+        locked_at: null,
+        locked_reason: null,
+        locked_policy_version: null,
+      },
+      userId,
+      mockSupabaseClient
+    );
+
+    expect(result.error).toBeNull();
+    expect(query._calls.update).toEqual([[{ status: 'interviewing' }]]);
+    expect(query._calls.eq).toEqual([['id', jobId], ['user_id', userId]]);
   });
 });
 
@@ -547,13 +603,14 @@ describe('deleteJob', () => {
 
   it('returns deleted job on success', async () => {
     const query = fakeQuery({ data: [mockCreatedJob], error: null });
-    mockClientFrom.mockReturnValueOnce(query);
+    mockFrom.mockReturnValueOnce(query);
 
     const result = await deleteJob(jobId, userId, mockSupabaseClient);
 
     expect(result.error).toBeNull();
     expect(result.data).toEqual(mockCreatedJob);
-    expect(mockFrom).not.toHaveBeenCalled();
+    expect(mockFrom).toHaveBeenCalledWith('jobs');
+    expect(mockClientFrom).not.toHaveBeenCalled();
 
     // Verify delete filters by both id and user_id
     expect(query._calls.delete).toHaveLength(1);
@@ -562,7 +619,7 @@ describe('deleteJob', () => {
   });
 
   it('returns not-found error when no rows were affected', async () => {
-    mockClientFrom.mockReturnValueOnce(fakeQuery({ data: [], error: null }));
+    mockFrom.mockReturnValueOnce(fakeQuery({ data: [], error: null }));
 
     const result = await deleteJob(jobId, userId, mockSupabaseClient);
 
@@ -572,16 +629,14 @@ describe('deleteJob', () => {
 });
 
 // ---------------------------------------------------------------------------
-// RLS behaviour — unauthenticated/expired session
+// Owner filter behaviour - no matching rows
 // ---------------------------------------------------------------------------
 
-describe('RLS behaviour — unauthenticated or expired session client', () => {
+describe('owner filter behaviour - no matching rows', () => {
   beforeEach(() => jest.clearAllMocks());
 
-  it('getJobsByUserId returns empty data (not an error) when RLS filters all rows', async () => {
-    // Simulates what Supabase returns when auth.uid() does not match any row:
-    // an empty result set, not an error.
-    mockClientFrom.mockReturnValueOnce(fakeQuery({ data: [], count: 0, error: null }));
+  it('getJobsByUserId returns empty data when the owner filter matches no rows', async () => {
+    mockFrom.mockReturnValueOnce(fakeQuery({ data: [], count: 0, error: null }));
 
     const result = await getJobsByUserId(userId, {}, mockSupabaseClient);
 
@@ -590,16 +645,14 @@ describe('RLS behaviour — unauthenticated or expired session client', () => {
     expect(result.count).toBe(0);
   });
 
-  it('getJobById returns not-found error (PGRST116) when RLS filters the row', async () => {
-    // RLS blocks the row → Supabase returns PGRST116 (no rows found for .single())
-    mockClientFrom.mockReturnValueOnce(
+  it('getJobById returns not-found error (PGRST116) when the owner filter matches no row', async () => {
+    mockFrom.mockReturnValueOnce(
       fakeQuery({ data: null, error: { code: 'PGRST116', message: 'no rows' } })
     );
 
     const result = await getJobById(jobId, userId, mockSupabaseClient);
 
     expect(result.data).toBeNull();
-    // Returns a generic not-found error — does not leak whether the row exists
     expect(result.error.message).toMatch(/not found/i);
   });
 });
