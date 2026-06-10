@@ -8,6 +8,8 @@ export const FREE_ACTIVE_JOB_LIMIT = 300;
 
 export const ABSOLUTE_RETAINED_JOB_LIMIT = 3000;
 
+export const LOCKED_BULK_DELETE_ROW_LIMIT = ABSOLUTE_RETAINED_JOB_LIMIT - FREE_ACTIVE_JOB_LIMIT;
+
 export const JOB_STORAGE_STATES = {
   ACTIVE: 'active',
   LOCKED_OVER_PLAN_LIMIT: 'locked_over_plan_limit',

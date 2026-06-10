@@ -16,7 +16,15 @@
  */
 import { supabaseAdmin } from '../lib/supabaseServer.js';
 import { logger as defaultLogger } from '../../shared/logger.js';
-import { getStorageLimitForTier, TIERS } from '../../shared/constants/tiers.js';
+import { classifyStorageCreateFlow } from '../lib/billingService.js';
+import {
+  STORAGE_CREATE_ACTIONS,
+  STORAGE_CREATE_ERROR_CODES,
+} from '../../shared/constants/billing.js';
+import {
+  ABSOLUTE_RETAINED_JOB_LIMIT,
+  FREE_ACTIVE_JOB_LIMIT,
+} from '../../shared/constants/storage.js';
 
 const SERVER_CONTROLLED_JOB_FIELDS = new Set([
   'id',
@@ -38,6 +46,27 @@ export class StorageLimitExceededError extends Error {
 }
 
 /**
+ * Error type for storage create decisions that are not quota-overage errors.
+ *
+ * Purpose: keep billing-unavailable, reconciliation, payment-recovery, and
+ * sync-pending create failures on stable codes for route-level response mapping.
+ */
+export class StorageCreateBlockedError extends Error {
+  /**
+   * Builds a route-mappable storage create error.
+   *
+   * @param {{ code: string, message: string, statusCode?: number, retryable?: boolean }} params
+   */
+  constructor({ code, message, statusCode = 409, retryable = false }) {
+    super(message);
+    this.name = 'StorageCreateBlockedError';
+    this.code = code;
+    this.statusCode = statusCode;
+    this.retryable = retryable;
+  }
+}
+
+/**
  * createStorageLimitExceededError constructs a user-facing Error for callers
  * when a user reaches the configured job storage limit.
  *
@@ -46,6 +75,62 @@ export class StorageLimitExceededError extends Error {
  */
 function createStorageLimitExceededError(maxJobs) {
   return new StorageLimitExceededError(maxJobs);
+}
+
+/**
+ * Builds a stable Error for non-insertable storage create-flow states.
+ *
+ * Purpose: billing state gates should fail before the atomic jobs RPC and must
+ * not be flattened into confirmed-Free quota copy.
+ *
+ * @param {object} createFlow - Result from classifyStorageCreateFlow().
+ * @returns {StorageCreateBlockedError} Route-mappable create failure.
+ */
+function createStorageCreateFlowError(createFlow = {}) {
+  const code = createFlow.code ?? STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE;
+
+  switch (code) {
+    case STORAGE_CREATE_ERROR_CODES.BILLING_RECONCILIATION_PENDING:
+      return new StorageCreateBlockedError({
+        code,
+        message: 'Billing reconciliation is pending',
+        statusCode: 503,
+        retryable: true,
+      });
+
+    case STORAGE_CREATE_ERROR_CODES.PAYMENT_METHOD_UPDATE_REQUIRED:
+      return new StorageCreateBlockedError({
+        code,
+        message: 'Payment method update required',
+        statusCode: 402,
+        retryable: false,
+      });
+
+    case STORAGE_CREATE_ERROR_CODES.BILLING_SYNC_PENDING:
+      return new StorageCreateBlockedError({
+        code,
+        message: 'Billing sync pending',
+        statusCode: 409,
+        retryable: false,
+      });
+
+    case STORAGE_CREATE_ERROR_CODES.BILLING_STATE_REVIEW_REQUIRED:
+      return new StorageCreateBlockedError({
+        code,
+        message: 'Billing state review required',
+        statusCode: 409,
+        retryable: false,
+      });
+
+    case STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE:
+    default:
+      return new StorageCreateBlockedError({
+        code: STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+        message: 'Billing status unavailable',
+        statusCode: 503,
+        retryable: true,
+      });
+  }
 }
 
 /**
@@ -68,6 +153,92 @@ function stripServerControlledJobFields(jobData) {
   }
 
   return sanitizedJobData;
+}
+
+/**
+ * Normalizes JSON returned by Supabase RPC calls.
+ *
+ * Purpose: PostgREST may return JSON function payloads as objects or strings
+ * depending on environment; the service should validate one trusted shape.
+ *
+ * @param {unknown} data - Raw Supabase RPC response payload.
+ * @returns {object|null} Parsed RPC payload object.
+ */
+function normalizeStorageCreateRpcData(data) {
+  if (!data) {
+    return null;
+  }
+
+  if (typeof data === 'string') {
+    try {
+      const parsed = JSON.parse(data);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  return typeof data === 'object' && !Array.isArray(data) ? data : null;
+}
+
+/**
+ * Calls the database-side atomic job create quota boundary.
+ *
+ * Purpose: active and retained create eligibility must be checked in the same
+ * transaction as the insert so concurrent creates cannot overshoot the caps.
+ *
+ * @param {{ userId: string, jobData: object, storageStatus: string }} params
+ * @returns {Promise<object>} Normalized RPC result.
+ */
+async function callCreateJobWithStorageQuotaRpc({ userId, jobData, storageStatus }) {
+  const { data, error } = await supabaseAdmin.rpc(
+    'create_job_with_storage_quota',
+    {
+      p_user_id: userId,
+      p_job_data: jobData,
+      p_storage_status: storageStatus,
+      p_active_job_limit: FREE_ACTIVE_JOB_LIMIT,
+      p_absolute_retained_job_limit: ABSOLUTE_RETAINED_JOB_LIMIT,
+    }
+  );
+
+  if (error) {
+    throw error;
+  }
+
+  const normalizedData = normalizeStorageCreateRpcData(data);
+
+  if (!normalizedData || typeof normalizedData.created !== 'boolean') {
+    throw new Error('Atomic job create RPC returned an unexpected payload');
+  }
+
+  return normalizedData;
+}
+
+/**
+ * Resolves the create-flow policy from a storage-status result.
+ *
+ * Purpose: service callers should pass the typed storage-status object from
+ * resolveStorageStatus(), while tests and defensive paths still normalize the
+ * same contract if only a status string is supplied.
+ *
+ * @param {string|object|null|undefined} storageStatusResult
+ * @returns {{ status: string|null, createFlow: object }}
+ */
+function getStorageCreatePolicy(storageStatusResult) {
+  const status = typeof storageStatusResult === 'object'
+    ? storageStatusResult?.status
+    : storageStatusResult;
+  const createFlow = typeof storageStatusResult === 'object' && storageStatusResult?.createFlow
+    ? storageStatusResult.createFlow
+    : classifyStorageCreateFlow(storageStatusResult);
+
+  return {
+    status: status ?? null,
+    createFlow,
+  };
 }
 
 /**
@@ -157,77 +328,92 @@ export async function getJobById(jobId, userId, supabaseClient, log = defaultLog
 }
 
 /**
- * Creates a new job for a user
+ * Creates a new job for a user.
  *
- * Purpose: Insert a new job application, enforcing the per-user storage limit
+ * Purpose: Insert a new job application with typed, atomic storage quota checks.
  * Connects to:
- * - supabaseAdmin for count and insert through the server-owned job boundary
- * - getStorageLimitForTier to retrieve the maxJobs limit for the user's tier
+ * - billingService.classifyStorageCreateFlow for status-aware create policy
+ * - create_job_with_storage_quota RPC for the transaction-scoped count/insert
+ * - supabaseAdmin service role for the server-owned job boundary
  *
- * @param {Object} jobData - The job data to insert (validated by jobSchema)
- * @param {string} userId - The user's ID
- * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Accepted for route compatibility; jobs are inserted through supabaseAdmin.
- * @param {object} log - Request-scoped logger
- * @param {string} effectiveTier - Resolved storage tier for the authenticated user
+ * @param {Object} jobData - The job data to insert (validated by jobSchema).
+ * @param {string} userId - The user's ID.
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Accepted for route compatibility; jobs are inserted through supabaseAdmin RPC.
+ * @param {object} log - Request-scoped logger.
+ * @param {object|string} storageStatusResult - Typed storage status from resolveStorageStatus().
  * @returns {Promise<{data: Object|null, error: Error|null}>}
  *
  * Security: Associates job with server-derived user_id to enforce ownership.
- * Storage: Rejects insert if user is at or over their tier's maxJobs limit
+ * Storage: Rejects creates from ambiguous billing states and uses the database
+ * transaction boundary for active and retained quota enforcement.
  */
-export async function createJob(jobData, userId, supabaseClient, log = defaultLogger, effectiveTier = TIERS.FREE) {
+export async function createJob(jobData, userId, supabaseClient, log = defaultLogger, storageStatusResult = null) {
   try {
     const sanitizedJobData = stripServerControlledJobFields(jobData);
+    const { status: storageStatus, createFlow } = getStorageCreatePolicy(storageStatusResult);
 
-    // Check storage limit before inserting
-    const { maxJobs } = getStorageLimitForTier(effectiveTier) || {};
-
-    // Fail closed: if the tier config is broken, deny the insert rather than
-    // silently allowing unlimited entries ((count ?? 0) >= undefined is false)
-    if (typeof maxJobs !== 'number' || maxJobs <= 0) {
-      log.error({ operation: 'createJob', userId, effectiveTier, maxJobs }, 'Storage limit configuration is invalid');
-      return { data: null, error: new Error('Storage limit configuration is invalid') };
+    if (
+      createFlow.action !== STORAGE_CREATE_ACTIONS.APPLY_FREE_LIMIT
+      && createFlow.action !== STORAGE_CREATE_ACTIONS.APPLY_PREMIUM_LIMIT
+    ) {
+      return { data: null, error: createStorageCreateFlowError(createFlow) };
     }
 
-    // TOCTOU note: There is a race window between the count check and the insert below.
-    // Concurrent requests could both pass the check and exceed the 300-job limit by a few rows.
-    // Accepted risk: the 30 req/hour rate limit makes concurrent exploitation extremely unlikely,
-    // and the cap is a storage hygiene limit, not a billing or security boundary. Any overshoot
-    // is self-correcting — subsequent requests will see the true count and block further inserts.
-    // If this ever guards a financial or security-critical limit, replace with a Supabase RPC
-    // (stored procedure) that performs the count + insert atomically in a single transaction.
-    //
-    // supabaseAdmin is used here intentionally — it bypasses RLS so the count reflects the
-    // true row count regardless of the user's session state. This prevents a user from
-    // manipulating their session to circumvent the storage limit.
-    const { count, error: countError } = await supabaseAdmin
-      .from('jobs')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', userId);
-
-    if (countError) {
-      log.error({ err: countError, operation: 'createJob', userId }, 'Failed to check job count before insert');
-      return { data: null, error: countError };
+    if (!storageStatus) {
+      log.error({ operation: 'createJob', userId }, 'Storage status is missing for create');
+      return {
+        data: null,
+        error: createStorageCreateFlowError({
+          code: STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+        }),
+      };
     }
 
-    if ((count ?? 0) >= maxJobs) {
-      log.warn({ operation: 'createJob', userId, effectiveTier, count, maxJobs }, 'Storage limit reached');
-      const limitError = createStorageLimitExceededError(maxJobs);
-      return { data: null, error: limitError };
+    const createResult = await callCreateJobWithStorageQuotaRpc({
+      userId,
+      jobData: sanitizedJobData,
+      storageStatus,
+    });
+
+    if (!createResult.created) {
+      if (createResult.code === STORAGE_CREATE_ERROR_CODES.STORAGE_LIMIT_EXCEEDED) {
+        const maxJobs = createResult.reason === 'active_limit_exceeded'
+          ? createResult.activeLimit
+          : createResult.absoluteRetainedLimit;
+
+        log.warn(
+          {
+            operation: 'createJob',
+            userId,
+            storageStatus,
+            reason: createResult.reason,
+            activeCount: createResult.activeCount,
+            retainedTotalCount: createResult.retainedTotalCount,
+            activeLimit: createResult.activeLimit,
+            absoluteRetainedLimit: createResult.absoluteRetainedLimit,
+          },
+          'Storage limit reached'
+        );
+
+        return { data: null, error: createStorageLimitExceededError(maxJobs) };
+      }
+
+      log.error(
+        { operation: 'createJob', userId, storageStatus, createResult },
+        'Atomic job create RPC denied create with an unexpected result'
+      );
+      return { data: null, error: new Error('Job create was not allowed') };
     }
 
-    const { data, error } = await supabaseAdmin
-      .from('jobs')
-      .insert({ ...sanitizedJobData, user_id: userId })
-      .select();
-
-    if (error) {
-      log.error({ err: error, operation: 'createJob', userId }, 'Failed to create job');
-      return { data: null, error };
+    if (!createResult.job || typeof createResult.job !== 'object') {
+      log.error({ operation: 'createJob', userId, storageStatus }, 'Atomic job create RPC returned no job');
+      return { data: null, error: new Error('Failed to create job') };
     }
 
-    log.info({ operation: 'createJob', userId, jobId: data?.[0]?.id }, 'Job created successfully');
+    log.info({ operation: 'createJob', userId, jobId: createResult.job?.id }, 'Job created successfully');
 
-    return { data, error: null };
+    return { data: [createResult.job], error: null };
+
   } catch (error) {
     log.error({ err: error, operation: 'createJob', userId }, 'Unexpected error in createJob');
     return { data: null, error };

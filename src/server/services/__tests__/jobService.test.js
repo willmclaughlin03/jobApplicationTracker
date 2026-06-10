@@ -14,16 +14,11 @@
  *
  * Test coverage:
  * createJob:
- * - Allows insert when under limit (0, 299 entries)
- * - Blocks insert at limit (300 entries) with STORAGE_LIMIT_EXCEEDED
- * - Blocks insert over limit (301 entries)
- * - Returns generic error if count query fails
- * - Treats null count as 0, allows insert
- * - Returns insert error when DB insert fails after limit check passes (edge case 1)
+ * - Creates through the atomic quota RPC for allowed storage statuses
+ * - Blocks active and retained quota failures with STORAGE_LIMIT_EXCEEDED
+ * - Blocks billing-unavailable, reconciliation, payment, and sync states
+ * - Returns RPC errors without attempting fallback writes
  * - Strips server-controlled fields before admin inserts
- * - Enforces limit dynamically from tier config, not a hardcoded value (edge case 2)
- * - Fails closed when maxJobs is undefined or null (edge case 3)
- * - Catches unexpected throw from getStorageLimitForTier (edge case 4)
  * - supabaseAdmin queries keep owner filters after direct table access is narrowed
  *
  * getJobsByUserId:
@@ -52,11 +47,18 @@
 // ---------------------------------------------------------------------------
 
 const mockFrom = jest.fn(); // supabaseAdmin - server-owned jobs boundary
+const mockRpc = jest.fn();
 
 jest.mock('../../lib/supabaseServer.js', () => ({
   supabaseAdmin: {
     from: mockFrom,
+    rpc: mockRpc,
   },
+}));
+
+const mockClassifyStorageCreateFlow = jest.fn();
+jest.mock('../../lib/billingService.js', () => ({
+  classifyStorageCreateFlow: mockClassifyStorageCreateFlow,
 }));
 
 jest.mock('../../../shared/logger.js', () => ({
@@ -68,21 +70,24 @@ jest.mock('../../../shared/logger.js', () => ({
   },
 }));
 
-jest.mock('../../../shared/constants/tiers.js', () => ({
-  getStorageLimitForTier: jest.fn().mockReturnValue({ maxJobs: 300 }),
-  TIERS: { FREE: 'free', PAID: 'paid' },
-}));
-
 const {
   createJob,
   getJobsByUserId,
   getJobById,
   updateJob,
   deleteJob,
+  StorageCreateBlockedError,
   StorageLimitExceededError,
 } = require('../jobService.js');
-
-const { getStorageLimitForTier: mockGetStorageLimitForTier } = require('../../../shared/constants/tiers.js');
+const {
+  STORAGE_CREATE_ACTIONS,
+  STORAGE_CREATE_ERROR_CODES,
+  STORAGE_STATUSES,
+} = require('../../../shared/constants/billing.js');
+const {
+  ABSOLUTE_RETAINED_JOB_LIMIT,
+  FREE_ACTIVE_JOB_LIMIT,
+} = require('../../../shared/constants/storage.js');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -148,248 +153,237 @@ const mockCreatedJob = { id: jobId, ...validJobData, user_id: userId };
 // createJob — storage limit enforcement
 // ---------------------------------------------------------------------------
 
-describe('createJob - storage limit enforcement', () => {
+describe('createJob - atomic storage quota enforcement', () => {
+  /**
+   * Build a typed storage-status result with a create-flow contract.
+   *
+   * @param {string} status Storage policy status.
+   * @param {string} action Create-flow action.
+   * @param {string|null} code Optional stable error code.
+   * @returns {object} Storage status result consumed by createJob().
+   */
+  function buildStorageStatusResult(status, action, code = null) {
+    return {
+      status,
+      createFlow: {
+        action,
+        code,
+        retryable: false,
+        mayUseFreeQuotaCopy: code === STORAGE_CREATE_ERROR_CODES.STORAGE_LIMIT_EXCEEDED,
+      },
+    };
+  }
+
+  /**
+   * Build a successful atomic create RPC response.
+   *
+   * @param {object} job Created job row.
+   * @returns {object} Supabase RPC response shape.
+   */
+  function rpcCreated(job = mockCreatedJob) {
+    return {
+      data: {
+        created: true,
+        job,
+        activeCountBeforeCreate: 0,
+        retainedTotalCountBeforeCreate: 0,
+        activeLimit: FREE_ACTIVE_JOB_LIMIT,
+        absoluteRetainedLimit: ABSOLUTE_RETAINED_JOB_LIMIT,
+      },
+      error: null,
+    };
+  }
+
+  const terminalFreeStatus = buildStorageStatusResult(
+    STORAGE_STATUSES.TERMINAL_FREE,
+    STORAGE_CREATE_ACTIONS.APPLY_FREE_LIMIT,
+    STORAGE_CREATE_ERROR_CODES.STORAGE_LIMIT_EXCEEDED
+  );
+  const premiumStatus = buildStorageStatusResult(
+    STORAGE_STATUSES.PREMIUM_ACTIVE,
+    STORAGE_CREATE_ACTIONS.APPLY_PREMIUM_LIMIT
+  );
+
   beforeEach(() => {
     jest.clearAllMocks();
-    mockGetStorageLimitForTier.mockReturnValue({ maxJobs: 300 });
-  });
-
-  describe('when user is under the limit', () => {
-    it('allows insert when user has 0 existing entries', async () => {
-      const countQ = fakeQuery({ count: 0, error: null });
-      const insertQ = fakeQuery({ data: [mockCreatedJob], error: null });
-      mockFrom.mockReturnValueOnce(countQ);
-      mockFrom.mockReturnValueOnce(insertQ);
-
-      const result = await createJob(validJobData, userId, mockSupabaseClient);
-
-      expect(result.error).toBeNull();
-      expect(result.data).toEqual([mockCreatedJob]);
-      expect(mockGetStorageLimitForTier).toHaveBeenCalledWith('free');
-      expect(mockFrom).toHaveBeenCalledTimes(2);
-      expect(mockClientFrom).not.toHaveBeenCalled();
-
-      // Verify the count query was built correctly
-      expect(countQ._calls.select).toEqual([['*', { count: 'exact', head: true }]]);
-      expect(countQ._calls.eq).toEqual([['user_id', userId]]);
-
-      // Verify the insert passed correct data
-      expect(insertQ._calls.insert).toEqual([[{ ...validJobData, user_id: userId }]]);
-      expect(insertQ._calls.select).toHaveLength(1);
-    });
-
-    it('allows insert when user has 299 existing entries', async () => {
-      mockFrom.mockReturnValueOnce(fakeQuery({ count: 299, error: null }));
-      mockFrom.mockReturnValueOnce(fakeQuery({ data: [mockCreatedJob], error: null }));
-
-      const result = await createJob(validJobData, userId, mockSupabaseClient);
-
-      expect(result.error).toBeNull();
-      expect(result.data).toEqual([mockCreatedJob]);
-      expect(mockGetStorageLimitForTier).toHaveBeenCalledWith('free');
-      expect(mockFrom).toHaveBeenCalledTimes(2);
-      expect(mockClientFrom).not.toHaveBeenCalled();
+    mockClassifyStorageCreateFlow.mockReturnValue({
+      action: STORAGE_CREATE_ACTIONS.BLOCK_RETRYABLE,
+      code: STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+      retryable: true,
+      mayUseFreeQuotaCopy: false,
     });
   });
 
-  describe('when user is at or over the limit', () => {
-    it('blocks insert and returns STORAGE_LIMIT_EXCEEDED error at exactly 300 entries', async () => {
-      mockFrom.mockReturnValueOnce(fakeQuery({ count: 300, error: null }));
+  it('creates a job through the atomic quota RPC for confirmed terminal Free', async () => {
+    mockRpc.mockResolvedValueOnce(rpcCreated());
 
-      const result = await createJob(validJobData, userId, mockSupabaseClient);
+    const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, terminalFreeStatus);
 
-      expect(result.data).toBeNull();
-      expect(result.error).toBeInstanceOf(StorageLimitExceededError);
-      expect(result.error.name).toBe('StorageLimitExceededError');
-      expect(result.error.code).toBe('STORAGE_LIMIT_EXCEEDED');
-      expect(result.error.statusCode).toBe(409);
-      expect(result.error.message).toContain('300');
-      expect(mockFrom).toHaveBeenCalledTimes(1);
-      expect(mockClientFrom).not.toHaveBeenCalled(); // insert must NOT run
+    expect(result.error).toBeNull();
+    expect(result.data).toEqual([mockCreatedJob]);
+    expect(mockRpc).toHaveBeenCalledWith('create_job_with_storage_quota', {
+      p_user_id: userId,
+      p_job_data: validJobData,
+      p_storage_status: STORAGE_STATUSES.TERMINAL_FREE,
+      p_active_job_limit: FREE_ACTIVE_JOB_LIMIT,
+      p_absolute_retained_job_limit: ABSOLUTE_RETAINED_JOB_LIMIT,
     });
-
-    it('blocks insert when user has 301 entries', async () => {
-      mockFrom.mockReturnValueOnce(fakeQuery({ count: 301, error: null }));
-
-      const result = await createJob(validJobData, userId, mockSupabaseClient);
-
-      expect(result.data).toBeNull();
-      expect(result.error.code).toBe('STORAGE_LIMIT_EXCEEDED');
-      expect(mockClientFrom).not.toHaveBeenCalled();
-    });
+    expect(mockFrom).not.toHaveBeenCalled();
+    expect(mockClientFrom).not.toHaveBeenCalled();
   });
 
-  describe('when the count query fails', () => {
-    it('returns the count error without attempting an insert', async () => {
-      const dbError = new Error('Connection timeout');
-      mockFrom.mockReturnValueOnce(fakeQuery({ count: null, error: dbError }));
+  it('uses the Premium storage status without falling back to a tier string', async () => {
+    mockRpc.mockResolvedValueOnce(rpcCreated());
 
-      const result = await createJob(validJobData, userId, mockSupabaseClient);
+    const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, premiumStatus);
 
-      expect(result.data).toBeNull();
-      expect(result.error).toBe(dbError);
-      expect(mockClientFrom).not.toHaveBeenCalled();
-    });
+    expect(result.error).toBeNull();
+    expect(mockRpc).toHaveBeenCalledWith(
+      'create_job_with_storage_quota',
+      expect.objectContaining({
+        p_storage_status: STORAGE_STATUSES.PREMIUM_ACTIVE,
+        p_absolute_retained_job_limit: ABSOLUTE_RETAINED_JOB_LIMIT,
+      })
+    );
   });
 
-  describe('when the count is null (no rows in DB)', () => {
-    it('treats null count as 0 and allows insert', async () => {
-      mockFrom.mockReturnValueOnce(fakeQuery({ count: null, error: null }));
-      mockFrom.mockReturnValueOnce(fakeQuery({ data: [mockCreatedJob], error: null }));
+  it('strips server-controlled fields before sending the RPC payload', async () => {
+    mockRpc.mockResolvedValueOnce(rpcCreated());
 
-      const result = await createJob(validJobData, userId, mockSupabaseClient);
+    const result = await createJob(
+      {
+        ...validJobData,
+        id: 'attacker-job',
+        user_id: 'attacker-user',
+        storage_state: 'locked_over_plan_limit',
+        locked_at: '2026-06-08T00:00:00.000Z',
+        locked_reason: 'premium_to_free_over_plan_limit',
+        locked_policy_version: 'v1',
+      },
+      userId,
+      mockSupabaseClient,
+      undefined,
+      terminalFreeStatus
+    );
 
-      expect(result.error).toBeNull();
-      expect(result.data).toEqual([mockCreatedJob]);
-    });
+    expect(result.error).toBeNull();
+    expect(mockRpc).toHaveBeenCalledWith(
+      'create_job_with_storage_quota',
+      expect.objectContaining({
+        p_job_data: validJobData,
+      })
+    );
   });
 
-  describe('when the insert query fails after passing the limit check', () => {
-    it('returns the insert error and does not return data', async () => {
-      const insertError = new Error('DB constraint violation');
-      mockFrom.mockReturnValueOnce(fakeQuery({ count: 0, error: null }));
-      mockFrom.mockReturnValueOnce(fakeQuery({ data: null, error: insertError }));
-
-      const result = await createJob(validJobData, userId, mockSupabaseClient);
-
-      expect(result.data).toBeNull();
-      expect(result.error).toBe(insertError);
+  it('returns STORAGE_LIMIT_EXCEEDED when the RPC blocks on the active cap', async () => {
+    mockRpc.mockResolvedValueOnce({
+      data: {
+        created: false,
+        code: STORAGE_CREATE_ERROR_CODES.STORAGE_LIMIT_EXCEEDED,
+        reason: 'active_limit_exceeded',
+        activeCount: FREE_ACTIVE_JOB_LIMIT,
+        retainedTotalCount: FREE_ACTIVE_JOB_LIMIT,
+        activeLimit: FREE_ACTIVE_JOB_LIMIT,
+        absoluteRetainedLimit: ABSOLUTE_RETAINED_JOB_LIMIT,
+      },
+      error: null,
     });
+
+    const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, terminalFreeStatus);
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(StorageLimitExceededError);
+    expect(result.error.code).toBe(STORAGE_CREATE_ERROR_CODES.STORAGE_LIMIT_EXCEEDED);
+    expect(result.error.message).toContain(String(FREE_ACTIVE_JOB_LIMIT));
   });
 
-  describe('server-controlled field sanitization', () => {
-    it('strips server-controlled fields before inserting through the admin client', async () => {
-      const countQ = fakeQuery({ count: 0, error: null });
-      const insertQ = fakeQuery({ data: [mockCreatedJob], error: null });
-      mockFrom.mockReturnValueOnce(countQ);
-      mockFrom.mockReturnValueOnce(insertQ);
-
-      const result = await createJob(
-        {
-          ...validJobData,
-          id: 'attacker-job',
-          user_id: 'attacker-user',
-          storage_state: 'locked_over_plan_limit',
-          locked_at: '2026-06-08T00:00:00.000Z',
-          locked_reason: 'premium_to_free_over_plan_limit',
-          locked_policy_version: 'v1',
-        },
-        userId,
-        mockSupabaseClient
-      );
-
-      expect(result.error).toBeNull();
-      expect(insertQ._calls.insert).toEqual([[{ ...validJobData, user_id: userId }]]);
-      expect(mockClientFrom).not.toHaveBeenCalled();
+  it('returns STORAGE_LIMIT_EXCEEDED when the RPC blocks on the retained cap', async () => {
+    mockRpc.mockResolvedValueOnce({
+      data: {
+        created: false,
+        code: STORAGE_CREATE_ERROR_CODES.STORAGE_LIMIT_EXCEEDED,
+        reason: 'retained_limit_exceeded',
+        activeCount: 299,
+        retainedTotalCount: ABSOLUTE_RETAINED_JOB_LIMIT,
+        activeLimit: FREE_ACTIVE_JOB_LIMIT,
+        absoluteRetainedLimit: ABSOLUTE_RETAINED_JOB_LIMIT,
+      },
+      error: null,
     });
+
+    const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, terminalFreeStatus);
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(StorageLimitExceededError);
+    expect(result.error.message).toContain(String(ABSOLUTE_RETAINED_JOB_LIMIT));
   });
 
-  describe('when the tier config supplies a non-default maxJobs', () => {
-    it('blocks insert at the custom limit rather than the default 300', async () => {
-      mockGetStorageLimitForTier.mockReturnValueOnce({ maxJobs: 5 });
-      mockFrom.mockReturnValueOnce(fakeQuery({ count: 5, error: null }));
+  it.each([
+    [
+      STORAGE_STATUSES.BILLING_UNAVAILABLE,
+      STORAGE_CREATE_ACTIONS.BLOCK_RETRYABLE,
+      STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+    ],
+    [
+      STORAGE_STATUSES.BILLING_RECONCILIATION_PENDING,
+      STORAGE_CREATE_ACTIONS.BLOCK_RETRYABLE,
+      STORAGE_CREATE_ERROR_CODES.BILLING_RECONCILIATION_PENDING,
+    ],
+    [
+      STORAGE_STATUSES.PAYMENT_RECOVERY,
+      STORAGE_CREATE_ACTIONS.BLOCK_PAYMENT_RECOVERY,
+      STORAGE_CREATE_ERROR_CODES.PAYMENT_METHOD_UPDATE_REQUIRED,
+    ],
+    [
+      STORAGE_STATUSES.SYNC_PENDING,
+      STORAGE_CREATE_ACTIONS.BLOCK_SYNC_PENDING,
+      STORAGE_CREATE_ERROR_CODES.BILLING_SYNC_PENDING,
+    ],
+  ])('blocks %s before the jobs RPC', async (status, action, code) => {
+    const result = await createJob(
+      validJobData,
+      userId,
+      mockSupabaseClient,
+      undefined,
+      buildStorageStatusResult(status, action, code)
+    );
 
-      const result = await createJob(validJobData, userId, mockSupabaseClient);
-
-      expect(result.data).toBeNull();
-      expect(result.error.code).toBe('STORAGE_LIMIT_EXCEEDED');
-      expect(result.error.message).toContain('5');
-      expect(mockClientFrom).not.toHaveBeenCalled();
-    });
-
-    it('allows insert when count is below the custom limit', async () => {
-      mockGetStorageLimitForTier.mockReturnValueOnce({ maxJobs: 5 });
-      mockFrom.mockReturnValueOnce(fakeQuery({ count: 4, error: null }));
-      mockFrom.mockReturnValueOnce(fakeQuery({ data: [mockCreatedJob], error: null }));
-
-      const result = await createJob(validJobData, userId, mockSupabaseClient);
-
-      expect(result.error).toBeNull();
-      expect(result.data).toEqual([mockCreatedJob]);
-    });
-
-    it('uses the provided paid tier when resolving the storage limit', async () => {
-      mockGetStorageLimitForTier.mockReturnValueOnce({ maxJobs: 3000 });
-      mockFrom.mockReturnValueOnce(fakeQuery({ count: 2999, error: null }));
-      mockFrom.mockReturnValueOnce(fakeQuery({ data: [mockCreatedJob], error: null }));
-
-      const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, 'paid');
-
-      expect(result.error).toBeNull();
-      expect(result.data).toEqual([mockCreatedJob]);
-      expect(mockGetStorageLimitForTier).toHaveBeenCalledWith('paid');
-    });
-
-    it('includes the premium storage limit in the error message when paid users hit the cap', async () => {
-      mockGetStorageLimitForTier.mockReturnValueOnce({ maxJobs: 3000 });
-      mockFrom.mockReturnValueOnce(fakeQuery({ count: 3000, error: null }));
-
-      const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, 'paid');
-
-      expect(result.data).toBeNull();
-      expect(result.error.code).toBe('STORAGE_LIMIT_EXCEEDED');
-      expect(result.error.message).toContain('3000');
-      expect(mockClientFrom).not.toHaveBeenCalled();
-    });
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(StorageCreateBlockedError);
+    expect(result.error.code).toBe(code);
+    expect(mockRpc).not.toHaveBeenCalled();
+    expect(mockFrom).not.toHaveBeenCalled();
   });
 
-  describe('when the tier config returns an invalid maxJobs (fail-closed)', () => {
-    it('returns a config error and does not run the count or insert query when maxJobs is undefined', async () => {
-      mockGetStorageLimitForTier.mockReturnValueOnce({ maxJobs: undefined });
-
-      const result = await createJob(validJobData, userId, mockSupabaseClient);
-
-      expect(result.data).toBeNull();
-      expect(result.error).not.toBeNull();
-      expect(mockFrom).not.toHaveBeenCalled();
-      expect(mockClientFrom).not.toHaveBeenCalled();
+  it('falls back through classifyStorageCreateFlow when only a status string is supplied', async () => {
+    mockClassifyStorageCreateFlow.mockReturnValueOnce({
+      action: STORAGE_CREATE_ACTIONS.APPLY_FREE_LIMIT,
+      code: STORAGE_CREATE_ERROR_CODES.STORAGE_LIMIT_EXCEEDED,
     });
+    mockRpc.mockResolvedValueOnce(rpcCreated());
 
-    it('returns a config error and does not run the count or insert query when maxJobs is null', async () => {
-      mockGetStorageLimitForTier.mockReturnValueOnce({ maxJobs: null });
+    const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, STORAGE_STATUSES.TERMINAL_FREE);
 
-      const result = await createJob(validJobData, userId, mockSupabaseClient);
-
-      expect(result.data).toBeNull();
-      expect(result.error).not.toBeNull();
-      expect(mockFrom).not.toHaveBeenCalled();
-      expect(mockClientFrom).not.toHaveBeenCalled();
-    });
+    expect(result.error).toBeNull();
+    expect(mockClassifyStorageCreateFlow).toHaveBeenCalledWith(STORAGE_STATUSES.TERMINAL_FREE);
+    expect(mockRpc).toHaveBeenCalledWith(
+      'create_job_with_storage_quota',
+      expect.objectContaining({
+        p_storage_status: STORAGE_STATUSES.TERMINAL_FREE,
+      })
+    );
   });
 
-  describe('when getStorageLimitForTier throws unexpectedly', () => {
-    it('catches the exception and returns an error without calling the database', async () => {
-      mockGetStorageLimitForTier.mockImplementationOnce(() => {
-        throw new Error('Config module failure');
-      });
+  it('returns RPC errors without attempting a fallback insert', async () => {
+    const rpcError = new Error('RPC unavailable');
+    mockRpc.mockResolvedValueOnce({ data: null, error: rpcError });
 
-      const result = await createJob(validJobData, userId, mockSupabaseClient);
+    const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, terminalFreeStatus);
 
-      expect(result.data).toBeNull();
-      expect(result.error.message).toBe('Config module failure');
-      expect(mockFrom).not.toHaveBeenCalled();
-      expect(mockClientFrom).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('storage boundary - supabaseAdmin owns job writes', () => {
-    it('count and insert both use supabaseAdmin so direct table grants can be narrowed', async () => {
-      const countQ = fakeQuery({ count: 0, error: null });
-      const insertQ = fakeQuery({ data: [mockCreatedJob], error: null });
-      mockFrom.mockReturnValueOnce(countQ);
-      mockFrom.mockReturnValueOnce(insertQ);
-
-      await createJob(validJobData, userId, mockSupabaseClient);
-
-      expect(mockFrom).toHaveBeenCalledTimes(2);
-      expect(mockFrom).toHaveBeenNthCalledWith(1, 'jobs');
-      expect(mockFrom).toHaveBeenNthCalledWith(2, 'jobs');
-      expect(mockClientFrom).not.toHaveBeenCalled();
-
-      // Verify count query uses head: true (count-only, no row data)
-      expect(countQ._calls.select).toEqual([['*', { count: 'exact', head: true }]]);
-      expect(insertQ._calls.insert).toEqual([[{ ...validJobData, user_id: userId }]]);
-    });
+    expect(result.data).toBeNull();
+    expect(result.error).toBe(rpcError);
+    expect(mockFrom).not.toHaveBeenCalled();
+    expect(mockClientFrom).not.toHaveBeenCalled();
   });
 });
 

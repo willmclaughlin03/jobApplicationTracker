@@ -59,6 +59,8 @@ export const ERROR_MESSAGES = {
   SUBSCRIPTION_REQUIRED: 'An active subscription is required to access this feature.',
   PAYMENT_METHOD_UPDATE_REQUIRED: 'Your billing information needs attention before access can continue.',
   BILLING_SYNC_PENDING: 'Billing status is still updating. Please try again shortly.',
+  BILLING_RECONCILIATION_PENDING: 'Billing status is being reconciled. Please try again shortly.',
+  BILLING_STATE_REVIEW_REQUIRED: 'Billing status needs review before adding jobs. Please try again later.',
   WEBHOOK_SIGNATURE_INVALID: 'Webhook verification failed.',
   CHECKOUT_SESSION_INVALID: 'Checkout session could not be verified.',
   CHECKOUT_SESSION_OWNERSHIP_INVALID: 'Checkout session could not be verified.',

@@ -32,9 +32,9 @@ jest.mock('../../../server/services/storageSummaryService.js', () => ({
   getStorageSummaryForUser: mockGetStorageSummaryForUser,
 }));
 
-const mockResolveStorageEntitlement = jest.fn();
+const mockResolveStorageStatus = jest.fn();
 jest.mock('../../../server/lib/billingService.js', () => ({
-  resolveStorageEntitlement: mockResolveStorageEntitlement,
+  resolveStorageStatus: mockResolveStorageStatus,
 }));
 
 // Mock jobSchema to avoid isomorphic-dompurify dependency issues
@@ -61,6 +61,11 @@ jest.mock('../../../shared/logger.js', () => ({
 
 const handler = require('../index.js').default;
 const { ERROR_MESSAGES } = require('../../../shared/errors.js');
+const {
+  STORAGE_CREATE_ACTIONS,
+  STORAGE_CREATE_ERROR_CODES,
+  STORAGE_STATUSES,
+} = require('../../../shared/constants/billing.js');
 
 describe('index API handler (/api/jobs)', () => {
   const mockUser = { id: 'user-123', email: 'test@example.com' };
@@ -79,6 +84,31 @@ describe('index API handler (/api/jobs)', () => {
     cancelAtPeriodEnd: false,
     currentPeriodEnd: null,
   };
+  /**
+   * Build a typed storage-status result for create-route tests.
+   *
+   * @param {string} status Storage policy status.
+   * @param {string} action Create-flow action.
+   * @param {string|null} code Optional stable create-flow error code.
+   * @returns {object} Storage status result returned by resolveStorageStatus().
+   */
+  function buildStorageStatusResult(status, action, code = null) {
+    return {
+      status,
+      createFlow: {
+        action,
+        code,
+        retryable: action === STORAGE_CREATE_ACTIONS.BLOCK_RETRYABLE,
+        mayUseFreeQuotaCopy: code === STORAGE_CREATE_ERROR_CODES.STORAGE_LIMIT_EXCEEDED,
+      },
+    };
+  }
+
+  const terminalFreeStorageStatus = buildStorageStatusResult(
+    STORAGE_STATUSES.TERMINAL_FREE,
+    STORAGE_CREATE_ACTIONS.APPLY_FREE_LIMIT,
+    STORAGE_CREATE_ERROR_CODES.STORAGE_LIMIT_EXCEEDED
+  );
 
   /**
    * Helper to create mock request with _rateLimitUser pre-set
@@ -98,13 +128,14 @@ describe('index API handler (/api/jobs)', () => {
     const res = {
       status: jest.fn().mockReturnThis(),
       json: jest.fn().mockReturnThis(),
+      setHeader: jest.fn().mockReturnThis(),
     };
     return res;
   };
 
   beforeEach(() => {
     jest.clearAllMocks();
-    mockResolveStorageEntitlement.mockResolvedValue('free');
+    mockResolveStorageStatus.mockResolvedValue(terminalFreeStorageStatus);
     mockGetStorageSummaryForUser.mockResolvedValue({
       data: mockStorageSummary,
       error: null,
@@ -308,7 +339,7 @@ describe('index API handler (/api/jobs)', () => {
     it('should create job and return 201', async () => {
       const createdJob = { id: 'new-job-1', ...validJobData, user_id: mockUser.id };
       mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
-      mockCreateJob.mockResolvedValue({ data: createdJob, error: null });
+      mockCreateJob.mockResolvedValue({ data: [createdJob], error: null });
       const mockClient = { from: jest.fn() };
 
       const req = { ...createMockRequest('POST', {}, validJobData), _supabaseClient: mockClient };
@@ -317,26 +348,36 @@ describe('index API handler (/api/jobs)', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(201);
-      expect(mockResolveStorageEntitlement).toHaveBeenCalledWith(mockUser.id, mockClient, noopLog);
-      expect(mockCreateJob).toHaveBeenCalledWith(validJobData, mockUser.id, mockClient, noopLog, 'free');
+      expect(mockResolveStorageStatus).toHaveBeenCalledWith(mockUser.id, mockClient, noopLog);
+      expect(mockCreateJob).toHaveBeenCalledWith(
+        validJobData,
+        mockUser.id,
+        mockClient,
+        noopLog,
+        terminalFreeStorageStatus
+      );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: createdJob,
+          data: [createdJob],
         })
       );
     });
 
-    it('should use the paid storage tier when local billing entitlement resolves paid', async () => {
-      mockResolveStorageEntitlement.mockResolvedValueOnce('paid');
+    it('should pass Premium storage status through to the create service', async () => {
+      const premiumStorageStatus = buildStorageStatusResult(
+        STORAGE_STATUSES.PREMIUM_ACTIVE,
+        STORAGE_CREATE_ACTIONS.APPLY_PREMIUM_LIMIT
+      );
+      mockResolveStorageStatus.mockResolvedValueOnce(premiumStorageStatus);
       mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
-      mockCreateJob.mockResolvedValue({ data: { id: 'new-job-2', ...validJobData, user_id: mockUser.id }, error: null });
+      mockCreateJob.mockResolvedValue({ data: [{ id: 'new-job-2', ...validJobData, user_id: mockUser.id }], error: null });
 
       const req = createMockRequest('POST', {}, validJobData);
       const res = createMockResponse();
 
       await handler(req, res);
 
-      expect(mockCreateJob).toHaveBeenCalledWith(validJobData, mockUser.id, undefined, noopLog, 'paid');
+      expect(mockCreateJob).toHaveBeenCalledWith(validJobData, mockUser.id, undefined, noopLog, premiumStorageStatus);
     });
 
     /**
@@ -356,7 +397,7 @@ describe('index API handler (/api/jobs)', () => {
 
       expect(res.status).toHaveBeenCalledWith(400);
       expect(mockCreateJob).not.toHaveBeenCalled();
-      expect(mockResolveStorageEntitlement).not.toHaveBeenCalled();
+      expect(mockResolveStorageStatus).not.toHaveBeenCalled();
     });
 
     /**
@@ -414,6 +455,95 @@ describe('index API handler (/api/jobs)', () => {
         })
       );
       expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('paid tier max 3000');
+    });
+
+    it('should return retryable 503 SERVICE_UNAVAILABLE when billing status is unavailable', async () => {
+      mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
+      mockCreateJob.mockResolvedValue({
+        data: null,
+        error: {
+          code: STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+          message: 'Internal billing read failed',
+        },
+      });
+
+      const req = createMockRequest('POST', {}, validJobData);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 5);
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: 'SERVICE_UNAVAILABLE',
+          message: ERROR_MESSAGES.SERVICE_UNAVAILABLE,
+        })
+      );
+      expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('Internal billing read failed');
+    });
+
+    it('should return retryable 503 when billing reconciliation is pending', async () => {
+      mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
+      mockCreateJob.mockResolvedValue({
+        data: null,
+        error: {
+          code: STORAGE_CREATE_ERROR_CODES.BILLING_RECONCILIATION_PENDING,
+          message: 'Internal stale period-end state',
+        },
+      });
+
+      const req = createMockRequest('POST', {}, validJobData);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 5);
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: STORAGE_CREATE_ERROR_CODES.BILLING_RECONCILIATION_PENDING,
+          message: ERROR_MESSAGES.BILLING_RECONCILIATION_PENDING,
+        })
+      );
+      expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('Internal stale period-end state');
+    });
+
+    it.each([
+      [
+        STORAGE_CREATE_ERROR_CODES.PAYMENT_METHOD_UPDATE_REQUIRED,
+        402,
+        ERROR_MESSAGES.PAYMENT_METHOD_UPDATE_REQUIRED,
+      ],
+      [
+        STORAGE_CREATE_ERROR_CODES.BILLING_SYNC_PENDING,
+        409,
+        ERROR_MESSAGES.BILLING_SYNC_PENDING,
+      ],
+    ])('should return %s without Free quota copy', async (code, statusCode, message) => {
+      mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
+      mockCreateJob.mockResolvedValue({
+        data: null,
+        error: {
+          code,
+          message: 'Internal create-flow detail',
+        },
+      });
+
+      const req = createMockRequest('POST', {}, validJobData);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(statusCode);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: code,
+          message,
+        })
+      );
+      expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain(ERROR_MESSAGES.STORAGE_LIMIT_EXCEEDED);
+      expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('Internal create-flow detail');
     });
 
     /**
