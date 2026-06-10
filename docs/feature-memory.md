@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-06-01
 
+- `2026-06-10` - `Premium downgrade storage summaries`: Added count-only active, locked, retained, and projected-overflow helpers plus `storageSummary` API metadata and a metadata-only storage status route.
 - `2026-06-08` - `Job create server-field sanitization`: Stripped server-controlled job fields from create payloads before admin inserts and covered the guard with focused job service tests.
 - `2026-06-08` - `Premium downgrade storage schema boundary`: Added the jobs storage-state migration, CHECK constraints, storage-state indexes, service-owned jobs access boundary, and direct-access integration evidence for locked overflow rows.
 - `2026-06-07` - `Premium sync-pending create retry contract`: Aligned sync-pending storage create-flow retryability with the top-level storage retryability contract.
