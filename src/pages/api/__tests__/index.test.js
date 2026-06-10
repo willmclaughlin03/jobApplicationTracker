@@ -27,6 +27,11 @@ jest.mock('../../../server/services/jobService.js', () => ({
   createJob: mockCreateJob,
 }));
 
+const mockGetStorageSummaryForUser = jest.fn();
+jest.mock('../../../server/services/storageSummaryService.js', () => ({
+  getStorageSummaryForUser: mockGetStorageSummaryForUser,
+}));
+
 const mockResolveStorageEntitlement = jest.fn();
 jest.mock('../../../server/lib/billingService.js', () => ({
   resolveStorageEntitlement: mockResolveStorageEntitlement,
@@ -63,6 +68,17 @@ describe('index API handler (/api/jobs)', () => {
     { id: 'job-1', company: 'Acme', position: 'Dev', status: 'Applied', user_id: 'user-123' },
     { id: 'job-2', company: 'Globex', position: 'SRE', status: 'Interview', user_id: 'user-123' },
   ];
+  const mockStorageSummary = {
+    status: 'terminal_free',
+    activeLimit: 300,
+    absoluteRetainedLimit: 3000,
+    activeCount: 2,
+    lockedCount: 0,
+    retainedTotalCount: 2,
+    projectedOverflowCount: 0,
+    cancelAtPeriodEnd: false,
+    currentPeriodEnd: null,
+  };
 
   /**
    * Helper to create mock request with _rateLimitUser pre-set
@@ -89,6 +105,10 @@ describe('index API handler (/api/jobs)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockResolveStorageEntitlement.mockResolvedValue('free');
+    mockGetStorageSummaryForUser.mockResolvedValue({
+      data: mockStorageSummary,
+      error: null,
+    });
   });
 
   describe('GET /api/jobs', () => {
@@ -109,7 +129,11 @@ describe('index API handler (/api/jobs)', () => {
       expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, {}, undefined, noopLog);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: { data: mockJobs, count: 2 },
+          data: {
+            data: mockJobs,
+            count: 2,
+            storageSummary: mockStorageSummary,
+          },
         })
       );
     });
@@ -216,6 +240,7 @@ describe('index API handler (/api/jobs)', () => {
       await handler(req, res);
 
       expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, {}, mockClient, noopLog);
+      expect(mockGetStorageSummaryForUser).toHaveBeenCalledWith(mockUser.id, mockClient, noopLog);
     });
 
     /**
@@ -234,7 +259,36 @@ describe('index API handler (/api/jobs)', () => {
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: { data: [], count: 0 },
+          data: {
+            data: [],
+            count: 0,
+            storageSummary: mockStorageSummary,
+          },
+        })
+      );
+    });
+
+    /**
+     * Test: Storage summary failure
+     * Expected: Returns 503 without a partial success envelope
+     */
+    it('should return 503 when storage summary metadata cannot be loaded', async () => {
+      mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: {} });
+      mockGetJobsByUserId.mockResolvedValue({ data: mockJobs, count: 2, error: null });
+      mockGetStorageSummaryForUser.mockResolvedValueOnce({
+        data: null,
+        error: new Error('storage summary failed'),
+      });
+
+      const req = createMockRequest('GET');
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: 'SERVICE_UNAVAILABLE',
         })
       );
     });

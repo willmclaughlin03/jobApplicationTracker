@@ -2,14 +2,17 @@ import { ERROR_MESSAGES } from '../../shared/errors.js';
 import { jobSchema, getQuerySchema } from '../../shared/validations/jobSchema.js';
 import { sendSuccess, sendError } from '../../shared/response.js';
 import { getJobsByUserId, createJob } from '../../server/services/jobService.js';
+import { getStorageSummaryForUser } from '../../server/services/storageSummaryService.js';
 import { withRateLimit } from '../../server/middleware/withRateLimit.js';
 import { resolveStorageEntitlement } from '../../server/lib/billingService.js';
 
 /**
- * Handles GET requests - retrieves jobs for authenticated user
+ * Handles GET requests - retrieves jobs and storage summary for authenticated user
  *
  * Purpose: Fetch user's job application history with optional pagination/filtering
- * Connects to: jobService.getJobsByUserId() for database operations
+ * Connects to:
+ * - jobService.getJobsByUserId() for database operations
+ * - storageSummaryService.getStorageSummaryForUser() for count-only metadata
  * Query params: from, to (pagination), status (filter)
  */
 async function handleGet(req, res, user) {
@@ -38,7 +41,22 @@ async function handleGet(req, res, user) {
     return sendError(res, 503, 'FETCH_FAILED', ERROR_MESSAGES.FETCH_FAILED);
   }
 
-  return sendSuccess(res, 200, { data, count }, 'Jobs retrieved successfully');
+  const storageSummaryResult = await getStorageSummaryForUser(
+    user.id,
+    req._supabaseClient,
+    req.log
+  );
+
+  if (storageSummaryResult.error) {
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+  }
+
+  return sendSuccess(
+    res,
+    200,
+    { data, count, storageSummary: storageSummaryResult.data },
+    'Jobs retrieved successfully'
+  );
 }
 
 /**
