@@ -178,18 +178,22 @@ describe('createJob - atomic storage quota enforcement', () => {
    * Build a successful atomic create RPC response.
    *
    * @param {object} job Created job row.
+   * @param {object} options Fixture options.
+   * @param {boolean} options.stringifyData Whether to return the RPC data as a JSON string.
    * @returns {object} Supabase RPC response shape.
    */
-  function rpcCreated(job = mockCreatedJob) {
+  function rpcCreated(job = mockCreatedJob, { stringifyData = false } = {}) {
+    const data = {
+      created: true,
+      job,
+      activeCountBeforeCreate: 0,
+      retainedTotalCountBeforeCreate: 0,
+      activeLimit: FREE_ACTIVE_JOB_LIMIT,
+      absoluteRetainedLimit: ABSOLUTE_RETAINED_JOB_LIMIT,
+    };
+
     return {
-      data: {
-        created: true,
-        job,
-        activeCountBeforeCreate: 0,
-        retainedTotalCountBeforeCreate: 0,
-        activeLimit: FREE_ACTIVE_JOB_LIMIT,
-        absoluteRetainedLimit: ABSOLUTE_RETAINED_JOB_LIMIT,
-      },
+      data: stringifyData ? JSON.stringify(data) : data,
       error: null,
     };
   }
@@ -216,6 +220,24 @@ describe('createJob - atomic storage quota enforcement', () => {
 
   it('creates a job through the atomic quota RPC for confirmed terminal Free', async () => {
     mockRpc.mockResolvedValueOnce(rpcCreated());
+
+    const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, terminalFreeStatus);
+
+    expect(result.error).toBeNull();
+    expect(result.data).toEqual([mockCreatedJob]);
+    expect(mockRpc).toHaveBeenCalledWith('create_job_with_storage_quota', {
+      p_user_id: userId,
+      p_job_data: validJobData,
+      p_storage_status: STORAGE_STATUSES.TERMINAL_FREE,
+      p_active_job_limit: FREE_ACTIVE_JOB_LIMIT,
+      p_absolute_retained_job_limit: ABSOLUTE_RETAINED_JOB_LIMIT,
+    });
+    expect(mockFrom).not.toHaveBeenCalled();
+    expect(mockClientFrom).not.toHaveBeenCalled();
+  });
+
+  it('creates a job when the atomic quota RPC returns JSON string data', async () => {
+    mockRpc.mockResolvedValueOnce(rpcCreated(mockCreatedJob, { stringifyData: true }));
 
     const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, terminalFreeStatus);
 

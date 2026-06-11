@@ -79,7 +79,7 @@ function sendCreateJobError(res, error) {
         ERROR_MESSAGES.BILLING_STATE_REVIEW_REQUIRED
       );
 
-    default:
+    default: {
       const statusCode = Number.isInteger(error?.statusCode)
         ? error.statusCode
         : error?.status;
@@ -90,6 +90,7 @@ function sendCreateJobError(res, error) {
         'ADD_FAILED',
         ERROR_MESSAGES.ADD_FAILED
       );
+    }
   }
 }
 
