@@ -4,7 +4,95 @@ import { sendSuccess, sendError } from '../../shared/response.js';
 import { getJobsByUserId, createJob } from '../../server/services/jobService.js';
 import { getStorageSummaryForUser } from '../../server/services/storageSummaryService.js';
 import { withRateLimit } from '../../server/middleware/withRateLimit.js';
-import { resolveStorageEntitlement } from '../../server/lib/billingService.js';
+import { resolveStorageStatus } from '../../server/lib/billingService.js';
+import { STORAGE_CREATE_ERROR_CODES } from '../../shared/constants/billing.js';
+
+const STORAGE_CREATE_RETRY_AFTER_SECONDS = 5;
+
+/**
+ * Attach retry guidance for retryable storage-create failures.
+ *
+ * Purpose: billing-unavailable and reconciliation-pending create responses are
+ * temporary service states, not confirmed-Free quota decisions.
+ *
+ * @param {import('next').NextApiResponse} res - API response object.
+ * @returns {void}
+ */
+function setStorageCreateRetryAfter(res) {
+  res.setHeader('Retry-After', STORAGE_CREATE_RETRY_AFTER_SECONDS);
+}
+
+/**
+ * Send the public API response for a failed createJob call.
+ *
+ * Purpose: preserve stable billing/storage error codes while keeping internal
+ * quota details and billing read failures out of client-visible messages.
+ *
+ * @param {import('next').NextApiResponse} res - API response object.
+ * @param {Error|object|string|null|undefined} error - Service-layer error.
+ * @returns {object} Next.js response chain.
+ */
+function sendCreateJobError(res, error) {
+  switch (error?.code) {
+    case STORAGE_CREATE_ERROR_CODES.STORAGE_LIMIT_EXCEEDED:
+      return sendError(
+        res,
+        409,
+        STORAGE_CREATE_ERROR_CODES.STORAGE_LIMIT_EXCEEDED,
+        ERROR_MESSAGES.STORAGE_LIMIT_EXCEEDED
+      );
+
+    case STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE:
+      setStorageCreateRetryAfter(res);
+      return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+
+    case STORAGE_CREATE_ERROR_CODES.BILLING_RECONCILIATION_PENDING:
+      setStorageCreateRetryAfter(res);
+      return sendError(
+        res,
+        503,
+        STORAGE_CREATE_ERROR_CODES.BILLING_RECONCILIATION_PENDING,
+        ERROR_MESSAGES.BILLING_RECONCILIATION_PENDING
+      );
+
+    case STORAGE_CREATE_ERROR_CODES.PAYMENT_METHOD_UPDATE_REQUIRED:
+      return sendError(
+        res,
+        402,
+        STORAGE_CREATE_ERROR_CODES.PAYMENT_METHOD_UPDATE_REQUIRED,
+        ERROR_MESSAGES.PAYMENT_METHOD_UPDATE_REQUIRED
+      );
+
+    case STORAGE_CREATE_ERROR_CODES.BILLING_SYNC_PENDING:
+      return sendError(
+        res,
+        409,
+        STORAGE_CREATE_ERROR_CODES.BILLING_SYNC_PENDING,
+        ERROR_MESSAGES.BILLING_SYNC_PENDING
+      );
+
+    case STORAGE_CREATE_ERROR_CODES.BILLING_STATE_REVIEW_REQUIRED:
+      return sendError(
+        res,
+        409,
+        STORAGE_CREATE_ERROR_CODES.BILLING_STATE_REVIEW_REQUIRED,
+        ERROR_MESSAGES.BILLING_STATE_REVIEW_REQUIRED
+      );
+
+    default: {
+      const statusCode = Number.isInteger(error?.statusCode)
+        ? error.statusCode
+        : error?.status;
+
+      return sendError(
+        res,
+        Number.isInteger(statusCode) ? statusCode : 500,
+        'ADD_FAILED',
+        ERROR_MESSAGES.ADD_FAILED
+      );
+    }
+  }
+}
 
 /**
  * Handles GET requests - retrieves jobs and storage summary for authenticated user
@@ -75,19 +163,17 @@ async function handlePost(req, res, user) {
 
   const finalizedData = createResult.data;
   finalizedData.status_date = new Date().toISOString();
-  const effectiveTier = await resolveStorageEntitlement(user.id, req._supabaseClient, req.log);
-  const { data, error } = await createJob(finalizedData, user.id, req._supabaseClient, req.log, effectiveTier);
+  const storageStatusResult = await resolveStorageStatus(user.id, req._supabaseClient, req.log);
+  const { data, error } = await createJob(
+    finalizedData,
+    user.id,
+    req._supabaseClient,
+    req.log,
+    storageStatusResult
+  );
 
   if (error) {
-    if (error.code === 'STORAGE_LIMIT_EXCEEDED') {
-      return sendError(
-        res,
-        409,
-        'STORAGE_LIMIT_EXCEEDED',
-        ERROR_MESSAGES.STORAGE_LIMIT_EXCEEDED
-      );
-    }
-    return sendError(res, 400, 'ADD_FAILED', ERROR_MESSAGES.ADD_FAILED);
+    return sendCreateJobError(res, error);
   }
 
   return sendSuccess(res, 201, data, 'Successfully added job');

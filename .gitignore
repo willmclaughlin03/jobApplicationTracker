@@ -14,5 +14,6 @@ src/server/ai/__tests__/
 src/server/db/__tests__/*
 !src/server/db/__tests__/
 !src/server/db/__tests__/billingMigrations.integration.test.js
+!src/server/db/__tests__/jobsAtomicCreateQuota.integration.test.js
 !src/server/db/__tests__/jobsStorageStateMigrations.integration.test.js
 src/shared/schemas/__tests__/
