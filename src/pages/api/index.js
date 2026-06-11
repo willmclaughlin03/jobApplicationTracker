@@ -95,6 +95,37 @@ function sendCreateJobError(res, error) {
 }
 
 /**
+ * Send the public API response for list access failures.
+ *
+ * Purpose: locked archive access can depend on confirmed billing state, so
+ * retryable ambiguity should return service-state responses instead of Free
+ * downgrade or generic fetch copy.
+ *
+ * @param {import('next').NextApiResponse} res - API response object.
+ * @param {Error|object|string|null|undefined} error - Service-layer error.
+ * @returns {object} Next.js response chain.
+ */
+function sendGetJobsError(res, error) {
+  switch (error?.code) {
+    case STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE:
+      setStorageCreateRetryAfter(res);
+      return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+
+    case STORAGE_CREATE_ERROR_CODES.BILLING_RECONCILIATION_PENDING:
+      setStorageCreateRetryAfter(res);
+      return sendError(
+        res,
+        503,
+        STORAGE_CREATE_ERROR_CODES.BILLING_RECONCILIATION_PENDING,
+        ERROR_MESSAGES.BILLING_RECONCILIATION_PENDING
+      );
+
+    default:
+      return sendError(res, 503, 'FETCH_FAILED', ERROR_MESSAGES.FETCH_FAILED);
+  }
+}
+
+/**
  * Handles GET requests - retrieves jobs and storage summary for authenticated user
  *
  * Purpose: Fetch user's job application history with optional pagination/filtering
@@ -110,7 +141,7 @@ async function handleGet(req, res, user) {
     return sendError(res, 400, 'VALIDATION_ERROR', ERROR_MESSAGES.VALIDATION_ERROR);
   }
 
-  const { from, to, status } = queryResult.data;
+  const { from, to, status, storage_state } = queryResult.data;
 
   const options = {};
 
@@ -123,10 +154,8 @@ async function handleGet(req, res, user) {
     options.status = status;
   }
 
-  const { data, count, error } = await getJobsByUserId(user.id, options, req._supabaseClient, req.log);
-
-  if (error) {
-    return sendError(res, 503, 'FETCH_FAILED', ERROR_MESSAGES.FETCH_FAILED);
+  if (storage_state) {
+    options.storage_state = storage_state;
   }
 
   const storageSummaryResult = await getStorageSummaryForUser(
@@ -137,6 +166,18 @@ async function handleGet(req, res, user) {
 
   if (storageSummaryResult.error) {
     return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+  }
+
+  const { data, count, error } = await getJobsByUserId(
+    user.id,
+    options,
+    req._supabaseClient,
+    req.log,
+    storageSummaryResult.data
+  );
+
+  if (error) {
+    return sendGetJobsError(res, error);
   }
 
   return sendSuccess(

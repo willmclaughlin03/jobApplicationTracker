@@ -18,7 +18,10 @@ export function useUpdateJob(onSuccess) {
     setSaving(false);
 
     if (apiError || response?.error) {
-      const normalizedError = normalizeError(apiError || response?.error, ERROR_MESSAGES.UPDATE_FAILED);
+      const errorData = response?.error
+        ? { message: response?.message, code: response?.error }
+        : apiError;
+      const normalizedError = normalizeError(errorData, ERROR_MESSAGES.UPDATE_FAILED);
       setError(normalizedError);
       return { success: false, data: null, error: normalizedError };
     }

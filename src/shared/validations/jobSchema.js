@@ -9,6 +9,7 @@
 import * as z from "zod"
 import DOMPurify from "isomorphic-dompurify"
 import { STATUSES, DEFAULT_STATUS } from "../constants/statuses.js"
+import { JOB_STORAGE_QUERY_STATES } from "../constants/storage.js"
 
 const sanitize = (val) => DOMPurify.sanitize(val, { ALLOWED_TAGS: [] })
 
@@ -81,6 +82,7 @@ export const getQuerySchema = z.object({
     from: z.coerce.number().int('from must be an integer').min(0, 'from must be >= 0').optional(),
     to:   z.coerce.number().int('to must be an integer').min(0, 'to must be >= 0').optional(),
     status: z.enum(STATUSES, { error: 'Invalid status value' }).optional(),
+    storage_state: z.enum([JOB_STORAGE_QUERY_STATES.LOCKED], { error: 'Invalid storage_state value' }).optional(),
 })
 .refine(
     (data) => (data.from === undefined) === (data.to === undefined),
@@ -99,6 +101,10 @@ export const getQuerySchema = z.object({
         return (data.to - data.from + 1) <= MAX_PAGE_SIZE;
     },
     { message: `Page size cannot exceed ${MAX_PAGE_SIZE} items` }
+)
+.refine(
+    (data) => !(data.storage_state === JOB_STORAGE_QUERY_STATES.LOCKED && data.status),
+    { message: 'status cannot be combined with locked storage_state', path: ['status'] }
 );
 
 export { STATUSES, DEFAULT_STATUS }

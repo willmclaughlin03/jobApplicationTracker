@@ -2,8 +2,13 @@ import { ERROR_MESSAGES } from '../../shared/errors.js';
 import { jobUpdateSchema, uuidSchema } from '../../shared/validations/jobSchema.js';
 import { sendSuccess, sendError } from '../../shared/response.js';
 import { getJobById, updateJob, deleteJob } from '../../server/services/jobService.js';
+import { resolveStorageStatus } from '../../server/lib/billingService.js';
+import { STORAGE_CREATE_ERROR_CODES } from '../../shared/constants/billing.js';
+import { JOB_STORAGE_ERRORS } from '../../shared/constants/storage.js';
 
 import { withRateLimit } from '../../server/middleware/withRateLimit.js';
+
+const STORAGE_ACCESS_RETRY_AFTER_SECONDS = 5;
 
 /**
  * Validates UUID format using Zod schema
@@ -20,6 +25,57 @@ function validateUUID(id) {
 }
 
 /**
+ * Attach retry guidance for temporary storage access failures.
+ *
+ * Purpose: locked-row access can require confirmed billing state; retryable
+ * ambiguity should use the same client retry path as service unavailability.
+ *
+ * @param {import('next').NextApiResponse} res - API response object.
+ * @returns {void}
+ */
+function setStorageAccessRetryAfter(res) {
+  res.setHeader('Retry-After', STORAGE_ACCESS_RETRY_AFTER_SECONDS);
+}
+
+/**
+ * Maps job access errors to public API responses.
+ *
+ * Purpose: locked-row detail and update requests need stable 423 responses,
+ * while billing ambiguity needs retryable 503 responses without downgrade copy.
+ *
+ * @param {import('next').NextApiResponse} res - API response object.
+ * @param {Error|object|string|null|undefined} error - Service-layer error.
+ * @returns {object} Next.js response chain.
+ */
+function sendJobAccessError(res, error) {
+  switch (error?.code) {
+    case JOB_STORAGE_ERRORS.JOB_LOCKED_BY_PLAN:
+      return sendError(
+        res,
+        423,
+        JOB_STORAGE_ERRORS.JOB_LOCKED_BY_PLAN,
+        ERROR_MESSAGES.JOB_LOCKED_BY_PLAN
+      );
+
+    case STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE:
+      setStorageAccessRetryAfter(res);
+      return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+
+    case STORAGE_CREATE_ERROR_CODES.BILLING_RECONCILIATION_PENDING:
+      setStorageAccessRetryAfter(res);
+      return sendError(
+        res,
+        503,
+        STORAGE_CREATE_ERROR_CODES.BILLING_RECONCILIATION_PENDING,
+        ERROR_MESSAGES.BILLING_RECONCILIATION_PENDING
+      );
+
+    default:
+      return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);
+  }
+}
+
+/**
  * Handles GET requests - retrieves a single job by ID
  *
  * Purpose: Fetch a specific job application for the authenticated user
@@ -31,10 +87,17 @@ function validateUUID(id) {
  * @param {string} jobId - The job's UUID from URL path
  */
 async function handleGet(req, res, user, jobId) {
-  const { data, error } = await getJobById(jobId, user.id, req._supabaseClient, req.log);
+  const storageStatusResult = await resolveStorageStatus(user.id, req._supabaseClient, req.log);
+  const { data, error } = await getJobById(
+    jobId,
+    user.id,
+    req._supabaseClient,
+    req.log,
+    storageStatusResult
+  );
 
   if (error || !data) {
-    return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);
+    return sendJobAccessError(res, error);
   }
 
   return sendSuccess(res, 200, data, 'Job retrieved successfully');
@@ -68,6 +131,8 @@ async function handlePut(req, res, user, jobId) {
     updatedData.status_date = new Date().toISOString();
   }
 
+  const storageStatusResult = await resolveStorageStatus(user.id, req._supabaseClient, req.log);
+
   // Cross-field salary validation on partial updates:
   // When only one salary field is sent, fetch the current job to validate
   // the range against the stored counterpart. DB CHECK constraint is the
@@ -75,9 +140,15 @@ async function handlePut(req, res, user, jobId) {
   const hasMin = updatedData.salary_min != null;
   const hasMax = updatedData.salary_max != null;
   if (hasMin !== hasMax) {
-    const { data: currentJob, error: fetchError } = await getJobById(jobId, user.id, req._supabaseClient, req.log);
+    const { data: currentJob, error: fetchError } = await getJobById(
+      jobId,
+      user.id,
+      req._supabaseClient,
+      req.log,
+      storageStatusResult
+    );
     if (fetchError || !currentJob) {
-      return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);
+      return sendJobAccessError(res, fetchError);
     }
     const effectiveMin = hasMin ? updatedData.salary_min : currentJob.salary_min;
     const effectiveMax = hasMax ? updatedData.salary_max : currentJob.salary_max;
@@ -86,10 +157,17 @@ async function handlePut(req, res, user, jobId) {
     }
   }
 
-  const { data, error } = await updateJob(jobId, updatedData, user.id, req._supabaseClient, req.log);
+  const { data, error } = await updateJob(
+    jobId,
+    updatedData,
+    user.id,
+    req._supabaseClient,
+    req.log,
+    storageStatusResult
+  );
 
   if (error || !data) {
-    return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);
+    return sendJobAccessError(res, error);
   }
 
   return sendSuccess(res, 200, data, 'Successfully updated job details');

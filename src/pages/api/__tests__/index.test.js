@@ -157,7 +157,13 @@ describe('index API handler (/api/jobs)', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, {}, undefined, noopLog);
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(
+        mockUser.id,
+        {},
+        undefined,
+        noopLog,
+        mockStorageSummary
+      );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           data: {
@@ -182,7 +188,13 @@ describe('index API handler (/api/jobs)', () => {
 
       await handler(req, res);
 
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, { from: 0, to: 10 }, undefined, noopLog);
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(
+        mockUser.id,
+        { from: 0, to: 10 },
+        undefined,
+        noopLog,
+        mockStorageSummary
+      );
     });
 
     /**
@@ -198,7 +210,47 @@ describe('index API handler (/api/jobs)', () => {
 
       await handler(req, res);
 
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, { status: 'Applied' }, undefined, noopLog);
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(
+        mockUser.id,
+        { status: 'Applied' },
+        undefined,
+        noopLog,
+        mockStorageSummary
+      );
+    });
+
+    it('should pass locked storage_state archive queries to the service', async () => {
+      const lockedTeasers = [
+        {
+          id: 'locked-job-1',
+          created_at: '2026-06-10T00:00:00.000Z',
+          locked_at: '2026-06-11T00:00:00.000Z',
+          locked_reason: 'premium_to_free_over_plan_limit',
+          locked_policy_version: 'v1',
+        },
+      ];
+      mockGetQuerySchemaSafeParse.mockReturnValue({
+        success: true,
+        data: { storage_state: 'locked' },
+      });
+      mockGetJobsByUserId.mockResolvedValue({ data: lockedTeasers, count: 1, error: null });
+
+      const req = createMockRequest('GET', { storage_state: 'locked' });
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(
+        mockUser.id,
+        { storage_state: 'locked' },
+        undefined,
+        noopLog,
+        mockStorageSummary
+      );
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('company');
+      expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('salary_min');
+      expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('notes');
     });
 
     /**
@@ -214,11 +266,17 @@ describe('index API handler (/api/jobs)', () => {
 
       await handler(req, res);
 
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, {
-        from: 0,
-        to: 5,
-        status: 'Applied',
-      }, undefined, noopLog);
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(
+        mockUser.id,
+        {
+          from: 0,
+          to: 5,
+          status: 'Applied',
+        },
+        undefined,
+        noopLog,
+        mockStorageSummary
+      );
     });
 
     /**
@@ -235,6 +293,34 @@ describe('index API handler (/api/jobs)', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(503);
+    });
+
+    it('should return retryable 503 when locked archive access needs confirmed billing', async () => {
+      mockGetQuerySchemaSafeParse.mockReturnValue({
+        success: true,
+        data: { storage_state: 'locked' },
+      });
+      mockGetJobsByUserId.mockResolvedValue({
+        data: null,
+        count: 0,
+        error: {
+          code: STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+        },
+      });
+
+      const req = createMockRequest('GET', { storage_state: 'locked' });
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 5);
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: 'SERVICE_UNAVAILABLE',
+          message: ERROR_MESSAGES.SERVICE_UNAVAILABLE,
+        })
+      );
     });
 
     /**
@@ -270,7 +356,13 @@ describe('index API handler (/api/jobs)', () => {
 
       await handler(req, res);
 
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(mockUser.id, {}, mockClient, noopLog);
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(
+        mockUser.id,
+        {},
+        mockClient,
+        noopLog,
+        mockStorageSummary
+      );
       expect(mockGetStorageSummaryForUser).toHaveBeenCalledWith(mockUser.id, mockClient, noopLog);
     });
 
@@ -317,6 +409,7 @@ describe('index API handler (/api/jobs)', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(503);
+      expect(mockGetJobsByUserId).not.toHaveBeenCalled();
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           error: 'SERVICE_UNAVAILABLE',

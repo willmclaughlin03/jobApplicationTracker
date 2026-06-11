@@ -61,6 +61,7 @@ export const ERROR_MESSAGES = {
   BILLING_SYNC_PENDING: 'Billing status is still updating. Please try again shortly.',
   BILLING_RECONCILIATION_PENDING: 'Billing status is being reconciled. Please try again shortly.',
   BILLING_STATE_REVIEW_REQUIRED: 'Billing status needs review before adding jobs. Please try again later.',
+  JOB_LOCKED_BY_PLAN: 'This job is locked by your current plan.',
   WEBHOOK_SIGNATURE_INVALID: 'Webhook verification failed.',
   CHECKOUT_SESSION_INVALID: 'Checkout session could not be verified.',
   CHECKOUT_SESSION_OWNERSHIP_INVALID: 'Checkout session could not be verified.',
