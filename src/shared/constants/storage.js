@@ -14,3 +14,11 @@ export const JOB_STORAGE_STATES = {
   ACTIVE: 'active',
   LOCKED_OVER_PLAN_LIMIT: 'locked_over_plan_limit',
 };
+
+export const JOB_STORAGE_QUERY_STATES = {
+  LOCKED: 'locked',
+};
+
+export const JOB_STORAGE_ERRORS = {
+  JOB_LOCKED_BY_PLAN: 'JOB_LOCKED_BY_PLAN',
+};

@@ -57,8 +57,13 @@ jest.mock('../../lib/supabaseServer.js', () => ({
 }));
 
 const mockClassifyStorageCreateFlow = jest.fn();
+const mockIsStorageStatusRetryable = jest.fn((status) => (
+  status === 'billing_unavailable'
+  || status === 'billing_reconciliation_pending'
+));
 jest.mock('../../lib/billingService.js', () => ({
   classifyStorageCreateFlow: mockClassifyStorageCreateFlow,
+  isStorageStatusRetryable: mockIsStorageStatusRetryable,
 }));
 
 jest.mock('../../../shared/logger.js', () => ({
@@ -76,6 +81,8 @@ const {
   getJobById,
   updateJob,
   deleteJob,
+  JobLockedByPlanError,
+  StorageAccessUnavailableError,
   StorageCreateBlockedError,
   StorageLimitExceededError,
 } = require('../jobService.js');
@@ -87,6 +94,9 @@ const {
 const {
   ABSOLUTE_RETAINED_JOB_LIMIT,
   FREE_ACTIVE_JOB_LIMIT,
+  JOB_STORAGE_ERRORS,
+  JOB_STORAGE_QUERY_STATES,
+  JOB_STORAGE_STATES,
 } = require('../../../shared/constants/storage.js');
 
 // ---------------------------------------------------------------------------
@@ -148,6 +158,23 @@ const validJobData = { company: 'Acme', position: 'Engineer', status: 'applied' 
 const userId = 'user-123';
 const jobId = 'job-abc';
 const mockCreatedJob = { id: jobId, ...validJobData, user_id: userId };
+const activeAccessRecord = {
+  id: jobId,
+  storage_state: JOB_STORAGE_STATES.ACTIVE,
+  locked_at: null,
+  locked_reason: null,
+  locked_policy_version: null,
+};
+const lockedAccessRecord = {
+  id: jobId,
+  storage_state: JOB_STORAGE_STATES.LOCKED_OVER_PLAN_LIMIT,
+  locked_at: '2026-06-10T00:00:00.000Z',
+  locked_reason: 'premium_to_free_over_plan_limit',
+  locked_policy_version: 'v1',
+};
+const terminalFreeAccessStatus = { status: STORAGE_STATUSES.TERMINAL_FREE };
+const premiumAccessStatus = { status: STORAGE_STATUSES.PREMIUM_ACTIVE };
+const billingUnavailableAccessStatus = { status: STORAGE_STATUSES.BILLING_UNAVAILABLE };
 
 // ---------------------------------------------------------------------------
 // createJob — storage limit enforcement
@@ -421,8 +448,11 @@ describe('updateJob - empty update payload', () => {
    * Verifies: Does not crash, returns whatever Supabase returns
    */
   it('sends empty update to Supabase without crashing', async () => {
-    const query = fakeQuery({ data: [mockCreatedJob], error: null });
-    mockFrom.mockReturnValueOnce(query);
+    const accessQuery = fakeQuery({ data: activeAccessRecord, error: null });
+    const updateQuery = fakeQuery({ data: [mockCreatedJob], error: null });
+    mockFrom
+      .mockReturnValueOnce(accessQuery)
+      .mockReturnValueOnce(updateQuery);
 
     const result = await updateJob(jobId, {}, userId, mockSupabaseClient);
 
@@ -431,15 +461,22 @@ describe('updateJob - empty update payload', () => {
     expect(mockClientFrom).not.toHaveBeenCalled();
 
     // Verify an empty object was passed to .update()
-    expect(query._calls.update).toEqual([[{}]]);
-    expect(query._calls.eq).toEqual([['id', jobId], ['user_id', userId]]);
+    expect(accessQuery._calls.select).toEqual([['id, storage_state, locked_at, locked_reason, locked_policy_version']]);
+    expect(updateQuery._calls.update).toEqual([[{}]]);
+    expect(updateQuery._calls.eq).toEqual([
+      ['id', jobId],
+      ['user_id', userId],
+      ['storage_state', JOB_STORAGE_STATES.ACTIVE],
+    ]);
   });
 
   /**
    * Test: Empty update returning no rows still produces not-found error
    */
   it('returns not-found when empty update matches no rows', async () => {
-    mockFrom.mockReturnValueOnce(fakeQuery({ data: [], error: null }));
+    mockFrom
+      .mockReturnValueOnce(fakeQuery({ data: activeAccessRecord, error: null }))
+      .mockReturnValueOnce(fakeQuery({ data: [], error: null }));
 
     const result = await updateJob(jobId, {}, userId, mockSupabaseClient);
 
@@ -469,7 +506,10 @@ describe('getJobsByUserId', () => {
 
     // Verify query was built correctly
     expect(query._calls.select).toEqual([['*', { count: 'exact' }]]);
-    expect(query._calls.eq).toEqual([['user_id', userId]]);
+    expect(query._calls.eq).toEqual([
+      ['user_id', userId],
+      ['storage_state', JOB_STORAGE_STATES.ACTIVE],
+    ]);
     expect(query._calls.order).toEqual([['created_at', { ascending: false }]]);
   });
 
@@ -492,6 +532,7 @@ describe('getJobsByUserId', () => {
     // Should have two .eq() calls: user_id and status
     expect(query._calls.eq).toEqual([
       ['user_id', userId],
+      ['storage_state', JOB_STORAGE_STATES.ACTIVE],
       ['status', 'applied'],
     ]);
   });
@@ -504,6 +545,60 @@ describe('getJobsByUserId', () => {
 
     expect(query._calls.range).toEqual([[0, 9]]);
   });
+
+  it('returns teaser rows only for locked archive queries', async () => {
+    const lockedTeaser = {
+      id: jobId,
+      created_at: '2026-06-10T00:00:00.000Z',
+      locked_at: lockedAccessRecord.locked_at,
+      locked_reason: lockedAccessRecord.locked_reason,
+      locked_policy_version: lockedAccessRecord.locked_policy_version,
+    };
+    const query = fakeQuery({ data: [lockedTeaser], count: 1, error: null });
+    mockFrom.mockReturnValueOnce(query);
+
+    const result = await getJobsByUserId(
+      userId,
+      { storage_state: JOB_STORAGE_QUERY_STATES.LOCKED },
+      mockSupabaseClient,
+      undefined,
+      terminalFreeAccessStatus
+    );
+
+    expect(result.error).toBeNull();
+    expect(result.data).toEqual([lockedTeaser]);
+    expect(query._calls.select).toEqual([
+      ['id, created_at, locked_at, locked_reason, locked_policy_version', { count: 'exact' }],
+    ]);
+    expect(query._calls.eq).toEqual([
+      ['user_id', userId],
+      ['storage_state', JOB_STORAGE_STATES.LOCKED_OVER_PLAN_LIMIT],
+    ]);
+  });
+
+  it('returns retryable unavailable error for locked archive queries during billing ambiguity', async () => {
+    const result = await getJobsByUserId(
+      userId,
+      { storage_state: JOB_STORAGE_QUERY_STATES.LOCKED },
+      mockSupabaseClient,
+      undefined,
+      billingUnavailableAccessStatus
+    );
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(StorageAccessUnavailableError);
+    expect(result.error.code).toBe(STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE);
+    expect(mockFrom).not.toHaveBeenCalled();
+  });
+
+  it('does not active-filter Premium normal lists', async () => {
+    const query = fakeQuery({ data: [mockCreatedJob], count: 1, error: null });
+    mockFrom.mockReturnValueOnce(query);
+
+    await getJobsByUserId(userId, {}, mockSupabaseClient, undefined, premiumAccessStatus);
+
+    expect(query._calls.eq).toEqual([['user_id', userId]]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -514,8 +609,11 @@ describe('getJobById', () => {
   beforeEach(() => jest.clearAllMocks());
 
   it('returns the job for a valid user+id', async () => {
-    const query = fakeQuery({ data: mockCreatedJob, error: null });
-    mockFrom.mockReturnValueOnce(query);
+    const accessQuery = fakeQuery({ data: activeAccessRecord, error: null });
+    const fullQuery = fakeQuery({ data: mockCreatedJob, error: null });
+    mockFrom
+      .mockReturnValueOnce(accessQuery)
+      .mockReturnValueOnce(fullQuery);
 
     const result = await getJobById(jobId, userId, mockSupabaseClient);
 
@@ -525,9 +623,11 @@ describe('getJobById', () => {
     expect(mockClientFrom).not.toHaveBeenCalled();
 
     // Verify the query filters by both id and user_id, then calls .single()
-    expect(query._calls.select).toEqual([['*']]);
-    expect(query._calls.eq).toEqual([['id', jobId], ['user_id', userId]]);
-    expect(query._calls.single).toHaveLength(1);
+    expect(accessQuery._calls.select).toEqual([['id, storage_state, locked_at, locked_reason, locked_policy_version']]);
+    expect(accessQuery._calls.eq).toEqual([['id', jobId], ['user_id', userId]]);
+    expect(fullQuery._calls.select).toEqual([['*']]);
+    expect(fullQuery._calls.eq).toEqual([['id', jobId], ['user_id', userId]]);
+    expect(fullQuery._calls.single).toHaveLength(1);
   });
 
   it('returns not-found error for PGRST116 (no rows)', async () => {
@@ -550,6 +650,59 @@ describe('getJobById', () => {
     expect(result.data).toBeNull();
     expect(result.error).toBe(dbError);
   });
+
+  it('returns 423-style locked error for locked rows under terminal Free', async () => {
+    mockFrom.mockReturnValueOnce(fakeQuery({ data: lockedAccessRecord, error: null }));
+
+    const result = await getJobById(
+      jobId,
+      userId,
+      mockSupabaseClient,
+      undefined,
+      terminalFreeAccessStatus
+    );
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(JobLockedByPlanError);
+    expect(result.error.code).toBe(JOB_STORAGE_ERRORS.JOB_LOCKED_BY_PLAN);
+    expect(mockFrom).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns retryable unavailable error for locked rows during billing ambiguity', async () => {
+    mockFrom.mockReturnValueOnce(fakeQuery({ data: lockedAccessRecord, error: null }));
+
+    const result = await getJobById(
+      jobId,
+      userId,
+      mockSupabaseClient,
+      undefined,
+      billingUnavailableAccessStatus
+    );
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(StorageAccessUnavailableError);
+    expect(result.error.code).toBe(STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE);
+    expect(mockFrom).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows Premium users to fetch full locked rows', async () => {
+    const lockedFullJob = { ...mockCreatedJob, ...lockedAccessRecord };
+    mockFrom
+      .mockReturnValueOnce(fakeQuery({ data: lockedAccessRecord, error: null }))
+      .mockReturnValueOnce(fakeQuery({ data: lockedFullJob, error: null }));
+
+    const result = await getJobById(
+      jobId,
+      userId,
+      mockSupabaseClient,
+      undefined,
+      premiumAccessStatus
+    );
+
+    expect(result.error).toBeNull();
+    expect(result.data).toEqual(lockedFullJob);
+    expect(mockFrom).toHaveBeenCalledTimes(2);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -561,8 +714,11 @@ describe('updateJob', () => {
 
   it('returns updated job on success', async () => {
     const updated = { ...mockCreatedJob, status: 'interviewing' };
-    const query = fakeQuery({ data: [updated], error: null });
-    mockFrom.mockReturnValueOnce(query);
+    const accessQuery = fakeQuery({ data: activeAccessRecord, error: null });
+    const updateQuery = fakeQuery({ data: [updated], error: null });
+    mockFrom
+      .mockReturnValueOnce(accessQuery)
+      .mockReturnValueOnce(updateQuery);
 
     const result = await updateJob(jobId, { status: 'interviewing' }, userId, mockSupabaseClient);
 
@@ -572,13 +728,19 @@ describe('updateJob', () => {
     expect(mockClientFrom).not.toHaveBeenCalled();
 
     // Verify correct update payload and ownership filters
-    expect(query._calls.update).toEqual([[{ status: 'interviewing' }]]);
-    expect(query._calls.eq).toEqual([['id', jobId], ['user_id', userId]]);
-    expect(query._calls.select).toEqual([['*']]);
+    expect(updateQuery._calls.update).toEqual([[{ status: 'interviewing' }]]);
+    expect(updateQuery._calls.eq).toEqual([
+      ['id', jobId],
+      ['user_id', userId],
+      ['storage_state', JOB_STORAGE_STATES.ACTIVE],
+    ]);
+    expect(updateQuery._calls.select).toEqual([['*']]);
   });
 
   it('returns not-found error when no rows were affected', async () => {
-    mockFrom.mockReturnValueOnce(fakeQuery({ data: [], error: null }));
+    mockFrom
+      .mockReturnValueOnce(fakeQuery({ data: activeAccessRecord, error: null }))
+      .mockReturnValueOnce(fakeQuery({ data: [], error: null }));
 
     const result = await updateJob(jobId, { status: 'interviewing' }, userId, mockSupabaseClient);
 
@@ -587,8 +749,10 @@ describe('updateJob', () => {
   });
 
   it('strips server-controlled fields before updating through the admin client', async () => {
-    const query = fakeQuery({ data: [{ ...mockCreatedJob, status: 'interviewing' }], error: null });
-    mockFrom.mockReturnValueOnce(query);
+    const updateQuery = fakeQuery({ data: [{ ...mockCreatedJob, status: 'interviewing' }], error: null });
+    mockFrom
+      .mockReturnValueOnce(fakeQuery({ data: activeAccessRecord, error: null }))
+      .mockReturnValueOnce(updateQuery);
 
     const result = await updateJob(
       jobId,
@@ -605,8 +769,54 @@ describe('updateJob', () => {
     );
 
     expect(result.error).toBeNull();
-    expect(query._calls.update).toEqual([[{ status: 'interviewing' }]]);
-    expect(query._calls.eq).toEqual([['id', jobId], ['user_id', userId]]);
+    expect(updateQuery._calls.update).toEqual([[{ status: 'interviewing' }]]);
+    expect(updateQuery._calls.eq).toEqual([
+      ['id', jobId],
+      ['user_id', userId],
+      ['storage_state', JOB_STORAGE_STATES.ACTIVE],
+    ]);
+  });
+
+  it('rejects locked row updates for terminal Free users before update', async () => {
+    mockFrom.mockReturnValueOnce(fakeQuery({ data: lockedAccessRecord, error: null }));
+
+    const result = await updateJob(
+      jobId,
+      { status: 'interviewing' },
+      userId,
+      mockSupabaseClient,
+      undefined,
+      terminalFreeAccessStatus
+    );
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(JobLockedByPlanError);
+    expect(mockFrom).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows Premium users to update locked rows with the locked-state race guard', async () => {
+    const updated = { ...mockCreatedJob, ...lockedAccessRecord, status: 'interviewing' };
+    const updateQuery = fakeQuery({ data: [updated], error: null });
+    mockFrom
+      .mockReturnValueOnce(fakeQuery({ data: lockedAccessRecord, error: null }))
+      .mockReturnValueOnce(updateQuery);
+
+    const result = await updateJob(
+      jobId,
+      { status: 'interviewing' },
+      userId,
+      mockSupabaseClient,
+      undefined,
+      premiumAccessStatus
+    );
+
+    expect(result.error).toBeNull();
+    expect(result.data).toEqual([updated]);
+    expect(updateQuery._calls.eq).toEqual([
+      ['id', jobId],
+      ['user_id', userId],
+      ['storage_state', JOB_STORAGE_STATES.LOCKED_OVER_PLAN_LIMIT],
+    ]);
   });
 });
 
@@ -618,8 +828,10 @@ describe('deleteJob', () => {
   beforeEach(() => jest.clearAllMocks());
 
   it('returns deleted job on success', async () => {
-    const query = fakeQuery({ data: [mockCreatedJob], error: null });
-    mockFrom.mockReturnValueOnce(query);
+    const deleteQuery = fakeQuery({ data: [mockCreatedJob], error: null });
+    mockFrom
+      .mockReturnValueOnce(fakeQuery({ data: activeAccessRecord, error: null }))
+      .mockReturnValueOnce(deleteQuery);
 
     const result = await deleteJob(jobId, userId, mockSupabaseClient);
 
@@ -629,18 +841,42 @@ describe('deleteJob', () => {
     expect(mockClientFrom).not.toHaveBeenCalled();
 
     // Verify delete filters by both id and user_id
-    expect(query._calls.delete).toHaveLength(1);
-    expect(query._calls.eq).toEqual([['id', jobId], ['user_id', userId]]);
-    expect(query._calls.select).toHaveLength(1);
+    expect(deleteQuery._calls.delete).toHaveLength(1);
+    expect(deleteQuery._calls.eq).toEqual([
+      ['id', jobId],
+      ['user_id', userId],
+      ['storage_state', JOB_STORAGE_STATES.ACTIVE],
+    ]);
+    expect(deleteQuery._calls.select).toEqual([['*']]);
   });
 
   it('returns not-found error when no rows were affected', async () => {
-    mockFrom.mockReturnValueOnce(fakeQuery({ data: [], error: null }));
+    mockFrom
+      .mockReturnValueOnce(fakeQuery({ data: activeAccessRecord, error: null }))
+      .mockReturnValueOnce(fakeQuery({ data: [], error: null }));
 
     const result = await deleteJob(jobId, userId, mockSupabaseClient);
 
     expect(result.data).toBeNull();
     expect(result.error.message).toMatch(/not found/i);
+  });
+
+  it('allows locked row deletion but returns only the id', async () => {
+    const deleteQuery = fakeQuery({
+      data: [{ id: jobId, company: 'Hidden Corp', notes: 'Hidden notes' }],
+      error: null,
+    });
+    mockFrom
+      .mockReturnValueOnce(fakeQuery({ data: lockedAccessRecord, error: null }))
+      .mockReturnValueOnce(deleteQuery);
+
+    const result = await deleteJob(jobId, userId, mockSupabaseClient);
+
+    expect(result.error).toBeNull();
+    expect(result.data).toEqual({ id: jobId });
+    expect(deleteQuery._calls.select).toEqual([['id']]);
+    expect(JSON.stringify(result.data)).not.toContain('Hidden Corp');
+    expect(JSON.stringify(result.data)).not.toContain('Hidden notes');
   });
 });
 

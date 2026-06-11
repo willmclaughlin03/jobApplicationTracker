@@ -31,6 +31,11 @@ jest.mock('../../../server/services/jobService.js', () => ({
   deleteJob: mockDeleteJob,
 }));
 
+const mockResolveStorageStatus = jest.fn();
+jest.mock('../../../server/lib/billingService.js', () => ({
+  resolveStorageStatus: mockResolveStorageStatus,
+}));
+
 // Mock logger to prevent console output during tests
 jest.mock('../../../shared/logger.js', () => ({
   logger: {
@@ -60,6 +65,9 @@ jest.mock('../../../shared/validations/jobSchema.js', () => ({
 }));
 
 const handler = require('../[id].js').default;
+const { ERROR_MESSAGES } = require('../../../shared/errors.js');
+const { STORAGE_CREATE_ERROR_CODES, STORAGE_STATUSES } = require('../../../shared/constants/billing.js');
+const { JOB_STORAGE_ERRORS } = require('../../../shared/constants/storage.js');
 
 describe('[id] API handler', () => {
   // Test fixtures
@@ -72,6 +80,7 @@ describe('[id] API handler', () => {
     status: 'Applied',
     user_id: 'user-123',
   };
+  const terminalFreeStorageStatus = { status: STORAGE_STATUSES.TERMINAL_FREE };
 
   /**
    * Helper to create mock request with _rateLimitUser pre-set
@@ -95,12 +104,14 @@ describe('[id] API handler', () => {
     const res = {
       status: jest.fn().mockReturnThis(),
       json: jest.fn().mockReturnThis(),
+      setHeader: jest.fn().mockReturnThis(),
     };
     return res;
   };
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockResolveStorageStatus.mockResolvedValue(terminalFreeStorageStatus);
     // Default: valid update data
     mockSafeParse.mockReturnValue({ success: true, data: {} });
   });
@@ -186,7 +197,13 @@ describe('[id] API handler', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(404);
-      expect(mockGetJobById).toHaveBeenCalledWith(validUUID, mockUser.id, undefined, noopLog);
+      expect(mockGetJobById).toHaveBeenCalledWith(
+        validUUID,
+        mockUser.id,
+        undefined,
+        noopLog,
+        terminalFreeStorageStatus
+      );
     });
 
     /**
@@ -202,7 +219,13 @@ describe('[id] API handler', () => {
 
       await handler(req, res);
 
-      expect(mockGetJobById).toHaveBeenCalledWith(validUUID, mockUser.id, mockClient, noopLog);
+      expect(mockGetJobById).toHaveBeenCalledWith(
+        validUUID,
+        mockUser.id,
+        mockClient,
+        noopLog,
+        terminalFreeStorageStatus
+      );
     });
 
     /**
@@ -240,6 +263,51 @@ describe('[id] API handler', () => {
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           data: mockJob,
+        })
+      );
+    });
+
+    it('should return 423 for locked plan-gated job detail', async () => {
+      mockGetJobById.mockResolvedValue({
+        data: null,
+        error: {
+          code: JOB_STORAGE_ERRORS.JOB_LOCKED_BY_PLAN,
+        },
+      });
+
+      const req = createMockRequest('GET', validUUID);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(423);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: JOB_STORAGE_ERRORS.JOB_LOCKED_BY_PLAN,
+          message: ERROR_MESSAGES.JOB_LOCKED_BY_PLAN,
+        })
+      );
+    });
+
+    it('should return retryable 503 for locked detail during billing ambiguity', async () => {
+      mockGetJobById.mockResolvedValue({
+        data: null,
+        error: {
+          code: STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+        },
+      });
+
+      const req = createMockRequest('GET', validUUID);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 5);
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: 'SERVICE_UNAVAILABLE',
+          message: ERROR_MESSAGES.SERVICE_UNAVAILABLE,
         })
       );
     });
@@ -287,6 +355,59 @@ describe('[id] API handler', () => {
       expect(res.status).toHaveBeenCalledWith(404);
     });
 
+    it('should return 423 when updating a locked plan-gated job', async () => {
+      mockSafeParse.mockReturnValue({ success: true, data: { status: 'Interview' } });
+      mockUpdateJob.mockResolvedValue({
+        data: null,
+        error: {
+          code: JOB_STORAGE_ERRORS.JOB_LOCKED_BY_PLAN,
+        },
+      });
+
+      const req = createMockRequest('PUT', validUUID, { status: 'Interview' });
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(423);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: JOB_STORAGE_ERRORS.JOB_LOCKED_BY_PLAN,
+          message: ERROR_MESSAGES.JOB_LOCKED_BY_PLAN,
+        })
+      );
+    });
+
+    it('should reject locked salary partial updates before calling updateJob', async () => {
+      mockSafeParse.mockReturnValue({ success: true, data: { salary_min: 100000 } });
+      mockGetJobById.mockResolvedValue({
+        data: null,
+        error: {
+          code: JOB_STORAGE_ERRORS.JOB_LOCKED_BY_PLAN,
+        },
+      });
+
+      const req = createMockRequest('PUT', validUUID, { salary_min: 100000 });
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(mockGetJobById).toHaveBeenCalledWith(
+        validUUID,
+        mockUser.id,
+        undefined,
+        noopLog,
+        terminalFreeStorageStatus
+      );
+      expect(mockUpdateJob).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(423);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: JOB_STORAGE_ERRORS.JOB_LOCKED_BY_PLAN,
+        })
+      );
+    });
+
     /**
      * Test: Valid update
      * Expected: Returns 200 with updated job data
@@ -310,7 +431,8 @@ describe('[id] API handler', () => {
         }),
         mockUser.id,
         undefined,
-        noopLog
+        noopLog,
+        terminalFreeStorageStatus
       );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -339,7 +461,8 @@ describe('[id] API handler', () => {
         { notes: 'Updated notes' },
         mockUser.id,
         undefined,
-        noopLog
+        noopLog,
+        terminalFreeStorageStatus
       );
     });
   });

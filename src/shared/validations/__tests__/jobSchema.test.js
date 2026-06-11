@@ -261,6 +261,25 @@ describe('getQuerySchema', () => {
     expect(result.success).toBe(true);
   });
 
+  it('should accept locked storage_state archive queries', () => {
+    const result = getQuerySchema.safeParse({ storage_state: 'locked' });
+    expect(result.success).toBe(true);
+    expect(result.data.storage_state).toBe('locked');
+  });
+
+  it('should reject unknown storage_state query values', () => {
+    const result = getQuerySchema.safeParse({ storage_state: 'active' });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject status filters on locked archive queries', () => {
+    const result = getQuerySchema.safeParse({
+      storage_state: 'locked',
+      status: 'applied',
+    });
+    expect(result.success).toBe(false);
+  });
+
   // -----------------------------------------------------------------------
   // Valid pagination
   // -----------------------------------------------------------------------

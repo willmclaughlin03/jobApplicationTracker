@@ -1,6 +1,8 @@
 const {
   ABSOLUTE_RETAINED_JOB_LIMIT,
   FREE_ACTIVE_JOB_LIMIT,
+  JOB_STORAGE_ERRORS,
+  JOB_STORAGE_QUERY_STATES,
   JOB_STORAGE_STATES,
   LOCKED_BULK_DELETE_ROW_LIMIT,
 } = require('../storage.js');
@@ -18,6 +20,15 @@ describe('storage constants', () => {
     expect(JOB_STORAGE_STATES).toEqual({
       ACTIVE: 'active',
       LOCKED_OVER_PLAN_LIMIT: 'locked_over_plan_limit',
+    });
+  });
+
+  it('names the locked archive query and error vocabulary', () => {
+    expect(JOB_STORAGE_QUERY_STATES).toEqual({
+      LOCKED: 'locked',
+    });
+    expect(JOB_STORAGE_ERRORS).toEqual({
+      JOB_LOCKED_BY_PLAN: 'JOB_LOCKED_BY_PLAN',
     });
   });
 });

@@ -16,14 +16,21 @@
  */
 import { supabaseAdmin } from '../lib/supabaseServer.js';
 import { logger as defaultLogger } from '../../shared/logger.js';
-import { classifyStorageCreateFlow } from '../lib/billingService.js';
+import {
+  classifyStorageCreateFlow,
+  isStorageStatusRetryable,
+} from '../lib/billingService.js';
 import {
   STORAGE_CREATE_ACTIONS,
   STORAGE_CREATE_ERROR_CODES,
+  STORAGE_STATUSES,
 } from '../../shared/constants/billing.js';
 import {
   ABSOLUTE_RETAINED_JOB_LIMIT,
   FREE_ACTIVE_JOB_LIMIT,
+  JOB_STORAGE_ERRORS,
+  JOB_STORAGE_QUERY_STATES,
+  JOB_STORAGE_STATES,
 } from '../../shared/constants/storage.js';
 
 const SERVER_CONTROLLED_JOB_FIELDS = new Set([
@@ -33,6 +40,20 @@ const SERVER_CONTROLLED_JOB_FIELDS = new Set([
   'locked_at',
   'locked_reason',
   'locked_policy_version',
+]);
+
+const FULL_JOB_SELECT = '*';
+const JOB_STORAGE_ACCESS_SELECT = 'id, storage_state, locked_at, locked_reason, locked_policy_version';
+const LOCKED_JOB_TEASER_SELECT = 'id, created_at, locked_at, locked_reason, locked_policy_version';
+const STORAGE_ACCESS_RETRYABLE_STATUS_CODES = new Map([
+  [
+    STORAGE_STATUSES.BILLING_RECONCILIATION_PENDING,
+    STORAGE_CREATE_ERROR_CODES.BILLING_RECONCILIATION_PENDING,
+  ],
+  [
+    STORAGE_STATUSES.BILLING_UNAVAILABLE,
+    STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+  ],
 ]);
 
 export class StorageLimitExceededError extends Error {
@@ -63,6 +84,33 @@ export class StorageCreateBlockedError extends Error {
     this.code = code;
     this.statusCode = statusCode;
     this.retryable = retryable;
+  }
+}
+
+export class JobLockedByPlanError extends Error {
+  /**
+   * Builds the stable locked-row error returned by plan-gated APIs.
+   */
+  constructor() {
+    super('Job is locked by the current storage plan');
+    this.name = 'JobLockedByPlanError';
+    this.code = JOB_STORAGE_ERRORS.JOB_LOCKED_BY_PLAN;
+    this.statusCode = 423;
+  }
+}
+
+export class StorageAccessUnavailableError extends Error {
+  /**
+   * Builds a retryable Error for storage access decisions that need billing.
+   *
+   * @param {{ code?: string, message?: string }} params
+   */
+  constructor({ code = STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE, message = 'Storage access unavailable' } = {}) {
+    super(message);
+    this.name = 'StorageAccessUnavailableError';
+    this.code = code;
+    this.statusCode = 503;
+    this.retryable = true;
   }
 }
 
@@ -153,6 +201,213 @@ function stripServerControlledJobFields(jobData) {
   }
 
   return sanitizedJobData;
+}
+
+/**
+ * Reads the storage-status string from a typed result or raw status.
+ *
+ * Purpose: job access helpers accept the same storage-status result shape used
+ * by createJob(), while tests and defensive callers may pass a raw string.
+ *
+ * @param {string|object|null|undefined} storageStatusResult - Typed storage status or raw status.
+ * @returns {string|null} Normalized storage status value.
+ */
+function getStorageStatusValue(storageStatusResult) {
+  if (typeof storageStatusResult === 'object' && storageStatusResult !== null) {
+    return storageStatusResult.status ?? null;
+  }
+
+  return typeof storageStatusResult === 'string' ? storageStatusResult : null;
+}
+
+/**
+ * Determines whether storage policy permits full locked-row access.
+ *
+ * Purpose: Premium and canceling Premium users keep full access, while Free
+ * and non-entitled states must not receive hidden locked-job fields.
+ *
+ * @param {string|null} storageStatus - Normalized storage status.
+ * @returns {boolean} True when full locked-row access is allowed.
+ */
+function isPremiumStorageStatus(storageStatus) {
+  return storageStatus === STORAGE_STATUSES.PREMIUM_ACTIVE
+    || storageStatus === STORAGE_STATUSES.PREMIUM_CANCELING;
+}
+
+/**
+ * Checks whether a minimal job row represents a locked overflow record.
+ *
+ * Purpose: centralize the v1 locked-state comparison so list, detail, update,
+ * and delete paths agree on which rows require plan-gated handling.
+ *
+ * @param {object|null|undefined} jobRecord - Minimal or full job row.
+ * @returns {boolean} True when the row is locked over the plan limit.
+ */
+function isLockedJobRecord(jobRecord) {
+  return jobRecord?.storage_state === JOB_STORAGE_STATES.LOCKED_OVER_PLAN_LIMIT;
+}
+
+/**
+ * Builds the retryable error for ambiguous locked-row access decisions.
+ *
+ * Purpose: billing_unavailable and reconciliation-pending are not confirmed
+ * Free states, so locked-row reads/edits should retry instead of returning
+ * downgrade copy or revealing locked data.
+ *
+ * @param {string|null} storageStatus - Normalized storage status.
+ * @returns {StorageAccessUnavailableError} Route-mappable retryable error.
+ */
+function createStorageAccessUnavailableError(storageStatus) {
+  return new StorageAccessUnavailableError({
+    code: STORAGE_ACCESS_RETRYABLE_STATUS_CODES.get(storageStatus)
+      ?? STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+    message: 'Storage access requires a confirmed billing status',
+  });
+}
+
+/**
+ * Returns the access error for a locked row, if full access is not allowed.
+ *
+ * Purpose: route handlers need a single service-layer decision for 423 locked
+ * responses versus retryable 503 billing-state responses.
+ *
+ * @param {string|null} storageStatus - Normalized storage status.
+ * @returns {Error|null} Error when full locked access must be denied.
+ */
+function getLockedJobAccessError(storageStatus) {
+  if (isPremiumStorageStatus(storageStatus)) {
+    return null;
+  }
+
+  if (!storageStatus || isStorageStatusRetryable(storageStatus)) {
+    return createStorageAccessUnavailableError(storageStatus);
+  }
+
+  return new JobLockedByPlanError();
+}
+
+/**
+ * Builds the row projection and filters for owner-scoped job list queries.
+ *
+ * Purpose: normal non-Premium lists return active full rows only, while the
+ * explicit locked archive query returns teaser rows with hidden fields omitted.
+ *
+ * @param {object} options - Validated list options from the route.
+ * @param {string|null} storageStatus - Normalized storage status.
+ * @returns {{select: string, storageStateFilter: string|null, error: Error|null}}
+ */
+function getJobListPolicy(options = {}, storageStatus = null) {
+  if (options.storage_state === JOB_STORAGE_QUERY_STATES.LOCKED) {
+    if (!storageStatus || isStorageStatusRetryable(storageStatus)) {
+      return {
+        select: LOCKED_JOB_TEASER_SELECT,
+        storageStateFilter: JOB_STORAGE_STATES.LOCKED_OVER_PLAN_LIMIT,
+        error: createStorageAccessUnavailableError(storageStatus),
+      };
+    }
+
+    return {
+      select: LOCKED_JOB_TEASER_SELECT,
+      storageStateFilter: JOB_STORAGE_STATES.LOCKED_OVER_PLAN_LIMIT,
+      error: null,
+    };
+  }
+
+  return {
+    select: FULL_JOB_SELECT,
+    storageStateFilter: isPremiumStorageStatus(storageStatus)
+      ? null
+      : JOB_STORAGE_STATES.ACTIVE,
+    error: null,
+  };
+}
+
+/**
+ * Fetches only storage-policy fields for an owned job row.
+ *
+ * Purpose: detail, update, and delete operations must know lock state before
+ * any path fetches or returns full sensitive job fields.
+ *
+ * @param {string} jobId - Job id to inspect.
+ * @param {string} userId - Authenticated owner id.
+ * @param {object} log - Request-scoped logger.
+ * @returns {Promise<{data: object|null, error: Error|object|null}>}
+ */
+async function getJobStorageAccessRecord(jobId, userId, log = defaultLogger) {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('jobs')
+      .select(JOB_STORAGE_ACCESS_SELECT)
+      .eq('id', jobId)
+      .eq('user_id', userId)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return { data: null, error: new Error('Job not found or unauthorized') };
+      }
+
+      log.error({ err: error, operation: 'getJobStorageAccessRecord', userId, jobId }, 'Database query failed');
+      return { data: null, error };
+    }
+
+    return { data, error: null };
+  } catch (error) {
+    log.error({ err: error, operation: 'getJobStorageAccessRecord', userId, jobId }, 'Unexpected error in getJobStorageAccessRecord');
+    return { data: null, error };
+  }
+}
+
+/**
+ * Fetches the full owned job row after storage access has been authorized.
+ *
+ * Purpose: keep full job selection isolated behind the minimal lock-state
+ * precheck used by getJobById() and salary validation paths.
+ *
+ * @param {string} jobId - Job id to fetch.
+ * @param {string} userId - Authenticated owner id.
+ * @param {object} log - Request-scoped logger.
+ * @returns {Promise<{data: object|null, error: Error|object|null}>}
+ */
+async function getFullJobById(jobId, userId, log = defaultLogger) {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('jobs')
+      .select(FULL_JOB_SELECT)
+      .eq('id', jobId)
+      .eq('user_id', userId)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        return { data: null, error: new Error('Job not found or unauthorized') };
+      }
+
+      log.error({ err: error, operation: 'getFullJobById', userId, jobId }, 'Database query failed');
+      return { data: null, error };
+    }
+
+    return { data, error: null };
+  } catch (error) {
+    log.error({ err: error, operation: 'getFullJobById', userId, jobId }, 'Unexpected error in getFullJobById');
+    return { data: null, error };
+  }
+}
+
+/**
+ * Applies the pre-read storage lock decision for full row operations.
+ *
+ * Purpose: avoid repeating the same locked-row denial logic in detail and
+ * update paths while allowing Premium statuses to proceed.
+ *
+ * @param {object|null} accessRecord - Minimal storage access record.
+ * @param {string|null} storageStatus - Normalized storage status.
+ * @returns {Error|null} Error when full access is denied.
+ */
+function getFullJobAccessError(accessRecord, storageStatus) {
+  return isLockedJobRecord(accessRecord)
+    ? getLockedJobAccessError(storageStatus)
+    : null;
 }
 
 /**
@@ -249,21 +504,40 @@ function getStorageCreatePolicy(storageStatusResult) {
  * @param {number} options.from - Start index for pagination
  * @param {number} options.to - End index for pagination
  * @param {string} options.status - Filter by job status
+ * @param {string} options.storage_state - Optional locked archive query state
  * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Accepted for route compatibility; jobs are queried through supabaseAdmin.
+ * @param {object} log - Request-scoped logger.
+ * @param {object|string|null} storageStatusResult - Typed storage status used for locked-row policy.
  * @returns {Promise<{data: Array|null, count: number, error: Error|null}>}
  *
  * Security: Only returns jobs where user_id matches the authenticated user.
  */
-export async function getJobsByUserId(userId, options = {}, supabaseClient, log = defaultLogger) {
+export async function getJobsByUserId(
+  userId,
+  options = {},
+  supabaseClient,
+  log = defaultLogger,
+  storageStatusResult = null
+) {
   try {
     const { from, to, status } = options;
+    const storageStatus = getStorageStatusValue(storageStatusResult);
+    const listPolicy = getJobListPolicy(options, storageStatus);
+
+    if (listPolicy.error) {
+      return { data: null, count: 0, error: listPolicy.error };
+    }
 
     let query = supabaseAdmin
       .from('jobs')
-      .select('*', { count: 'exact' })
+      .select(listPolicy.select, { count: 'exact' })
       .eq('user_id', userId);
 
-    if (status) {
+    if (listPolicy.storageStateFilter) {
+      query = query.eq('storage_state', listPolicy.storageStateFilter);
+    }
+
+    if (status && options.storage_state !== JOB_STORAGE_QUERY_STATES.LOCKED) {
       query = query.eq('status', status);
     }
 
@@ -296,31 +570,37 @@ export async function getJobsByUserId(userId, options = {}, supabaseClient, log 
  * @param {string} jobId - The job's UUID
  * @param {string} userId - The user's ID
  * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Accepted for route compatibility; jobs are queried through supabaseAdmin.
+ * @param {object} log - Request-scoped logger.
+ * @param {object|string|null} storageStatusResult - Typed storage status used for locked-row policy.
  * @returns {Promise<{data: Object|null, error: Error|null}>}
  *
  * Security: Enforces user ownership by requiring user_id match.
  * - Returns null if job doesn't exist OR user doesn't own it (prevents enumeration)
  */
-export async function getJobById(jobId, userId, supabaseClient, log = defaultLogger) {
+export async function getJobById(
+  jobId,
+  userId,
+  supabaseClient,
+  log = defaultLogger,
+  storageStatusResult = null
+) {
   try {
-    const { data, error } = await supabaseAdmin
-      .from('jobs')
-      .select('*')
-      .eq('id', jobId)
-      .eq('user_id', userId)
-      .single();
+    const accessResult = await getJobStorageAccessRecord(jobId, userId, log);
 
-    if (error) {
-      // PGRST116 = "No rows found" - treat as not found, not as error
-      if (error.code === 'PGRST116') {
-        return { data: null, error: new Error('Job not found or unauthorized') };
-      }
-
-      log.error({ err: error, operation: 'getJobById', userId, jobId }, 'Database query failed');
-      return { data: null, error };
+    if (accessResult.error || !accessResult.data) {
+      return { data: null, error: accessResult.error };
     }
 
-    return { data, error: null };
+    const accessError = getFullJobAccessError(
+      accessResult.data,
+      getStorageStatusValue(storageStatusResult)
+    );
+
+    if (accessError) {
+      return { data: null, error: accessError };
+    }
+
+    return await getFullJobById(jobId, userId, log);
   } catch (error) {
     log.error({ err: error, operation: 'getJobById', userId, jobId }, 'Unexpected error in getJobById');
     return { data: null, error };
@@ -427,21 +707,49 @@ export async function createJob(jobData, userId, supabaseClient, log = defaultLo
  * @param {Object} updateData - The fields to update (validated by jobUpdateSchema)
  * @param {string} userId - The user's ID
  * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Accepted for route compatibility; jobs are updated through supabaseAdmin.
+ * @param {object} log - Request-scoped logger.
+ * @param {object|string|null} storageStatusResult - Typed storage status used for locked-row policy.
  * @returns {Promise<{data: Object|null, error: Error|null}>}
  *
  * Security: Enforces user ownership by requiring user_id match.
  * - This prevents users from updating jobs they don't own
  */
-export async function updateJob(jobId, updateData, userId, supabaseClient, log = defaultLogger) {
+export async function updateJob(
+  jobId,
+  updateData,
+  userId,
+  supabaseClient,
+  log = defaultLogger,
+  storageStatusResult = null
+) {
   try {
     const sanitizedUpdateData = stripServerControlledJobFields(updateData);
+    const accessResult = await getJobStorageAccessRecord(jobId, userId, log);
 
-    const { data, error } = await supabaseAdmin
+    if (accessResult.error || !accessResult.data) {
+      return { data: null, error: accessResult.error };
+    }
+
+    const accessError = getFullJobAccessError(
+      accessResult.data,
+      getStorageStatusValue(storageStatusResult)
+    );
+
+    if (accessError) {
+      return { data: null, error: accessError };
+    }
+
+    let query = supabaseAdmin
       .from('jobs')
       .update(sanitizedUpdateData)
       .eq('id', jobId)
-      .eq('user_id', userId)
-      .select('*');
+      .eq('user_id', userId);
+
+    if (accessResult.data.storage_state) {
+      query = query.eq('storage_state', accessResult.data.storage_state);
+    }
+
+    const { data, error } = await query.select(FULL_JOB_SELECT);
 
     if (error) {
       log.error({ err: error, operation: 'updateJob', userId, jobId }, 'Failed to update job');
@@ -467,6 +775,7 @@ export async function updateJob(jobId, updateData, userId, supabaseClient, log =
  * @param {string} jobId - The job ID to delete
  * @param {string} userId - The user's ID
  * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Accepted for route compatibility; jobs are deleted through supabaseAdmin.
+ * @param {object} log - Request-scoped logger.
  * @returns {Promise<{data: Object|null, error: Error|null}>}
  *
  * Security: Enforces user ownership by requiring user_id match.
@@ -474,12 +783,24 @@ export async function updateJob(jobId, updateData, userId, supabaseClient, log =
  */
 export async function deleteJob(jobId, userId, supabaseClient, log = defaultLogger) {
   try {
-    const { data, error } = await supabaseAdmin
+    const accessResult = await getJobStorageAccessRecord(jobId, userId, log);
+
+    if (accessResult.error || !accessResult.data) {
+      return { data: null, error: accessResult.error };
+    }
+
+    const isLockedDelete = isLockedJobRecord(accessResult.data);
+    let query = supabaseAdmin
       .from('jobs')
       .delete()
       .eq('id', jobId)
-      .eq('user_id', userId)
-      .select();
+      .eq('user_id', userId);
+
+    if (accessResult.data.storage_state) {
+      query = query.eq('storage_state', accessResult.data.storage_state);
+    }
+
+    const { data, error } = await query.select(isLockedDelete ? 'id' : FULL_JOB_SELECT);
 
     if (error) {
       log.error({ err: error, operation: 'deleteJob', userId, jobId }, 'Failed to delete job');
@@ -491,7 +812,12 @@ export async function deleteJob(jobId, userId, supabaseClient, log = defaultLogg
       return { data: null, error: new Error('Job not found or unauthorized') };
     }
 
-    return { data: data[0], error: null };
+    return {
+      data: isLockedDelete
+        ? { id: data[0]?.id ?? accessResult.data.id }
+        : data[0],
+      error: null,
+    };
   } catch (error) {
     log.error({ err: error, operation: 'deleteJob', userId, jobId }, 'Unexpected error in deleteJob');
     return { data: null, error };
