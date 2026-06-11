@@ -12,6 +12,12 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-06-08
+
+- `2026-06-11` - `Atomic create quota SQL-safe test setup`: Replaced dynamic integration-test SQL literals with Supabase table API seeding and counts.
+- `2026-06-11` - `Unmapped create error status handling`: Changed unmapped job-create failures to preserve service status or surface as 500 while keeping public add-failed copy.
+- `2026-06-11` - `Billing review create error coverage`: Added API route coverage for billing-state review create failures returning the public 409 response.
+
 ### Week of 2026-06-01
 
 - `2026-06-10` - `Premium downgrade atomic create quota`: Added a service-role atomic job-create RPC, wired POST job creation to typed storage status, and covered active/retained quota race behavior.

@@ -10,6 +10,7 @@ import { join } from 'path';
 import {
   ABSOLUTE_RETAINED_JOB_LIMIT,
   FREE_ACTIVE_JOB_LIMIT,
+  JOB_STORAGE_STATES,
 } from '../../../shared/constants/storage.js';
 import {
   STORAGE_STATUSES,
@@ -24,6 +25,7 @@ const TEST_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const hasInfra = Boolean(TEST_URL && TEST_SERVICE_KEY);
 const describeOrSkip = hasInfra ? describe : describe.skip;
+const JOBS_SEED_BATCH_SIZE = 500;
 
 /**
  * Normalize exec_sql RPC data into a row array.
@@ -75,16 +77,6 @@ function isRpcSchemaCacheError(error) {
 function isExecSqlHelperMissingError(error) {
   return /exec_sql/i.test(buildPermissionMessage(error))
     && isRpcSchemaCacheError(error);
-}
-
-/**
- * Quote a string for controlled integration-test SQL literals.
- *
- * @param {string} value String value to embed as a SQL literal.
- * @returns {string} Single-quoted SQL literal.
- */
-function sqlLiteral(value) {
-  return `'${String(value).replace(/'/g, "''")}'`;
 }
 
 /**
@@ -225,63 +217,52 @@ describeOrSkip('Suite D - Jobs atomic create quota integration', () => {
    */
   async function seedGeneratedJobs(userId, { activeCount = 0, lockedCount = 0 }) {
     if (activeCount > 0) {
-      await execSql(`
-        INSERT INTO public.jobs (
-          user_id,
-          company,
-          position,
-          status,
-          notes,
-          salary_min,
-          salary_max,
-          status_date,
-          storage_state
-        )
-        SELECT
-          ${sqlLiteral(userId)}::uuid,
-          'Atomic Active ' || gs::text,
-          'Quota Engineer',
-          'applied',
-          '',
-          NULL,
-          NULL,
-          pg_catalog.now(),
-          'active'
-        FROM generate_series(1, ${activeCount}) AS gs
-      `);
+      const uniqueSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const activeRows = Array.from({ length: activeCount }, (_, index) => ({
+        user_id: userId,
+        company: `Atomic Active ${uniqueSuffix}-${index + 1}`,
+        position: 'Quota Engineer',
+        status: 'applied',
+        notes: '',
+        salary_min: null,
+        salary_max: null,
+        status_date: new Date().toISOString(),
+        storage_state: JOB_STORAGE_STATES.ACTIVE,
+      }));
+
+      for (let index = 0; index < activeRows.length; index += JOBS_SEED_BATCH_SIZE) {
+        const { error } = await serviceClient.from('jobs').insert(
+          activeRows.slice(index, index + JOBS_SEED_BATCH_SIZE)
+        );
+
+        if (error) throw error;
+      }
     }
 
     if (lockedCount > 0) {
-      await execSql(`
-        INSERT INTO public.jobs (
-          user_id,
-          company,
-          position,
-          status,
-          notes,
-          salary_min,
-          salary_max,
-          status_date,
-          storage_state,
-          locked_at,
-          locked_reason,
-          locked_policy_version
-        )
-        SELECT
-          ${sqlLiteral(userId)}::uuid,
-          'Atomic Locked ' || gs::text,
-          'Quota Engineer',
-          'applied',
-          '',
-          NULL,
-          NULL,
-          pg_catalog.now(),
-          'locked_over_plan_limit',
-          pg_catalog.now(),
-          'premium_to_free_over_plan_limit',
-          'v1'
-        FROM generate_series(1, ${lockedCount}) AS gs
-      `);
+      const uniqueSuffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const lockedRows = Array.from({ length: lockedCount }, (_, index) => ({
+        user_id: userId,
+        company: `Atomic Locked ${uniqueSuffix}-${index + 1}`,
+        position: 'Quota Engineer',
+        status: 'applied',
+        notes: '',
+        salary_min: null,
+        salary_max: null,
+        status_date: new Date().toISOString(),
+        storage_state: JOB_STORAGE_STATES.LOCKED_OVER_PLAN_LIMIT,
+        locked_at: new Date().toISOString(),
+        locked_reason: 'premium_to_free_over_plan_limit',
+        locked_policy_version: 'v1',
+      }));
+
+      for (let index = 0; index < lockedRows.length; index += JOBS_SEED_BATCH_SIZE) {
+        const { error } = await serviceClient.from('jobs').insert(
+          lockedRows.slice(index, index + JOBS_SEED_BATCH_SIZE)
+        );
+
+        if (error) throw error;
+      }
     }
   }
 
@@ -325,16 +306,32 @@ describeOrSkip('Suite D - Jobs atomic create quota integration', () => {
    * @returns {Promise<object>} Count row.
    */
   async function getStorageCounts(userId) {
-    const rows = await execSql(`
-      SELECT
-        COUNT(*) FILTER (WHERE storage_state = 'active')::integer AS active_count,
-        COUNT(*) FILTER (WHERE storage_state = 'locked_over_plan_limit')::integer AS locked_count,
-        COUNT(*)::integer AS retained_total_count
-      FROM public.jobs
-      WHERE user_id = ${sqlLiteral(userId)}::uuid
-    `);
+    const [activeResult, lockedResult, retainedResult] = await Promise.all([
+      serviceClient
+        .from('jobs')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', userId)
+        .eq('storage_state', JOB_STORAGE_STATES.ACTIVE),
+      serviceClient
+        .from('jobs')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', userId)
+        .eq('storage_state', JOB_STORAGE_STATES.LOCKED_OVER_PLAN_LIMIT),
+      serviceClient
+        .from('jobs')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', userId),
+    ]);
 
-    return rows[0];
+    for (const result of [activeResult, lockedResult, retainedResult]) {
+      if (result.error) throw result.error;
+    }
+
+    return {
+      active_count: activeResult.count ?? 0,
+      locked_count: lockedResult.count ?? 0,
+      retained_total_count: retainedResult.count ?? 0,
+    };
   }
 
   beforeAll(async () => {

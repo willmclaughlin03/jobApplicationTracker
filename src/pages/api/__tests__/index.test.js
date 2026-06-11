@@ -520,6 +520,11 @@ describe('index API handler (/api/jobs)', () => {
         409,
         ERROR_MESSAGES.BILLING_SYNC_PENDING,
       ],
+      [
+        STORAGE_CREATE_ERROR_CODES.BILLING_STATE_REVIEW_REQUIRED,
+        409,
+        ERROR_MESSAGES.BILLING_STATE_REVIEW_REQUIRED,
+      ],
     ])('should return %s without Free quota copy', async (code, statusCode, message) => {
       mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
       mockCreateJob.mockResolvedValue({
@@ -548,9 +553,9 @@ describe('index API handler (/api/jobs)', () => {
 
     /**
      * Test: Service error on create
-     * Expected: Returns 400
+     * Expected: Returns 500
      */
-    it('should return 400 when create service fails', async () => {
+    it('should return 500 when create service fails without a status', async () => {
       mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
       mockCreateJob.mockResolvedValue({ data: null, error: 'Insert failed' });
 
@@ -559,7 +564,46 @@ describe('index API handler (/api/jobs)', () => {
 
       await handler(req, res);
 
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: 'ADD_FAILED',
+          message: ERROR_MESSAGES.ADD_FAILED,
+        })
+      );
+      expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('Insert failed');
+    });
+
+    /**
+     * Test: Service error on create with explicit client status
+     * Expected: Preserves the service-provided 4xx status
+     */
+    it('should preserve explicit client status when unmapped create service fails', async () => {
+      mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
+      mockCreateJob.mockResolvedValue({
+        data: null,
+        error: {
+          code: 'UNMAPPED_CLIENT_ERROR',
+          statusCode: 400,
+          message: 'Internal client-side create detail',
+        },
+      });
+
+      const req = createMockRequest('POST', {}, validJobData);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
       expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: 'ADD_FAILED',
+          message: ERROR_MESSAGES.ADD_FAILED,
+        })
+      );
+      expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain(
+        'Internal client-side create detail'
+      );
     });
   });
 

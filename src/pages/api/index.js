@@ -80,7 +80,16 @@ function sendCreateJobError(res, error) {
       );
 
     default:
-      return sendError(res, 400, 'ADD_FAILED', ERROR_MESSAGES.ADD_FAILED);
+      const statusCode = Number.isInteger(error?.statusCode)
+        ? error.statusCode
+        : error?.status;
+
+      return sendError(
+        res,
+        Number.isInteger(statusCode) ? statusCode : 500,
+        'ADD_FAILED',
+        ERROR_MESSAGES.ADD_FAILED
+      );
   }
 }
 
