@@ -213,7 +213,7 @@ export function buildStorageSummary(storageStatusResult = {}, counts = {}) {
  * @param {string} userId - Authenticated owner id.
  * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Request-scoped client for strict billing reads.
  * @param {object} log - Request-scoped logger.
- * @param {{ now?: Date }} [options] - Optional clock override for tests.
+ * @param {{ now?: Date, storageStatusResult?: object|string|null }} [options] - Optional clock override or already-resolved storage status.
  * @returns {Promise<{data: object|null, error: Error|object|null}>}
  */
 export async function getStorageSummaryForUser(
@@ -223,7 +223,8 @@ export async function getStorageSummaryForUser(
   options = {}
 ) {
   try {
-    const storageStatusResult = await resolveStorageStatus(userId, supabaseClient, log, options);
+    const storageStatusResult = options.storageStatusResult
+      ?? await resolveStorageStatus(userId, supabaseClient, log, options);
     const countsResult = await getJobStorageCounts(userId, log);
 
     if (countsResult.error) {

@@ -32,9 +32,9 @@ jest.mock('../../../server/services/storageSummaryService.js', () => ({
   getStorageSummaryForUser: mockGetStorageSummaryForUser,
 }));
 
-const mockResolveStorageStatus = jest.fn();
-jest.mock('../../../server/lib/billingService.js', () => ({
-  resolveStorageStatus: mockResolveStorageStatus,
+const mockReconcileAndLockDowngradedStorageForUser = jest.fn();
+jest.mock('../../../server/services/storageDowngradeService.js', () => ({
+  reconcileAndLockDowngradedStorageForUser: mockReconcileAndLockDowngradedStorageForUser,
 }));
 
 // Mock jobSchema to avoid isomorphic-dompurify dependency issues
@@ -135,9 +135,16 @@ describe('index API handler (/api/jobs)', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    mockResolveStorageStatus.mockResolvedValue(terminalFreeStorageStatus);
     mockGetStorageSummaryForUser.mockResolvedValue({
       data: mockStorageSummary,
+      error: null,
+    });
+    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValue({
+      data: {
+        outcome: 'skipped',
+        lockedCount: 0,
+        storageStatusResult: terminalFreeStorageStatus,
+      },
       error: null,
     });
   });
@@ -295,6 +302,28 @@ describe('index API handler (/api/jobs)', () => {
       expect(res.status).toHaveBeenCalledWith(503);
     });
 
+    it('should fail closed when lazy downgrade repair fails before listing jobs', async () => {
+      const repairError = new Error('overflow lock failed');
+      mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: {} });
+      mockReconcileAndLockDowngradedStorageForUser.mockResolvedValueOnce({
+        data: null,
+        error: repairError,
+      });
+
+      const req = createMockRequest('GET');
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(mockReconcileAndLockDowngradedStorageForUser).toHaveBeenCalledWith(
+        mockUser.id,
+        noopLog
+      );
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
+      expect(mockGetJobsByUserId).not.toHaveBeenCalled();
+    });
+
     it('should return retryable 503 when locked archive access needs confirmed billing', async () => {
       mockGetQuerySchemaSafeParse.mockReturnValue({
         success: true,
@@ -363,7 +392,12 @@ describe('index API handler (/api/jobs)', () => {
         noopLog,
         mockStorageSummary
       );
-      expect(mockGetStorageSummaryForUser).toHaveBeenCalledWith(mockUser.id, mockClient, noopLog);
+      expect(mockGetStorageSummaryForUser).toHaveBeenCalledWith(
+        mockUser.id,
+        mockClient,
+        noopLog,
+        { storageStatusResult: terminalFreeStorageStatus }
+      );
     });
 
     /**
@@ -441,7 +475,10 @@ describe('index API handler (/api/jobs)', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(201);
-      expect(mockResolveStorageStatus).toHaveBeenCalledWith(mockUser.id, mockClient, noopLog);
+      expect(mockReconcileAndLockDowngradedStorageForUser).toHaveBeenCalledWith(
+        mockUser.id,
+        noopLog
+      );
       expect(mockCreateJob).toHaveBeenCalledWith(
         validJobData,
         mockUser.id,
@@ -461,7 +498,14 @@ describe('index API handler (/api/jobs)', () => {
         STORAGE_STATUSES.PREMIUM_ACTIVE,
         STORAGE_CREATE_ACTIONS.APPLY_PREMIUM_LIMIT
       );
-      mockResolveStorageStatus.mockResolvedValueOnce(premiumStorageStatus);
+      mockReconcileAndLockDowngradedStorageForUser.mockResolvedValueOnce({
+        data: {
+          outcome: 'skipped',
+          lockedCount: 0,
+          storageStatusResult: premiumStorageStatus,
+        },
+        error: null,
+      });
       mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
       mockCreateJob.mockResolvedValue({ data: [{ id: 'new-job-2', ...validJobData, user_id: mockUser.id }], error: null });
 
@@ -490,7 +534,7 @@ describe('index API handler (/api/jobs)', () => {
 
       expect(res.status).toHaveBeenCalledWith(400);
       expect(mockCreateJob).not.toHaveBeenCalled();
-      expect(mockResolveStorageStatus).not.toHaveBeenCalled();
+      expect(mockReconcileAndLockDowngradedStorageForUser).not.toHaveBeenCalled();
     });
 
     /**
@@ -697,6 +741,23 @@ describe('index API handler (/api/jobs)', () => {
       expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain(
         'Internal client-side create detail'
       );
+    });
+
+    it('should fail closed when lazy downgrade repair fails before creating jobs', async () => {
+      const repairError = new Error('overflow lock failed');
+      mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
+      mockReconcileAndLockDowngradedStorageForUser.mockResolvedValueOnce({
+        data: null,
+        error: repairError,
+      });
+
+      const req = createMockRequest('POST', {}, validJobData);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(mockCreateJob).not.toHaveBeenCalled();
     });
   });
 

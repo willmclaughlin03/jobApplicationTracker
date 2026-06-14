@@ -2,7 +2,7 @@ import { ERROR_MESSAGES } from '../../shared/errors.js';
 import { jobUpdateSchema, uuidSchema } from '../../shared/validations/jobSchema.js';
 import { sendSuccess, sendError } from '../../shared/response.js';
 import { getJobById, updateJob, deleteJob } from '../../server/services/jobService.js';
-import { resolveStorageStatus } from '../../server/lib/billingService.js';
+import { reconcileAndLockDowngradedStorageForUser } from '../../server/services/storageDowngradeService.js';
 import { STORAGE_CREATE_ERROR_CODES } from '../../shared/constants/billing.js';
 import { JOB_STORAGE_ERRORS } from '../../shared/constants/storage.js';
 
@@ -76,6 +76,21 @@ function sendJobAccessError(res, error) {
 }
 
 /**
+ * Repair missed downgrade state before reading or updating one job.
+ *
+ * Purpose: direct-by-id routes must not expose an overflow row that remained
+ * active only because a terminal cancellation webhook was missed. The returned
+ * typed status is reused for locked-row access policy.
+ *
+ * @param {import('next').NextApiRequest & { log: object }} req - API request with logger.
+ * @param {{ id: string }} user - Authenticated user.
+ * @returns {Promise<{data: object|null, error: Error|object|null}>}
+ */
+async function repairDowngradedStorageForJobRequest(req, user) {
+  return reconcileAndLockDowngradedStorageForUser(user.id, req.log);
+}
+
+/**
  * Handles GET requests - retrieves a single job by ID
  *
  * Purpose: Fetch a specific job application for the authenticated user
@@ -87,7 +102,13 @@ function sendJobAccessError(res, error) {
  * @param {string} jobId - The job's UUID from URL path
  */
 async function handleGet(req, res, user, jobId) {
-  const storageStatusResult = await resolveStorageStatus(user.id, req._supabaseClient, req.log);
+  const repairResult = await repairDowngradedStorageForJobRequest(req, user);
+  const storageStatusResult = repairResult.data?.storageStatusResult;
+
+  if (repairResult.error || !storageStatusResult) {
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+  }
+
   const { data, error } = await getJobById(
     jobId,
     user.id,
@@ -122,6 +143,13 @@ async function handlePut(req, res, user, jobId) {
     return sendError(res, 400, 'VALIDATION_ERROR', ERROR_MESSAGES.VALIDATION_ERROR);
   }
 
+  const repairResult = await repairDowngradedStorageForJobRequest(req, user);
+  const storageStatusResult = repairResult.data?.storageStatusResult;
+
+  if (repairResult.error || !storageStatusResult) {
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+  }
+
   const updatedData = updateResult.data;
 
   // Server-side only: auto-set status_date when status is being changed.
@@ -130,8 +158,6 @@ async function handlePut(req, res, user, jobId) {
   if (updatedData.status !== undefined) {
     updatedData.status_date = new Date().toISOString();
   }
-
-  const storageStatusResult = await resolveStorageStatus(user.id, req._supabaseClient, req.log);
 
   // Cross-field salary validation on partial updates:
   // When only one salary field is sent, fetch the current job to validate

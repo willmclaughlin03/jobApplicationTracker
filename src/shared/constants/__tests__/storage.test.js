@@ -2,6 +2,8 @@ const {
   ABSOLUTE_RETAINED_JOB_LIMIT,
   FREE_ACTIVE_JOB_LIMIT,
   JOB_STORAGE_ERRORS,
+  JOB_STORAGE_LOCK_POLICY_VERSION,
+  JOB_STORAGE_LOCK_REASONS,
   JOB_STORAGE_QUERY_STATES,
   JOB_STORAGE_STATES,
   LOCKED_BULK_DELETE_ROW_LIMIT,
@@ -30,5 +32,12 @@ describe('storage constants', () => {
     expect(JOB_STORAGE_ERRORS).toEqual({
       JOB_LOCKED_BY_PLAN: 'JOB_LOCKED_BY_PLAN',
     });
+  });
+
+  it('names the v1 automatic overflow lock metadata', () => {
+    expect(JOB_STORAGE_LOCK_REASONS).toEqual({
+      PREMIUM_TO_FREE_OVER_PLAN_LIMIT: 'premium_to_free_over_plan_limit',
+    });
+    expect(JOB_STORAGE_LOCK_POLICY_VERSION).toBe('v1');
   });
 });

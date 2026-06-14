@@ -11,6 +11,7 @@ import {
   recordStripeEventReceipt,
   syncSubscriptionFromEvent,
 } from './billingService.js';
+import { reconcileAndLockDowngradedStorageForUser } from '../services/storageDowngradeService.js';
 
 const SUBSCRIPTION_CREATED = 'customer.subscription.created';
 const SUBSCRIPTION_UPDATED = 'customer.subscription.updated';
@@ -193,6 +194,53 @@ async function recordFailedReceiptBestEffort(event, originalError, log) {
       },
       'Failed to record failed Stripe webhook receipt after dispatcher error'
     );
+  }
+}
+
+/**
+ * Resolve the local user id that is safe for post-billing storage repair.
+ *
+ * Purpose: only processed billing writes with a server-resolved local user id
+ * should trigger downgrade locking; stale, malformed, customer-missing, or
+ * unsupported outcomes must remain non-mutating.
+ *
+ * @param {object|null|undefined} dispatchResult
+ * @returns {string|null}
+ */
+function getProcessedBillingUserId(dispatchResult) {
+  if (
+    dispatchResult?.outcome !== BILLING_WRITE_OUTCOMES.PROCESSED
+    || typeof dispatchResult?.userId !== 'string'
+  ) {
+    return null;
+  }
+
+  const userId = dispatchResult.userId.trim();
+  return userId || null;
+}
+
+/**
+ * Run storage downgrade repair after a successful billing reconcile.
+ *
+ * Purpose: webhook deliveries are the earliest authoritative signal that a
+ * cancellation reached terminal Free, so overflow locking runs before the
+ * receipt is marked processed. Lock failures then retry through Stripe safely.
+ *
+ * @param {object|null|undefined} dispatchResult
+ * @param {object} log
+ * @returns {Promise<void>}
+ */
+async function repairDowngradedStorageAfterBillingDispatch(dispatchResult, log) {
+  const userId = getProcessedBillingUserId(dispatchResult);
+
+  if (!userId) {
+    return;
+  }
+
+  const repairResult = await reconcileAndLockDowngradedStorageForUser(userId, log);
+
+  if (repairResult.error) {
+    throw repairResult.error;
   }
 }
 
@@ -535,6 +583,7 @@ export async function processBillingWebhookEvent(event, log) {
 
   try {
     const dispatchResult = await dispatchStripeBillingEvent(event, log);
+    await repairDowngradedStorageAfterBillingDispatch(dispatchResult, log);
     const receiptResult = getReceiptResultForDispatchResult(dispatchResult);
 
     await recordStripeEventReceipt(event, receiptResult, log);

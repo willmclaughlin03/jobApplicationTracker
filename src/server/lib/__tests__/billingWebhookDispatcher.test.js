@@ -6,6 +6,7 @@ const mockHasMatchingStripeEventReceiptEnvelope = jest.fn();
 const mockMarkMintedCheckoutSessionTerminalByStripeSessionId = jest.fn();
 const mockMarkSubscriptionDeletedFromEvent = jest.fn();
 const mockRecordStripeEventReceipt = jest.fn();
+const mockReconcileAndLockDowngradedStorageForUser = jest.fn();
 const mockSyncSubscriptionFromEvent = jest.fn();
 
 jest.mock('../billingService.js', () => ({
@@ -31,6 +32,10 @@ jest.mock('../billingService.js', () => ({
   markSubscriptionDeletedFromEvent: mockMarkSubscriptionDeletedFromEvent,
   recordStripeEventReceipt: mockRecordStripeEventReceipt,
   syncSubscriptionFromEvent: mockSyncSubscriptionFromEvent,
+}));
+
+jest.mock('../../services/storageDowngradeService.js', () => ({
+  reconcileAndLockDowngradedStorageForUser: mockReconcileAndLockDowngradedStorageForUser,
 }));
 
 const { processBillingWebhookEvent } = require('../billingWebhookDispatcher.js');
@@ -86,6 +91,10 @@ describe('billingWebhookDispatcher', () => {
     mockMarkMintedCheckoutSessionTerminalByStripeSessionId.mockResolvedValue(null);
     mockMarkSubscriptionDeletedFromEvent.mockResolvedValue({ outcome: 'processed' });
     mockRecordStripeEventReceipt.mockResolvedValue({ outcome: 'updated' });
+    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValue({
+      data: { outcome: 'skipped', lockedCount: 0 },
+      error: null,
+    });
     mockSyncSubscriptionFromEvent.mockResolvedValue({ outcome: 'processed' });
   });
 
@@ -215,13 +224,51 @@ describe('billingWebhookDispatcher', () => {
   });
 
   it('records stale_ignored when the billing service reports a stale event', async () => {
-    mockSyncSubscriptionFromEvent.mockResolvedValue({ outcome: 'stale_ignored' });
+    mockSyncSubscriptionFromEvent.mockResolvedValue({ outcome: 'stale_ignored', userId: 'user_stale_123' });
     const event = createEvent();
 
     const result = await processBillingWebhookEvent(event, mockLog);
 
     expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'stale_ignored', mockLog);
+    expect(mockReconcileAndLockDowngradedStorageForUser).not.toHaveBeenCalled();
     expect(result.receiptResult).toBe('stale_ignored');
+  });
+
+  it('runs downgrade storage repair after processed billing syncs with a resolved user', async () => {
+    mockSyncSubscriptionFromEvent.mockResolvedValue({
+      outcome: 'processed',
+      userId: 'user_processed_123',
+    });
+    const event = createEvent();
+
+    const result = await processBillingWebhookEvent(event, mockLog);
+
+    expect(mockReconcileAndLockDowngradedStorageForUser).toHaveBeenCalledWith(
+      'user_processed_123',
+      mockLog
+    );
+    expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'processed', mockLog);
+    expect(
+      mockReconcileAndLockDowngradedStorageForUser.mock.invocationCallOrder[0]
+    ).toBeLessThan(mockRecordStripeEventReceipt.mock.invocationCallOrder[0]);
+    expect(result.receiptResult).toBe('processed');
+  });
+
+  it('records failed and rejects when post-billing downgrade storage repair fails', async () => {
+    const repairError = new Error('overflow lock failed');
+    mockSyncSubscriptionFromEvent.mockResolvedValue({
+      outcome: 'processed',
+      userId: 'user_repair_failed_123',
+    });
+    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValue({
+      data: null,
+      error: repairError,
+    });
+    const event = createEvent();
+
+    await expect(processBillingWebhookEvent(event, mockLog)).rejects.toBe(repairError);
+
+    expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'failed', mockLog);
   });
 
   it('safe-ignores invoice events without subscription ids', async () => {

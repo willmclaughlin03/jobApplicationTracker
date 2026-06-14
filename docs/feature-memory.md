@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-06-08
 
+- `2026-06-14` - `Premium downgrade concurrency hardening`: Strengthened unpublished migration `018` with canonical billing revalidation, guarded authoritative reconciliation, shared billing/storage locks, create-versus-lock serialization, direct job-route lazy repair, and resolved-status reuse.
+- `2026-06-13` - `Premium downgrade overflow locking`: Added terminal-Free-only downgrade repair with idempotent overflow locking, webhook/lazy request wiring, and focused regression coverage.
 - `2026-06-11` - `Premium downgrade locked job API enforcement`: Added locked archive teaser listings, locked detail/update 423 responses, safe locked single-delete responses, and salary-prefetch protection for plan-locked rows.
 - `2026-06-11` - `Atomic create quota SQL-safe test setup`: Replaced dynamic integration-test SQL literals with Supabase table API seeding and counts.
 - `2026-06-11` - `Unmapped create error status handling`: Changed unmapped job-create failures to preserve service status or surface as 500 while keeping public add-failed copy.

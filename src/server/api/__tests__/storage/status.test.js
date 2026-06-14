@@ -3,9 +3,14 @@ jest.mock('../../../middleware/withRateLimit.js', () => ({
 }));
 
 const mockGetStorageSummaryForUser = jest.fn();
+const mockReconcileAndLockDowngradedStorageForUser = jest.fn();
 
 jest.mock('../../../services/storageSummaryService.js', () => ({
   getStorageSummaryForUser: mockGetStorageSummaryForUser,
+}));
+
+jest.mock('../../../services/storageDowngradeService.js', () => ({
+  reconcileAndLockDowngradedStorageForUser: mockReconcileAndLockDowngradedStorageForUser,
 }));
 
 const handler = require('../../../../pages/api/storage/status.js').default;
@@ -24,6 +29,10 @@ describe('/api/storage/status handler', () => {
     projectedOverflowCount: 50,
     cancelAtPeriodEnd: false,
     currentPeriodEnd: null,
+  };
+  const mockStorageStatusResult = {
+    status: 'billing_unavailable',
+    billingStatus: null,
   };
 
   /**
@@ -67,6 +76,14 @@ describe('/api/storage/status handler', () => {
       data: mockStorageSummary,
       error: null,
     });
+    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValue({
+      data: {
+        outcome: 'skipped',
+        lockedCount: 0,
+        storageStatusResult: mockStorageStatusResult,
+      },
+      error: null,
+    });
   });
 
   it('returns storage summary metadata with cache-hardening headers', async () => {
@@ -75,7 +92,16 @@ describe('/api/storage/status handler', () => {
 
     await handler(req, res);
 
-    expect(mockGetStorageSummaryForUser).toHaveBeenCalledWith(mockUser.id, mockClient, mockLog);
+    expect(mockReconcileAndLockDowngradedStorageForUser).toHaveBeenCalledWith(
+      mockUser.id,
+      mockLog
+    );
+    expect(mockGetStorageSummaryForUser).toHaveBeenCalledWith(
+      mockUser.id,
+      mockClient,
+      mockLog,
+      { storageStatusResult: mockStorageStatusResult }
+    );
     expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
     expect(res.setHeader).toHaveBeenCalledWith('CDN-Cache-Control', 'no-store');
     expect(res.setHeader).toHaveBeenCalledWith('Pragma', 'no-cache');
@@ -117,6 +143,27 @@ describe('/api/storage/status handler', () => {
     await handler(req, res);
 
     expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: null,
+        error: 'SERVICE_UNAVAILABLE',
+      })
+    );
+  });
+
+  it('returns 503 when confirmed downgrade storage repair fails', async () => {
+    const repairError = new Error('overflow lock failed');
+    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValueOnce({
+      data: null,
+      error: repairError,
+    });
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
         data: null,

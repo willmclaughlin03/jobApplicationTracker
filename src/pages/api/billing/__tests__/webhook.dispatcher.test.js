@@ -33,6 +33,11 @@ jest.mock('../../../../server/lib/billingService.js', () => ({
   syncSubscriptionFromEvent: mockSyncSubscriptionFromEvent,
 }));
 
+const mockReconcileAndLockDowngradedStorageForUser = jest.fn();
+jest.mock('../../../../server/services/storageDowngradeService.js', () => ({
+  reconcileAndLockDowngradedStorageForUser: mockReconcileAndLockDowngradedStorageForUser,
+}));
+
 const mockVerifyWebhookSignature = jest.fn();
 jest.mock('../../../../server/lib/webhookSignature.js', () => ({
   verifyWebhookSignature: mockVerifyWebhookSignature,
@@ -133,6 +138,10 @@ describe('/api/billing/webhook dispatcher route boundary', () => {
     mockMarkSubscriptionDeletedFromEvent.mockResolvedValue({ outcome: 'processed' });
     mockRecordStripeEventReceipt.mockResolvedValue({ outcome: 'updated' });
     mockSyncSubscriptionFromEvent.mockResolvedValue({ outcome: 'processed' });
+    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValue({
+      data: { outcome: 'skipped', lockedCount: 0 },
+      error: null,
+    });
   });
 
   it('processes checkout.session.expired through the public route and real dispatcher', async () => {

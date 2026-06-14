@@ -367,6 +367,32 @@ describe('createJob - atomic storage quota enforcement', () => {
     expect(result.error.message).toContain(String(ABSOLUTE_RETAINED_JOB_LIMIT));
   });
 
+  it('returns retryable billing unavailable when canonical billing changes inside the create RPC', async () => {
+    mockRpc.mockResolvedValueOnce({
+      data: {
+        created: false,
+        code: STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+        reason: 'billing_status_changed',
+        storageStatus: STORAGE_STATUSES.PREMIUM_ACTIVE,
+        canonicalStorageStatus: STORAGE_STATUSES.TERMINAL_FREE,
+      },
+      error: null,
+    });
+
+    const result = await createJob(
+      validJobData,
+      userId,
+      mockSupabaseClient,
+      undefined,
+      premiumStatus
+    );
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(StorageCreateBlockedError);
+    expect(result.error.code).toBe(STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE);
+    expect(result.error.retryable).toBe(true);
+  });
+
   it.each([
     [
       STORAGE_STATUSES.BILLING_UNAVAILABLE,

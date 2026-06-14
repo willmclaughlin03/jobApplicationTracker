@@ -3,6 +3,7 @@ import { ERROR_MESSAGES } from '../../../shared/errors.js';
 import { withRateLimit } from '../../../server/middleware/withRateLimit.js';
 import { OPERATIONS } from '../../../shared/constants/tiers.js';
 import { getStorageSummaryForUser } from '../../../server/services/storageSummaryService.js';
+import { reconcileAndLockDowngradedStorageForUser } from '../../../server/services/storageDowngradeService.js';
 
 /**
  * Apply no-store headers to authenticated storage-status responses.
@@ -21,6 +22,28 @@ function setStorageStatusCacheHeaders(res) {
 }
 
 /**
+ * Repair confirmed terminal-Free overflow before returning storage metadata.
+ *
+ * Purpose: storage status responses should reflect the post-lock counts when a
+ * lazy request observes a downgraded over-cap account, and fail closed if that
+ * confirmed terminal-Free lock transition cannot complete.
+ *
+ * @param {import('next').NextApiRequest & { _rateLimitUser: { id: string }, log: object }} req - Authenticated request.
+ * @returns {Promise<{data: object|null, error: Error|object|null}>}
+ */
+async function repairDowngradedStorageForStatusRequest(req) {
+  const repairResult = await reconcileAndLockDowngradedStorageForUser(
+    req._rateLimitUser.id,
+    req.log
+  );
+
+  return {
+    data: repairResult.data ?? null,
+    error: repairResult.error ?? null,
+  };
+}
+
+/**
  * Return count-only storage summary metadata for the authenticated caller.
  *
  * Purpose: billing/settings surfaces need storage state and limits without
@@ -33,10 +56,19 @@ function setStorageStatusCacheHeaders(res) {
 async function handler(req, res) {
   setStorageStatusCacheHeaders(res);
 
+  const repairResult = await repairDowngradedStorageForStatusRequest(req);
+
+  if (repairResult.error) {
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+  }
+
   const storageSummaryResult = await getStorageSummaryForUser(
     req._rateLimitUser.id,
     req._supabaseClient,
-    req.log
+    req.log,
+    {
+      storageStatusResult: repairResult.data?.storageStatusResult,
+    }
   );
 
   if (storageSummaryResult.error) {

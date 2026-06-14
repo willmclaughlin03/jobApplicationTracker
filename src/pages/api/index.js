@@ -3,8 +3,8 @@ import { jobSchema, getQuerySchema } from '../../shared/validations/jobSchema.js
 import { sendSuccess, sendError } from '../../shared/response.js';
 import { getJobsByUserId, createJob } from '../../server/services/jobService.js';
 import { getStorageSummaryForUser } from '../../server/services/storageSummaryService.js';
+import { reconcileAndLockDowngradedStorageForUser } from '../../server/services/storageDowngradeService.js';
 import { withRateLimit } from '../../server/middleware/withRateLimit.js';
-import { resolveStorageStatus } from '../../server/lib/billingService.js';
 import { STORAGE_CREATE_ERROR_CODES } from '../../shared/constants/billing.js';
 
 const STORAGE_CREATE_RETRY_AFTER_SECONDS = 5;
@@ -126,6 +126,28 @@ function sendGetJobsError(res, error) {
 }
 
 /**
+ * Run terminal-Free downgrade repair before collection reads or creates.
+ *
+ * Purpose: lazy request-time repair catches missed cancellation webhooks while
+ * preserving fail-closed behavior if confirmed terminal-Free locking fails.
+ *
+ * @param {import('next').NextApiRequest & { log: object }} req - API request with logger.
+ * @param {{ id: string }} user - Authenticated user.
+ * @returns {Promise<{data: object|null, error: Error|object|null}>}
+ */
+async function repairDowngradedStorageForRequest(req, user) {
+  const repairResult = await reconcileAndLockDowngradedStorageForUser(
+    user.id,
+    req.log
+  );
+
+  return {
+    data: repairResult.data ?? null,
+    error: repairResult.error ?? null,
+  };
+}
+
+/**
  * Handles GET requests - retrieves jobs and storage summary for authenticated user
  *
  * Purpose: Fetch user's job application history with optional pagination/filtering
@@ -158,10 +180,19 @@ async function handleGet(req, res, user) {
     options.storage_state = storage_state;
   }
 
+  const repairResult = await repairDowngradedStorageForRequest(req, user);
+
+  if (repairResult.error) {
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+  }
+
   const storageSummaryResult = await getStorageSummaryForUser(
     user.id,
     req._supabaseClient,
-    req.log
+    req.log,
+    {
+      storageStatusResult: repairResult.data?.storageStatusResult,
+    }
   );
 
   if (storageSummaryResult.error) {
@@ -204,7 +235,18 @@ async function handlePost(req, res, user) {
 
   const finalizedData = createResult.data;
   finalizedData.status_date = new Date().toISOString();
-  const storageStatusResult = await resolveStorageStatus(user.id, req._supabaseClient, req.log);
+  const repairResult = await repairDowngradedStorageForRequest(req, user);
+
+  if (repairResult.error) {
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+  }
+
+  const storageStatusResult = repairResult.data?.storageStatusResult;
+
+  if (!storageStatusResult) {
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+  }
+
   const { data, error } = await createJob(
     finalizedData,
     user.id,

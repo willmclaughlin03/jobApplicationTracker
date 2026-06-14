@@ -260,4 +260,29 @@ describe('storageSummaryService', () => {
       error: null,
     });
   });
+
+  it('reuses an already-resolved storage status without another billing read', async () => {
+    const storageStatusResult = {
+      status: STORAGE_STATUSES.TERMINAL_FREE,
+      billingStatus: null,
+    };
+    mockFrom
+      .mockReturnValueOnce(fakeQuery({ count: 300, error: null }))
+      .mockReturnValueOnce(fakeQuery({ count: 1, error: null }))
+      .mockReturnValueOnce(fakeQuery({ count: 301, error: null }));
+
+    const result = await getStorageSummaryForUser(
+      userId,
+      mockClient,
+      mockLog,
+      { storageStatusResult }
+    );
+
+    expect(mockResolveStorageStatus).not.toHaveBeenCalled();
+    expect(result.data).toEqual(expect.objectContaining({
+      status: STORAGE_STATUSES.TERMINAL_FREE,
+      activeCount: 300,
+      lockedCount: 1,
+    }));
+  });
 });

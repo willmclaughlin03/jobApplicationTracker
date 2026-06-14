@@ -2101,6 +2101,8 @@ describe('billingService', () => {
         rpc: {
           upsert_billing_subscription_authoritative: {
             data: {
+              applied: true,
+              reason: 'applied',
               subscription: {
                 user_id: userId,
                 stripe_subscription_id: 'sub_sync_123',
@@ -2155,6 +2157,70 @@ describe('billingService', () => {
       });
     });
 
+    it('returns snapshot_changed when guarded authoritative reconciliation loses its local compare-and-swap', async () => {
+      const adminClient = useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: { user_id: userId, stripe_customer_id: 'cus_sync_123' },
+            error: null,
+          },
+        },
+        rpc: {
+          upsert_billing_subscription_authoritative: {
+            data: {
+              applied: false,
+              reason: 'billing_snapshot_changed',
+              subscription: {
+                user_id: userId,
+                stripe_subscription_id: 'sub_newer_456',
+                updated_at: '2029-11-15T00:00:00.000Z',
+              },
+            },
+            error: null,
+          },
+        },
+      }));
+      mockStripe.subscriptions.retrieve.mockResolvedValue({
+        id: 'sub_sync_123',
+        customer: 'cus_sync_123',
+        status: 'canceled',
+        livemode: false,
+        cancel_at_period_end: false,
+        items: {
+          data: [{
+            price: { id: 'price_premium_monthly' },
+            current_period_end: 1889827200,
+          }],
+        },
+      });
+
+      const result = await syncSubscriptionFromStripe(
+        'sub_sync_123',
+        {
+          mode: BILLING_SYNC_MODES.AUTHORITATIVE,
+          expectedUserId: userId,
+          expectedSubscriptionId: 'sub_sync_123',
+          expectedSubscriptionUpdatedAt: '2029-11-14T00:00:00.123456+00:00',
+        },
+        mockLog
+      );
+
+      expect(result).toEqual(expect.objectContaining({
+        outcome: BILLING_WRITE_OUTCOMES.SNAPSHOT_CHANGED,
+        localSubscription: expect.objectContaining({
+          stripe_subscription_id: 'sub_newer_456',
+        }),
+      }));
+      expect(
+        adminClient.rpcCallsByName.upsert_billing_subscription_authoritative[0].args
+      ).toEqual({
+        payload: expect.objectContaining({
+          _expected_stripe_subscription_id: 'sub_sync_123',
+          _expected_subscription_updated_at: '2029-11-14T00:00:00.123456+00:00',
+        }),
+      });
+    });
+
     it('rejects authoritative sync when the resolved local user does not match expectedUserId before the RPC write', async () => {
       useAdminClient(createSupabaseClient({
         billing_customers: {
@@ -2166,6 +2232,8 @@ describe('billingService', () => {
         rpc: {
           upsert_billing_subscription_authoritative: {
             data: {
+              applied: true,
+              reason: 'applied',
               subscription: {
                 user_id: 'user-other',
               },
