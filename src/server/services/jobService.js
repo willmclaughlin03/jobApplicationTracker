@@ -678,6 +678,24 @@ export async function createJob(jobData, userId, supabaseClient, log = defaultLo
         return { data: null, error: createStorageLimitExceededError(maxJobs) };
       }
 
+      if (createResult.code === STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE) {
+        log.warn(
+          {
+            operation: 'createJob',
+            userId,
+            storageStatus,
+            canonicalStorageStatus: createResult.canonicalStorageStatus ?? null,
+          },
+          'Billing status changed before atomic job create'
+        );
+        return {
+          data: null,
+          error: createStorageCreateFlowError({
+            code: STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+          }),
+        };
+      }
+
       log.error(
         { operation: 'createJob', userId, storageStatus, createResult },
         'Atomic job create RPC denied create with an unexpected result'

@@ -12,8 +12,19 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-06-15
+
+- `2026-06-15` - `Storage summary string status normalization`: Preserved raw string storage status overrides when building count-only storage summaries.
+- `2026-06-15` - `Subscription delete webhook repair coverage`: Added dispatcher coverage proving processed subscription delete events run downgrade storage repair before receipt recording.
+- `2026-06-15` - `Overflow locking CAS timestamp retry`: Replaced the fixed E8 integration-test timestamp delay with a bounded retry that waits for the billing subscription snapshot timestamp to advance.
+- `2026-06-15` - `Overflow locking integration cleanup checks`: Made overflow-locking integration cleanup fail on Supabase table or auth-user deletion errors.
+- `2026-06-15` - `Jobs list storage repair snapshot guard`: Made the jobs list route fail closed when lazy downgrade repair omits the typed storage status snapshot.
+- `2026-06-15` - `Stripe webhook storage repair route coverage`: Added public webhook route tests for post-dispatch storage repair success, stale skip, and repair failure handling.
+
 ### Week of 2026-06-08
 
+- `2026-06-14` - `Premium downgrade concurrency hardening`: Strengthened unpublished migration `018` with canonical billing revalidation, guarded authoritative reconciliation, shared billing/storage locks, create-versus-lock serialization, direct job-route lazy repair, and resolved-status reuse.
+- `2026-06-13` - `Premium downgrade overflow locking`: Added terminal-Free-only downgrade repair with idempotent overflow locking, webhook/lazy request wiring, and focused regression coverage.
 - `2026-06-11` - `Premium downgrade locked job API enforcement`: Added locked archive teaser listings, locked detail/update 423 responses, safe locked single-delete responses, and salary-prefetch protection for plan-locked rows.
 - `2026-06-11` - `Atomic create quota SQL-safe test setup`: Replaced dynamic integration-test SQL literals with Supabase table API seeding and counts.
 - `2026-06-11` - `Unmapped create error status handling`: Changed unmapped job-create failures to preserve service status or surface as 500 while keeping public add-failed copy.

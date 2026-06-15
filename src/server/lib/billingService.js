@@ -68,6 +68,7 @@ export const BILLING_WRITE_OUTCOMES = Object.freeze({
   STALE_IGNORED: 'stale_ignored',
   CUSTOMER_NOT_FOUND: 'customer_not_found',
   UNSUPPORTED_STATUS_IGNORED: 'unsupported_status_ignored',
+  SNAPSHOT_CHANGED: 'snapshot_changed',
 });
 
 export const CHECKOUT_STATUS_STATES = Object.freeze({
@@ -952,6 +953,27 @@ export function assertStripeLivemode(livemode, context = {}) {
 }
 
 /**
+ * Validate a billing snapshot timestamp without discarding database precision.
+ *
+ * Purpose: PostgreSQL updated_at values can include microseconds that
+ * Date#toISOString would truncate. Compare-and-swap tokens must preserve a
+ * valid source string exactly while still normalizing Date/number inputs.
+ *
+ * @param {string|number|Date} value
+ * @returns {string|null}
+ */
+function normalizeBillingSnapshotTimestamp(value) {
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    return normalized && !Number.isNaN(Date.parse(normalized))
+      ? normalized
+      : null;
+  }
+
+  return toIsoTimestamp(value);
+}
+
+/**
  * Validate and normalize sync options for subscription reconciliation flows.
  *
  * Event-driven sync requires an event timestamp because the write RPC uses it
@@ -962,8 +984,8 @@ export function assertStripeLivemode(livemode, context = {}) {
  * that the resolved local customer mapping still belongs to the caller before
  * any authoritative write runs.
  *
- * @param {{ mode?: string, eventCreated?: string | number | Date, expectedUserId?: string }} options
- * @returns {{ mode: string, eventCreated: string | undefined, expectedUserId: string | undefined }}
+ * @param {{ mode?: string, eventCreated?: string | number | Date, expectedUserId?: string, expectedSubscriptionId?: string, expectedSubscriptionUpdatedAt?: string | number | Date }} options
+ * @returns {{ mode: string, eventCreated: string | undefined, expectedUserId: string | undefined, expectedSubscriptionId: string | undefined, expectedSubscriptionUpdatedAt: string | undefined }}
  */
 function parseSyncSubscriptionOptions(options) {
   const parsedMode = nonEmptyStringSchema.safeParse(options?.mode);
@@ -997,10 +1019,39 @@ function parseSyncSubscriptionOptions(options) {
     throw createBillingError('Invalid expectedUserId for subscription sync');
   }
 
+  const hasExpectedSubscriptionId = options?.expectedSubscriptionId !== undefined;
+  const expectedSubscriptionId = hasExpectedSubscriptionId
+    ? normalizeString(options.expectedSubscriptionId)
+    : undefined;
+  const hasExpectedSubscriptionUpdatedAt = options?.expectedSubscriptionUpdatedAt !== undefined;
+  const expectedSubscriptionUpdatedAt = hasExpectedSubscriptionUpdatedAt
+    ? normalizeBillingSnapshotTimestamp(options.expectedSubscriptionUpdatedAt)
+    : undefined;
+
+  if (hasExpectedSubscriptionId !== hasExpectedSubscriptionUpdatedAt) {
+    throw createBillingError('Complete expected subscription snapshot is required');
+  }
+
+  if (
+    hasExpectedSubscriptionId
+    && (!expectedSubscriptionId || !expectedSubscriptionUpdatedAt)
+  ) {
+    throw createBillingError('Invalid expected subscription snapshot');
+  }
+
+  if (
+    parsedMode.data !== BILLING_SYNC_MODES.AUTHORITATIVE
+    && hasExpectedSubscriptionId
+  ) {
+    throw createBillingError('Expected subscription snapshot requires authoritative sync');
+  }
+
   return {
     mode: parsedMode.data,
     eventCreated,
     expectedUserId,
+    expectedSubscriptionId,
+    expectedSubscriptionUpdatedAt,
   };
 }
 
@@ -1299,6 +1350,8 @@ function buildEventDrivenSubscriptionPayload({
  * Purpose: direct Stripe fetches can refresh the canonical local snapshot even
  * when no webhook event timestamp is available. `last_stripe_event_created`
  * stays optional so callers do not accidentally invent event ordering data.
+ * Downgrade repair can also supply an expected local snapshot so the database
+ * rejects a stale Stripe fetch after a concurrent subscription replacement.
  *
  * @param {object} params
  * @returns {object}
@@ -1312,6 +1365,8 @@ function buildAuthoritativeSubscriptionPayload({
   currentPeriodEnd,
   cancelAtPeriodEnd = false,
   lastStripeEventCreated,
+  expectedSubscriptionId,
+  expectedSubscriptionUpdatedAt,
 }) {
   const payload = {
     user_id: userId,
@@ -1325,6 +1380,14 @@ function buildAuthoritativeSubscriptionPayload({
 
   if (lastStripeEventCreated !== undefined) {
     payload.last_stripe_event_created = lastStripeEventCreated;
+  }
+
+  if (
+    expectedSubscriptionId !== undefined
+    && expectedSubscriptionUpdatedAt !== undefined
+  ) {
+    payload._expected_stripe_subscription_id = expectedSubscriptionId;
+    payload._expected_subscription_updated_at = expectedSubscriptionUpdatedAt;
   }
 
   return payload;
@@ -1470,7 +1533,15 @@ async function callSubscriptionAuthoritativeRpc(payload) {
 
   const normalizedData = normalizeRpcJsonData(data);
 
-  if (!normalizedData || typeof normalizedData !== 'object' || !normalizedData.subscription) {
+  if (
+    !normalizedData
+    || typeof normalizedData !== 'object'
+    || typeof normalizedData.applied !== 'boolean'
+    || (
+      normalizedData.applied
+      && (!normalizedData.subscription || typeof normalizedData.subscription !== 'object')
+    )
+  ) {
     throw createBillingRpcError('Billing authoritative subscription RPC returned an unexpected payload');
   }
 
@@ -2732,7 +2803,7 @@ export async function getOrCreateStripeCustomer(userId, email, log = defaultLogg
  * service to fail closed unless the resolved Stripe customer mapping still
  * belongs to that same user before any authoritative write is attempted.
  *
- * @param {{ mode: 'event' | 'authoritative', eventCreated?: number | string | Date, expectedUserId?: string }} options
+ * @param {{ mode: 'event' | 'authoritative', eventCreated?: number | string | Date, expectedUserId?: string, expectedSubscriptionId?: string, expectedSubscriptionUpdatedAt?: number | string | Date }} options
  * @param {object} log
  * @returns {Promise<object>}
  */
@@ -2905,8 +2976,19 @@ export async function syncSubscriptionFromStripe(
         currentPeriodEnd: extractStripeCurrentPeriodEnd(stripeSubscription),
         cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end,
         lastStripeEventCreated: parsedOptions.eventCreated,
+        expectedSubscriptionId: parsedOptions.expectedSubscriptionId,
+        expectedSubscriptionUpdatedAt: parsedOptions.expectedSubscriptionUpdatedAt,
       })
     );
+
+    if (!rpcResult.applied && rpcResult.reason === 'billing_snapshot_changed') {
+      return {
+        outcome: BILLING_WRITE_OUTCOMES.SNAPSHOT_CHANGED,
+        userId: localCustomer.user_id,
+        subscription: stripeSubscription,
+        localSubscription: rpcResult.subscription ?? null,
+      };
+    }
 
     return {
       outcome: BILLING_WRITE_OUTCOMES.PROCESSED,

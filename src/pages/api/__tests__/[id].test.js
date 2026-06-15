@@ -31,9 +31,9 @@ jest.mock('../../../server/services/jobService.js', () => ({
   deleteJob: mockDeleteJob,
 }));
 
-const mockResolveStorageStatus = jest.fn();
-jest.mock('../../../server/lib/billingService.js', () => ({
-  resolveStorageStatus: mockResolveStorageStatus,
+const mockReconcileAndLockDowngradedStorageForUser = jest.fn();
+jest.mock('../../../server/services/storageDowngradeService.js', () => ({
+  reconcileAndLockDowngradedStorageForUser: mockReconcileAndLockDowngradedStorageForUser,
 }));
 
 // Mock logger to prevent console output during tests
@@ -111,7 +111,14 @@ describe('[id] API handler', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    mockResolveStorageStatus.mockResolvedValue(terminalFreeStorageStatus);
+    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValue({
+      data: {
+        outcome: 'already_within_limit',
+        lockedCount: 0,
+        storageStatusResult: terminalFreeStorageStatus,
+      },
+      error: null,
+    });
     // Default: valid update data
     mockSafeParse.mockReturnValue({ success: true, data: {} });
   });
@@ -135,6 +142,7 @@ describe('[id] API handler', () => {
       );
       // Should not attempt DB calls
       expect(mockGetJobById).not.toHaveBeenCalled();
+      expect(mockReconcileAndLockDowngradedStorageForUser).not.toHaveBeenCalled();
     });
 
     /**
@@ -311,6 +319,21 @@ describe('[id] API handler', () => {
         })
       );
     });
+
+    it('should fail closed when downgrade repair fails before job detail access', async () => {
+      mockReconcileAndLockDowngradedStorageForUser.mockResolvedValueOnce({
+        data: null,
+        error: new Error('overflow lock failed'),
+      });
+
+      const req = createMockRequest('GET', validUUID);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(mockGetJobById).not.toHaveBeenCalled();
+    });
   });
 
   describe('PUT /api/jobs/[id]', () => {
@@ -439,6 +462,23 @@ describe('[id] API handler', () => {
           data: updatedJob,
         })
       );
+    });
+
+    it('should fail closed when downgrade repair fails before job update', async () => {
+      mockSafeParse.mockReturnValue({ success: true, data: { notes: 'Updated notes' } });
+      mockReconcileAndLockDowngradedStorageForUser.mockResolvedValueOnce({
+        data: null,
+        error: new Error('overflow lock failed'),
+      });
+
+      const req = createMockRequest('PUT', validUUID, { notes: 'Updated notes' });
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(mockGetJobById).not.toHaveBeenCalled();
+      expect(mockUpdateJob).not.toHaveBeenCalled();
     });
 
     /**
