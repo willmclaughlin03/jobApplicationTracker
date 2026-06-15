@@ -324,6 +324,31 @@ describe('index API handler (/api/jobs)', () => {
       expect(mockGetJobsByUserId).not.toHaveBeenCalled();
     });
 
+    it('should fail closed when lazy downgrade repair omits storage status before listing jobs', async () => {
+      mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: {} });
+      mockReconcileAndLockDowngradedStorageForUser.mockResolvedValueOnce({
+        data: {
+          outcome: 'skipped',
+          lockedCount: 0,
+        },
+        error: null,
+      });
+
+      const req = createMockRequest('GET');
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: 'SERVICE_UNAVAILABLE',
+        })
+      );
+      expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
+      expect(mockGetJobsByUserId).not.toHaveBeenCalled();
+    });
+
     it('should return retryable 503 when locked archive access needs confirmed billing', async () => {
       mockGetQuerySchemaSafeParse.mockReturnValue({
         success: true,

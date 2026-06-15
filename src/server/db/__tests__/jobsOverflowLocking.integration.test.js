@@ -438,13 +438,25 @@ describeOrSkip('Suite E - Jobs downgrade overflow locking integration', () => {
     const userIds = [...cleanupUserIds];
 
     if (userIds.length > 0) {
-      await serviceClient.from('jobs').delete().in('user_id', userIds);
-      await serviceClient.from('billing_subscriptions').delete().in('user_id', userIds);
-      await serviceClient.from('billing_customers').delete().in('user_id', userIds);
+      const { error: jobsError } = await serviceClient.from('jobs').delete().in('user_id', userIds);
+      if (jobsError) throw jobsError;
+
+      const { error: subscriptionsError } = await serviceClient
+        .from('billing_subscriptions')
+        .delete()
+        .in('user_id', userIds);
+      if (subscriptionsError) throw subscriptionsError;
+
+      const { error: customersError } = await serviceClient
+        .from('billing_customers')
+        .delete()
+        .in('user_id', userIds);
+      if (customersError) throw customersError;
     }
 
     for (const userId of userIds) {
-      await serviceClient.auth.admin.deleteUser(userId);
+      const { error: deleteUserError } = await serviceClient.auth.admin.deleteUser(userId);
+      if (deleteUserError) throw deleteUserError;
     }
   });
 
@@ -619,20 +631,29 @@ describeOrSkip('Suite E - Jobs downgrade overflow locking integration', () => {
     });
     const newerSubscriptionId = `${originalSubscription.stripe_subscription_id}_new`;
 
-    await wait(10);
-    const newerResult = await serviceClient
-      .from('billing_subscriptions')
-      .update({
-        stripe_subscription_id: newerSubscriptionId,
-        status: 'active',
-        current_period_end: '2026-07-01T00:00:00.000Z',
-        cancel_at_period_end: false,
-      })
-      .eq('user_id', user.id)
-      .select('*')
-      .single();
+    let newerResult;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      if (attempt > 0) {
+        await wait(250);
+      }
 
-    if (newerResult.error) throw newerResult.error;
+      newerResult = await serviceClient
+        .from('billing_subscriptions')
+        .update({
+          stripe_subscription_id: newerSubscriptionId,
+          status: 'active',
+          current_period_end: '2026-07-01T00:00:00.000Z',
+          cancel_at_period_end: false,
+        })
+        .eq('user_id', user.id)
+        .select('*')
+        .single();
+
+      if (newerResult.error) throw newerResult.error;
+      if (newerResult.data?.updated_at !== originalSubscription.updated_at) break;
+    }
+
+    expect(newerResult.data?.updated_at).not.toBe(originalSubscription.updated_at);
 
     const { data, error } = await serviceClient.rpc(
       'upsert_billing_subscription_authoritative',

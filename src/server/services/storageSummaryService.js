@@ -223,8 +223,13 @@ export async function getStorageSummaryForUser(
   options = {}
 ) {
   try {
-    const storageStatusResult = options.storageStatusResult
-      ?? await resolveStorageStatus(userId, supabaseClient, log, options);
+    const providedStorageStatusResult = options.storageStatusResult;
+    const storageStatusResult = typeof providedStorageStatusResult === 'string'
+      ? { status: providedStorageStatusResult, billingStatus: null }
+      : (
+        providedStorageStatusResult
+        ?? await resolveStorageStatus(userId, supabaseClient, log, options)
+      );
     const countsResult = await getJobStorageCounts(userId, log);
 
     if (countsResult.error) {

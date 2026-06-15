@@ -285,4 +285,27 @@ describe('storageSummaryService', () => {
       lockedCount: 1,
     }));
   });
+
+  it('preserves a string storage status override without another billing read', async () => {
+    mockFrom
+      .mockReturnValueOnce(fakeQuery({ count: 450, error: null }))
+      .mockReturnValueOnce(fakeQuery({ count: 0, error: null }))
+      .mockReturnValueOnce(fakeQuery({ count: 450, error: null }));
+
+    const result = await getStorageSummaryForUser(
+      userId,
+      mockClient,
+      mockLog,
+      { storageStatusResult: STORAGE_STATUSES.PREMIUM_ACTIVE }
+    );
+
+    expect(mockResolveStorageStatus).not.toHaveBeenCalled();
+    expect(result.data).toEqual(expect.objectContaining({
+      status: STORAGE_STATUSES.PREMIUM_ACTIVE,
+      activeCount: 450,
+      projectedOverflowCount: 150,
+      cancelAtPeriodEnd: false,
+      currentPeriodEnd: null,
+    }));
+  });
 });

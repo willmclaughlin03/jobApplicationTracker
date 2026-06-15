@@ -329,6 +329,44 @@ describe('billingWebhookDispatcher', () => {
     expect(result.receiptResult).toBe('processed');
   });
 
+  it('runs downgrade storage repair after processed subscription delete events with a resolved user', async () => {
+    const subscription = {
+      id: 'sub_deleted_repair_123',
+      customer: 'cus_delete_repair_123',
+      cancel_at_period_end: false,
+    };
+    mockMarkSubscriptionDeletedFromEvent.mockResolvedValue({
+      outcome: 'processed',
+      userId: 'user_deleted_repair_123',
+    });
+    const event = createEvent({
+      type: 'customer.subscription.deleted',
+      data: {
+        object: subscription,
+      },
+    });
+
+    const result = await processBillingWebhookEvent(event, mockLog);
+
+    expect(mockMarkSubscriptionDeletedFromEvent).toHaveBeenCalledWith(
+      subscription,
+      {
+        eventCreated: 1889308800,
+        livemode: false,
+      },
+      mockLog
+    );
+    expect(mockReconcileAndLockDowngradedStorageForUser).toHaveBeenCalledWith(
+      'user_deleted_repair_123',
+      mockLog
+    );
+    expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'processed', mockLog);
+    expect(
+      mockReconcileAndLockDowngradedStorageForUser.mock.invocationCallOrder[0]
+    ).toBeLessThan(mockRecordStripeEventReceipt.mock.invocationCallOrder[0]);
+    expect(result.receiptResult).toBe('processed');
+  });
+
   it('records failed for malformed subscription delete events before calling the service', async () => {
     const event = createEvent({
       type: 'customer.subscription.deleted',

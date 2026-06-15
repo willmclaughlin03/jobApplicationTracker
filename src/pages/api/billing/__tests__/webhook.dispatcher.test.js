@@ -144,6 +144,72 @@ describe('/api/billing/webhook dispatcher route boundary', () => {
     });
   });
 
+  it('calls storage repair after processing customer.subscription.updated', async () => {
+    const event = createVerifiedEvent('customer.subscription.updated', {
+      id: 'sub_test_route_updated_123',
+      customer: 'cus_test_123',
+    });
+    mockSyncSubscriptionFromEvent.mockResolvedValue({
+      outcome: 'processed',
+      userId: 'user-123',
+    });
+    mockVerifyWebhookSignature.mockResolvedValue(event);
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockReconcileAndLockDowngradedStorageForUser).toHaveBeenCalledWith(
+      'user-123',
+      mockLog
+    );
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  it('skips storage repair when dispatch outcome is not processed', async () => {
+    const event = createVerifiedEvent('customer.subscription.updated', {
+      id: 'sub_test_stale_123',
+    });
+    mockSyncSubscriptionFromEvent.mockResolvedValue({
+      outcome: 'stale_ignored',
+    });
+    mockVerifyWebhookSignature.mockResolvedValue(event);
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockReconcileAndLockDowngradedStorageForUser).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  it('fails webhook when storage repair returns an error', async () => {
+    const event = createVerifiedEvent('customer.subscription.updated', {
+      id: 'sub_test_repair_error_123',
+    });
+    const repairError = new Error('Repair failed');
+    mockSyncSubscriptionFromEvent.mockResolvedValue({
+      outcome: 'processed',
+      userId: 'user-456',
+    });
+    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValue({
+      data: null,
+      error: repairError,
+    });
+    mockVerifyWebhookSignature.mockResolvedValue(event);
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockReconcileAndLockDowngradedStorageForUser).toHaveBeenCalledWith(
+      'user-456',
+      mockLog
+    );
+    expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'failed', mockLog);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+
   it('processes checkout.session.expired through the public route and real dispatcher', async () => {
     const event = createVerifiedEvent('checkout.session.expired', {
       id: 'cs_test_route_expired_123',

@@ -181,8 +181,9 @@ async function handleGet(req, res, user) {
   }
 
   const repairResult = await repairDowngradedStorageForRequest(req, user);
+  const storageStatusResult = repairResult.data?.storageStatusResult;
 
-  if (repairResult.error) {
+  if (repairResult.error || !storageStatusResult) {
     return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
   }
 
@@ -191,7 +192,7 @@ async function handleGet(req, res, user) {
     req._supabaseClient,
     req.log,
     {
-      storageStatusResult: repairResult.data?.storageStatusResult,
+      storageStatusResult,
     }
   );
 
