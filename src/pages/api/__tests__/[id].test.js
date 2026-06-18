@@ -31,9 +31,9 @@ jest.mock('../../../server/services/jobService.js', () => ({
   deleteJob: mockDeleteJob,
 }));
 
-const mockReconcileAndLockDowngradedStorageForUser = jest.fn();
-jest.mock('../../../server/services/storageDowngradeService.js', () => ({
-  reconcileAndLockDowngradedStorageForUser: mockReconcileAndLockDowngradedStorageForUser,
+const mockReconcileStorageTransitionsForUser = jest.fn();
+jest.mock('../../../server/services/storageTransitionService.js', () => ({
+  reconcileStorageTransitionsForUser: mockReconcileStorageTransitionsForUser,
 }));
 
 // Mock logger to prevent console output during tests
@@ -111,7 +111,7 @@ describe('[id] API handler', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValue({
+    mockReconcileStorageTransitionsForUser.mockResolvedValue({
       data: {
         outcome: 'already_within_limit',
         lockedCount: 0,
@@ -142,7 +142,7 @@ describe('[id] API handler', () => {
       );
       // Should not attempt DB calls
       expect(mockGetJobById).not.toHaveBeenCalled();
-      expect(mockReconcileAndLockDowngradedStorageForUser).not.toHaveBeenCalled();
+      expect(mockReconcileStorageTransitionsForUser).not.toHaveBeenCalled();
     });
 
     /**
@@ -320,8 +320,8 @@ describe('[id] API handler', () => {
       );
     });
 
-    it('should fail closed when downgrade repair fails before job detail access', async () => {
-      mockReconcileAndLockDowngradedStorageForUser.mockResolvedValueOnce({
+    it('should fail closed when storage transition repair fails before job detail access', async () => {
+      mockReconcileStorageTransitionsForUser.mockResolvedValueOnce({
         data: null,
         error: new Error('overflow lock failed'),
       });
@@ -332,6 +332,27 @@ describe('[id] API handler', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(503);
+      expect(mockGetJobById).not.toHaveBeenCalled();
+    });
+
+    it('should fail closed when storage transition repair rejects before job detail access', async () => {
+      const repairError = new Error('storage transition rejected');
+      mockReconcileStorageTransitionsForUser.mockRejectedValueOnce(repairError);
+
+      const req = createMockRequest('GET', validUUID);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(noopLog.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          err: repairError,
+          operation: 'repairStorageTransitionsForJobRequest',
+          userId: mockUser.id,
+        }),
+        'Storage transition repair failed'
+      );
       expect(mockGetJobById).not.toHaveBeenCalled();
     });
   });
@@ -464,9 +485,9 @@ describe('[id] API handler', () => {
       );
     });
 
-    it('should fail closed when downgrade repair fails before job update', async () => {
+    it('should fail closed when storage transition repair fails before job update', async () => {
       mockSafeParse.mockReturnValue({ success: true, data: { notes: 'Updated notes' } });
-      mockReconcileAndLockDowngradedStorageForUser.mockResolvedValueOnce({
+      mockReconcileStorageTransitionsForUser.mockResolvedValueOnce({
         data: null,
         error: new Error('overflow lock failed'),
       });
