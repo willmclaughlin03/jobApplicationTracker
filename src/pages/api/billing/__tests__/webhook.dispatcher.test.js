@@ -33,9 +33,9 @@ jest.mock('../../../../server/lib/billingService.js', () => ({
   syncSubscriptionFromEvent: mockSyncSubscriptionFromEvent,
 }));
 
-const mockReconcileAndLockDowngradedStorageForUser = jest.fn();
-jest.mock('../../../../server/services/storageDowngradeService.js', () => ({
-  reconcileAndLockDowngradedStorageForUser: mockReconcileAndLockDowngradedStorageForUser,
+const mockReconcileStorageTransitionsForUser = jest.fn();
+jest.mock('../../../../server/services/storageTransitionService.js', () => ({
+  reconcileStorageTransitionsForUser: mockReconcileStorageTransitionsForUser,
 }));
 
 const mockVerifyWebhookSignature = jest.fn();
@@ -138,7 +138,7 @@ describe('/api/billing/webhook dispatcher route boundary', () => {
     mockMarkSubscriptionDeletedFromEvent.mockResolvedValue({ outcome: 'processed' });
     mockRecordStripeEventReceipt.mockResolvedValue({ outcome: 'updated' });
     mockSyncSubscriptionFromEvent.mockResolvedValue({ outcome: 'processed' });
-    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValue({
+    mockReconcileStorageTransitionsForUser.mockResolvedValue({
       data: { outcome: 'skipped', lockedCount: 0 },
       error: null,
     });
@@ -159,7 +159,7 @@ describe('/api/billing/webhook dispatcher route boundary', () => {
 
     await handler(req, res);
 
-    expect(mockReconcileAndLockDowngradedStorageForUser).toHaveBeenCalledWith(
+    expect(mockReconcileStorageTransitionsForUser).toHaveBeenCalledWith(
       'user-123',
       mockLog
     );
@@ -179,7 +179,7 @@ describe('/api/billing/webhook dispatcher route boundary', () => {
 
     await handler(req, res);
 
-    expect(mockReconcileAndLockDowngradedStorageForUser).not.toHaveBeenCalled();
+    expect(mockReconcileStorageTransitionsForUser).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(200);
   });
 
@@ -192,7 +192,7 @@ describe('/api/billing/webhook dispatcher route boundary', () => {
       outcome: 'processed',
       userId: 'user-456',
     });
-    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValue({
+    mockReconcileStorageTransitionsForUser.mockResolvedValue({
       data: null,
       error: repairError,
     });
@@ -202,7 +202,7 @@ describe('/api/billing/webhook dispatcher route boundary', () => {
 
     await handler(req, res);
 
-    expect(mockReconcileAndLockDowngradedStorageForUser).toHaveBeenCalledWith(
+    expect(mockReconcileStorageTransitionsForUser).toHaveBeenCalledWith(
       'user-456',
       mockLog
     );

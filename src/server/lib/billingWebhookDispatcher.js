@@ -11,7 +11,7 @@ import {
   recordStripeEventReceipt,
   syncSubscriptionFromEvent,
 } from './billingService.js';
-import { reconcileAndLockDowngradedStorageForUser } from '../services/storageDowngradeService.js';
+import { reconcileStorageTransitionsForUser } from '../services/storageTransitionService.js';
 
 const SUBSCRIPTION_CREATED = 'customer.subscription.created';
 const SUBSCRIPTION_UPDATED = 'customer.subscription.updated';
@@ -201,8 +201,8 @@ async function recordFailedReceiptBestEffort(event, originalError, log) {
  * Resolve the local user id that is safe for post-billing storage repair.
  *
  * Purpose: only processed billing writes with a server-resolved local user id
- * should trigger downgrade locking; stale, malformed, customer-missing, or
- * unsupported outcomes must remain non-mutating.
+ * should trigger storage transition repair; stale, malformed, customer-missing,
+ * or unsupported outcomes must remain non-mutating.
  *
  * @param {object|null|undefined} dispatchResult
  * @returns {string|null}
@@ -220,24 +220,25 @@ function getProcessedBillingUserId(dispatchResult) {
 }
 
 /**
- * Run storage downgrade repair after a successful billing reconcile.
+ * Run storage transition repair after a successful billing reconcile.
  *
  * Purpose: webhook deliveries are the earliest authoritative signal that a
- * cancellation reached terminal Free, so overflow locking runs before the
- * receipt is marked processed. Lock failures then retry through Stripe safely.
+ * cancellation reached terminal Free or Premium entitlement returned, so
+ * storage transitions run before the receipt is marked processed. Failures
+ * then retry through Stripe safely.
  *
  * @param {object|null|undefined} dispatchResult
  * @param {object} log
  * @returns {Promise<void>}
  */
-async function repairDowngradedStorageAfterBillingDispatch(dispatchResult, log) {
+async function repairStorageTransitionsAfterBillingDispatch(dispatchResult, log) {
   const userId = getProcessedBillingUserId(dispatchResult);
 
   if (!userId) {
     return;
   }
 
-  const repairResult = await reconcileAndLockDowngradedStorageForUser(userId, log);
+  const repairResult = await reconcileStorageTransitionsForUser(userId, log);
 
   if (repairResult.error) {
     throw repairResult.error;
@@ -583,7 +584,7 @@ export async function processBillingWebhookEvent(event, log) {
 
   try {
     const dispatchResult = await dispatchStripeBillingEvent(event, log);
-    await repairDowngradedStorageAfterBillingDispatch(dispatchResult, log);
+    await repairStorageTransitionsAfterBillingDispatch(dispatchResult, log);
     const receiptResult = getReceiptResultForDispatchResult(dispatchResult);
 
     await recordStripeEventReceipt(event, receiptResult, log);

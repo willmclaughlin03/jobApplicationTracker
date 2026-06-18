@@ -2,7 +2,7 @@ import { ERROR_MESSAGES } from '../../shared/errors.js';
 import { jobUpdateSchema, uuidSchema } from '../../shared/validations/jobSchema.js';
 import { sendSuccess, sendError } from '../../shared/response.js';
 import { getJobById, updateJob, deleteJob } from '../../server/services/jobService.js';
-import { reconcileAndLockDowngradedStorageForUser } from '../../server/services/storageDowngradeService.js';
+import { reconcileStorageTransitionsForUser } from '../../server/services/storageTransitionService.js';
 import { STORAGE_CREATE_ERROR_CODES } from '../../shared/constants/billing.js';
 import { JOB_STORAGE_ERRORS } from '../../shared/constants/storage.js';
 
@@ -76,18 +76,19 @@ function sendJobAccessError(res, error) {
 }
 
 /**
- * Repair missed downgrade state before reading or updating one job.
+ * Repair missed storage transitions before reading or updating one job.
  *
  * Purpose: direct-by-id routes must not expose an overflow row that remained
- * active only because a terminal cancellation webhook was missed. The returned
- * typed status is reused for locked-row access policy.
+ * active only because a terminal cancellation webhook was missed, and Premium
+ * re-entitlement should restore locked rows before access policy runs. The
+ * returned typed status is reused for locked-row access policy.
  *
  * @param {import('next').NextApiRequest & { log: object }} req - API request with logger.
  * @param {{ id: string }} user - Authenticated user.
  * @returns {Promise<{data: object|null, error: Error|object|null}>}
  */
-async function repairDowngradedStorageForJobRequest(req, user) {
-  return reconcileAndLockDowngradedStorageForUser(user.id, req.log);
+async function repairStorageTransitionsForJobRequest(req, user) {
+  return reconcileStorageTransitionsForUser(user.id, req.log);
 }
 
 /**
@@ -102,7 +103,7 @@ async function repairDowngradedStorageForJobRequest(req, user) {
  * @param {string} jobId - The job's UUID from URL path
  */
 async function handleGet(req, res, user, jobId) {
-  const repairResult = await repairDowngradedStorageForJobRequest(req, user);
+  const repairResult = await repairStorageTransitionsForJobRequest(req, user);
   const storageStatusResult = repairResult.data?.storageStatusResult;
 
   if (repairResult.error || !storageStatusResult) {
@@ -143,7 +144,7 @@ async function handlePut(req, res, user, jobId) {
     return sendError(res, 400, 'VALIDATION_ERROR', ERROR_MESSAGES.VALIDATION_ERROR);
   }
 
-  const repairResult = await repairDowngradedStorageForJobRequest(req, user);
+  const repairResult = await repairStorageTransitionsForJobRequest(req, user);
   const storageStatusResult = repairResult.data?.storageStatusResult;
 
   if (repairResult.error || !storageStatusResult) {

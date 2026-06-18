@@ -3,7 +3,7 @@ import { ERROR_MESSAGES } from '../../../shared/errors.js';
 import { withRateLimit } from '../../../server/middleware/withRateLimit.js';
 import { OPERATIONS } from '../../../shared/constants/tiers.js';
 import { getStorageSummaryForUser } from '../../../server/services/storageSummaryService.js';
-import { reconcileAndLockDowngradedStorageForUser } from '../../../server/services/storageDowngradeService.js';
+import { reconcileStorageTransitionsForUser } from '../../../server/services/storageTransitionService.js';
 
 /**
  * Apply no-store headers to authenticated storage-status responses.
@@ -22,17 +22,17 @@ function setStorageStatusCacheHeaders(res) {
 }
 
 /**
- * Repair confirmed terminal-Free overflow before returning storage metadata.
+ * Repair confirmed storage transitions before returning storage metadata.
  *
- * Purpose: storage status responses should reflect the post-lock counts when a
- * lazy request observes a downgraded over-cap account, and fail closed if that
- * confirmed terminal-Free lock transition cannot complete.
+ * Purpose: storage status responses should reflect post-lock or post-restore
+ * counts when lazy requests observe an account whose billing entitlement
+ * changed, and fail closed if a required storage transition cannot complete.
  *
  * @param {import('next').NextApiRequest & { _rateLimitUser: { id: string }, log: object }} req - Authenticated request.
  * @returns {Promise<{data: object|null, error: Error|object|null}>}
  */
-async function repairDowngradedStorageForStatusRequest(req) {
-  const repairResult = await reconcileAndLockDowngradedStorageForUser(
+async function repairStorageTransitionsForStatusRequest(req) {
+  const repairResult = await reconcileStorageTransitionsForUser(
     req._rateLimitUser.id,
     req.log
   );
@@ -56,7 +56,7 @@ async function repairDowngradedStorageForStatusRequest(req) {
 async function handler(req, res) {
   setStorageStatusCacheHeaders(res);
 
-  const repairResult = await repairDowngradedStorageForStatusRequest(req);
+  const repairResult = await repairStorageTransitionsForStatusRequest(req);
 
   if (repairResult.error) {
     return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);

@@ -3,7 +3,7 @@ import { jobSchema, getQuerySchema } from '../../shared/validations/jobSchema.js
 import { sendSuccess, sendError } from '../../shared/response.js';
 import { getJobsByUserId, createJob } from '../../server/services/jobService.js';
 import { getStorageSummaryForUser } from '../../server/services/storageSummaryService.js';
-import { reconcileAndLockDowngradedStorageForUser } from '../../server/services/storageDowngradeService.js';
+import { reconcileStorageTransitionsForUser } from '../../server/services/storageTransitionService.js';
 import { withRateLimit } from '../../server/middleware/withRateLimit.js';
 import { STORAGE_CREATE_ERROR_CODES } from '../../shared/constants/billing.js';
 
@@ -126,17 +126,18 @@ function sendGetJobsError(res, error) {
 }
 
 /**
- * Run terminal-Free downgrade repair before collection reads or creates.
+ * Run storage transition repair before collection reads or creates.
  *
- * Purpose: lazy request-time repair catches missed cancellation webhooks while
- * preserving fail-closed behavior if confirmed terminal-Free locking fails.
+ * Purpose: lazy request-time repair catches missed cancellation webhooks and
+ * Premium re-entitlement restores while preserving fail-closed behavior when a
+ * required storage transition fails.
  *
  * @param {import('next').NextApiRequest & { log: object }} req - API request with logger.
  * @param {{ id: string }} user - Authenticated user.
  * @returns {Promise<{data: object|null, error: Error|object|null}>}
  */
-async function repairDowngradedStorageForRequest(req, user) {
-  const repairResult = await reconcileAndLockDowngradedStorageForUser(
+async function repairStorageTransitionsForRequest(req, user) {
+  const repairResult = await reconcileStorageTransitionsForUser(
     user.id,
     req.log
   );
@@ -180,7 +181,7 @@ async function handleGet(req, res, user) {
     options.storage_state = storage_state;
   }
 
-  const repairResult = await repairDowngradedStorageForRequest(req, user);
+  const repairResult = await repairStorageTransitionsForRequest(req, user);
   const storageStatusResult = repairResult.data?.storageStatusResult;
 
   if (repairResult.error || !storageStatusResult) {
@@ -236,7 +237,7 @@ async function handlePost(req, res, user) {
 
   const finalizedData = createResult.data;
   finalizedData.status_date = new Date().toISOString();
-  const repairResult = await repairDowngradedStorageForRequest(req, user);
+  const repairResult = await repairStorageTransitionsForRequest(req, user);
 
   if (repairResult.error) {
     return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
