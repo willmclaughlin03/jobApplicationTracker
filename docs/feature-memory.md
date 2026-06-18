@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-06-15
 
+- `2026-06-18` - `Premium storage restore hardening`: Tightened Chunk 7 restore with DB-enforced Premium price allowlisting, stale Premium status refresh after canonical mismatch, and focused regressions for non-allowlisted prices and restore races.
 - `2026-06-15` - `Premium storage restore`: Added Premium re-entitlement restore for locked overflow jobs with a service-role RPC, shared storage-transition repair wiring, over-cap monitoring, and focused regression coverage.
 - `2026-06-15` - `Storage summary string status normalization`: Preserved raw string storage status overrides when building count-only storage summaries.
 - `2026-06-15` - `Subscription delete webhook repair coverage`: Added dispatcher coverage proving processed subscription delete events run downgrade storage repair before receipt recording.

@@ -12,6 +12,7 @@ import {
   ABSOLUTE_RETAINED_JOB_LIMIT,
 } from '../../shared/constants/storage.js';
 import { logger as defaultLogger } from '../../shared/logger.js';
+import { getEntitledPriceIdAllowlist } from '../lib/billingService.js';
 import { supabaseAdmin } from '../lib/supabaseServer.js';
 
 const PREMIUM_RESTORE_RPC = 'restore_locked_jobs_for_premium_user';
@@ -44,6 +45,35 @@ function getStorageStatusValue(storageStatusResult) {
  */
 function normalizeCount(value) {
   return Number.isInteger(value) && value > 0 ? value : 0;
+}
+
+/**
+ * Resolve configured Premium price ids for the restore RPC.
+ *
+ * Purpose: the database restore boundary must enforce the same price allowlist
+ * as canonical JS entitlement checks instead of trusting active status alone.
+ *
+ * @returns {string[]} Non-empty, trimmed Premium price ids.
+ */
+function getEntitledPriceIdsForRestore() {
+  return [...getEntitledPriceIdAllowlist()]
+    .map((priceId) => (typeof priceId === 'string' ? priceId.trim() : ''))
+    .filter(Boolean);
+}
+
+/**
+ * Build the fail-closed restore configuration error.
+ *
+ * Purpose: if a Premium caller reaches restore without a configured price
+ * allowlist, storage state must remain untouched and API callers should retry
+ * or surface service-unavailable behavior instead of restoring optimistically.
+ *
+ * @returns {Error}
+ */
+function createPremiumRestoreConfigError() {
+  const error = new Error('Premium restore price allowlist is not configured');
+  error.code = 'PREMIUM_RESTORE_PRICE_ALLOWLIST_MISSING';
+  return error;
 }
 
 /**
@@ -95,22 +125,34 @@ function isPremiumRestoreEligible(storageStatus) {
  * Purpose: skipped states should be explicit so logs and tests distinguish
  * safe non-restores from successful zero-row restore passes.
  *
- * @param {{ storageStatus?: string|null, storageStatusResult?: object|string|null, reason: string }} params
+ * @param {{ storageStatus?: string|null, storageStatusResult?: object|string|null, reason: string, canonicalStorageStatus?: string|null, canonicalEntitlementReason?: string|null }} params
  * @returns {{data: object, error: null}}
  */
 function buildSkippedResult({
   storageStatus = null,
   storageStatusResult = null,
   reason,
+  canonicalStorageStatus = null,
+  canonicalEntitlementReason = null,
 }) {
+  const data = {
+    outcome: 'skipped',
+    reason,
+    storageStatus,
+    storageStatusResult,
+    restoredCount: 0,
+  };
+
+  if (canonicalStorageStatus) {
+    data.canonicalStorageStatus = canonicalStorageStatus;
+  }
+
+  if (canonicalEntitlementReason) {
+    data.canonicalEntitlementReason = canonicalEntitlementReason;
+  }
+
   return {
-    data: {
-      outcome: 'skipped',
-      reason,
-      storageStatus,
-      storageStatusResult,
-      restoredCount: 0,
-    },
+    data,
     error: null,
   };
 }
@@ -121,14 +163,15 @@ function buildSkippedResult({
  * Purpose: keep the database boundary call in one place so the retained cap
  * and caller-observed storage status cannot drift between restore triggers.
  *
- * @param {{ userId: string, storageStatus: string }} params
+ * @param {{ userId: string, storageStatus: string, entitledPriceIds: string[] }} params
  * @returns {Promise<object>}
  */
-async function callPremiumRestoreRpc({ userId, storageStatus }) {
+async function callPremiumRestoreRpc({ userId, storageStatus, entitledPriceIds }) {
   const { data, error } = await supabaseAdmin.rpc(PREMIUM_RESTORE_RPC, {
     p_user_id: userId,
     p_storage_status: storageStatus,
     p_absolute_retained_job_limit: ABSOLUTE_RETAINED_JOB_LIMIT,
+    p_entitled_price_ids: entitledPriceIds,
   });
 
   if (error) {
@@ -203,13 +246,25 @@ export async function restoreLockedJobsForPremiumUser(
   }
 
   try {
-    const restoreResult = await callPremiumRestoreRpc({ userId, storageStatus });
+    const entitledPriceIds = getEntitledPriceIdsForRestore();
+
+    if (entitledPriceIds.length <= 0) {
+      throw createPremiumRestoreConfigError();
+    }
+
+    const restoreResult = await callPremiumRestoreRpc({
+      userId,
+      storageStatus,
+      entitledPriceIds,
+    });
 
     if (!restoreResult.applied) {
       return buildSkippedResult({
         storageStatus,
         storageStatusResult,
         reason: restoreResult.reason ?? 'restore_rpc_not_applied',
+        canonicalStorageStatus: restoreResult.canonicalStorageStatus ?? null,
+        canonicalEntitlementReason: restoreResult.canonicalEntitlementReason ?? null,
       });
     }
 

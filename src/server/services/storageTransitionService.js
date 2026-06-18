@@ -11,6 +11,34 @@ import { reconcileAndLockDowngradedStorageForUser } from './storageDowngradeServ
 import { restoreLockedJobsForPremiumUser } from './storageRestoreService.js';
 
 /**
+ * Decide whether a restore skip means the caller's Premium status is stale.
+ *
+ * Purpose: when the restore RPC rechecks canonical billing and rejects the
+ * earlier Premium status, routes must not keep using that stale status for
+ * locked-row visibility or full-list access decisions.
+ *
+ * @param {{data?: object|null}|null|undefined} restoreResult
+ * @returns {boolean}
+ */
+function shouldRefreshAfterRestoreMismatch(restoreResult) {
+  return restoreResult?.data?.reason === 'canonical_billing_not_premium';
+}
+
+/**
+ * Remove caller-provided storage status before a refresh repair pass.
+ *
+ * Purpose: stale Premium status can be the thing being repaired, so the second
+ * downgrade/status pass must resolve billing from the privileged source again
+ * while preserving safe options such as the test clock.
+ *
+ * @param {{ storageStatusResult?: object|string|null, now?: Date }} options
+ * @returns {{ now?: Date }}
+ */
+function buildFreshRepairOptions(options = {}) {
+  return options.now instanceof Date ? { now: options.now } : {};
+}
+
+/**
  * Reconcile all storage transitions for one user.
  *
  * Purpose: existing request and webhook paths need downgrade repair before
@@ -46,6 +74,26 @@ export async function reconcileStorageTransitionsForUser(
 
   if (restoreResult.error) {
     return restoreResult;
+  }
+
+  if (shouldRefreshAfterRestoreMismatch(restoreResult)) {
+    const refreshedDowngradeResult = await reconcileAndLockDowngradedStorageForUser(
+      userId,
+      log,
+      buildFreshRepairOptions(options)
+    );
+
+    if (refreshedDowngradeResult.error) {
+      return refreshedDowngradeResult;
+    }
+
+    return {
+      data: {
+        ...refreshedDowngradeResult.data,
+        restoreResult: restoreResult.data,
+      },
+      error: null,
+    };
   }
 
   return {

@@ -7,11 +7,17 @@
  */
 
 const mockRpc = jest.fn();
+const mockGetEntitledPriceIdAllowlist = jest.fn();
+const entitledPriceIds = ['price_premium_monthly'];
 
 jest.mock('../../lib/supabaseServer.js', () => ({
   supabaseAdmin: {
     rpc: mockRpc,
   },
+}));
+
+jest.mock('../../lib/billingService.js', () => ({
+  getEntitledPriceIdAllowlist: mockGetEntitledPriceIdAllowlist,
 }));
 
 jest.mock('../../../shared/logger.js', () => ({
@@ -80,6 +86,7 @@ function rpcRestoreResponse(overrides = {}) {
 describe('storageRestoreService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGetEntitledPriceIdAllowlist.mockReturnValue(new Set(entitledPriceIds));
   });
 
   it('calls the restore RPC only for confirmed Premium storage status', async () => {
@@ -105,6 +112,7 @@ describe('storageRestoreService', () => {
       p_user_id: userId,
       p_storage_status: STORAGE_STATUSES.PREMIUM_ACTIVE,
       p_absolute_retained_job_limit: ABSOLUTE_RETAINED_JOB_LIMIT,
+      p_entitled_price_ids: entitledPriceIds,
     });
   });
 
@@ -132,7 +140,36 @@ describe('storageRestoreService', () => {
       p_user_id: userId,
       p_storage_status: STORAGE_STATUSES.PREMIUM_CANCELING,
       p_absolute_retained_job_limit: ABSOLUTE_RETAINED_JOB_LIMIT,
+      p_entitled_price_ids: entitledPriceIds,
     });
+  });
+
+  it('fails closed before restore when the Premium price allowlist is missing', async () => {
+    mockGetEntitledPriceIdAllowlist.mockReturnValueOnce(new Set());
+
+    const result = await restoreLockedJobsForPremiumUser(
+      userId,
+      buildStorageStatus(STORAGE_STATUSES.PREMIUM_ACTIVE),
+      mockLog
+    );
+
+    expect(result.data).toBeNull();
+    expect(result.error).toEqual(
+      expect.objectContaining({
+        code: 'PREMIUM_RESTORE_PRICE_ALLOWLIST_MISSING',
+      })
+    );
+    expect(mockRpc).not.toHaveBeenCalled();
+    expect(mockLog.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: expect.objectContaining({
+          code: 'PREMIUM_RESTORE_PRICE_ALLOWLIST_MISSING',
+        }),
+        operation: 'restoreLockedJobsForPremiumUser',
+        userId,
+      }),
+      'Failed to restore Premium storage archive'
+    );
   });
 
   it.each([
@@ -178,6 +215,7 @@ describe('storageRestoreService', () => {
     expect(result.data).toEqual(expect.objectContaining({
       outcome: 'skipped',
       reason: 'canonical_billing_not_premium',
+      canonicalStorageStatus: STORAGE_STATUSES.TERMINAL_FREE,
       restoredCount: 0,
     }));
   });

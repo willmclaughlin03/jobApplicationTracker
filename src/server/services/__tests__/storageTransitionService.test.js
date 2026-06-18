@@ -107,6 +107,75 @@ describe('storageTransitionService', () => {
     );
   });
 
+  it('refreshes storage status when restore rejects a stale Premium result', async () => {
+    const now = new Date('2026-06-15T12:00:00.000Z');
+    const staleStorageStatusResult = { status: STORAGE_STATUSES.PREMIUM_ACTIVE };
+    const refreshedStorageStatusResult = {
+      status: STORAGE_STATUSES.TERMINAL_FREE,
+      lockEligible: true,
+    };
+    const options = {
+      storageStatusResult: staleStorageStatusResult,
+      now,
+    };
+    const initialDowngradeData = {
+      outcome: 'skipped',
+      reason: 'storage_status_not_lock_eligible',
+      storageStatusResult: staleStorageStatusResult,
+    };
+    const restoreData = {
+      outcome: 'skipped',
+      reason: 'canonical_billing_not_premium',
+      canonicalStorageStatus: STORAGE_STATUSES.TERMINAL_FREE,
+      restoredCount: 0,
+    };
+    const refreshedDowngradeData = {
+      outcome: 'locked',
+      lockedCount: 4,
+      storageStatus: STORAGE_STATUSES.TERMINAL_FREE,
+      storageStatusResult: refreshedStorageStatusResult,
+    };
+
+    mockReconcileAndLockDowngradedStorageForUser
+      .mockResolvedValueOnce({
+        data: initialDowngradeData,
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: refreshedDowngradeData,
+        error: null,
+      });
+    mockRestoreLockedJobsForPremiumUser.mockResolvedValueOnce({
+      data: restoreData,
+      error: null,
+    });
+
+    const result = await reconcileStorageTransitionsForUser(userId, mockLog, options);
+
+    expect(result.error).toBeNull();
+    expect(result.data).toEqual({
+      ...refreshedDowngradeData,
+      restoreResult: restoreData,
+    });
+    expect(mockRestoreLockedJobsForPremiumUser).toHaveBeenCalledWith(
+      userId,
+      staleStorageStatusResult,
+      mockLog
+    );
+    expect(mockReconcileAndLockDowngradedStorageForUser).toHaveBeenNthCalledWith(
+      1,
+      userId,
+      mockLog,
+      options
+    );
+    expect(mockReconcileAndLockDowngradedStorageForUser).toHaveBeenNthCalledWith(
+      2,
+      userId,
+      mockLog,
+      { now }
+    );
+  });
+
   it('propagates downgrade repair errors without attempting restore', async () => {
     const downgradeError = new Error('lock failed');
     mockReconcileAndLockDowngradedStorageForUser.mockResolvedValueOnce({

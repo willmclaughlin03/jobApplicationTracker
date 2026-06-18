@@ -42,6 +42,8 @@ CREATE INDEX IF NOT EXISTS jobs_locked_restore_selection_idx
 -- Ordering semantics:
 --   - rechecks canonical local billing while holding the shared billing/storage
 --     advisory lock inside resolve_canonical_storage_status_for_user()
+--   - verifies the local subscription price_id against the server-provided
+--     Premium price allowlist before treating a billing row as entitled
 --   - takes the same per-user jobs_create_quota advisory lock as create and
 --     downgrade locking before reading or mutating jobs
 --   - restores locked rows by status priority, then created_at DESC, id DESC
@@ -55,7 +57,8 @@ CREATE INDEX IF NOT EXISTS jobs_locked_restore_selection_idx
 CREATE OR REPLACE FUNCTION public.restore_locked_jobs_for_premium_user(
   p_user_id uuid,
   p_storage_status text,
-  p_absolute_retained_job_limit integer
+  p_absolute_retained_job_limit integer,
+  p_entitled_price_ids text[]
 )
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -73,6 +76,8 @@ DECLARE
   restore_slots integer;
   restored_count integer;
   retained_over_limit boolean;
+  subscription_price_id text;
+  normalized_entitled_price_ids text[];
 BEGIN
   normalized_storage_status := pg_catalog.btrim(p_storage_status);
 
@@ -86,11 +91,31 @@ BEGIN
       USING ERRCODE = '22023';
   END IF;
 
+  SELECT ARRAY(
+    SELECT DISTINCT allowed_price.normalized_price_id
+    FROM (
+      SELECT pg_catalog.btrim(price_id) AS normalized_price_id
+      FROM pg_catalog.unnest(p_entitled_price_ids) AS allowed_price_id(price_id)
+    ) AS allowed_price
+    WHERE allowed_price.normalized_price_id <> ''
+  )
+  INTO normalized_entitled_price_ids;
+
   IF normalized_storage_status IS NULL
      OR normalized_storage_status NOT IN ('premium_active', 'premium_canceling') THEN
     RETURN jsonb_build_object(
       'applied', false,
       'reason', 'storage_status_not_restore_eligible',
+      'storageStatus', normalized_storage_status,
+      'restoredCount', 0
+    );
+  END IF;
+
+  IF normalized_entitled_price_ids IS NULL
+     OR pg_catalog.array_length(normalized_entitled_price_ids, 1) IS NULL THEN
+    RETURN jsonb_build_object(
+      'applied', false,
+      'reason', 'premium_price_allowlist_missing',
       'storageStatus', normalized_storage_status,
       'restoredCount', 0
     );
@@ -105,6 +130,23 @@ BEGIN
       'reason', 'canonical_billing_not_premium',
       'storageStatus', normalized_storage_status,
       'canonicalStorageStatus', canonical_storage_status,
+      'restoredCount', 0
+    );
+  END IF;
+
+  SELECT pg_catalog.btrim(price_id)
+  INTO subscription_price_id
+  FROM public.billing_subscriptions
+  WHERE user_id = p_user_id;
+
+  IF subscription_price_id IS NULL
+     OR subscription_price_id <> ALL(normalized_entitled_price_ids) THEN
+    RETURN jsonb_build_object(
+      'applied', false,
+      'reason', 'canonical_billing_not_premium',
+      'storageStatus', normalized_storage_status,
+      'canonicalStorageStatus', 'non_entitled_non_terminal',
+      'canonicalEntitlementReason', 'price_id_not_allowlisted',
       'restoredCount', 0
     );
   END IF;
@@ -223,7 +265,7 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.restore_locked_jobs_for_premium_user(uuid, text, integer)
+REVOKE ALL ON FUNCTION public.restore_locked_jobs_for_premium_user(uuid, text, integer, text[])
   FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.restore_locked_jobs_for_premium_user(uuid, text, integer)
+GRANT EXECUTE ON FUNCTION public.restore_locked_jobs_for_premium_user(uuid, text, integer, text[])
   TO service_role;

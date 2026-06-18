@@ -363,6 +363,7 @@ describeOrSkip('Suite F - Jobs Premium restore integration', () => {
    * @param {object} options RPC options.
    * @param {string} options.storageStatus Caller-observed storage status.
    * @param {number} options.retainedLimit Absolute retained row cap.
+   * @param {string[]} options.entitledPriceIds Server-configured Premium price allowlist.
    * @returns {Promise<object>} Normalized RPC response payload.
    */
   async function callPremiumRestoreRpc(
@@ -370,6 +371,7 @@ describeOrSkip('Suite F - Jobs Premium restore integration', () => {
     {
       storageStatus = STORAGE_STATUSES.PREMIUM_ACTIVE,
       retainedLimit = ABSOLUTE_RETAINED_JOB_LIMIT,
+      entitledPriceIds = ['price_premium_monthly'],
     } = {}
   ) {
     let lastError = null;
@@ -379,6 +381,7 @@ describeOrSkip('Suite F - Jobs Premium restore integration', () => {
         p_user_id: userId,
         p_storage_status: storageStatus,
         p_absolute_retained_job_limit: retainedLimit,
+        p_entitled_price_ids: entitledPriceIds,
       });
 
       if (!error) {
@@ -498,12 +501,12 @@ describeOrSkip('Suite F - Jobs Premium restore integration', () => {
       SELECT
         has_function_privilege(
           'authenticated',
-          'public.restore_locked_jobs_for_premium_user(uuid,text,integer)',
+          'public.restore_locked_jobs_for_premium_user(uuid,text,integer,text[])',
           'EXECUTE'
         ) AS authenticated_can_execute,
         has_function_privilege(
           'service_role',
-          'public.restore_locked_jobs_for_premium_user(uuid,text,integer)',
+          'public.restore_locked_jobs_for_premium_user(uuid,text,integer,text[])',
           'EXECUTE'
         ) AS service_role_can_execute
     `);
@@ -591,7 +594,31 @@ describeOrSkip('Suite F - Jobs Premium restore integration', () => {
     });
   });
 
-  test('F5: over-cap historical rows restore only up to the Premium cap and still block creates', async () => {
+  test('F5: active non-allowlisted price rejects a stale Premium restore request', async () => {
+    const user = await createTempUser('jobs-restore-wrong-price');
+    await seedBillingSubscription(user.id, { price_id: 'price_other_monthly' });
+    await seedGeneratedJobs(user.id, { activeCount: 1, lockedCount: 2 });
+
+    const result = await callPremiumRestoreRpc(user.id, {
+      storageStatus: STORAGE_STATUSES.PREMIUM_ACTIVE,
+      entitledPriceIds: ['price_premium_monthly'],
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      applied: false,
+      reason: 'canonical_billing_not_premium',
+      canonicalStorageStatus: STORAGE_STATUSES.NON_ENTITLED_NON_TERMINAL,
+      canonicalEntitlementReason: 'price_id_not_allowlisted',
+      restoredCount: 0,
+    }));
+    await expect(getStorageCounts(user.id)).resolves.toEqual({
+      active_count: 1,
+      locked_count: 2,
+      retained_total_count: 3,
+    });
+  });
+
+  test('F6: over-cap historical rows restore only up to the Premium cap and still block creates', async () => {
     const user = await createTempUser('jobs-restore-over-cap');
     await seedBillingSubscription(user.id);
     await seedGeneratedJobs(user.id, {
@@ -621,7 +648,7 @@ describeOrSkip('Suite F - Jobs Premium restore integration', () => {
     });
   });
 
-  test('F6: deterministic restore ordering keeps status-priority rows first', async () => {
+  test('F7: deterministic restore ordering keeps status-priority rows first', async () => {
     const user = await createTempUser('jobs-restore-ordering');
     await seedBillingSubscription(user.id);
     await seedGeneratedJobs(user.id, { activeCount: 1 });
