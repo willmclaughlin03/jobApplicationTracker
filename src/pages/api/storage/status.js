@@ -32,15 +32,27 @@ function setStorageStatusCacheHeaders(res) {
  * @returns {Promise<{data: object|null, error: Error|object|null}>}
  */
 async function repairStorageTransitionsForStatusRequest(req) {
-  const repairResult = await reconcileStorageTransitionsForUser(
-    req._rateLimitUser.id,
-    req.log
-  );
+  try {
+    const repairResult = await reconcileStorageTransitionsForUser(
+      req._rateLimitUser.id,
+      req.log
+    );
 
-  return {
-    data: repairResult.data ?? null,
-    error: repairResult.error ?? null,
-  };
+    return {
+      data: repairResult.data ?? null,
+      error: repairResult.error ?? null,
+    };
+  } catch (error) {
+    req.log.error(
+      {
+        err: error,
+        operation: 'repairStorageTransitionsForStatusRequest',
+        userId: req._rateLimitUser.id,
+      },
+      'Storage transition repair failed'
+    );
+    return { data: null, error };
+  }
 }
 
 /**

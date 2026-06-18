@@ -334,6 +334,27 @@ describe('[id] API handler', () => {
       expect(res.status).toHaveBeenCalledWith(503);
       expect(mockGetJobById).not.toHaveBeenCalled();
     });
+
+    it('should fail closed when storage transition repair rejects before job detail access', async () => {
+      const repairError = new Error('storage transition rejected');
+      mockReconcileStorageTransitionsForUser.mockRejectedValueOnce(repairError);
+
+      const req = createMockRequest('GET', validUUID);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(noopLog.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          err: repairError,
+          operation: 'repairStorageTransitionsForJobRequest',
+          userId: mockUser.id,
+        }),
+        'Storage transition repair failed'
+      );
+      expect(mockGetJobById).not.toHaveBeenCalled();
+    });
   });
 
   describe('PUT /api/jobs/[id]', () => {

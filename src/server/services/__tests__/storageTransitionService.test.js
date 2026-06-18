@@ -189,6 +189,39 @@ describe('storageTransitionService', () => {
     expect(mockRestoreLockedJobsForPremiumUser).not.toHaveBeenCalled();
   });
 
+  it('fails closed when downgrade repair rejects', async () => {
+    const downgradeError = new Error('lock failed');
+    mockReconcileAndLockDowngradedStorageForUser.mockRejectedValueOnce(downgradeError);
+
+    await expect(reconcileStorageTransitionsForUser(userId, mockLog)).resolves.toEqual({
+      data: null,
+      error: downgradeError,
+    });
+    expect(mockLog.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: downgradeError,
+        operation: 'reconcileStorageTransitionsForUser.downgrade',
+        userId,
+      }),
+      'Storage transition downgrade repair failed'
+    );
+    expect(mockRestoreLockedJobsForPremiumUser).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when downgrade repair returns malformed success data', async () => {
+    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValueOnce({
+      data: null,
+      error: null,
+    });
+
+    const result = await reconcileStorageTransitionsForUser(userId, mockLog);
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(Error);
+    expect(result.error.message).toBe('Downgrade reconciliation returned no data');
+    expect(mockRestoreLockedJobsForPremiumUser).not.toHaveBeenCalled();
+  });
+
   it('propagates Premium restore errors so callers fail closed', async () => {
     const restoreError = new Error('restore failed');
     const storageStatusResult = { status: STORAGE_STATUSES.PREMIUM_ACTIVE };
@@ -207,5 +240,52 @@ describe('storageTransitionService', () => {
     const result = await reconcileStorageTransitionsForUser(userId, mockLog);
 
     expect(result).toEqual({ data: null, error: restoreError });
+  });
+
+  it('fails closed when Premium restore rejects', async () => {
+    const restoreError = new Error('restore failed');
+    const storageStatusResult = { status: STORAGE_STATUSES.PREMIUM_ACTIVE };
+    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValueOnce({
+      data: {
+        outcome: 'skipped',
+        storageStatusResult,
+      },
+      error: null,
+    });
+    mockRestoreLockedJobsForPremiumUser.mockRejectedValueOnce(restoreError);
+
+    await expect(reconcileStorageTransitionsForUser(userId, mockLog)).resolves.toEqual({
+      data: null,
+      error: restoreError,
+    });
+    expect(mockLog.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: restoreError,
+        operation: 'reconcileStorageTransitionsForUser.restore',
+        userId,
+      }),
+      'Storage transition Premium restore failed'
+    );
+  });
+
+  it('fails closed when Premium restore returns malformed success data', async () => {
+    const storageStatusResult = { status: STORAGE_STATUSES.PREMIUM_ACTIVE };
+    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValueOnce({
+      data: {
+        outcome: 'skipped',
+        storageStatusResult,
+      },
+      error: null,
+    });
+    mockRestoreLockedJobsForPremiumUser.mockResolvedValueOnce({
+      data: null,
+      error: null,
+    });
+
+    const result = await reconcileStorageTransitionsForUser(userId, mockLog);
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(Error);
+    expect(result.error.message).toBe('Premium restore returned no data');
   });
 });

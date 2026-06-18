@@ -171,4 +171,30 @@ describe('/api/storage/status handler', () => {
       })
     );
   });
+
+  it('returns 503 when confirmed storage transition repair rejects', async () => {
+    const repairError = new Error('storage transition rejected');
+    mockReconcileStorageTransitionsForUser.mockRejectedValueOnce(repairError);
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
+    expect(mockLog.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: repairError,
+        operation: 'repairStorageTransitionsForStatusRequest',
+        userId: mockUser.id,
+      }),
+      'Storage transition repair failed'
+    );
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: null,
+        error: 'SERVICE_UNAVAILABLE',
+      })
+    );
+  });
 });

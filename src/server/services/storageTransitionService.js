@@ -55,36 +55,96 @@ export async function reconcileStorageTransitionsForUser(
   log = defaultLogger,
   options = {}
 ) {
-  const downgradeResult = await reconcileAndLockDowngradedStorageForUser(
-    userId,
-    log,
-    options
-  );
+  let downgradeResult;
+  try {
+    downgradeResult = await reconcileAndLockDowngradedStorageForUser(
+      userId,
+      log,
+      options
+    );
+  } catch (error) {
+    log.error(
+      { err: error, operation: 'reconcileStorageTransitionsForUser.downgrade', userId },
+      'Storage transition downgrade repair failed'
+    );
+    return { data: null, error };
+  }
 
-  if (downgradeResult.error) {
+  if (downgradeResult?.error) {
     return downgradeResult;
   }
 
-  const storageStatusResult = downgradeResult.data?.storageStatusResult ?? null;
-  const restoreResult = await restoreLockedJobsForPremiumUser(
-    userId,
-    storageStatusResult,
-    log
-  );
+  if (
+    !downgradeResult?.data
+    || typeof downgradeResult.data !== 'object'
+    || Array.isArray(downgradeResult.data)
+  ) {
+    return {
+      data: null,
+      error: new Error('Downgrade reconciliation returned no data'),
+    };
+  }
 
-  if (restoreResult.error) {
+  const storageStatusResult = downgradeResult.data.storageStatusResult ?? null;
+  let restoreResult;
+  try {
+    restoreResult = await restoreLockedJobsForPremiumUser(
+      userId,
+      storageStatusResult,
+      log
+    );
+  } catch (error) {
+    log.error(
+      { err: error, operation: 'reconcileStorageTransitionsForUser.restore', userId },
+      'Storage transition Premium restore failed'
+    );
+    return { data: null, error };
+  }
+
+  if (restoreResult?.error) {
     return restoreResult;
   }
 
-  if (shouldRefreshAfterRestoreMismatch(restoreResult)) {
-    const refreshedDowngradeResult = await reconcileAndLockDowngradedStorageForUser(
-      userId,
-      log,
-      buildFreshRepairOptions(options)
-    );
+  if (
+    !restoreResult?.data
+    || typeof restoreResult.data !== 'object'
+    || Array.isArray(restoreResult.data)
+  ) {
+    return {
+      data: null,
+      error: new Error('Premium restore returned no data'),
+    };
+  }
 
-    if (refreshedDowngradeResult.error) {
+  if (shouldRefreshAfterRestoreMismatch(restoreResult)) {
+    let refreshedDowngradeResult;
+    try {
+      refreshedDowngradeResult = await reconcileAndLockDowngradedStorageForUser(
+        userId,
+        log,
+        buildFreshRepairOptions(options)
+      );
+    } catch (error) {
+      log.error(
+        { err: error, operation: 'reconcileStorageTransitionsForUser.downgradeRefresh', userId },
+        'Storage transition downgrade refresh failed'
+      );
+      return { data: null, error };
+    }
+
+    if (refreshedDowngradeResult?.error) {
       return refreshedDowngradeResult;
+    }
+
+    if (
+      !refreshedDowngradeResult?.data
+      || typeof refreshedDowngradeResult.data !== 'object'
+      || Array.isArray(refreshedDowngradeResult.data)
+    ) {
+      return {
+        data: null,
+        error: new Error('Downgrade reconciliation returned no data'),
+      };
     }
 
     return {

@@ -14,6 +14,11 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-06-15
 
+- `2026-06-18` - `Storage transition malformed-envelope guard`: Made shared storage-transition repair fail closed when downgrade or restore dependencies return missing success data, with focused service coverage.
+- `2026-06-18` - `Storage transition service rejection guard`: Normalized downgrade and Premium restore dependency rejections into fail-closed storage-transition envelopes with focused service coverage.
+- `2026-06-18` - `Single-job repair rejection guard`: Kept single-job detail/update storage-transition repair fail-closed when reconciliation rejects and covered the rejected-promise path.
+- `2026-06-18` - `Jobs collection repair rejection guard`: Kept jobs list/create storage-transition repair fail-closed when reconciliation rejects and covered the rejected-promise path.
+- `2026-06-18` - `Storage status repair rejection guard`: Kept storage-status transition repair fail-closed when reconciliation rejects and covered the rejected-promise path.
 - `2026-06-18` - `Premium storage restore hardening`: Tightened Chunk 7 restore with DB-enforced Premium price allowlisting, stale Premium status refresh after canonical mismatch, and focused regressions for non-allowlisted prices and restore races.
 - `2026-06-15` - `Premium storage restore`: Added Premium re-entitlement restore for locked overflow jobs with a service-role RPC, shared storage-transition repair wiring, over-cap monitoring, and focused regression coverage.
 - `2026-06-15` - `Storage summary string status normalization`: Preserved raw string storage status overrides when building count-only storage summaries.

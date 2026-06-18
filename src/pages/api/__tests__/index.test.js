@@ -324,6 +324,29 @@ describe('index API handler (/api/jobs)', () => {
       expect(mockGetJobsByUserId).not.toHaveBeenCalled();
     });
 
+    it('should fail closed when lazy storage transition repair rejects before listing jobs', async () => {
+      const repairError = new Error('storage transition rejected');
+      mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: {} });
+      mockReconcileStorageTransitionsForUser.mockRejectedValueOnce(repairError);
+
+      const req = createMockRequest('GET');
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(noopLog.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          err: repairError,
+          operation: 'repairStorageTransitionsForRequest',
+          userId: mockUser.id,
+        }),
+        'Storage transition repair failed'
+      );
+      expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
+      expect(mockGetJobsByUserId).not.toHaveBeenCalled();
+    });
+
     it('should fail closed when lazy storage transition repair omits storage status before listing jobs', async () => {
       mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: {} });
       mockReconcileStorageTransitionsForUser.mockResolvedValueOnce({

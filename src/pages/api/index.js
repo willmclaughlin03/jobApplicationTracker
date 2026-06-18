@@ -137,15 +137,27 @@ function sendGetJobsError(res, error) {
  * @returns {Promise<{data: object|null, error: Error|object|null}>}
  */
 async function repairStorageTransitionsForRequest(req, user) {
-  const repairResult = await reconcileStorageTransitionsForUser(
-    user.id,
-    req.log
-  );
+  try {
+    const repairResult = await reconcileStorageTransitionsForUser(
+      user.id,
+      req.log
+    );
 
-  return {
-    data: repairResult.data ?? null,
-    error: repairResult.error ?? null,
-  };
+    return {
+      data: repairResult.data ?? null,
+      error: repairResult.error ?? null,
+    };
+  } catch (error) {
+    req.log.error(
+      {
+        err: error,
+        operation: 'repairStorageTransitionsForRequest',
+        userId: user.id,
+      },
+      'Storage transition repair failed'
+    );
+    return { data: null, error };
+  }
 }
 
 /**
