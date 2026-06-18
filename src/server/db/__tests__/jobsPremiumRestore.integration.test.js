@@ -651,7 +651,14 @@ describeOrSkip('Suite F - Jobs Premium restore integration', () => {
   test('F7: deterministic restore ordering keeps status-priority rows first', async () => {
     const user = await createTempUser('jobs-restore-ordering');
     await seedBillingSubscription(user.id);
-    await seedGeneratedJobs(user.id, { activeCount: 1 });
+    const activeSeedResult = await serviceClient.from('jobs').insert(
+      buildJobRow(user.id, {
+        company: 'Existing Active Baseline',
+      })
+    );
+
+    if (activeSeedResult.error) throw activeSeedResult.error;
+
     await seedExplicitLockedJobs(user.id, [
       {
         company: 'Restore Offered Old',

@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-06-15
 
+- `2026-06-18` - `Premium restore ordering test fixture`: Renamed the restore-ordering active baseline fixture so restored-row assertions only inspect rows unlocked by the Premium restore RPC.
 - `2026-06-18` - `Storage transition malformed-envelope guard`: Made shared storage-transition repair fail closed when downgrade or restore dependencies return missing success data, with focused service coverage.
 - `2026-06-18` - `Storage transition service rejection guard`: Normalized downgrade and Premium restore dependency rejections into fail-closed storage-transition envelopes with focused service coverage.
 - `2026-06-18` - `Single-job repair rejection guard`: Kept single-job detail/update storage-transition repair fail-closed when reconciliation rejects and covered the rejected-promise path.
