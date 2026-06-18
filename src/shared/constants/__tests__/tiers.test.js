@@ -9,6 +9,7 @@ describe('billing tier invariants', () => {
       [OPERATIONS.DELETE]: { hourly: null, daily: null },
       [OPERATIONS.AUTH]: { hourly: 15, daily: 30 },
       [OPERATIONS.HEALTH]: { hourly: 60, daily: null },
+      [OPERATIONS.STORAGE_EXPORT]: { hourly: 5, daily: 25 },
       storage: { maxJobs: 3000, autoDeleteOldest: false },
     });
   });
@@ -43,6 +44,17 @@ describe('billing tier invariants', () => {
     expect(TIER_LIMITS[TIERS.PAID][OPERATIONS.BILLING_WRITE]).toEqual({
       hourly: 60,
       daily: 180,
+    });
+  });
+
+  it('pins the storage export limits for free and paid tiers', () => {
+    expect(TIER_LIMITS[TIERS.FREE][OPERATIONS.STORAGE_EXPORT]).toEqual({
+      hourly: 5,
+      daily: 25,
+    });
+    expect(TIER_LIMITS[TIERS.PAID][OPERATIONS.STORAGE_EXPORT]).toEqual({
+      hourly: 5,
+      daily: 25,
     });
   });
 
