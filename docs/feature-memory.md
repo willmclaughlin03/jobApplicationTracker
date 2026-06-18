@@ -15,6 +15,7 @@ Use this file as a quick-running log of implemented changes.
 ### Week of 2026-06-15
 
 - `2026-06-18` - `Job CSV export`: Added an authenticated storage export endpoint with owner-scoped active-plus-locked CSV output, dedicated export rate limits, no-store download headers, and focused route/service coverage.
+- `2026-06-18` - `Job CSV export keyset pagination`: Replaced offset-based export paging with a stable `(created_at, id)` keyset cursor so large CSV exports avoid duplicate or skipped rows near page boundaries.
 - `2026-06-15` - `Storage summary string status normalization`: Preserved raw string storage status overrides when building count-only storage summaries.
 - `2026-06-15` - `Subscription delete webhook repair coverage`: Added dispatcher coverage proving processed subscription delete events run downgrade storage repair before receipt recording.
 - `2026-06-15` - `Overflow locking CAS timestamp retry`: Replaced the fixed E8 integration-test timestamp delay with a bounded retry that waits for the billing subscription snapshot timestamp to advance.

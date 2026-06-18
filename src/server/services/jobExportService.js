@@ -20,10 +20,53 @@ export const JOB_EXPORT_COLUMNS = Object.freeze([
   'created_at',
 ]);
 
-const JOB_EXPORT_SELECT = JOB_EXPORT_COLUMNS.join(',');
+const JOB_EXPORT_SELECT = [...JOB_EXPORT_COLUMNS, 'id'].join(',');
 const JOB_EXPORT_PAGE_SIZE = 1000;
 const FORMULA_LIKE_CELL_PATTERN = /^\s*[=+\-@]/;
 const CONTROL_FORMULA_CELL_PATTERN = /^[\t\r]/;
+
+/**
+ * Builds the PostgREST keyset cursor predicate for export pagination.
+ *
+ * Purpose: keep multi-page exports stable when rows share created_at values or
+ * when newer rows are inserted while the export is being assembled.
+ *
+ * @param {{ createdAt: string, id: string }} cursor - Last row from the previous page.
+ * @returns {string} Supabase .or() predicate for rows after the cursor.
+ */
+function buildJobExportCursorFilter(cursor) {
+  return [
+    `created_at.lt.${cursor.createdAt}`,
+    `and(created_at.eq.${cursor.createdAt},id.lt.${cursor.id})`,
+  ].join(',');
+}
+
+/**
+ * Extracts the next keyset cursor from a full export page.
+ *
+ * Purpose: fail closed if the service-role query ever omits the non-exported
+ * cursor fields needed to avoid unstable offset pagination.
+ *
+ * @param {object[]} jobs - One fetched export page.
+ * @returns {{ createdAt: string, id: string } | null} Cursor for the next page.
+ */
+function getNextJobExportCursor(jobs) {
+  const lastJob = jobs[jobs.length - 1];
+
+  if (
+    typeof lastJob?.created_at !== 'string'
+    || lastJob.created_at.length === 0
+    || typeof lastJob?.id !== 'string'
+    || lastJob.id.length === 0
+  ) {
+    return null;
+  }
+
+  return {
+    createdAt: lastJob.created_at,
+    id: lastJob.id,
+  };
+}
 
 /**
  * Converts a database value into exportable cell text.
@@ -107,27 +150,32 @@ export function serializeJobsToCsv(jobs = []) {
 /**
  * Fetches one bounded page of owned jobs for CSV export.
  *
- * Purpose: Explicitly filters by authenticated owner and projects only the
- * user-facing export columns, including active and locked rows.
+ * Purpose: Explicitly filters by authenticated owner and projects the
+ * user-facing export columns plus a non-exported keyset cursor.
  *
  * @param {string} userId - Authenticated owner id from req._rateLimitUser.id.
- * @param {number} rangeStart - Inclusive Supabase range start.
+ * @param {{ createdAt: string, id: string } | null} cursor - Last row cursor from the previous page.
  * @param {object} log - Request-scoped logger.
  * @returns {Promise<{data: object[]|null, error: Error|object|null}>}
  */
-async function fetchOwnedJobExportPage(userId, rangeStart, log = defaultLogger) {
-  const rangeEnd = rangeStart + JOB_EXPORT_PAGE_SIZE - 1;
-
-  const { data, error } = await supabaseAdmin
+async function fetchOwnedJobExportPage(userId, cursor, log = defaultLogger) {
+  let query = supabaseAdmin
     .from('jobs')
     .select(JOB_EXPORT_SELECT)
-    .eq('user_id', userId)
+    .eq('user_id', userId);
+
+  if (cursor) {
+    query = query.or(buildJobExportCursorFilter(cursor));
+  }
+
+  const { data, error } = await query
     .order('created_at', { ascending: false })
-    .range(rangeStart, rangeEnd);
+    .order('id', { ascending: false })
+    .limit(JOB_EXPORT_PAGE_SIZE);
 
   if (error) {
     log.error(
-      { err: error, operation: 'fetchOwnedJobExportPage', userId, rangeStart },
+      { err: error, operation: 'fetchOwnedJobExportPage', userId, cursor },
       'Failed to fetch jobs export page'
     );
     return { data: null, error };
@@ -136,7 +184,7 @@ async function fetchOwnedJobExportPage(userId, rangeStart, log = defaultLogger) 
   if (!Array.isArray(data)) {
     const shapeError = new Error('Jobs export query returned an unexpected payload');
     log.error(
-      { err: shapeError, operation: 'fetchOwnedJobExportPage', userId, rangeStart },
+      { err: shapeError, operation: 'fetchOwnedJobExportPage', userId, cursor },
       'Jobs export page payload was invalid'
     );
     return { data: null, error: shapeError };
@@ -165,9 +213,10 @@ export async function getJobsCsvExportForUser(userId, log = defaultLogger) {
 
   try {
     const jobs = [];
+    let cursor = null;
 
-    for (let rangeStart = 0; ; rangeStart += JOB_EXPORT_PAGE_SIZE) {
-      const pageResult = await fetchOwnedJobExportPage(userId, rangeStart, log);
+    for (;;) {
+      const pageResult = await fetchOwnedJobExportPage(userId, cursor, log);
 
       if (pageResult.error) {
         return { data: null, error: pageResult.error };
@@ -178,6 +227,19 @@ export async function getJobsCsvExportForUser(userId, log = defaultLogger) {
       if (pageResult.data.length < JOB_EXPORT_PAGE_SIZE) {
         break;
       }
+
+      const nextCursor = getNextJobExportCursor(pageResult.data);
+
+      if (!nextCursor) {
+        const cursorError = new Error('Jobs export query returned an invalid cursor row');
+        log.error(
+          { err: cursorError, operation: 'getJobsCsvExportForUser', userId },
+          'Jobs export cursor payload was invalid'
+        );
+        return { data: null, error: cursorError };
+      }
+
+      cursor = nextCursor;
     }
 
     return {
