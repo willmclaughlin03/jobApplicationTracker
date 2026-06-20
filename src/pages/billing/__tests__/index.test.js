@@ -407,4 +407,41 @@ describe('BillingPage', () => {
     expect(el.textContent).not.toContain('Storage after cancellation');
     expect(el.textContent).not.toContain('Free storage archive');
   });
+
+  it('shows a storage-status warning when storage metadata fails after billing loads', async () => {
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api/storage/status') {
+        return Promise.resolve({
+          data: {
+            error: 'SERVICE_UNAVAILABLE',
+            message: ERROR_MESSAGES.SERVICE_UNAVAILABLE,
+          },
+          error: null,
+          meta: { status: 503, retryAfterSeconds: null },
+        });
+      }
+
+      return Promise.resolve({
+        data: {
+          data: {
+            status: 'active',
+            currentPeriodEnd: '2026-07-15T12:00:00.000Z',
+            cancelAtPeriodEnd: true,
+            hasPortalCustomer: true,
+          },
+        },
+        error: null,
+        meta: { status: 200, retryAfterSeconds: null },
+      });
+    });
+
+    const el = await renderBillingPage();
+
+    expect(mockApiGet).toHaveBeenCalledWith('/api/storage/status');
+    expect(mockRouter.replace).not.toHaveBeenCalled();
+    expect(el.textContent).toContain('Storage details are temporarily unavailable');
+    expect(el.textContent).toContain('Local status');
+    expect(el.textContent).not.toContain('Storage after cancellation');
+    expect(el.textContent).not.toContain('Free storage archive');
+  });
 });

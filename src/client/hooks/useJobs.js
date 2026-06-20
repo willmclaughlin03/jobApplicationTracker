@@ -32,7 +32,16 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
   const { currentPage, setCurrentPage, setTotalCount, goToPage } = usePagination(PAGE_SIZE);
 
   const query = useJobsQuery();
-  const { jobs: allJobs, storageSummary, loading, fetchJobs, prependJob, updateJobInList, removeJobFromList } = query;
+  const {
+    jobs: allJobs,
+    storageSummary,
+    loading,
+    fetchJobs,
+    refreshStorageSummary,
+    prependJob,
+    updateJobInList,
+    removeJobFromList,
+  } = query;
 
   // Load all jobs once on mount; all subsequent filtering is client-side at zero API cost
   useEffect(() => {
@@ -61,10 +70,38 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
   const pageStart = (currentPage - 1) * PAGE_SIZE;
   const jobs = filteredJobs.slice(pageStart, pageStart + PAGE_SIZE);
 
+  /**
+   * Applies a created job locally and refreshes count-only storage metadata.
+   *
+   * Purpose: the POST response returns the created row, while downgrade banners
+   * and archive counts depend on the server-built storage summary.
+   *
+   * @param {object} newJob - Created job row returned by the jobs API.
+   * @returns {void}
+   */
+  const handleAddJobSuccess = useCallback((newJob) => {
+    prependJob(newJob);
+    void refreshStorageSummary();
+  }, [prependJob, refreshStorageSummary]);
+
+  /**
+   * Removes a deleted job locally and refreshes count-only storage metadata.
+   *
+   * Purpose: active counts and projected overflow can change after deletes even
+   * though the table can update immediately from the deleted row id.
+   *
+   * @param {string} id - Deleted job id returned by the delete flow.
+   * @returns {void}
+   */
+  const handleDeleteJobSuccess = useCallback((id) => {
+    removeJobFromList(id);
+    void refreshStorageSummary();
+  }, [removeJobFromList, refreshStorageSummary]);
+
   // Pass stable list-mutation helpers directly as onSuccess callbacks
-  const add = useAddJob(prependJob);
+  const add = useAddJob(handleAddJobSuccess);
   const update = useUpdateJob(updateJobInList);
-  const del = useDeleteJob(removeJobFromList);
+  const del = useDeleteJob(handleDeleteJobSuccess);
 
   const error = useMemo(
     () => query.error || add.error || update.error || del.error,

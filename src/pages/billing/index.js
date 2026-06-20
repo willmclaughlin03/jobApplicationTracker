@@ -23,6 +23,8 @@ import {
 } from '../../client/lib/storageSummaryUi.js';
 import { ERROR_MESSAGES } from '../../shared/errors.js';
 
+const STORAGE_STATUS_UNAVAILABLE_MESSAGE = 'Storage details are temporarily unavailable. Please refresh before relying on archive or downgrade counts.';
+
 /**
  * Format a billing period timestamp for display in the billing summary.
  *
@@ -116,6 +118,7 @@ export default function BillingPage() {
   const [actionLoading, setActionLoading] = useState('');
   const actionLoadingRef = useRef('');
   const [errorMessage, setErrorMessage] = useState('');
+  const [storageStatusErrorMessage, setStorageStatusErrorMessage] = useState('');
 
   useEffect(() => {
     actionLoadingRef.current = actionLoading;
@@ -138,6 +141,7 @@ export default function BillingPage() {
       setLoading(true);
       setLoadState(BILLING_PAGE_LOAD_STATES.LOADING);
       setErrorMessage('');
+      setStorageStatusErrorMessage('');
 
       try {
         const result = await api.get('/api/billing/status');
@@ -159,6 +163,7 @@ export default function BillingPage() {
         if (result.error) {
           setBillingStatus(null);
           setStorageSummary(null);
+          setStorageStatusErrorMessage('');
           setLoadState(BILLING_PAGE_LOAD_STATES.ERROR);
           setErrorMessage(ERROR_MESSAGES.SERVICE_UNAVAILABLE);
           setLoading(false);
@@ -168,13 +173,20 @@ export default function BillingPage() {
         if (result.data?.error) {
           setBillingStatus(null);
           setStorageSummary(null);
+          setStorageStatusErrorMessage('');
           setLoadState(BILLING_PAGE_LOAD_STATES.ERROR);
           setErrorMessage(result.data.message || 'Failed to load billing status.');
           setLoading(false);
           return;
         }
 
-        const storageResult = await api.get('/api/storage/status');
+        let storageResult;
+
+        try {
+          storageResult = await api.get('/api/storage/status');
+        } catch {
+          storageResult = { data: null, error: STORAGE_STATUS_UNAVAILABLE_MESSAGE, meta: null };
+        }
 
         if (isCancelled) {
           return;
@@ -190,8 +202,11 @@ export default function BillingPage() {
           return;
         }
 
+        const storageStatusFailed = Boolean(storageResult.error || storageResult.data?.error);
+
         setBillingStatus(result.data?.data ?? null);
-        setStorageSummary(storageResult.error || storageResult.data?.error ? null : storageResult.data?.data ?? null);
+        setStorageSummary(storageStatusFailed ? null : storageResult.data?.data ?? null);
+        setStorageStatusErrorMessage(storageStatusFailed ? STORAGE_STATUS_UNAVAILABLE_MESSAGE : '');
         setLoadState(BILLING_PAGE_LOAD_STATES.READY);
         setLoading(false);
       } catch {
@@ -201,6 +216,7 @@ export default function BillingPage() {
 
         setBillingStatus(null);
         setStorageSummary(null);
+        setStorageStatusErrorMessage('');
         setLoadState(BILLING_PAGE_LOAD_STATES.ERROR);
         setErrorMessage(ERROR_MESSAGES.SERVICE_UNAVAILABLE);
         setLoading(false);
@@ -327,6 +343,16 @@ export default function BillingPage() {
           {errorMessage && (
             <div className="mt-5 rounded-md bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
               {errorMessage}
+            </div>
+          )}
+
+          {storageStatusErrorMessage && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="mt-5 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+            >
+              {storageStatusErrorMessage}
             </div>
           )}
 
