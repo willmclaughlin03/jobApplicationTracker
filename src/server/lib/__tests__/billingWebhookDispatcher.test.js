@@ -6,7 +6,7 @@ const mockHasMatchingStripeEventReceiptEnvelope = jest.fn();
 const mockMarkMintedCheckoutSessionTerminalByStripeSessionId = jest.fn();
 const mockMarkSubscriptionDeletedFromEvent = jest.fn();
 const mockRecordStripeEventReceipt = jest.fn();
-const mockReconcileAndLockDowngradedStorageForUser = jest.fn();
+const mockReconcileStorageTransitionsForUser = jest.fn();
 const mockSyncSubscriptionFromEvent = jest.fn();
 
 jest.mock('../billingService.js', () => ({
@@ -34,8 +34,8 @@ jest.mock('../billingService.js', () => ({
   syncSubscriptionFromEvent: mockSyncSubscriptionFromEvent,
 }));
 
-jest.mock('../../services/storageDowngradeService.js', () => ({
-  reconcileAndLockDowngradedStorageForUser: mockReconcileAndLockDowngradedStorageForUser,
+jest.mock('../../services/storageTransitionService.js', () => ({
+  reconcileStorageTransitionsForUser: mockReconcileStorageTransitionsForUser,
 }));
 
 const { processBillingWebhookEvent } = require('../billingWebhookDispatcher.js');
@@ -91,7 +91,7 @@ describe('billingWebhookDispatcher', () => {
     mockMarkMintedCheckoutSessionTerminalByStripeSessionId.mockResolvedValue(null);
     mockMarkSubscriptionDeletedFromEvent.mockResolvedValue({ outcome: 'processed' });
     mockRecordStripeEventReceipt.mockResolvedValue({ outcome: 'updated' });
-    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValue({
+    mockReconcileStorageTransitionsForUser.mockResolvedValue({
       data: { outcome: 'skipped', lockedCount: 0 },
       error: null,
     });
@@ -230,11 +230,11 @@ describe('billingWebhookDispatcher', () => {
     const result = await processBillingWebhookEvent(event, mockLog);
 
     expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'stale_ignored', mockLog);
-    expect(mockReconcileAndLockDowngradedStorageForUser).not.toHaveBeenCalled();
+    expect(mockReconcileStorageTransitionsForUser).not.toHaveBeenCalled();
     expect(result.receiptResult).toBe('stale_ignored');
   });
 
-  it('runs downgrade storage repair after processed billing syncs with a resolved user', async () => {
+  it('runs storage transition repair after processed billing syncs with a resolved user', async () => {
     mockSyncSubscriptionFromEvent.mockResolvedValue({
       outcome: 'processed',
       userId: 'user_processed_123',
@@ -243,24 +243,24 @@ describe('billingWebhookDispatcher', () => {
 
     const result = await processBillingWebhookEvent(event, mockLog);
 
-    expect(mockReconcileAndLockDowngradedStorageForUser).toHaveBeenCalledWith(
+    expect(mockReconcileStorageTransitionsForUser).toHaveBeenCalledWith(
       'user_processed_123',
       mockLog
     );
     expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'processed', mockLog);
     expect(
-      mockReconcileAndLockDowngradedStorageForUser.mock.invocationCallOrder[0]
+      mockReconcileStorageTransitionsForUser.mock.invocationCallOrder[0]
     ).toBeLessThan(mockRecordStripeEventReceipt.mock.invocationCallOrder[0]);
     expect(result.receiptResult).toBe('processed');
   });
 
-  it('records failed and rejects when post-billing downgrade storage repair fails', async () => {
+  it('records failed and rejects when post-billing storage transition repair fails', async () => {
     const repairError = new Error('overflow lock failed');
     mockSyncSubscriptionFromEvent.mockResolvedValue({
       outcome: 'processed',
       userId: 'user_repair_failed_123',
     });
-    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValue({
+    mockReconcileStorageTransitionsForUser.mockResolvedValue({
       data: null,
       error: repairError,
     });
@@ -329,7 +329,7 @@ describe('billingWebhookDispatcher', () => {
     expect(result.receiptResult).toBe('processed');
   });
 
-  it('runs downgrade storage repair after processed subscription delete events with a resolved user', async () => {
+  it('runs storage transition repair after processed subscription delete events with a resolved user', async () => {
     const subscription = {
       id: 'sub_deleted_repair_123',
       customer: 'cus_delete_repair_123',
@@ -356,13 +356,13 @@ describe('billingWebhookDispatcher', () => {
       },
       mockLog
     );
-    expect(mockReconcileAndLockDowngradedStorageForUser).toHaveBeenCalledWith(
+    expect(mockReconcileStorageTransitionsForUser).toHaveBeenCalledWith(
       'user_deleted_repair_123',
       mockLog
     );
     expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'processed', mockLog);
     expect(
-      mockReconcileAndLockDowngradedStorageForUser.mock.invocationCallOrder[0]
+      mockReconcileStorageTransitionsForUser.mock.invocationCallOrder[0]
     ).toBeLessThan(mockRecordStripeEventReceipt.mock.invocationCallOrder[0]);
     expect(result.receiptResult).toBe('processed');
   });

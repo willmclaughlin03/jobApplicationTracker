@@ -3,14 +3,14 @@ jest.mock('../../../middleware/withRateLimit.js', () => ({
 }));
 
 const mockGetStorageSummaryForUser = jest.fn();
-const mockReconcileAndLockDowngradedStorageForUser = jest.fn();
+const mockReconcileStorageTransitionsForUser = jest.fn();
 
 jest.mock('../../../services/storageSummaryService.js', () => ({
   getStorageSummaryForUser: mockGetStorageSummaryForUser,
 }));
 
-jest.mock('../../../services/storageDowngradeService.js', () => ({
-  reconcileAndLockDowngradedStorageForUser: mockReconcileAndLockDowngradedStorageForUser,
+jest.mock('../../../services/storageTransitionService.js', () => ({
+  reconcileStorageTransitionsForUser: mockReconcileStorageTransitionsForUser,
 }));
 
 const handler = require('../../../../pages/api/storage/status.js').default;
@@ -76,7 +76,7 @@ describe('/api/storage/status handler', () => {
       data: mockStorageSummary,
       error: null,
     });
-    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValue({
+    mockReconcileStorageTransitionsForUser.mockResolvedValue({
       data: {
         outcome: 'skipped',
         lockedCount: 0,
@@ -92,7 +92,7 @@ describe('/api/storage/status handler', () => {
 
     await handler(req, res);
 
-    expect(mockReconcileAndLockDowngradedStorageForUser).toHaveBeenCalledWith(
+    expect(mockReconcileStorageTransitionsForUser).toHaveBeenCalledWith(
       mockUser.id,
       mockLog
     );
@@ -151,9 +151,9 @@ describe('/api/storage/status handler', () => {
     );
   });
 
-  it('returns 503 when confirmed downgrade storage repair fails', async () => {
+  it('returns 503 when confirmed storage transition repair fails', async () => {
     const repairError = new Error('overflow lock failed');
-    mockReconcileAndLockDowngradedStorageForUser.mockResolvedValueOnce({
+    mockReconcileStorageTransitionsForUser.mockResolvedValueOnce({
       data: null,
       error: repairError,
     });
@@ -164,6 +164,32 @@ describe('/api/storage/status handler', () => {
 
     expect(res.status).toHaveBeenCalledWith(503);
     expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: null,
+        error: 'SERVICE_UNAVAILABLE',
+      })
+    );
+  });
+
+  it('returns 503 when confirmed storage transition repair rejects', async () => {
+    const repairError = new Error('storage transition rejected');
+    mockReconcileStorageTransitionsForUser.mockRejectedValueOnce(repairError);
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
+    expect(mockLog.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: repairError,
+        operation: 'repairStorageTransitionsForStatusRequest',
+        userId: mockUser.id,
+      }),
+      'Storage transition repair failed'
+    );
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
         data: null,

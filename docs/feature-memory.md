@@ -19,6 +19,14 @@ Use this file as a quick-running log of implemented changes.
 - `2026-06-20` - `Storage export query validation`: Replaced manual export query-key checks with a strict empty Zod schema so unsupported query parameters are rejected through the standard validation pattern.
 - `2026-06-18` - `Job CSV export`: Added an authenticated storage export endpoint with owner-scoped active-plus-locked CSV output, dedicated export rate limits, no-store download headers, and focused route/service coverage.
 - `2026-06-18` - `Job CSV export keyset pagination`: Replaced offset-based export paging with a stable `(created_at, id)` keyset cursor so large CSV exports avoid duplicate or skipped rows near page boundaries.
+- `2026-06-18` - `Premium restore ordering test fixture`: Renamed the restore-ordering active baseline fixture so restored-row assertions only inspect rows unlocked by the Premium restore RPC.
+- `2026-06-18` - `Storage transition malformed-envelope guard`: Made shared storage-transition repair fail closed when downgrade or restore dependencies return missing success data, with focused service coverage.
+- `2026-06-18` - `Storage transition service rejection guard`: Normalized downgrade and Premium restore dependency rejections into fail-closed storage-transition envelopes with focused service coverage.
+- `2026-06-18` - `Single-job repair rejection guard`: Kept single-job detail/update storage-transition repair fail-closed when reconciliation rejects and covered the rejected-promise path.
+- `2026-06-18` - `Jobs collection repair rejection guard`: Kept jobs list/create storage-transition repair fail-closed when reconciliation rejects and covered the rejected-promise path.
+- `2026-06-18` - `Storage status repair rejection guard`: Kept storage-status transition repair fail-closed when reconciliation rejects and covered the rejected-promise path.
+- `2026-06-18` - `Premium storage restore hardening`: Tightened Chunk 7 restore with DB-enforced Premium price allowlisting, stale Premium status refresh after canonical mismatch, and focused regressions for non-allowlisted prices and restore races.
+- `2026-06-15` - `Premium storage restore`: Added Premium re-entitlement restore for locked overflow jobs with a service-role RPC, shared storage-transition repair wiring, over-cap monitoring, and focused regression coverage.
 - `2026-06-15` - `Storage summary string status normalization`: Preserved raw string storage status overrides when building count-only storage summaries.
 - `2026-06-15` - `Subscription delete webhook repair coverage`: Added dispatcher coverage proving processed subscription delete events run downgrade storage repair before receipt recording.
 - `2026-06-15` - `Overflow locking CAS timestamp retry`: Replaced the fixed E8 integration-test timestamp delay with a bounded retry that waits for the billing subscription snapshot timestamp to advance.
