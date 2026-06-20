@@ -26,6 +26,24 @@ const FORMULA_LIKE_CELL_PATTERN = /^\s*[=+\-@]/;
 const CONTROL_FORMULA_CELL_PATTERN = /^[\t\r]/;
 
 /**
+ * Error type for invalid owner ids at the job-export service boundary.
+ *
+ * Purpose: keep defensive service validation route-mappable even when the
+ * normal API path already receives middleware-validated user context.
+ */
+export class InvalidUserIdError extends Error {
+  /**
+   * Builds the stable invalid-user-id error for job export callers.
+   */
+  constructor() {
+    super('Authenticated user id is required for job export');
+    this.name = 'InvalidUserIdError';
+    this.code = 'JOB_EXPORT_INVALID_USER_ID';
+    this.statusCode = 400;
+  }
+}
+
+/**
  * Builds the PostgREST keyset cursor predicate for export pagination.
  *
  * Purpose: keep multi-page exports stable when rows share created_at values or
@@ -204,10 +222,11 @@ async function fetchOwnedJobExportPage(userId, cursor, log = defaultLogger) {
  * @returns {Promise<{data: {csv: string, rowCount: number}|null, error: Error|object|null}>}
  */
 export async function getJobsCsvExportForUser(userId, log = defaultLogger) {
+  // Keep this defensive guard for direct service callers outside middleware.
   if (!userId || typeof userId !== 'string') {
     return {
       data: null,
-      error: new Error('Authenticated user id is required for job export'),
+      error: new InvalidUserIdError(),
     };
   }
 

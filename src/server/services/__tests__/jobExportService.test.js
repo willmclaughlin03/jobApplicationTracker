@@ -23,6 +23,7 @@ jest.mock('../../../shared/logger.js', () => ({
 }));
 
 const {
+  InvalidUserIdError,
   JOB_EXPORT_COLUMNS,
   getJobsCsvExportForUser,
   serializeJobsToCsv,
@@ -271,11 +272,16 @@ describe('getJobsCsvExportForUser', () => {
     );
   });
 
-  it('fails before querying when the authenticated user id is missing', async () => {
-    const result = await getJobsCsvExportForUser('', mockLog);
+  it.each(['', 42])('fails before querying when the authenticated user id is invalid: %p', async (invalidUserId) => {
+    const result = await getJobsCsvExportForUser(invalidUserId, mockLog);
 
     expect(result.data).toBeNull();
-    expect(result.error).toBeInstanceOf(Error);
+    expect(result.error).toBeInstanceOf(InvalidUserIdError);
+    expect(result.error).toMatchObject({
+      name: 'InvalidUserIdError',
+      code: 'JOB_EXPORT_INVALID_USER_ID',
+      statusCode: 400,
+    });
     expect(mockFrom).not.toHaveBeenCalled();
   });
 });

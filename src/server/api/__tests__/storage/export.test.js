@@ -168,4 +168,31 @@ describe('/api/storage/export handler', () => {
     );
     expect(res.send).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['missing csv', {}],
+    ['non-string csv', { csv: 123 }],
+  ])('returns a public-safe error when the service returns %s', async (_label, data) => {
+    mockGetJobsCsvExportForUser.mockResolvedValueOnce({
+      data,
+      error: null,
+    });
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: 'EXPORT_FAILED',
+        message: ERROR_MESSAGES.EXPORT_FAILED,
+      })
+    );
+    expect(res.setHeader).not.toHaveBeenCalledWith(
+      'Content-Disposition',
+      expect.any(String)
+    );
+    expect(res.send).not.toHaveBeenCalled();
+  });
 });

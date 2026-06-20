@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { sendError } from '../../../shared/response.js';
 import { ERROR_MESSAGES } from '../../../shared/errors.js';
 import { OPERATIONS } from '../../../shared/constants/tiers.js';
@@ -5,6 +6,14 @@ import { withRateLimit } from '../../../server/middleware/withRateLimit.js';
 import { getJobsCsvExportForUser } from '../../../server/services/jobExportService.js';
 
 const EXPORT_FILENAME = 'job-applications-export.csv';
+
+/**
+ * Validates query parameters for GET /api/storage/export.
+ *
+ * Purpose: reject all client-controlled query params because export ownership
+ * and scope come only from authenticated middleware context.
+ */
+const storageExportQuerySchema = z.object({}).strict();
 
 /**
  * Applies no-store headers to storage export responses.
@@ -50,7 +59,7 @@ function setCsvDownloadHeaders(res) {
  * @returns {boolean} True when any query key was supplied.
  */
 function hasUnexpectedQueryParams(query) {
-  return Object.keys(query || {}).length > 0;
+  return !storageExportQuerySchema.safeParse(query || {}).success;
 }
 
 /**
@@ -95,7 +104,9 @@ async function handler(req, res) {
     req.log
   );
 
-  if (exportResult?.error || !exportResult?.data) {
+  const csv = exportResult?.data?.csv;
+
+  if (exportResult?.error || typeof csv !== 'string') {
     return sendError(
       res,
       503,
@@ -104,7 +115,7 @@ async function handler(req, res) {
     );
   }
 
-  return sendCsvExport(res, exportResult.data.csv);
+  return sendCsvExport(res, csv);
 }
 
 export default withRateLimit(handler, {

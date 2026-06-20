@@ -14,6 +14,9 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-06-15
 
+- `2026-06-20` - `Storage export invalid-user error`: Replaced the export service's generic invalid-user error with a stable custom error carrying code and status metadata.
+- `2026-06-20` - `Storage export CSV payload guard`: Made the storage export route fail closed when the export service returns missing or non-string CSV payloads.
+- `2026-06-20` - `Storage export query validation`: Replaced manual export query-key checks with a strict empty Zod schema so unsupported query parameters are rejected through the standard validation pattern.
 - `2026-06-18` - `Job CSV export`: Added an authenticated storage export endpoint with owner-scoped active-plus-locked CSV output, dedicated export rate limits, no-store download headers, and focused route/service coverage.
 - `2026-06-18` - `Job CSV export keyset pagination`: Replaced offset-based export paging with a stable `(created_at, id)` keyset cursor so large CSV exports avoid duplicate or skipped rows near page boundaries.
 - `2026-06-15` - `Storage summary string status normalization`: Preserved raw string storage status overrides when building count-only storage summaries.
