@@ -28,6 +28,7 @@ export function normalizeError(error, fallbackMessage) {
 
 export const ERROR_MESSAGES = {
   FETCH_FAILED: 'Failed to load jobs. Please refresh the page.',
+  EXPORT_FAILED: 'Failed to export jobs. Please try again later.',
   ADD_FAILED: 'Failed to add job. Please try again.',
   UPDATE_FAILED: 'Failed to update job. Please try again.',
   DELETE_FAILED: 'Failed to delete job. Please try again.',
