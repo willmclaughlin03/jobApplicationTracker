@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-06-15
 
+- `2026-06-20` - `Storage downgrade warning and archive UI`: Added storageSummary-powered dashboard warnings, locked archive teaser preview/export entry points, billing-page downgrade copy, active-only analytics labeling, and locked-plan error normalization.
 - `2026-06-20` - `Storage export invalid-user error`: Replaced the export service's generic invalid-user error with a stable custom error carrying code and status metadata.
 - `2026-06-20` - `Storage export CSV payload guard`: Made the storage export route fail closed when the export service returns missing or non-string CSV payloads.
 - `2026-06-20` - `Storage export query validation`: Replaced manual export query-key checks with a strict empty Zod schema so unsupported query parameters are rejected through the standard validation pattern.

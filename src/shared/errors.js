@@ -17,11 +17,25 @@ export function normalizeError(error, fallbackMessage) {
     };
   }
 
+  if (typeof error === 'string') {
+    const message = ERROR_MESSAGES[error] || fallbackMessage;
+
+    return {
+      message,
+      code: ERROR_MESSAGES[error] ? error : null,
+      details: process.env.NODE_ENV !== 'production'
+        ? { name: 'ApiErrorCode', message }
+        : null,
+    };
+  }
+
+  const message = error.message || (error.code ? ERROR_MESSAGES[error.code] : null) || fallbackMessage;
+
   return {
-    message: error.message || fallbackMessage,
+    message,
     code: error.code || null,
     details: process.env.NODE_ENV !== 'production'
-      ? { name: error.name, message: error.message || fallbackMessage }
+      ? { name: error.name, message }
       : null,
   };
 }

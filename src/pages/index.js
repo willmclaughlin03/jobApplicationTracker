@@ -14,6 +14,9 @@ import Spinner from '../client/components/Spinner';
 import DashboardSkeleton from '../client/components/skeletons/DashboardSkeleton';
 import InfoTooltip from '../client/components/InfoTooltip';
 import ActivityDrawer from '../client/components/ActivityDrawer';
+import StorageDowngradeBanner from '../client/components/StorageDowngradeBanner';
+import LockedArchivePanel from '../client/components/LockedArchivePanel';
+import { getStorageCount } from '../client/lib/storageSummaryUi.js';
 
 export default function Dashboard() {
   const { user, loading: authLoading, signOut } = useAuth();
@@ -41,6 +44,7 @@ export default function Dashboard() {
   const {
     jobs,
     allJobs,
+    storageSummary,
     loading,
     saving,
     deleting,
@@ -56,6 +60,8 @@ export default function Dashboard() {
     pageSize,
     goToPage,
   } = useJobs(user?.id, statusFilter, searchQuery, salaryFilterMin, salaryFilterMax, selectedDates);
+
+  const archivedCount = getStorageCount(storageSummary?.lockedCount);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
@@ -138,7 +144,11 @@ export default function Dashboard() {
           salaryFilterMax={salaryFilterMax}
           onSalaryFilterMinChange={setSalaryFilterMin}
           onSalaryFilterMaxChange={setSalaryFilterMax}
+          archivedCount={archivedCount}
         />
+
+        <StorageDowngradeBanner storageSummary={storageSummary} />
+        <LockedArchivePanel storageSummary={storageSummary} />
 
         <div>
           <div className="flex items-center justify-between mb-6">

@@ -32,7 +32,7 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
   const { currentPage, setCurrentPage, setTotalCount, goToPage } = usePagination(PAGE_SIZE);
 
   const query = useJobsQuery();
-  const { jobs: allJobs, loading, fetchJobs, prependJob, updateJobInList, removeJobFromList } = query;
+  const { jobs: allJobs, storageSummary, loading, fetchJobs, prependJob, updateJobInList, removeJobFromList } = query;
 
   // Load all jobs once on mount; all subsequent filtering is client-side at zero API cost
   useEffect(() => {
@@ -98,6 +98,7 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
     jobs,
     allJobs,
     filteredJobs,
+    storageSummary,
     loading,
     saving: add.saving || update.saving,
     deleting: del.deleting,

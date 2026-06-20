@@ -4,6 +4,7 @@ import { normalizeError, ERROR_MESSAGES } from '../../../shared/errors.js';
 
 export function useJobsQuery() {
   const [jobs, setJobs] = useState([]);
+  const [storageSummary, setStorageSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -17,10 +18,10 @@ export function useJobsQuery() {
    * additional API / rate-limit cost.
    *
    * Connects to:
-   * - api.get('/api') — returns { data: { data: Job[], count: number } }
+   * - api.get('/api') — returns { data: { data: Job[], count: number, storageSummary: object } }
    * - normalizeError — converts raw API errors to a consistent shape
    *
-   * @returns {Promise<{ success: boolean, data: Job[]|null, count: number, error: string|null }>}
+   * @returns {Promise<{ success: boolean, data: Job[]|null, count: number, storageSummary: object|null, error: string|null }>}
    */
   const fetchJobs = useCallback(async () => {
     setLoading(true);
@@ -31,16 +32,19 @@ export function useJobsQuery() {
     if (apiError || response?.error) {
       const normalizedError = normalizeError(apiError || response?.error, ERROR_MESSAGES.FETCH_FAILED);
       setError(normalizedError);
+      setStorageSummary(null);
       setLoading(false);
-      return { success: false, data: null, count: 0, error: normalizedError };
+      return { success: false, data: null, count: 0, storageSummary: null, error: normalizedError };
     }
 
     const jobsData = response?.data?.data || [];
     const count = response?.data?.count || 0;
+    const nextStorageSummary = response?.data?.storageSummary ?? null;
 
     setJobs(jobsData);
+    setStorageSummary(nextStorageSummary);
     setLoading(false);
-    return { success: true, data: jobsData, count, error: null };
+    return { success: true, data: jobsData, count, storageSummary: nextStorageSummary, error: null };
   }, []);
 
   const prependJob = useCallback((job) => {
@@ -60,6 +64,8 @@ export function useJobsQuery() {
   return {
     jobs,
     setJobs,
+    storageSummary,
+    setStorageSummary,
     loading,
     error,
     clearError,
