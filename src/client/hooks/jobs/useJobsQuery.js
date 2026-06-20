@@ -9,6 +9,7 @@ export function useJobsQuery() {
   const [storageSummary, setStorageSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const jobsRequestRef = useRef(0);
   const storageSummaryRequestRef = useRef(0);
 
   const clearError = useCallback(() => setError(null), []);
@@ -30,11 +31,12 @@ export function useJobsQuery() {
     setLoading(true);
     setError(null);
 
-    const requestId = storageSummaryRequestRef.current + 1;
-    storageSummaryRequestRef.current = requestId;
+    const requestId = jobsRequestRef.current + 1;
+    jobsRequestRef.current = requestId;
     const { data: response, error: apiError } = await api.get('/api');
 
-    if (requestId !== storageSummaryRequestRef.current) {
+    if (requestId !== jobsRequestRef.current) {
+      setLoading(false);
       return { success: false, data: null, count: 0, storageSummary: null, error: null, stale: true };
     }
 

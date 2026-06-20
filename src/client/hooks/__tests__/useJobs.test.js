@@ -250,4 +250,101 @@ describe('useJobs storage summary refresh', () => {
     expect(latestHook.storageSummary.activeCount).toBe(300);
     expect(latestHook.storageSummary.projectedOverflowCount).toBe(0);
   });
+
+  it('keeps full refetch loading independent from storage summary refreshes', async () => {
+    const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
+    const createdJob = { id: 'job-2', company: 'Beta', position: 'Designer', status: 'applied' };
+    const refetchedJob = { id: 'job-3', company: 'Core', position: 'Manager', status: 'interviewing' };
+    const jobsRequests = [];
+    const storageRefreshes = [];
+    let jobsRequestCount = 0;
+
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api') {
+        jobsRequestCount += 1;
+
+        if (jobsRequestCount === 1) {
+          return Promise.resolve(buildJobsResponse({
+            jobs: [initialJob],
+            storageSummary: {
+              status: 'premium_canceling',
+              activeLimit: 300,
+              activeCount: 301,
+              lockedCount: 0,
+              projectedOverflowCount: 1,
+              cancelAtPeriodEnd: true,
+            },
+          }));
+        }
+
+        const deferred = createDeferred();
+        jobsRequests.push(deferred);
+        return deferred.promise;
+      }
+
+      if (endpoint === '/api/storage/status') {
+        const deferred = createDeferred();
+        storageRefreshes.push(deferred);
+        return deferred.promise;
+      }
+
+      return Promise.resolve(buildApiSuccess(null));
+    });
+    mockApiPost.mockResolvedValue(buildApiSuccess([createdJob]));
+
+    await renderUseJobs();
+
+    expect(latestHook.loading).toBe(false);
+
+    let refetchPromise;
+    await act(async () => {
+      refetchPromise = latestHook.refetch();
+      await Promise.resolve();
+    });
+
+    expect(latestHook.loading).toBe(true);
+    expect(jobsRequests).toHaveLength(1);
+
+    await act(async () => {
+      await latestHook.addJob({ company: 'Beta', position: 'Designer' });
+      await Promise.resolve();
+    });
+
+    expect(storageRefreshes).toHaveLength(1);
+
+    await act(async () => {
+      storageRefreshes[0].resolve(buildApiSuccess({
+        status: 'premium_canceling',
+        activeLimit: 300,
+        activeCount: 302,
+        lockedCount: 0,
+        projectedOverflowCount: 2,
+        cancelAtPeriodEnd: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(latestHook.loading).toBe(true);
+    expect(latestHook.storageSummary.activeCount).toBe(302);
+
+    await act(async () => {
+      jobsRequests[0].resolve(buildJobsResponse({
+        jobs: [refetchedJob],
+        storageSummary: {
+          status: 'premium_canceling',
+          activeLimit: 300,
+          activeCount: 280,
+          lockedCount: 0,
+          projectedOverflowCount: 0,
+          cancelAtPeriodEnd: true,
+        },
+      }));
+      await refetchPromise;
+      await Promise.resolve();
+    });
+
+    expect(latestHook.loading).toBe(false);
+    expect(latestHook.allJobs).toEqual([refetchedJob]);
+    expect(latestHook.storageSummary.activeCount).toBe(280);
+  });
 });
