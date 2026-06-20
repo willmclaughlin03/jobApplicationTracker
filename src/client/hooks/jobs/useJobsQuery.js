@@ -24,7 +24,7 @@ export function useJobsQuery() {
    * - api.get('/api') — returns { data: { data: Job[], count: number, storageSummary: object } }
    * - normalizeError — converts raw API errors to a consistent shape
    *
-   * @returns {Promise<{ success: boolean, data: Job[]|null, count: number, storageSummary: object|null, error: string|null }>}
+   * @returns {Promise<{ success: boolean, data: Job[]|null, count: number, storageSummary: object|null, error: string|null, stale?: boolean }>}
    */
   const fetchJobs = useCallback(async () => {
     setLoading(true);
@@ -34,12 +34,14 @@ export function useJobsQuery() {
     storageSummaryRequestRef.current = requestId;
     const { data: response, error: apiError } = await api.get('/api');
 
+    if (requestId !== storageSummaryRequestRef.current) {
+      return { success: false, data: null, count: 0, storageSummary: null, error: null, stale: true };
+    }
+
     if (apiError || response?.error) {
       const normalizedError = normalizeError(apiError || response?.error, ERROR_MESSAGES.FETCH_FAILED);
       setError(normalizedError);
-      if (requestId === storageSummaryRequestRef.current) {
-        setStorageSummary(null);
-      }
+      setStorageSummary(null);
       setLoading(false);
       return { success: false, data: null, count: 0, storageSummary: null, error: normalizedError };
     }
@@ -49,9 +51,7 @@ export function useJobsQuery() {
     const nextStorageSummary = response?.data?.storageSummary ?? null;
 
     setJobs(jobsData);
-    if (requestId === storageSummaryRequestRef.current) {
-      setStorageSummary(nextStorageSummary);
-    }
+    setStorageSummary(nextStorageSummary);
     setLoading(false);
     return { success: true, data: jobsData, count, storageSummary: nextStorageSummary, error: null };
   }, []);

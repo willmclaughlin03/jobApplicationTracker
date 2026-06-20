@@ -408,6 +408,48 @@ describe('BillingPage', () => {
     expect(el.textContent).not.toContain('Free storage archive');
   });
 
+  it('shows free storage archive notice and export link for terminal_free status', async () => {
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api/storage/status') {
+        return Promise.resolve({
+          data: {
+            data: {
+              status: 'terminal_free',
+              activeLimit: 300,
+              activeCount: 280,
+              lockedCount: 25,
+              projectedOverflowCount: 0,
+              cancelAtPeriodEnd: false,
+              currentPeriodEnd: null,
+            },
+          },
+          error: null,
+          meta: { status: 200, retryAfterSeconds: null },
+        });
+      }
+
+      return Promise.resolve({
+        data: {
+          data: {
+            status: 'free',
+            currentPeriodEnd: null,
+            cancelAtPeriodEnd: false,
+            hasPortalCustomer: false,
+          },
+        },
+        error: null,
+        meta: { status: 200, retryAfterSeconds: null },
+      });
+    });
+
+    const el = await renderBillingPage();
+
+    expect(el.textContent).toContain('Free storage archive');
+    expect(el.textContent).toContain('280');
+    expect(el.textContent).toContain('25 archived applications');
+    expect(el.querySelector('a[href="/api/storage/export"]')).toBeTruthy();
+  });
+
   it('shows a storage-status warning when storage metadata fails after billing loads', async () => {
     mockApiGet.mockImplementation((endpoint) => {
       if (endpoint === '/api/storage/status') {

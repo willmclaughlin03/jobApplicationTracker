@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-06-15
 
+- `2026-06-20` - `Chunk 9 review follow-ups`: Added billing-page terminal-Free archive notice coverage and guarded full job fetches against stale state updates.
 - `2026-06-20` - `Storage warning freshness hardening`: Refreshed dashboard storage summaries after add/delete mutations, guarded out-of-order refreshes, and surfaced billing-page storage-status failures without showing confirmed downgrade copy.
 - `2026-06-20` - `Storage downgrade warning and archive UI`: Added storageSummary-powered dashboard warnings, locked archive teaser preview/export entry points, billing-page downgrade copy, active-only analytics labeling, and locked-plan error normalization.
 - `2026-06-20` - `Storage export invalid-user error`: Replaced the export service's generic invalid-user error with a stable custom error carrying code and status metadata.
