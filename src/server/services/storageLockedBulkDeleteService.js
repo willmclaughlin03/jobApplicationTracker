@@ -24,6 +24,7 @@ import {
 } from '../lib/billingService.js';
 
 const LOCKED_BULK_DELETE_RPC = 'delete_locked_jobs_for_terminal_free_user';
+const MAX_LOCKED_BULK_DELETE_RPC_ATTEMPTS = 10;
 const STORAGE_BULK_DELETE_RETRYABLE_STATUS_CODES = new Map([
   [
     STORAGE_STATUSES.BILLING_RECONCILIATION_PENDING,
@@ -239,37 +240,68 @@ export async function deleteLockedJobsForTerminalFreeUser(
   }
 
   try {
-    const deleteResult = await callLockedBulkDeleteRpc({ userId, storageStatus });
+    let totalDeletedCount = 0;
+    let lockedCountBeforeDelete = null;
+    let lockedCountAfterDelete = null;
+    let lockedDeleteLimit = LOCKED_BULK_DELETE_ROW_LIMIT;
 
-    if (!deleteResult.applied) {
-      return {
-        data: null,
-        error: new LockedBulkDeleteNotAllowedError({
-          reason: deleteResult.reason ?? 'locked_bulk_delete_not_applied',
-          storageStatus: deleteResult.storageStatus ?? storageStatus,
-          canonicalStorageStatus: deleteResult.canonicalStorageStatus ?? null,
-        }),
-      };
+    for (let attempt = 0; attempt < MAX_LOCKED_BULK_DELETE_RPC_ATTEMPTS; attempt += 1) {
+      const deleteResult = await callLockedBulkDeleteRpc({ userId, storageStatus });
+
+      if (!deleteResult.applied) {
+        return {
+          data: null,
+          error: new LockedBulkDeleteNotAllowedError({
+            reason: deleteResult.reason ?? 'locked_bulk_delete_not_applied',
+            storageStatus: deleteResult.storageStatus ?? storageStatus,
+            canonicalStorageStatus: deleteResult.canonicalStorageStatus ?? null,
+          }),
+        };
+      }
+
+      const deletedCount = normalizeCount(deleteResult.deletedCount);
+      totalDeletedCount += deletedCount;
+      if (lockedCountBeforeDelete === null) {
+        lockedCountBeforeDelete = normalizeCount(deleteResult.lockedCountBeforeDelete);
+      }
+      lockedCountAfterDelete = normalizeCount(deleteResult.lockedCountAfterDelete);
+      lockedDeleteLimit = normalizeCount(deleteResult.lockedDeleteLimit) || lockedDeleteLimit;
+
+      if (lockedCountAfterDelete === 0) {
+        log.info(
+          {
+            operation: 'deleteLockedJobsForTerminalFreeUser',
+            userId,
+            deletedCount: totalDeletedCount,
+            rpcAttempts: attempt + 1,
+          },
+          'Locked archive bulk delete completed'
+        );
+
+        return {
+          data: {
+            outcome: totalDeletedCount > 0 ? 'deleted' : 'already_empty',
+            deletedCount: totalDeletedCount,
+            lockedCountBeforeDelete: lockedCountBeforeDelete ?? 0,
+            lockedCountAfterDelete,
+            lockedDeleteLimit,
+          },
+          error: null,
+        };
+      }
+
+      if (deletedCount === 0) {
+        break;
+      }
     }
 
-    const deletedCount = normalizeCount(deleteResult.deletedCount);
-
-    log.info(
-      { operation: 'deleteLockedJobsForTerminalFreeUser', userId, deletedCount },
-      'Locked archive bulk delete completed'
+    const incompleteDeleteError = new Error(
+      'Locked bulk delete did not finish within bounded attempts'
     );
-
-    return {
-      data: {
-        outcome: deletedCount > 0 ? 'deleted' : 'already_empty',
-        deletedCount,
-        lockedCountBeforeDelete: normalizeCount(deleteResult.lockedCountBeforeDelete),
-        lockedCountAfterDelete: normalizeCount(deleteResult.lockedCountAfterDelete),
-        lockedDeleteLimit: normalizeCount(deleteResult.lockedDeleteLimit)
-          || LOCKED_BULK_DELETE_ROW_LIMIT,
-      },
-      error: null,
-    };
+    incompleteDeleteError.code = 'LOCKED_BULK_DELETE_INCOMPLETE';
+    incompleteDeleteError.deletedCount = totalDeletedCount;
+    incompleteDeleteError.lockedCountAfterDelete = lockedCountAfterDelete;
+    throw incompleteDeleteError;
   } catch (error) {
     log.error(
       { err: error, operation: 'deleteLockedJobsForTerminalFreeUser', userId, storageStatus },

@@ -20,6 +20,7 @@ const MIGRATIONS_DIR = join(process.cwd(), 'migrations');
 const JOBS_STORAGE_MIGRATION_FILE = '016_jobs_storage_state_boundary.sql';
 const JOBS_ATOMIC_CREATE_MIGRATION_FILE = '017_jobs_atomic_create_quota.sql';
 const JOBS_OVERFLOW_LOCKING_MIGRATION_FILE = '018_jobs_overflow_locking.sql';
+const JOBS_PREMIUM_RESTORE_MIGRATION_FILE = '019_jobs_premium_restore.sql';
 const JOBS_LOCKED_BULK_DELETE_MIGRATION_FILE = '020_jobs_locked_bulk_delete.sql';
 
 const TEST_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -227,6 +228,7 @@ describeOrSkip('Suite G - Jobs locked bulk delete integration', () => {
       JOBS_STORAGE_MIGRATION_FILE,
       JOBS_ATOMIC_CREATE_MIGRATION_FILE,
       JOBS_OVERFLOW_LOCKING_MIGRATION_FILE,
+      JOBS_PREMIUM_RESTORE_MIGRATION_FILE,
       JOBS_LOCKED_BULK_DELETE_MIGRATION_FILE,
     ]) {
       const migrationPath = join(MIGRATIONS_DIR, migrationFile);

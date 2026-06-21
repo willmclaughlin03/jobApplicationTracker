@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { formatStorageDate, getStorageCount, hasLockedArchive } from '../lib/storageSummaryUi.js';
 import { normalizeError, ERROR_MESSAGES } from '../../shared/errors.js';
@@ -212,6 +212,7 @@ export default function LockedArchivePanel({ storageSummary = null, onArchiveDel
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [deletingArchive, setDeletingArchive] = useState(false);
   const [deleteError, setDeleteError] = useState(null);
+  const deleteInFlightRef = useRef(false);
   const lockedCount = getStorageCount(storageSummary?.lockedCount);
   const activeCount = getStorageCount(storageSummary?.activeCount);
   const activeLimit = getStorageCount(storageSummary?.activeLimit);
@@ -303,30 +304,42 @@ export default function LockedArchivePanel({ storageSummary = null, onArchiveDel
    * @returns {Promise<void>}
    */
   async function confirmDeleteLockedArchive() {
-    setDeletingArchive(true);
-    setDeleteError(null);
-
-    const result = await api.delete(LOCKED_ARCHIVE_DELETE_PATH, {
-      confirmation: LOCKED_ARCHIVE_DELETE_CONFIRMATION,
-    });
-
-    if (result.error || result.data?.error) {
-      const errorData = result.data?.error
-        ? { message: result.data?.message, code: result.data?.error }
-        : result.error;
-      setDeleteError(normalizeError(errorData, ERROR_MESSAGES.DELETE_FAILED));
-      setDeletingArchive(false);
+    if (deleteInFlightRef.current) {
       return;
     }
 
-    setTeasers([]);
-    setHasLoaded(false);
-    setIsOpen(false);
-    setDeleteModalOpen(false);
-    setDeletingArchive(false);
+    deleteInFlightRef.current = true;
+    setDeletingArchive(true);
+    setDeleteError(null);
 
-    if (typeof onArchiveDeleted === 'function') {
-      await onArchiveDeleted(result.data?.data ?? null);
+    try {
+      const result = await api.delete(LOCKED_ARCHIVE_DELETE_PATH, {
+        confirmation: LOCKED_ARCHIVE_DELETE_CONFIRMATION,
+      });
+
+      if (result.error || result.data?.error) {
+        const errorData = result.data?.error
+          ? { message: result.data?.message, code: result.data?.error }
+          : result.error;
+        setDeleteError(normalizeError(errorData, ERROR_MESSAGES.DELETE_FAILED));
+        setDeletingArchive(false);
+        return;
+      }
+
+      setTeasers([]);
+      setHasLoaded(false);
+      setIsOpen(false);
+      setDeleteModalOpen(false);
+      setDeletingArchive(false);
+
+      if (typeof onArchiveDeleted === 'function') {
+        await onArchiveDeleted(result.data?.data ?? null);
+      }
+    } catch (error) {
+      setDeleteError(normalizeError(error, ERROR_MESSAGES.DELETE_FAILED));
+      setDeletingArchive(false);
+    } finally {
+      deleteInFlightRef.current = false;
     }
   }
 

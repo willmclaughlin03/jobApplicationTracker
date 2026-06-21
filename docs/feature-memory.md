@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-06-15
 
+- `2026-06-21` - `Locked archive bulk-delete hardening`: Added a ref-backed UI duplicate-submit guard and multi-pass bounded service deletion for oversized locked archives.
 - `2026-06-21` - `Locked archive bulk delete`: Added the confirmed terminal-Free locked archive bulk-delete API, bounded service-role RPC, dedicated rate limit, second-confirmation archive UI, and focused regression coverage.
 - `2026-06-21` - `Chunk 9 jobs fetch rejection and stale loading guard`: Normalized rejected full job fetches and kept stale full-fetch responses from clearing loading while newer fetches are pending.
 - `2026-06-20` - `Chunk 9 full-fetch freshness guard`: Split full job fetch and storage-summary freshness refs and covered loading cleanup when refreshes complete during refetch.

@@ -122,6 +122,72 @@ describe('storageLockedBulkDeleteService', () => {
     });
   });
 
+  it('drains locked rows across multiple bounded RPC calls', async () => {
+    mockResolveStorageStatusPrivileged.mockResolvedValueOnce(
+      buildStorageStatus(STORAGE_STATUSES.TERMINAL_FREE)
+    );
+    mockRpc
+      .mockResolvedValueOnce(rpcDeleteResponse({
+        deletedCount: LOCKED_BULK_DELETE_ROW_LIMIT,
+        lockedCountBeforeDelete: LOCKED_BULK_DELETE_ROW_LIMIT + 301,
+        lockedCountAfterDelete: 301,
+      }))
+      .mockResolvedValueOnce(rpcDeleteResponse({
+        deletedCount: 301,
+        lockedCountBeforeDelete: 301,
+        lockedCountAfterDelete: 0,
+      }));
+
+    const result = await deleteLockedJobsForTerminalFreeUser(userId, mockLog);
+
+    expect(result.error).toBeNull();
+    expect(result.data).toEqual(expect.objectContaining({
+      outcome: 'deleted',
+      deletedCount: LOCKED_BULK_DELETE_ROW_LIMIT + 301,
+      lockedCountBeforeDelete: LOCKED_BULK_DELETE_ROW_LIMIT + 301,
+      lockedCountAfterDelete: 0,
+      lockedDeleteLimit: LOCKED_BULK_DELETE_ROW_LIMIT,
+    }));
+    expect(mockRpc).toHaveBeenCalledTimes(2);
+    expect(mockLog.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: 'deleteLockedJobsForTerminalFreeUser',
+        userId,
+        deletedCount: LOCKED_BULK_DELETE_ROW_LIMIT + 301,
+        rpcAttempts: 2,
+      }),
+      'Locked archive bulk delete completed'
+    );
+  });
+
+  it('fails closed when repeated bounded RPC calls cannot drain the archive', async () => {
+    mockRpc.mockResolvedValue(rpcDeleteResponse({
+      deletedCount: 1,
+      lockedCountBeforeDelete: 20,
+      lockedCountAfterDelete: 1,
+    }));
+
+    const result = await deleteLockedJobsForTerminalFreeUser(userId, mockLog, {
+      storageStatusResult: buildStorageStatus(STORAGE_STATUSES.TERMINAL_FREE),
+    });
+
+    expect(result.data).toBeNull();
+    expect(result.error).toEqual(expect.objectContaining({
+      code: 'LOCKED_BULK_DELETE_INCOMPLETE',
+      deletedCount: 10,
+      lockedCountAfterDelete: 1,
+    }));
+    expect(mockRpc).toHaveBeenCalledTimes(10);
+    expect(mockLog.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: expect.objectContaining({ code: 'LOCKED_BULK_DELETE_INCOMPLETE' }),
+        operation: 'deleteLockedJobsForTerminalFreeUser',
+        userId,
+      }),
+      'Failed to bulk delete locked archive rows'
+    );
+  });
+
   it('returns an idempotent already-empty result when the RPC deletes zero rows', async () => {
     mockRpc.mockResolvedValueOnce(rpcDeleteResponse({
       deletedCount: 0,

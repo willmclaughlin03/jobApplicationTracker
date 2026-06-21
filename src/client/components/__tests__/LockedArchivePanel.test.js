@@ -213,6 +213,49 @@ describe('LockedArchivePanel', () => {
     expect(el.textContent).not.toContain('Permanently delete 1 archived application?');
   });
 
+  it('ignores duplicate confirm clicks while locked bulk delete is in flight', async () => {
+    let resolveDelete;
+    const pendingDelete = new Promise((resolve) => {
+      resolveDelete = resolve;
+    });
+    const onArchiveDeleted = jest.fn().mockResolvedValue({ success: true });
+    mockApiDelete.mockReturnValueOnce(pendingDelete);
+    const el = render(React.createElement(LockedArchivePanel, {
+      storageSummary: {
+        status: 'terminal_free',
+        lockedCount: 1,
+        activeCount: 300,
+        activeLimit: 300,
+      },
+      onArchiveDeleted,
+    }));
+
+    click(findButtonByText(el, 'Delete Archive'));
+    const confirmButton = findButtonByText(el, 'Permanently Delete Archive');
+
+    act(() => {
+      confirmButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      confirmButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(mockApiDelete).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveDelete({
+        error: null,
+        data: {
+          data: { deletedCount: 1 },
+          error: null,
+          message: 'Locked archive deleted successfully',
+        },
+      });
+      await pendingDelete;
+    });
+    await flushEffects();
+
+    expect(onArchiveDeleted).toHaveBeenCalledWith({ deletedCount: 1 });
+  });
+
   it('renders public delete errors inside the confirmation modal', async () => {
     mockApiDelete.mockResolvedValueOnce({
       error: null,
