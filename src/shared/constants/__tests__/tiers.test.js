@@ -10,6 +10,7 @@ describe('billing tier invariants', () => {
       [OPERATIONS.AUTH]: { hourly: 15, daily: 30 },
       [OPERATIONS.HEALTH]: { hourly: 60, daily: null },
       [OPERATIONS.STORAGE_EXPORT]: { hourly: 5, daily: 25 },
+      [OPERATIONS.BULK_DELETE_LOCKED_JOBS]: { hourly: 3, daily: 4 },
       storage: { maxJobs: 3000, autoDeleteOldest: false },
     });
   });
@@ -55,6 +56,17 @@ describe('billing tier invariants', () => {
     expect(TIER_LIMITS[TIERS.PAID][OPERATIONS.STORAGE_EXPORT]).toEqual({
       hourly: 5,
       daily: 25,
+    });
+  });
+
+  it('pins the locked bulk delete limits for free and paid tiers', () => {
+    expect(TIER_LIMITS[TIERS.FREE][OPERATIONS.BULK_DELETE_LOCKED_JOBS]).toEqual({
+      hourly: 3,
+      daily: 4,
+    });
+    expect(TIER_LIMITS[TIERS.PAID][OPERATIONS.BULK_DELETE_LOCKED_JOBS]).toEqual({
+      hourly: 3,
+      daily: 4,
     });
   });
 

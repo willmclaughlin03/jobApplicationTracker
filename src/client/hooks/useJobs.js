@@ -144,6 +144,7 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
     addJob,
     updateJob,
     deleteJob,
+    refreshStorageSummary,
     refetch: fetchJobs,
     currentPage,
     totalCount: filteredJobs.length,

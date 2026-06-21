@@ -49,6 +49,10 @@ export const TIER_LIMITS = {
             hourly: 5,
             daily: 25
         },
+        bulk_delete_locked_jobs: {
+            hourly: 3,
+            daily: 4
+        },
         storage: {
             maxJobs: 300,
             // Potential autoDelete
@@ -116,6 +120,10 @@ export const TIER_LIMITS = {
             hourly: 5,
             daily: 25
         },
+        bulk_delete_locked_jobs: {
+            hourly: 3,
+            daily: 4
+        },
         storage: {
             maxJobs: 3000,
             autoDeleteOldest: false,
@@ -149,6 +157,7 @@ export const OPERATIONS = {
     BILLING_READ: 'billing_read',
     BILLING_WRITE: 'billing_write',
     STORAGE_EXPORT: 'storage_export',
+    BULK_DELETE_LOCKED_JOBS: 'bulk_delete_locked_jobs',
     ADMIN_READ: 'admin_read',
     ADMIN_WRITE: 'admin_write',
 };

@@ -53,6 +53,7 @@ export default function Dashboard() {
     addJob,
     updateJob,
     deleteJob,
+    refreshStorageSummary,
     currentPage,
     totalCount,
     totalJobs,
@@ -148,7 +149,7 @@ export default function Dashboard() {
         />
 
         <StorageDowngradeBanner storageSummary={storageSummary} />
-        <LockedArchivePanel storageSummary={storageSummary} />
+        <LockedArchivePanel storageSummary={storageSummary} onArchiveDeleted={refreshStorageSummary} />
 
         <div>
           <div className="flex items-center justify-between mb-6">

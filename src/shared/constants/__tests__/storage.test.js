@@ -31,6 +31,7 @@ describe('storage constants', () => {
     });
     expect(JOB_STORAGE_ERRORS).toEqual({
       JOB_LOCKED_BY_PLAN: 'JOB_LOCKED_BY_PLAN',
+      LOCKED_BULK_DELETE_NOT_ALLOWED: 'LOCKED_BULK_DELETE_NOT_ALLOWED',
     });
   });
 

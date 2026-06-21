@@ -2,8 +2,11 @@ import { useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { formatStorageDate, getStorageCount, hasLockedArchive } from '../lib/storageSummaryUi.js';
 import { normalizeError, ERROR_MESSAGES } from '../../shared/errors.js';
+import { STORAGE_STATUSES } from '../../shared/constants/billing.js';
 
 const LOCKED_ARCHIVE_PREVIEW_PATH = '/api?storage_state=locked&from=0&to=14';
+const LOCKED_ARCHIVE_DELETE_PATH = '/api/storage/locked-jobs';
+const LOCKED_ARCHIVE_DELETE_CONFIRMATION = 'permanently_delete_locked_jobs';
 
 /**
  * Formats a locked teaser timestamp for compact archive rows.
@@ -31,6 +34,20 @@ function formatLockedReason(reason) {
   return reason === 'premium_to_free_over_plan_limit'
     ? 'Moved after Premium ended'
     : 'Archived by storage policy';
+}
+
+/**
+ * Checks whether the current summary may show locked bulk-delete controls.
+ *
+ * Purpose: Chunk 10 deletion is only for confirmed terminal-Free users with an
+ * existing locked archive, never Premium, ambiguous, dunning, or sync states.
+ *
+ * @param {object|null|undefined} storageSummary - Count-only storage metadata.
+ * @returns {boolean} True when the delete affordance can render.
+ */
+function canShowLockedArchiveDelete(storageSummary) {
+  return storageSummary?.status === STORAGE_STATUSES.TERMINAL_FREE
+    && hasLockedArchive(storageSummary);
 }
 
 /**
@@ -76,21 +93,129 @@ function LockedArchiveTeaserList({ teasers }) {
 }
 
 /**
+ * Renders the second confirmation modal for deleting locked archive rows.
+ *
+ * Purpose: make the destructive action explicit before the API receives the
+ * fixed confirmation body required by the locked bulk-delete route.
+ *
+ * @param {object} props - Modal props.
+ * @param {number} props.lockedCount - Locked archive row count.
+ * @param {number} props.activeCount - Current active row count.
+ * @param {number} props.activeLimit - Free active row limit.
+ * @param {Function} props.onConfirm - Confirm callback.
+ * @param {Function} props.onClose - Dismiss callback.
+ * @param {boolean} props.deleting - Whether delete is in flight.
+ * @param {object|null} props.error - Normalized delete error.
+ * @returns {import('react').ReactElement} Confirmation modal.
+ */
+function LockedArchiveDeleteModal({
+  lockedCount,
+  activeCount,
+  activeLimit,
+  onConfirm,
+  onClose,
+  deleting,
+  error,
+}) {
+  /**
+   * Closes the modal when the backdrop itself is clicked.
+   *
+   * Purpose: match the existing modal behavior while avoiding accidental close
+   * during an in-flight destructive request.
+   *
+   * @param {MouseEvent} event - React click event.
+   * @returns {void}
+   */
+  function handleOverlayClick(event) {
+    if (!deleting && event.target === event.currentTarget) {
+      onClose();
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-5"
+      role="dialog"
+      aria-modal="true"
+      onClick={handleOverlayClick}
+    >
+      <div className="w-full max-w-md rounded-lg bg-white p-6">
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <h2 className="text-lg font-semibold text-gray-900">Delete Locked Archive</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={deleting}
+            className="text-2xl leading-none text-gray-400 hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-60"
+            aria-label="Close locked archive delete confirmation"
+          >
+            &times;
+          </button>
+        </div>
+
+        <div className="space-y-3 text-sm text-gray-600">
+          <p>
+            Permanently delete {lockedCount} archived application{lockedCount === 1 ? '' : 's'}?
+            This cannot be undone.
+          </p>
+          <p>
+            Deleting locked applications does not restore add capacity if you still have
+            {' '}{activeLimit} active applications. You currently have {activeCount} active.
+          </p>
+        </div>
+
+        {error && (
+          <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+            {error.message}
+          </p>
+        )}
+
+        <div className="mt-5 flex justify-end gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={deleting}
+            className="rounded border border-gray-300 bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={deleting}
+            className="rounded bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-gray-400"
+          >
+            {deleting ? 'Deleting...' : 'Permanently Delete Archive'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Shows the locked archive entry point and teaser-only preview.
  *
  * Purpose: let downgraded users see archive size, inspect safe teaser metadata,
- * and access the explicit CSV export path without leaking hidden job fields.
+ * access the explicit CSV export path, and intentionally delete locked rows
+ * without leaking hidden job fields.
  *
- * @param {{ storageSummary?: object|null }} props - Count-only storage metadata.
+ * @param {{ storageSummary?: object|null, onArchiveDeleted?: Function|null }} props - Count metadata and refresh callback.
  * @returns {import('react').ReactElement|null} Archive panel or null.
  */
-export default function LockedArchivePanel({ storageSummary = null }) {
+export default function LockedArchivePanel({ storageSummary = null, onArchiveDeleted = null }) {
   const [isOpen, setIsOpen] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [teasers, setTeasers] = useState([]);
   const [error, setError] = useState(null);
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deletingArchive, setDeletingArchive] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
   const lockedCount = getStorageCount(storageSummary?.lockedCount);
+  const activeCount = getStorageCount(storageSummary?.activeCount);
+  const activeLimit = getStorageCount(storageSummary?.activeLimit);
+  const showDeleteAction = canShowLockedArchiveDelete(storageSummary);
 
   useEffect(() => {
     if (!isOpen || hasLoaded || !hasLockedArchive(storageSummary)) {
@@ -140,6 +265,71 @@ export default function LockedArchivePanel({ storageSummary = null }) {
     };
   }, [hasLoaded, isOpen, storageSummary]);
 
+  /**
+   * Opens the destructive archive-delete confirmation modal.
+   *
+   * Purpose: keep the API confirmation behind a deliberate second click from
+   * the archive panel rather than firing from the primary archive controls.
+   *
+   * @returns {void}
+   */
+  function openDeleteModal() {
+    setDeleteError(null);
+    setDeleteModalOpen(true);
+  }
+
+  /**
+   * Closes the destructive archive-delete confirmation modal.
+   *
+   * Purpose: allow users to back out unless a delete request is already in
+   * flight and the UI is waiting for the route response.
+   *
+   * @returns {void}
+   */
+  function closeDeleteModal() {
+    if (!deletingArchive) {
+      setDeleteModalOpen(false);
+      setDeleteError(null);
+    }
+  }
+
+  /**
+   * Calls the locked bulk-delete API after second confirmation.
+   *
+   * Purpose: send the fixed confirmation token required by the route, normalize
+   * public errors, clear stale teaser data on success, and refresh count-only
+   * storage metadata through the parent dashboard hook.
+   *
+   * @returns {Promise<void>}
+   */
+  async function confirmDeleteLockedArchive() {
+    setDeletingArchive(true);
+    setDeleteError(null);
+
+    const result = await api.delete(LOCKED_ARCHIVE_DELETE_PATH, {
+      confirmation: LOCKED_ARCHIVE_DELETE_CONFIRMATION,
+    });
+
+    if (result.error || result.data?.error) {
+      const errorData = result.data?.error
+        ? { message: result.data?.message, code: result.data?.error }
+        : result.error;
+      setDeleteError(normalizeError(errorData, ERROR_MESSAGES.DELETE_FAILED));
+      setDeletingArchive(false);
+      return;
+    }
+
+    setTeasers([]);
+    setHasLoaded(false);
+    setIsOpen(false);
+    setDeleteModalOpen(false);
+    setDeletingArchive(false);
+
+    if (typeof onArchiveDeleted === 'function') {
+      await onArchiveDeleted(result.data?.data ?? null);
+    }
+  }
+
   if (!hasLockedArchive(storageSummary)) {
     return null;
   }
@@ -168,6 +358,15 @@ export default function LockedArchivePanel({ storageSummary = null }) {
           >
             Export CSV
           </a>
+          {showDeleteAction && (
+            <button
+              type="button"
+              onClick={openDeleteModal}
+              className="inline-flex items-center justify-center rounded-md border border-red-300 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
+            >
+              Delete Archive
+            </button>
+          )}
         </div>
       </div>
 
@@ -176,6 +375,12 @@ export default function LockedArchivePanel({ storageSummary = null }) {
           <p className="text-xs text-gray-500">
             This preview shows archive dates only. Export CSV includes your full application data.
           </p>
+          {showDeleteAction && (
+            <p className="text-xs text-gray-500">
+              Deleting locked applications is permanent and does not restore add capacity while
+              your active applications are at the Free limit.
+            </p>
+          )}
           {loading && <p className="text-sm text-gray-500">Loading archive...</p>}
           {error && <p className="text-sm text-red-700">{error.message}</p>}
           {!loading && !error && <LockedArchiveTeaserList teasers={teasers} />}
@@ -185,6 +390,18 @@ export default function LockedArchivePanel({ storageSummary = null }) {
             </p>
           )}
         </div>
+      )}
+
+      {deleteModalOpen && (
+        <LockedArchiveDeleteModal
+          lockedCount={lockedCount}
+          activeCount={activeCount}
+          activeLimit={activeLimit}
+          onConfirm={confirmDeleteLockedArchive}
+          onClose={closeDeleteModal}
+          deleting={deletingArchive}
+          error={deleteError}
+        />
       )}
     </section>
   );
