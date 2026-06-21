@@ -33,10 +33,16 @@ export function useJobsQuery() {
 
     const requestId = jobsRequestRef.current + 1;
     jobsRequestRef.current = requestId;
-    const { data: response, error: apiError } = await api.get('/api');
+    let response = null;
+    let apiError = null;
+
+    try {
+      ({ data: response, error: apiError } = await api.get('/api'));
+    } catch (error) {
+      apiError = error;
+    }
 
     if (requestId !== jobsRequestRef.current) {
-      setLoading(false);
       return { success: false, data: null, count: 0, storageSummary: null, error: null, stale: true };
     }
 

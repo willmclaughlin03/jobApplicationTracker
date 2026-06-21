@@ -10,6 +10,7 @@
 const React = require('react');
 const { createRoot } = require('react-dom/client');
 const { act } = require('react');
+const { ERROR_MESSAGES } = require('../../../shared/errors.js');
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -174,6 +175,111 @@ describe('useJobs storage summary refresh', () => {
   });
 
   afterEach(cleanup);
+
+  it('clears loading and exposes normalized fetch errors when initial jobs load rejects', async () => {
+    mockApiGet.mockRejectedValue({ code: 'FETCH_FAILED' });
+
+    await renderUseJobs();
+
+    expect(mockApiGet).toHaveBeenCalledWith('/api');
+    expect(latestHook.loading).toBe(false);
+    expect(latestHook.error).toEqual(expect.objectContaining({
+      message: ERROR_MESSAGES.FETCH_FAILED,
+      code: 'FETCH_FAILED',
+    }));
+  });
+
+  it('keeps loading true when a stale full refetch resolves before a newer one', async () => {
+    const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
+    const staleJob = { id: 'job-2', company: 'Beta', position: 'Designer', status: 'applied' };
+    const latestJob = { id: 'job-3', company: 'Core', position: 'Manager', status: 'interviewing' };
+    const jobsRequests = [];
+    let jobsRequestCount = 0;
+
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api') {
+        jobsRequestCount += 1;
+
+        if (jobsRequestCount === 1) {
+          return Promise.resolve(buildJobsResponse({
+            jobs: [initialJob],
+            storageSummary: {
+              status: 'premium_canceling',
+              activeLimit: 300,
+              activeCount: 301,
+              lockedCount: 0,
+              projectedOverflowCount: 1,
+              cancelAtPeriodEnd: true,
+            },
+          }));
+        }
+
+        const deferred = createDeferred();
+        jobsRequests.push(deferred);
+        return deferred.promise;
+      }
+
+      return Promise.resolve(buildApiSuccess(null));
+    });
+
+    await renderUseJobs();
+
+    expect(latestHook.loading).toBe(false);
+
+    let staleRefetchPromise;
+    await act(async () => {
+      staleRefetchPromise = latestHook.refetch();
+      await Promise.resolve();
+    });
+
+    let latestRefetchPromise;
+    await act(async () => {
+      latestRefetchPromise = latestHook.refetch();
+      await Promise.resolve();
+    });
+
+    expect(latestHook.loading).toBe(true);
+    expect(jobsRequests).toHaveLength(2);
+
+    await act(async () => {
+      jobsRequests[0].resolve(buildJobsResponse({
+        jobs: [staleJob],
+        storageSummary: {
+          status: 'premium_canceling',
+          activeLimit: 300,
+          activeCount: 250,
+          lockedCount: 0,
+          projectedOverflowCount: 0,
+          cancelAtPeriodEnd: true,
+        },
+      }));
+      await staleRefetchPromise;
+      await Promise.resolve();
+    });
+
+    expect(latestHook.loading).toBe(true);
+    expect(latestHook.allJobs).toEqual([initialJob]);
+
+    await act(async () => {
+      jobsRequests[1].resolve(buildJobsResponse({
+        jobs: [latestJob],
+        storageSummary: {
+          status: 'premium_canceling',
+          activeLimit: 300,
+          activeCount: 280,
+          lockedCount: 0,
+          projectedOverflowCount: 0,
+          cancelAtPeriodEnd: true,
+        },
+      }));
+      await latestRefetchPromise;
+      await Promise.resolve();
+    });
+
+    expect(latestHook.loading).toBe(false);
+    expect(latestHook.allJobs).toEqual([latestJob]);
+    expect(latestHook.storageSummary.activeCount).toBe(280);
+  });
 
   it('keeps the newest storage summary when add/delete refreshes resolve out of order', async () => {
     const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
