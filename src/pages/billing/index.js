@@ -15,7 +15,15 @@ import {
   getBillingStatusSummary,
 } from '../../client/lib/billingPageState.js';
 import { BILLING_PLANS } from '../../shared/constants/billing.js';
+import {
+  formatStorageDate,
+  getStorageCount,
+  shouldShowPremiumCancelingStorageWarning,
+  shouldShowTerminalFreeArchiveCopy,
+} from '../../client/lib/storageSummaryUi.js';
 import { ERROR_MESSAGES } from '../../shared/errors.js';
+
+const STORAGE_STATUS_UNAVAILABLE_MESSAGE = 'Storage details are temporarily unavailable. Please refresh before relying on archive or downgrade counts.';
 
 /**
  * Format a billing period timestamp for display in the billing summary.
@@ -104,11 +112,13 @@ export default function BillingPage() {
   const router = useRouter();
   const { user, loading: authLoading, signOut } = useAuth();
   const [billingStatus, setBillingStatus] = useState(null);
+  const [storageSummary, setStorageSummary] = useState(null);
   const [loadState, setLoadState] = useState(BILLING_PAGE_LOAD_STATES.LOADING);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState('');
   const actionLoadingRef = useRef('');
   const [errorMessage, setErrorMessage] = useState('');
+  const [storageStatusErrorMessage, setStorageStatusErrorMessage] = useState('');
 
   useEffect(() => {
     actionLoadingRef.current = actionLoading;
@@ -131,6 +141,7 @@ export default function BillingPage() {
       setLoading(true);
       setLoadState(BILLING_PAGE_LOAD_STATES.LOADING);
       setErrorMessage('');
+      setStorageStatusErrorMessage('');
 
       try {
         const result = await api.get('/api/billing/status');
@@ -151,6 +162,8 @@ export default function BillingPage() {
 
         if (result.error) {
           setBillingStatus(null);
+          setStorageSummary(null);
+          setStorageStatusErrorMessage('');
           setLoadState(BILLING_PAGE_LOAD_STATES.ERROR);
           setErrorMessage(ERROR_MESSAGES.SERVICE_UNAVAILABLE);
           setLoading(false);
@@ -159,13 +172,41 @@ export default function BillingPage() {
 
         if (result.data?.error) {
           setBillingStatus(null);
+          setStorageSummary(null);
+          setStorageStatusErrorMessage('');
           setLoadState(BILLING_PAGE_LOAD_STATES.ERROR);
           setErrorMessage(result.data.message || 'Failed to load billing status.');
           setLoading(false);
           return;
         }
 
+        let storageResult;
+
+        try {
+          storageResult = await api.get('/api/storage/status');
+        } catch {
+          storageResult = { data: null, error: STORAGE_STATUS_UNAVAILABLE_MESSAGE, meta: null };
+        }
+
+        if (isCancelled) {
+          return;
+        }
+
+        if (
+          storageResult.error === ERROR_MESSAGES.UNAUTHORIZED
+          || storageResult.meta?.status === 401
+          || (storageResult.data?.error === 'UNAUTHORIZED' && storageResult.data?.status === 401)
+        ) {
+          await signOut();
+          router.replace('/login');
+          return;
+        }
+
+        const storageStatusFailed = Boolean(storageResult.error || storageResult.data?.error);
+
         setBillingStatus(result.data?.data ?? null);
+        setStorageSummary(storageStatusFailed ? null : storageResult.data?.data ?? null);
+        setStorageStatusErrorMessage(storageStatusFailed ? STORAGE_STATUS_UNAVAILABLE_MESSAGE : '');
         setLoadState(BILLING_PAGE_LOAD_STATES.READY);
         setLoading(false);
       } catch {
@@ -174,6 +215,8 @@ export default function BillingPage() {
         }
 
         setBillingStatus(null);
+        setStorageSummary(null);
+        setStorageStatusErrorMessage('');
         setLoadState(BILLING_PAGE_LOAD_STATES.ERROR);
         setErrorMessage(ERROR_MESSAGES.SERVICE_UNAVAILABLE);
         setLoading(false);
@@ -257,6 +300,13 @@ export default function BillingPage() {
   }
 
   const summary = getBillingStatusSummary({ billingStatus, loadState });
+  const showPremiumStorageWarning = shouldShowPremiumCancelingStorageWarning(storageSummary);
+  const showTerminalFreeArchiveNotice = shouldShowTerminalFreeArchiveCopy(storageSummary);
+  const storagePeriodEnd = formatStorageDate(storageSummary?.currentPeriodEnd) ?? 'your current period end';
+  const storageActiveLimit = getStorageCount(storageSummary?.activeLimit);
+  const storageActiveCount = getStorageCount(storageSummary?.activeCount);
+  const storageOverflowCount = getStorageCount(storageSummary?.projectedOverflowCount);
+  const storageLockedCount = getStorageCount(storageSummary?.lockedCount);
   const showCheckoutButton = canStartCheckoutFromLocalStatus({ billingStatus, loadState });
   const showPortalButton = canOpenPortalFromLocalStatus({ billingStatus, loadState });
 
@@ -296,6 +346,16 @@ export default function BillingPage() {
             </div>
           )}
 
+          {storageStatusErrorMessage && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="mt-5 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+            >
+              {storageStatusErrorMessage}
+            </div>
+          )}
+
           <div className="mt-6 grid gap-4 md:grid-cols-3">
             <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
               <p className="text-sm text-gray-500">Local status</p>
@@ -316,6 +376,39 @@ export default function BillingPage() {
               </p>
             </div>
           </div>
+
+          {(showPremiumStorageWarning || showTerminalFreeArchiveNotice) && (
+            <div className="mt-6 rounded-lg border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950">
+              {showPremiumStorageWarning && (
+                <div>
+                  <h3 className="font-semibold">Storage after cancellation</h3>
+                  <p className="mt-1 leading-6">
+                    Your Premium plan ends on {storagePeriodEnd}. Free accounts can keep {storageActiveLimit}
+                    {' '}active applications. You currently have {storageActiveCount}, so {storageOverflowCount}
+                    {' '}will move to a locked archive if you do not renew. Nothing will be deleted.
+                  </p>
+                </div>
+              )}
+              {showTerminalFreeArchiveNotice && (
+                <div>
+                  <h3 className="font-semibold">Free storage archive</h3>
+                  <p className="mt-1 leading-6">
+                    Your Free account has {storageActiveCount} active applications and {storageLockedCount}
+                    {' '}archived application{storageLockedCount === 1 ? '' : 's'}. Free accounts can keep
+                    {' '}{storageActiveLimit} active applications.
+                  </p>
+                  {storageLockedCount > 0 && (
+                    <a
+                      href="/api/storage/export"
+                      className="mt-3 inline-flex items-center justify-center rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                    >
+                      Export CSV
+                    </a>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="mt-6 flex flex-col gap-3 sm:flex-row">
             {showCheckoutButton && (

@@ -322,4 +322,168 @@ describe('BillingPage', () => {
     expect(mockApiPost).toHaveBeenCalledTimes(1);
     expect(mockApiPost).toHaveBeenCalledWith('/api/billing/portal', {});
   });
+  it('shows exact storage downgrade counts for canceling Premium overflow', async () => {
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api/storage/status') {
+        return Promise.resolve({
+          data: {
+            data: {
+              status: 'premium_canceling',
+              activeLimit: 300,
+              absoluteRetainedLimit: 3000,
+              activeCount: 450,
+              lockedCount: 0,
+              retainedTotalCount: 450,
+              projectedOverflowCount: 150,
+              cancelAtPeriodEnd: true,
+              currentPeriodEnd: '2026-07-15T12:00:00.000Z',
+            },
+          },
+          error: null,
+          meta: { status: 200, retryAfterSeconds: null },
+        });
+      }
+
+      return Promise.resolve({
+        data: {
+          data: {
+            status: 'active',
+            currentPeriodEnd: '2026-07-15T12:00:00.000Z',
+            cancelAtPeriodEnd: true,
+            hasPortalCustomer: true,
+          },
+        },
+        error: null,
+        meta: { status: 200, retryAfterSeconds: null },
+      });
+    });
+
+    const el = await renderBillingPage();
+
+    expect(mockApiGet).toHaveBeenCalledWith('/api/storage/status');
+    expect(el.textContent).toContain('Storage after cancellation');
+    expect(el.textContent).toContain('July 15, 2026');
+    expect(el.textContent).toContain('450');
+    expect(el.textContent).toContain('150');
+    expect(el.textContent).toContain('Nothing will be deleted');
+  });
+
+  it('does not show confirmed downgrade copy for billing-unavailable storage status', async () => {
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api/storage/status') {
+        return Promise.resolve({
+          data: {
+            data: {
+              status: 'billing_unavailable',
+              activeLimit: 300,
+              activeCount: 450,
+              lockedCount: 0,
+              projectedOverflowCount: 150,
+              cancelAtPeriodEnd: true,
+              currentPeriodEnd: '2026-07-15T12:00:00.000Z',
+            },
+          },
+          error: null,
+          meta: { status: 200, retryAfterSeconds: null },
+        });
+      }
+
+      return Promise.resolve({
+        data: {
+          data: {
+            status: 'active',
+            currentPeriodEnd: '2026-07-15T12:00:00.000Z',
+            cancelAtPeriodEnd: true,
+            hasPortalCustomer: true,
+          },
+        },
+        error: null,
+        meta: { status: 200, retryAfterSeconds: null },
+      });
+    });
+
+    const el = await renderBillingPage();
+
+    expect(el.textContent).not.toContain('Storage after cancellation');
+    expect(el.textContent).not.toContain('Free storage archive');
+  });
+
+  it('shows free storage archive notice and export link for terminal_free status', async () => {
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api/storage/status') {
+        return Promise.resolve({
+          data: {
+            data: {
+              status: 'terminal_free',
+              activeLimit: 300,
+              activeCount: 280,
+              lockedCount: 25,
+              projectedOverflowCount: 0,
+              cancelAtPeriodEnd: false,
+              currentPeriodEnd: null,
+            },
+          },
+          error: null,
+          meta: { status: 200, retryAfterSeconds: null },
+        });
+      }
+
+      return Promise.resolve({
+        data: {
+          data: {
+            status: 'free',
+            currentPeriodEnd: null,
+            cancelAtPeriodEnd: false,
+            hasPortalCustomer: false,
+          },
+        },
+        error: null,
+        meta: { status: 200, retryAfterSeconds: null },
+      });
+    });
+
+    const el = await renderBillingPage();
+
+    expect(el.textContent).toContain('Free storage archive');
+    expect(el.textContent).toContain('280');
+    expect(el.textContent).toContain('25 archived applications');
+    expect(el.querySelector('a[href="/api/storage/export"]')).toBeTruthy();
+  });
+
+  it('shows a storage-status warning when storage metadata fails after billing loads', async () => {
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api/storage/status') {
+        return Promise.resolve({
+          data: {
+            error: 'SERVICE_UNAVAILABLE',
+            message: ERROR_MESSAGES.SERVICE_UNAVAILABLE,
+          },
+          error: null,
+          meta: { status: 503, retryAfterSeconds: null },
+        });
+      }
+
+      return Promise.resolve({
+        data: {
+          data: {
+            status: 'active',
+            currentPeriodEnd: '2026-07-15T12:00:00.000Z',
+            cancelAtPeriodEnd: true,
+            hasPortalCustomer: true,
+          },
+        },
+        error: null,
+        meta: { status: 200, retryAfterSeconds: null },
+      });
+    });
+
+    const el = await renderBillingPage();
+
+    expect(mockApiGet).toHaveBeenCalledWith('/api/storage/status');
+    expect(mockRouter.replace).not.toHaveBeenCalled();
+    expect(el.textContent).toContain('Storage details are temporarily unavailable');
+    expect(el.textContent).toContain('Local status');
+    expect(el.textContent).not.toContain('Storage after cancellation');
+    expect(el.textContent).not.toContain('Free storage archive');
+  });
 });

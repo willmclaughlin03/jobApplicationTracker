@@ -40,6 +40,7 @@ export default function JobStatsSidebar({
   salaryFilterMax,
   onSalaryFilterMinChange,
   onSalaryFilterMaxChange,
+  archivedCount = 0,
 }) {
   const { containerRef } = useOverlayAccessibility(isOpen, onClose);
   const [localSearch, setLocalSearch] = useState(searchQuery || '');
@@ -172,11 +173,17 @@ export default function JobStatsSidebar({
         {/* Total count */}
         <div className="px-4 py-3 border-b border-gray-100">
           <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-600">Total Applications</span>
+            <span className="text-sm text-gray-600">Active Applications</span>
             <span className="text-lg font-bold text-gray-900">
               {loading ? '-' : total}
             </span>
           </div>
+          {archivedCount > 0 && (
+            <div className="mt-2 flex items-center justify-between text-sm">
+              <span className="text-gray-500">Archived</span>
+              <span className="font-medium text-gray-700">{archivedCount}</span>
+            </div>
+          )}
         </div>
 
         {/* Pie chart */}
