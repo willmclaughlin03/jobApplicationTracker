@@ -57,15 +57,16 @@ export class LockedBulkDeleteUnavailableError extends Error {
   /**
    * Builds a retryable bulk-delete error for ambiguous billing state.
    *
-   * @param {{ code?: string, storageStatus?: string|null }} params
+   * @param {{ code?: string, storageStatus?: string|null, reason?: string|null }} params
    */
-  constructor({ code = STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE, storageStatus = null } = {}) {
+  constructor({ code = STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE, storageStatus = null, reason = null } = {}) {
     super('Locked archive deletion requires a confirmed billing status');
     this.name = 'LockedBulkDeleteUnavailableError';
     this.code = code;
     this.statusCode = 503;
     this.retryable = true;
     this.storageStatus = storageStatus;
+    this.reason = reason;
   }
 }
 
@@ -87,6 +88,28 @@ function getStorageStatusValue(storageStatusResult) {
 }
 
 /**
+ * Checks whether a raw RPC count is a usable non-negative integer.
+ *
+ * Purpose: required database count fields must not silently collapse to zero
+ * when an unexpected RPC payload is missing or malformed.
+ *
+ * @param {unknown} value - Raw count value from the RPC payload.
+ * @returns {boolean} True when the value can safely represent a count.
+ */
+function isValidRpcCount(value) {
+  if (typeof value !== 'number' && typeof value !== 'string') {
+    return false;
+  }
+
+  if (typeof value === 'string' && value.trim() === '') {
+    return false;
+  }
+
+  const numericValue = Number(value);
+  return Number.isSafeInteger(numericValue) && numericValue >= 0;
+}
+
+/**
  * Normalizes integer-like count fields from RPC payloads.
  *
  * Purpose: route responses should never expose NaN or malformed count values if
@@ -96,7 +119,8 @@ function getStorageStatusValue(storageStatusResult) {
  * @returns {number} Safe non-negative integer.
  */
 function normalizeCount(value) {
-  return Number.isInteger(value) && value > 0 ? value : 0;
+  const numericValue = Number(value);
+  return isValidRpcCount(value) && numericValue > 0 ? numericValue : 0;
 }
 
 /**
@@ -198,7 +222,15 @@ async function callLockedBulkDeleteRpc({ userId, storageStatus }) {
   const normalizedData = normalizeLockedBulkDeleteRpcData(data);
 
   if (!normalizedData || typeof normalizedData.applied !== 'boolean') {
-    throw new Error('Locked bulk delete RPC returned an unexpected payload');
+    throw new LockedBulkDeleteUnavailableError({ reason: 'invalid_rpc_payload' });
+  }
+
+  if (normalizedData.applied) {
+    for (const fieldName of ['deletedCount', 'lockedCountAfterDelete']) {
+      if (!isValidRpcCount(normalizedData[fieldName])) {
+        throw new LockedBulkDeleteUnavailableError({ reason: `invalid_${fieldName}` });
+      }
+    }
   }
 
   return normalizedData;

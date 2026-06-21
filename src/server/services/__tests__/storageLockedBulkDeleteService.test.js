@@ -265,6 +265,36 @@ describe('storageLockedBulkDeleteService', () => {
     }));
   });
 
+  it.each([
+    ['deletedCount', undefined],
+    ['lockedCountAfterDelete', undefined],
+    ['deletedCount', -1],
+    ['lockedCountAfterDelete', 1.5],
+    ['deletedCount', '   '],
+  ])('rejects malformed successful RPC count field %s', async (fieldName, fieldValue) => {
+    const response = rpcDeleteResponse();
+
+    if (fieldValue === undefined) {
+      delete response.data[fieldName];
+    } else {
+      response.data[fieldName] = fieldValue;
+    }
+
+    mockRpc.mockResolvedValueOnce(response);
+
+    const result = await deleteLockedJobsForTerminalFreeUser(userId, mockLog, {
+      storageStatusResult: buildStorageStatus(STORAGE_STATUSES.TERMINAL_FREE),
+    });
+
+    expect(result.data).toBeNull();
+    expect(result.error).toEqual(expect.objectContaining({
+      name: 'LockedBulkDeleteUnavailableError',
+      code: STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+      statusCode: 503,
+      retryable: true,
+      reason: `invalid_${fieldName}`,
+    }));
+  });
   it('parses stringified RPC payloads', async () => {
     mockRpc.mockResolvedValueOnce({
       data: JSON.stringify({

@@ -256,6 +256,36 @@ describe('LockedArchivePanel', () => {
     expect(onArchiveDeleted).toHaveBeenCalledWith({ deletedCount: 1 });
   });
 
+  it('propagates callback errors without showing delete error', async () => {
+    const callbackError = new Error('Refresh failed');
+    const callbackPromise = Promise.reject(callbackError);
+    callbackPromise.catch(() => {});
+    const onArchiveDeleted = jest.fn().mockReturnValue(callbackPromise);
+    const el = render(React.createElement(LockedArchivePanel, {
+      storageSummary: {
+        status: 'terminal_free',
+        lockedCount: 1,
+        activeCount: 300,
+        activeLimit: 300,
+      },
+      onArchiveDeleted,
+    }));
+
+    click(findButtonByText(el, 'Delete Archive'));
+    const confirmButton = findButtonByText(el, 'Permanently Delete Archive');
+
+    click(confirmButton);
+    await flushEffects();
+    await flushEffects();
+
+    expect(mockApiDelete).toHaveBeenCalledTimes(1);
+    expect(onArchiveDeleted).toHaveBeenCalledWith({ deletedCount: 1 });
+    await expect(onArchiveDeleted.mock.results[0].value).rejects.toThrow('Refresh failed');
+    expect(el.querySelector('[role="dialog"]')).toBeNull();
+    expect(el.textContent).not.toContain('Refresh failed');
+    expect(el.textContent).not.toContain('Locked archive deletion is available only');
+  });
+
   it('renders public delete errors inside the confirmation modal', async () => {
     mockApiDelete.mockResolvedValueOnce({
       error: null,

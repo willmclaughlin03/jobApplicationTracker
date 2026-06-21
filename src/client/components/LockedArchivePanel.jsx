@@ -312,6 +312,9 @@ export default function LockedArchivePanel({ storageSummary = null, onArchiveDel
     setDeletingArchive(true);
     setDeleteError(null);
 
+    let archiveDeletedData = null;
+    let shouldNotifyArchiveDeleted = false;
+
     try {
       const result = await api.delete(LOCKED_ARCHIVE_DELETE_PATH, {
         confirmation: LOCKED_ARCHIVE_DELETE_CONFIRMATION,
@@ -322,24 +325,24 @@ export default function LockedArchivePanel({ storageSummary = null, onArchiveDel
           ? { message: result.data?.message, code: result.data?.error }
           : result.error;
         setDeleteError(normalizeError(errorData, ERROR_MESSAGES.DELETE_FAILED));
-        setDeletingArchive(false);
         return;
       }
 
+      archiveDeletedData = result.data?.data ?? null;
+      shouldNotifyArchiveDeleted = true;
       setTeasers([]);
       setHasLoaded(false);
       setIsOpen(false);
       setDeleteModalOpen(false);
-      setDeletingArchive(false);
-
-      if (typeof onArchiveDeleted === 'function') {
-        await onArchiveDeleted(result.data?.data ?? null);
-      }
     } catch (error) {
       setDeleteError(normalizeError(error, ERROR_MESSAGES.DELETE_FAILED));
-      setDeletingArchive(false);
     } finally {
+      setDeletingArchive(false);
       deleteInFlightRef.current = false;
+    }
+
+    if (shouldNotifyArchiveDeleted && typeof onArchiveDeleted === 'function') {
+      onArchiveDeleted(archiveDeletedData);
     }
   }
 
