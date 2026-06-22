@@ -12,6 +12,10 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-06-22
+
+- `2026-06-22` - `Premium storage final integration evidence`: Added a final-state integration suite covering the complete storage-degradation migration stack, SQL storage-status matrix, service-role RPC boundaries, real locked-row projections, export visibility, and deterministic id tie-breakers.
+
 ### Week of 2026-06-15
 
 - `2026-06-21` - `Locked archive review hardening`: Added callback rejection boundary coverage and successful RPC count validation for locked archive bulk deletes.
