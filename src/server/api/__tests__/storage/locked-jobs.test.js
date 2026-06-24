@@ -127,22 +127,35 @@ describe('/api/storage/locked-jobs handler', () => {
     expect(mockDeleteLockedJobsForTerminalFreeUser).not.toHaveBeenCalled();
   });
 
-  it('rejects client-supplied user ids in query or body', async () => {
-    const queryReq = createMockReq({ query: { user_id: 'other-user' } });
-    const queryRes = createMockRes();
-    await handler(queryReq, queryRes);
+  it('strictly rejects unsupported query or body fields before calling the service', async () => {
+    const requests = [
+      createMockReq({ query: { user_id: 'other-user' } }),
+      createMockReq({ query: { storage_state: 'locked_over_plan_limit' } }),
+      createMockReq({
+        body: {
+          confirmation: 'permanently_delete_locked_jobs',
+          user_id: 'other-user',
+        },
+      }),
+      createMockReq({
+        body: {
+          confirmation: 'permanently_delete_locked_jobs',
+          deleteLimit: 100,
+        },
+      }),
+    ];
 
-    const bodyReq = createMockReq({
-      body: {
-        confirmation: 'permanently_delete_locked_jobs',
-        user_id: 'other-user',
-      },
-    });
-    const bodyRes = createMockRes();
-    await handler(bodyReq, bodyRes);
+    for (const req of requests) {
+      const res = createMockRes();
+      await handler(req, res);
 
-    expect(queryRes.status).toHaveBeenCalledWith(400);
-    expect(bodyRes.status).toHaveBeenCalledWith(400);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        error: 'VALIDATION_ERROR',
+        message: ERROR_MESSAGES.VALIDATION_ERROR,
+      }));
+    }
+
     expect(mockDeleteLockedJobsForTerminalFreeUser).not.toHaveBeenCalled();
   });
 

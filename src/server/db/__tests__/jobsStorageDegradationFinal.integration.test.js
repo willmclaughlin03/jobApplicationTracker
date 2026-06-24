@@ -28,6 +28,7 @@ const FINAL_STORAGE_MIGRATION_FILES = Object.freeze([
   '019_jobs_premium_restore.sql',
   '020_jobs_locked_bulk_delete.sql',
 ]);
+const TEST_PREMIUM_PRICE_IDS = Object.freeze(['price_premium_monthly']);
 
 const TEST_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const TEST_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -421,7 +422,7 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
         user_id: userId,
         stripe_subscription_id: stripeSubscriptionId,
         stripe_customer_id: stripeCustomerId,
-        price_id: 'price_premium_monthly',
+        price_id: TEST_PREMIUM_PRICE_IDS[0],
         status: 'active',
         current_period_end: '2099-01-01T00:00:00.000Z',
         cancel_at_period_end: false,
@@ -581,17 +582,20 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
    *
    * @param {string} userId Owner auth user id.
    * @param {object} options RPC options.
+   * @param {string[]} options.entitledPriceIds Server-configured Premium price allowlist.
    * @returns {Promise<object>} Normalized RPC response.
    */
   async function callPremiumRestoreRpc(userId, options = {}) {
     const {
       storageStatus = STORAGE_STATUSES.PREMIUM_ACTIVE,
       retainedLimit = ABSOLUTE_RETAINED_JOB_LIMIT,
+      entitledPriceIds = TEST_PREMIUM_PRICE_IDS,
     } = options;
     const { data, error } = await serviceClient.rpc('restore_locked_jobs_for_premium_user', {
       p_user_id: userId,
       p_storage_status: storageStatus,
       p_absolute_retained_job_limit: retainedLimit,
+      p_entitled_price_ids: entitledPriceIds,
     });
 
     if (error) throw error;
@@ -900,6 +904,74 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
     }
   });
 
+  test('H4b: Premium restore allowlist and stale-caller negatives do not unlock rows', async () => {
+    const emptyAllowlistUser = await createTempUser('final-restore-empty-allowlist');
+    await seedBillingSubscription(emptyAllowlistUser.id);
+    await seedJobs(emptyAllowlistUser.id, {
+      activeRows: [{ company: 'Empty Allowlist Active' }],
+      lockedRows: [{ company: 'Empty Allowlist Locked' }],
+    });
+
+    const emptyAllowlistResult = await callPremiumRestoreRpc(emptyAllowlistUser.id, {
+      entitledPriceIds: [],
+    });
+
+    expect(emptyAllowlistResult).toEqual(expect.objectContaining({
+      applied: false,
+      reason: 'premium_price_allowlist_missing',
+      restoredCount: 0,
+    }));
+    await expect(getStorageCounts(emptyAllowlistUser.id)).resolves.toEqual({
+      active_count: 1,
+      locked_count: 1,
+      retained_total_count: 2,
+    });
+
+    const wrongPriceUser = await createTempUser('final-restore-wrong-price');
+    await seedBillingSubscription(wrongPriceUser.id, {
+      price_id: 'price_non_entitled_monthly',
+    });
+    await seedJobs(wrongPriceUser.id, {
+      activeRows: [{ company: 'Wrong Price Active' }],
+      lockedRows: [{ company: 'Wrong Price Locked' }],
+    });
+
+    const wrongPriceResult = await callPremiumRestoreRpc(wrongPriceUser.id);
+
+    expect(wrongPriceResult).toEqual(expect.objectContaining({
+      applied: false,
+      reason: 'canonical_billing_not_premium',
+      canonicalStorageStatus: STORAGE_STATUSES.NON_ENTITLED_NON_TERMINAL,
+      canonicalEntitlementReason: 'price_id_not_allowlisted',
+      restoredCount: 0,
+    }));
+    await expect(getStorageCounts(wrongPriceUser.id)).resolves.toEqual({
+      active_count: 1,
+      locked_count: 1,
+      retained_total_count: 2,
+    });
+
+    const stalePremiumUser = await createTempUser('final-restore-stale-premium');
+    await seedJobs(stalePremiumUser.id, {
+      activeRows: [{ company: 'Stale Premium Active' }],
+      lockedRows: [{ company: 'Stale Premium Locked' }],
+    });
+
+    const stalePremiumResult = await callPremiumRestoreRpc(stalePremiumUser.id);
+
+    expect(stalePremiumResult).toEqual(expect.objectContaining({
+      applied: false,
+      reason: 'canonical_billing_not_premium',
+      canonicalStorageStatus: STORAGE_STATUSES.TERMINAL_FREE,
+      restoredCount: 0,
+    }));
+    await expect(getStorageCounts(stalePremiumUser.id)).resolves.toEqual({
+      active_count: 1,
+      locked_count: 1,
+      retained_total_count: 2,
+    });
+  });
+
   test('H5: storage RPC execute privileges stay service-role only', async () => {
     const privilegeRows = await execSql(`
       SELECT
@@ -912,9 +984,10 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
         has_function_privilege('authenticated', 'public.lock_overflow_jobs_for_terminal_free_user(uuid,text,integer,text,text)', 'EXECUTE') AS authenticated_lock,
         has_function_privilege('anon', 'public.lock_overflow_jobs_for_terminal_free_user(uuid,text,integer,text,text)', 'EXECUTE') AS anon_lock,
         has_function_privilege('service_role', 'public.lock_overflow_jobs_for_terminal_free_user(uuid,text,integer,text,text)', 'EXECUTE') AS service_lock,
-        has_function_privilege('authenticated', 'public.restore_locked_jobs_for_premium_user(uuid,text,integer)', 'EXECUTE') AS authenticated_restore,
-        has_function_privilege('anon', 'public.restore_locked_jobs_for_premium_user(uuid,text,integer)', 'EXECUTE') AS anon_restore,
-        has_function_privilege('service_role', 'public.restore_locked_jobs_for_premium_user(uuid,text,integer)', 'EXECUTE') AS service_restore,
+        pg_catalog.to_regprocedure('public.restore_locked_jobs_for_premium_user(uuid,text,integer)')::text AS stale_restore_signature,
+        has_function_privilege('authenticated', 'public.restore_locked_jobs_for_premium_user(uuid,text,integer,text[])', 'EXECUTE') AS authenticated_restore,
+        has_function_privilege('anon', 'public.restore_locked_jobs_for_premium_user(uuid,text,integer,text[])', 'EXECUTE') AS anon_restore,
+        has_function_privilege('service_role', 'public.restore_locked_jobs_for_premium_user(uuid,text,integer,text[])', 'EXECUTE') AS service_restore,
         has_function_privilege('authenticated', 'public.delete_locked_jobs_for_terminal_free_user(uuid,text,integer)', 'EXECUTE') AS authenticated_delete,
         has_function_privilege('anon', 'public.delete_locked_jobs_for_terminal_free_user(uuid,text,integer)', 'EXECUTE') AS anon_delete,
         has_function_privilege('service_role', 'public.delete_locked_jobs_for_terminal_free_user(uuid,text,integer)', 'EXECUTE') AS service_delete
@@ -930,6 +1003,7 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
       authenticated_lock: false,
       anon_lock: false,
       service_lock: true,
+      stale_restore_signature: null,
       authenticated_restore: false,
       anon_restore: false,
       service_restore: true,
@@ -960,6 +1034,13 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
         p_user_id: user.id,
         p_storage_status: STORAGE_STATUSES.PREMIUM_ACTIVE,
         p_absolute_retained_job_limit: 1,
+        p_entitled_price_ids: TEST_PREMIUM_PRICE_IDS,
+      }),
+      anonClient.rpc('restore_locked_jobs_for_premium_user', {
+        p_user_id: user.id,
+        p_storage_status: STORAGE_STATUSES.PREMIUM_ACTIVE,
+        p_absolute_retained_job_limit: 1,
+        p_entitled_price_ids: TEST_PREMIUM_PRICE_IDS,
       }),
       authenticatedClient.rpc('delete_locked_jobs_for_terminal_free_user', {
         p_user_id: user.id,
@@ -1191,5 +1272,112 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
         storage_state: JOB_STORAGE_STATES.ACTIVE,
       }),
     ]);
+  });
+
+  test('H8: final storage RPC races preserve delete, restore, and create invariants', async () => {
+    const deleteRestoreUser = await createTempUser('final-race-delete-restore');
+    await seedBillingSubscription(deleteRestoreUser.id);
+    await seedJobs(deleteRestoreUser.id, {
+      lockedRows: [
+        { company: 'Delete Restore Race Locked 1' },
+        { company: 'Delete Restore Race Locked 2' },
+      ],
+    });
+
+    const [deleteRestoreDeleteResult, deleteRestoreRestoreResult] = await Promise.all([
+      callLockedBulkDeleteRpc(deleteRestoreUser.id, {
+        storageStatus: STORAGE_STATUSES.TERMINAL_FREE,
+        deleteLimit: 10,
+      }),
+      callPremiumRestoreRpc(deleteRestoreUser.id, {
+        storageStatus: STORAGE_STATUSES.PREMIUM_ACTIVE,
+        retainedLimit: 10,
+      }),
+    ]);
+
+    expect(deleteRestoreDeleteResult).toEqual(expect.objectContaining({
+      applied: false,
+      reason: 'canonical_billing_not_terminal_free',
+      deletedCount: 0,
+    }));
+    expect(deleteRestoreRestoreResult).toEqual(expect.objectContaining({
+      applied: true,
+      restoredCount: 2,
+      lockedCountAfterRestore: 0,
+    }));
+    await expect(getStorageCounts(deleteRestoreUser.id)).resolves.toEqual({
+      active_count: 2,
+      locked_count: 0,
+      retained_total_count: 2,
+    });
+
+    const deleteCreateUser = await createTempUser('final-race-delete-create');
+    await seedJobs(deleteCreateUser.id, {
+      activeRows: [{ company: 'Delete Create Race Active' }],
+      lockedRows: [
+        { company: 'Delete Create Race Locked 1' },
+        { company: 'Delete Create Race Locked 2' },
+      ],
+    });
+
+    const [deleteCreateDeleteResult, deleteCreateCreateResult] = await Promise.all([
+      callLockedBulkDeleteRpc(deleteCreateUser.id, { deleteLimit: 10 }),
+      callCreateJobRpc(deleteCreateUser.id, {
+        storageStatus: STORAGE_STATUSES.TERMINAL_FREE,
+        activeLimit: 2,
+        retainedLimit: 4,
+        company: 'Delete Create Race New Active',
+      }),
+    ]);
+
+    expect(deleteCreateDeleteResult).toEqual(expect.objectContaining({
+      applied: true,
+      deletedCount: 2,
+      lockedCountAfterDelete: 0,
+    }));
+    expect(deleteCreateCreateResult).toEqual(expect.objectContaining({
+      created: true,
+    }));
+    await expect(getStorageCounts(deleteCreateUser.id)).resolves.toEqual({
+      active_count: 2,
+      locked_count: 0,
+      retained_total_count: 2,
+    });
+
+    const restoreCreateUser = await createTempUser('final-race-restore-create');
+    await seedBillingSubscription(restoreCreateUser.id);
+    await seedJobs(restoreCreateUser.id, {
+      activeRows: [{ company: 'Restore Create Race Active' }],
+      lockedRows: [{ company: 'Restore Create Race Locked' }],
+    });
+
+    const [restoreCreateRestoreResult, restoreCreateCreateResult] = await Promise.all([
+      callPremiumRestoreRpc(restoreCreateUser.id, { retainedLimit: 2 }),
+      callCreateJobRpc(restoreCreateUser.id, {
+        storageStatus: STORAGE_STATUSES.PREMIUM_ACTIVE,
+        activeLimit: 2,
+        retainedLimit: 2,
+        company: 'Restore Create Race New Active',
+      }),
+    ]);
+
+    expect(restoreCreateRestoreResult).toEqual(expect.objectContaining({
+      applied: true,
+      restoredCount: 1,
+      lockedCountAfterRestore: 0,
+    }));
+    expect(restoreCreateCreateResult).toEqual(expect.objectContaining({
+      created: false,
+      code: STORAGE_CREATE_ERROR_CODES.STORAGE_LIMIT_EXCEEDED,
+    }));
+    expect([
+      'active_limit_exceeded',
+      'retained_limit_exceeded',
+    ]).toContain(restoreCreateCreateResult.reason);
+    await expect(getStorageCounts(restoreCreateUser.id)).resolves.toEqual({
+      active_count: 2,
+      locked_count: 0,
+      retained_total_count: 2,
+    });
   });
 });
