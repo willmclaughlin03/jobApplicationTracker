@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-06-22
 
+- `2026-06-24` - `Destructive DB integration fail-closed gating`: Required explicit destructive integration opt-in plus Supabase test project URL matching before live database suites can run.
+
 - `2026-06-22` - `Premium storage final integration evidence`: Added a final-state integration suite covering the complete storage-degradation migration stack, SQL storage-status matrix, service-role RPC boundaries, real locked-row projections, export visibility, and deterministic id tie-breakers.
 
 ### Week of 2026-06-15

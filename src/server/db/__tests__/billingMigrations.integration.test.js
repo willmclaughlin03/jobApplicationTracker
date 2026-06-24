@@ -37,6 +37,20 @@ const MIGRATIONS_DIR = join(process.cwd(), 'migrations');
 const TEST_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const TEST_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const TEST_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const RUN_DESTRUCTIVE_DB_INTEGRATION = process.env.RUN_DESTRUCTIVE_DB_INTEGRATION === 'true';
+const SUPABASE_TEST_PROJECT_REF = process.env.SUPABASE_TEST_PROJECT_REF;
+const EXPECTED_TEST_URL_PREFIX = SUPABASE_TEST_PROJECT_REF
+  ? `https://${SUPABASE_TEST_PROJECT_REF}.supabase.co`
+  : '';
+
+const isExpectedSupabaseTarget = Boolean(
+  TEST_URL
+  && EXPECTED_TEST_URL_PREFIX
+  && (
+    TEST_URL === EXPECTED_TEST_URL_PREFIX
+    || TEST_URL.startsWith(`${EXPECTED_TEST_URL_PREFIX}/`)
+  )
+);
 
 const USER_A_EMAIL = process.env.SUPABASE_TEST_USER_A_EMAIL;
 const USER_B_EMAIL = process.env.SUPABASE_TEST_USER_B_EMAIL;
@@ -147,12 +161,20 @@ const ADDITIVE_BILLING_MIGRATIONS = [
 ];
 
 const hasInfra = Boolean(
-  TEST_URL
+  RUN_DESTRUCTIVE_DB_INTEGRATION
+  && isExpectedSupabaseTarget
+  && TEST_URL
   && TEST_SERVICE_KEY
   && TEST_ANON_KEY
   && USER_A_EMAIL
   && USER_B_EMAIL
 );
+
+if (RUN_DESTRUCTIVE_DB_INTEGRATION && !isExpectedSupabaseTarget) {
+  throw new Error(
+    'Refusing to run Suite B: NEXT_PUBLIC_SUPABASE_URL must match SUPABASE_TEST_PROJECT_REF.'
+  );
+}
 
 /**
  * Normalize exec_sql RPC payloads into row arrays.
