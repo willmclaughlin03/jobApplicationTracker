@@ -25,9 +25,34 @@ const JOBS_LOCKED_BULK_DELETE_MIGRATION_FILE = '020_jobs_locked_bulk_delete.sql'
 
 const TEST_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const TEST_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const RUN_DESTRUCTIVE_DB_INTEGRATION = process.env.RUN_DESTRUCTIVE_DB_INTEGRATION === 'true';
+const SUPABASE_TEST_PROJECT_REF = process.env.SUPABASE_TEST_PROJECT_REF;
+const EXPECTED_TEST_URL_PREFIX = SUPABASE_TEST_PROJECT_REF
+  ? `https://${SUPABASE_TEST_PROJECT_REF}.supabase.co`
+  : '';
 
-const hasInfra = Boolean(TEST_URL && TEST_SERVICE_KEY);
+const isExpectedSupabaseTarget = Boolean(
+  TEST_URL
+  && EXPECTED_TEST_URL_PREFIX
+  && (
+    TEST_URL === EXPECTED_TEST_URL_PREFIX
+    || TEST_URL.startsWith(`${EXPECTED_TEST_URL_PREFIX}/`)
+  )
+);
+
+const hasInfra = Boolean(
+  RUN_DESTRUCTIVE_DB_INTEGRATION
+  && isExpectedSupabaseTarget
+  && TEST_URL
+  && TEST_SERVICE_KEY
+);
 const describeOrSkip = hasInfra ? describe : describe.skip;
+
+if (RUN_DESTRUCTIVE_DB_INTEGRATION && !isExpectedSupabaseTarget) {
+  throw new Error(
+    'Refusing to run Suite G: NEXT_PUBLIC_SUPABASE_URL must match SUPABASE_TEST_PROJECT_REF.'
+  );
+}
 
 /**
  * Normalize exec_sql RPC data into a row array.
@@ -436,6 +461,31 @@ describeOrSkip('Suite G - Jobs locked bulk delete integration', () => {
     expect(afterFirstCounts.locked_count).toBe(1);
     expect(secondResult.deletedCount).toBe(1);
     expect(afterSecondCounts.locked_count).toBe(0);
+  });
+
+  it('serializes concurrent bulk-delete calls without double-counting locked rows', async () => {
+    const userId = await createTestUser();
+    const insertResult = await serviceClient.from('jobs').insert([
+      buildLockedJobRow(userId, { company: 'Concurrent Locked One' }),
+      buildLockedJobRow(userId, { company: 'Concurrent Locked Two' }),
+      buildLockedJobRow(userId, { company: 'Concurrent Locked Three' }),
+    ]);
+    if (insertResult.error) throw insertResult.error;
+
+    const results = await Promise.all([
+      callLockedBulkDeleteRpc(userId, { lockedDeleteLimit: 2 }),
+      callLockedBulkDeleteRpc(userId, { lockedDeleteLimit: 2 }),
+    ]);
+    const deletedCounts = results
+      .map((result) => result.deletedCount)
+      .sort((left, right) => left - right);
+
+    expect(deletedCounts).toEqual([1, 2]);
+    await expect(getStorageCounts(userId)).resolves.toEqual({
+      active_count: 0,
+      locked_count: 0,
+      retained_total_count: 0,
+    });
   });
 
   it('does not delete when caller status is not terminal Free', async () => {

@@ -16,4 +16,8 @@ src/server/db/__tests__/*
 !src/server/db/__tests__/billingMigrations.integration.test.js
 !src/server/db/__tests__/jobsAtomicCreateQuota.integration.test.js
 !src/server/db/__tests__/jobsStorageStateMigrations.integration.test.js
+!src/server/db/__tests__/jobsOverflowLocking.integration.test.js
+!src/server/db/__tests__/jobsPremiumRestore.integration.test.js
+!src/server/db/__tests__/jobsLockedBulkDelete.integration.test.js
+!src/server/db/__tests__/jobsStorageDegradationFinal.integration.test.js
 src/shared/schemas/__tests__/

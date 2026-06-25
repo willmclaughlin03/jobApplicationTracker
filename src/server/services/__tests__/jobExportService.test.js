@@ -106,6 +106,13 @@ describe('serializeJobsToCsv', () => {
         notes: '-note',
         created_at: null,
       },
+      {
+        company: 'Safe Corp',
+        position: '\t=cmd|calc',
+        status: 'applied',
+        notes: 'CRLF line\r\nquoted, comma "cell"',
+        created_at: '2026-06-19T00:00:00.000Z',
+      },
     ]);
 
     expect(csv.startsWith('company,position,status,notes,created_at\r\n')).toBe(true);
@@ -116,6 +123,8 @@ describe('serializeJobsToCsv', () => {
     expect(csv).toContain('"\'@status"');
     expect(csv).toContain('"\'-note"');
     expect(csv).toContain('"","\'+Ops"');
+    expect(csv).toContain('"\'\t=cmd|calc"');
+    expect(csv).toContain('"CRLF line\r\nquoted, comma ""cell"""');
     expect(csv.endsWith('\r\n')).toBe(true);
   });
 });
