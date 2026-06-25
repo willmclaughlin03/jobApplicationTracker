@@ -1229,7 +1229,7 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
     const restorePair = buildOrderedUuidPair();
     await seedJobs(restoreUser.id, {
       activeRows: [
-        { company: 'Restore Tie Active Baseline' },
+        { id: randomUUID(), company: 'Restore Tie Active Baseline' },
       ],
       lockedRows: [
         {
