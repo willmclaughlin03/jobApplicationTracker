@@ -18,6 +18,13 @@ import {
   JOB_STORAGE_STATES,
 } from '../../shared/constants/storage.js';
 
+const STORAGE_COUNTS_RPC = 'get_job_storage_counts_for_user';
+const STORAGE_COUNT_FIELD_NAMES = Object.freeze([
+  'activeCount',
+  'lockedCount',
+  'retainedTotalCount',
+]);
+
 /**
  * Normalizes Supabase count values into a non-negative integer.
  *
@@ -30,6 +37,129 @@ import {
  */
 function normalizeStorageCount(count) {
   return Number.isInteger(count) && count > 0 ? count : 0;
+}
+
+/**
+ * Checks whether an RPC count field is a valid non-negative integer.
+ *
+ * Purpose: storage-count RPC payloads must fail closed when a required count
+ * is missing, fractional, negative, or coerced into an unexpected type.
+ *
+ * @param {unknown} count - Raw count field from the RPC payload.
+ * @returns {boolean} True when the count can be trusted.
+ */
+function isValidStorageCountsRpcCount(count) {
+  return Number.isSafeInteger(count) && count >= 0;
+}
+
+/**
+ * Parses JSON returned by the storage-count RPC.
+ *
+ * Purpose: Supabase RPC calls may return jsonb as an object or JSON string,
+ * but callers need exactly the three count fields and no partial fallback.
+ *
+ * @param {unknown} data - Raw Supabase RPC response payload.
+ * @returns {object|null} Validated storage counts, or null when malformed.
+ */
+function normalizeStorageCountsRpcData(data) {
+  if (!data) {
+    return null;
+  }
+
+  let payload = data;
+
+  if (typeof data === 'string') {
+    try {
+      payload = JSON.parse(data);
+    } catch {
+      return null;
+    }
+  }
+
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return null;
+  }
+
+  const payloadKeys = Object.keys(payload);
+  if (
+    payloadKeys.length !== STORAGE_COUNT_FIELD_NAMES.length
+    || !STORAGE_COUNT_FIELD_NAMES.every((fieldName) => (
+      Object.prototype.hasOwnProperty.call(payload, fieldName)
+    ))
+  ) {
+    return null;
+  }
+
+  if (!STORAGE_COUNT_FIELD_NAMES.every((fieldName) => (
+    isValidStorageCountsRpcCount(payload[fieldName])
+  ))) {
+    return null;
+  }
+
+  return {
+    activeCount: payload.activeCount,
+    lockedCount: payload.lockedCount,
+    retainedTotalCount: payload.retainedTotalCount,
+  };
+}
+
+/**
+ * Builds the fail-closed error for invalid storage-count RPC payloads.
+ *
+ * Purpose: route handlers need a concrete error so malformed count metadata
+ * returns service-unavailable behavior instead of silently becoming zeros.
+ *
+ * @returns {Error} Stable malformed-payload error.
+ */
+function createInvalidStorageCountsRpcPayloadError() {
+  const error = new Error('Storage counts RPC returned an unexpected payload');
+  error.code = 'INVALID_STORAGE_COUNTS_RPC_PAYLOAD';
+  return error;
+}
+
+/**
+ * Calls the service-role storage-count RPC and validates its count payload.
+ *
+ * Purpose: keep the database round trip and strict parsing in one boundary so
+ * storage summaries never fall back to partial or row-returning count queries.
+ *
+ * @param {string} userId - Authenticated owner id.
+ * @param {object} log - Request-scoped logger.
+ * @returns {Promise<{data: object|null, error: Error|object|null}>}
+ */
+async function callJobStorageCountsRpc(userId, log = defaultLogger) {
+  try {
+    const { data, error } = await supabaseAdmin.rpc(STORAGE_COUNTS_RPC, {
+      p_user_id: userId,
+    });
+
+    if (error) {
+      log.error(
+        { err: error, operation: 'getJobStorageCounts', userId },
+        'Failed to load job storage counts'
+      );
+      return { data: null, error };
+    }
+
+    const counts = normalizeStorageCountsRpcData(data);
+
+    if (!counts) {
+      const payloadError = createInvalidStorageCountsRpcPayloadError();
+      log.error(
+        { err: payloadError, operation: 'getJobStorageCounts', userId },
+        'Job storage counts RPC payload was invalid'
+      );
+      return { data: null, error: payloadError };
+    }
+
+    return { data: counts, error: null };
+  } catch (error) {
+    log.error(
+      { err: error, operation: 'getJobStorageCounts', userId },
+      'Unexpected error while loading job storage counts'
+    );
+    return { data: null, error };
+  }
 }
 
 /**
@@ -158,23 +288,7 @@ export function getProjectedOverflowCount(activeCount, activeLimit = FREE_ACTIVE
  * @returns {Promise<{data: object|null, error: Error|object|null}>}
  */
 export async function getJobStorageCounts(userId, log = defaultLogger) {
-  const activeResult = await getActiveJobCount(userId, log);
-  if (activeResult.error) return { data: null, error: activeResult.error };
-
-  const lockedResult = await getLockedJobCount(userId, log);
-  if (lockedResult.error) return { data: null, error: lockedResult.error };
-
-  const retainedResult = await getRetainedTotalJobCount(userId, log);
-  if (retainedResult.error) return { data: null, error: retainedResult.error };
-
-  return {
-    data: {
-      activeCount: activeResult.count,
-      lockedCount: lockedResult.count,
-      retainedTotalCount: retainedResult.count,
-    },
-    error: null,
-  };
+  return callJobStorageCountsRpc(userId, log);
 }
 
 /**

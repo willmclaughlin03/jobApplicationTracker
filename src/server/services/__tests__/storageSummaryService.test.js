@@ -1,21 +1,24 @@
 /**
  * Tests for storageSummaryService - count-only storage metadata.
  *
- * Purpose: Verify Chunk 3 storage summary helpers count active, locked, and
- * retained rows without exposing job data, and preserve typed storage status.
+ * Purpose: Verify storage summaries load active, locked, and retained counts
+ * through the consolidated service-role RPC without exposing job row data, and
+ * preserve typed storage status semantics.
  *
  * Connects to:
  * - server/services/storageSummaryService.js
  * - server/lib/billingService.resolveStorageStatus()
- * - supabaseAdmin jobs count queries
+ * - supabaseAdmin get_job_storage_counts_for_user RPC
  */
 
 const mockFrom = jest.fn();
+const mockRpc = jest.fn();
 const mockResolveStorageStatus = jest.fn();
 
 jest.mock('../../lib/supabaseServer.js', () => ({
   supabaseAdmin: {
     from: mockFrom,
+    rpc: mockRpc,
   },
 }));
 
@@ -34,50 +37,44 @@ jest.mock('../../../shared/logger.js', () => ({
 
 const {
   buildStorageSummary,
-  getActiveJobCount,
   getJobStorageCounts,
-  getLockedJobCount,
   getProjectedOverflowCount,
-  getRetainedTotalJobCount,
   getStorageSummaryForUser,
 } = require('../storageSummaryService.js');
 const { STORAGE_STATUSES } = require('../../../shared/constants/billing.js');
 const {
   ABSOLUTE_RETAINED_JOB_LIMIT,
   FREE_ACTIVE_JOB_LIMIT,
-  JOB_STORAGE_STATES,
 } = require('../../../shared/constants/storage.js');
 
 /**
- * Create a chainable Supabase query fake.
+ * Builds the storage-count RPC payload shape used by the service.
  *
- * Purpose: service tests need to inspect fluent query construction while await
- * resolves to caller-provided count/error metadata.
+ * Purpose: tests need readable count fixtures while preserving the exact field
+ * names returned by get_job_storage_counts_for_user().
  *
- * @param {object} resolvedValue - Supabase-like terminal response.
- * @returns {Proxy} Chainable thenable query fake with recorded calls.
+ * @param {{ activeCount?: number, lockedCount?: number, retainedTotalCount?: number }} counts - Count overrides.
+ * @returns {{ activeCount: number, lockedCount: number, retainedTotalCount: number }} RPC payload.
  */
-function fakeQuery(resolvedValue) {
-  const _calls = {};
+function buildCountsPayload(counts = {}) {
+  return {
+    activeCount: counts.activeCount ?? 300,
+    lockedCount: counts.lockedCount ?? 2,
+    retainedTotalCount: counts.retainedTotalCount ?? 302,
+  };
+}
 
-  const chain = new Proxy({}, {
-    get(_, prop) {
-      if (prop === '_calls') return _calls;
-
-      if (prop === 'then') {
-        return (resolve, reject) =>
-          Promise.resolve(resolvedValue).then(resolve, reject);
-      }
-
-      return (...args) => {
-        _calls[prop] = _calls[prop] || [];
-        _calls[prop].push(args);
-        return chain;
-      };
-    },
-  });
-
-  return chain;
+/**
+ * Queues a successful storage-count RPC response.
+ *
+ * Purpose: storage-summary tests can focus on summary behavior while still
+ * asserting that no legacy table-count fallback is used.
+ *
+ * @param {object|string} payload - RPC payload object or JSON string.
+ * @returns {void}
+ */
+function mockStorageCountsRpcSuccess(payload = buildCountsPayload()) {
+  mockRpc.mockResolvedValueOnce({ data: payload, error: null });
 }
 
 describe('storageSummaryService', () => {
@@ -93,78 +90,96 @@ describe('storageSummaryService', () => {
     });
   });
 
-  it('counts active jobs through a count-only active-row query', async () => {
-    const query = fakeQuery({ count: 42, error: null });
-    mockFrom.mockReturnValueOnce(query);
-
-    const result = await getActiveJobCount(userId, mockLog);
-
-    expect(result).toEqual({ count: 42, error: null });
-    expect(mockFrom).toHaveBeenCalledWith('jobs');
-    expect(query._calls.select).toEqual([['id', { count: 'exact', head: true }]]);
-    expect(query._calls.eq).toEqual([
-      ['user_id', userId],
-      ['storage_state', JOB_STORAGE_STATES.ACTIVE],
-    ]);
-  });
-
-  it('counts locked jobs through a count-only locked-row query', async () => {
-    const query = fakeQuery({ count: 7, error: null });
-    mockFrom.mockReturnValueOnce(query);
-
-    const result = await getLockedJobCount(userId, mockLog);
-
-    expect(result).toEqual({ count: 7, error: null });
-    expect(query._calls.select).toEqual([['id', { count: 'exact', head: true }]]);
-    expect(query._calls.eq).toEqual([
-      ['user_id', userId],
-      ['storage_state', JOB_STORAGE_STATES.LOCKED_OVER_PLAN_LIMIT],
-    ]);
-  });
-
-  it('counts retained total jobs without a storage-state filter', async () => {
-    const query = fakeQuery({ count: 49, error: null });
-    mockFrom.mockReturnValueOnce(query);
-
-    const result = await getRetainedTotalJobCount(userId, mockLog);
-
-    expect(result).toEqual({ count: 49, error: null });
-    expect(query._calls.select).toEqual([['id', { count: 'exact', head: true }]]);
-    expect(query._calls.eq).toEqual([['user_id', userId]]);
-  });
-
-  it('collects active, locked, and retained counts into one shape', async () => {
-    mockFrom
-      .mockReturnValueOnce(fakeQuery({ count: 300, error: null }))
-      .mockReturnValueOnce(fakeQuery({ count: 150, error: null }))
-      .mockReturnValueOnce(fakeQuery({ count: 450, error: null }));
-
-    const result = await getJobStorageCounts(userId, mockLog);
-
-    expect(result).toEqual({
-      data: {
-        activeCount: 300,
-        lockedCount: 150,
-        retainedTotalCount: 450,
-      },
-      error: null,
+  it('collects active, locked, and retained counts through one RPC call', async () => {
+    const payload = buildCountsPayload({
+      activeCount: 300,
+      lockedCount: 150,
+      retainedTotalCount: 450,
     });
-  });
-
-  it('surfaces count failures instead of returning partial summary counts', async () => {
-    const countError = new Error('count failed');
-    mockFrom.mockReturnValueOnce(fakeQuery({ count: null, error: countError }));
+    mockStorageCountsRpcSuccess(payload);
 
     const result = await getJobStorageCounts(userId, mockLog);
 
-    expect(result).toEqual({ data: null, error: countError });
-    expect(mockFrom).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ data: payload, error: null });
+    expect(mockRpc).toHaveBeenCalledTimes(1);
+    expect(mockRpc).toHaveBeenCalledWith('get_job_storage_counts_for_user', {
+      p_user_id: userId,
+    });
+    expect(mockFrom).not.toHaveBeenCalled();
+  });
+
+  it('accepts zero counts from the storage-count RPC', async () => {
+    const payload = buildCountsPayload({
+      activeCount: 0,
+      lockedCount: 0,
+      retainedTotalCount: 0,
+    });
+    mockStorageCountsRpcSuccess(payload);
+
+    const result = await getJobStorageCounts(userId, mockLog);
+
+    expect(result).toEqual({ data: payload, error: null });
+    expect(mockFrom).not.toHaveBeenCalled();
+  });
+
+  it('accepts storage-count RPC JSON string payloads', async () => {
+    const payload = buildCountsPayload({
+      activeCount: 12,
+      lockedCount: 3,
+      retainedTotalCount: 15,
+    });
+    mockStorageCountsRpcSuccess(JSON.stringify(payload));
+
+    const result = await getJobStorageCounts(userId, mockLog);
+
+    expect(result).toEqual({ data: payload, error: null });
+    expect(mockFrom).not.toHaveBeenCalled();
+  });
+
+  it('surfaces RPC failures instead of returning partial summary counts', async () => {
+    const rpcError = new Error('storage counts unavailable');
+    mockRpc.mockResolvedValueOnce({ data: null, error: rpcError });
+
+    const result = await getJobStorageCounts(userId, mockLog);
+
+    expect(result).toEqual({ data: null, error: rpcError });
+    expect(mockRpc).toHaveBeenCalledTimes(1);
+    expect(mockFrom).not.toHaveBeenCalled();
     expect(mockLog.error).toHaveBeenCalledWith(
       expect.objectContaining({
-        err: countError,
-        operation: 'getActiveJobCount',
+        err: rpcError,
+        operation: 'getJobStorageCounts',
+        userId,
       }),
-      'Failed to count job storage rows'
+      'Failed to load job storage counts'
+    );
+  });
+
+  it.each([
+    ['missing retained count', { activeCount: 1, lockedCount: 0 }],
+    ['extra payload field', { ...buildCountsPayload(), staleCount: 99 }],
+    ['negative count', { ...buildCountsPayload(), lockedCount: -1 }],
+    ['string count', { ...buildCountsPayload(), activeCount: '3' }],
+    ['array payload', [buildCountsPayload()]],
+    ['invalid JSON string', '{not json'],
+  ])('fails closed for malformed storage-count RPC payloads: %s', async (_label, malformedPayload) => {
+    mockStorageCountsRpcSuccess(malformedPayload);
+
+    const result = await getJobStorageCounts(userId, mockLog);
+
+    expect(result.data).toBeNull();
+    expect(result.error).toEqual(expect.objectContaining({
+      code: 'INVALID_STORAGE_COUNTS_RPC_PAYLOAD',
+    }));
+    expect(mockRpc).toHaveBeenCalledTimes(1);
+    expect(mockFrom).not.toHaveBeenCalled();
+    expect(mockLog.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: result.error,
+        operation: 'getJobStorageCounts',
+        userId,
+      }),
+      'Job storage counts RPC payload was invalid'
     );
   });
 
@@ -239,10 +254,11 @@ describe('storageSummaryService', () => {
         currentPeriodEnd: '2026-06-09T00:00:00.000Z',
       },
     });
-    mockFrom
-      .mockReturnValueOnce(fakeQuery({ count: 301, error: null }))
-      .mockReturnValueOnce(fakeQuery({ count: 0, error: null }))
-      .mockReturnValueOnce(fakeQuery({ count: 301, error: null }));
+    mockStorageCountsRpcSuccess(buildCountsPayload({
+      activeCount: 301,
+      lockedCount: 0,
+      retainedTotalCount: 301,
+    }));
 
     const result = await getStorageSummaryForUser(userId, mockClient, mockLog, { now });
 
@@ -259,6 +275,7 @@ describe('storageSummaryService', () => {
       }),
       error: null,
     });
+    expect(mockFrom).not.toHaveBeenCalled();
   });
 
   it('reuses an already-resolved storage status without another billing read', async () => {
@@ -266,10 +283,11 @@ describe('storageSummaryService', () => {
       status: STORAGE_STATUSES.TERMINAL_FREE,
       billingStatus: null,
     };
-    mockFrom
-      .mockReturnValueOnce(fakeQuery({ count: 300, error: null }))
-      .mockReturnValueOnce(fakeQuery({ count: 1, error: null }))
-      .mockReturnValueOnce(fakeQuery({ count: 301, error: null }));
+    mockStorageCountsRpcSuccess(buildCountsPayload({
+      activeCount: 300,
+      lockedCount: 1,
+      retainedTotalCount: 301,
+    }));
 
     const result = await getStorageSummaryForUser(
       userId,
@@ -284,13 +302,15 @@ describe('storageSummaryService', () => {
       activeCount: 300,
       lockedCount: 1,
     }));
+    expect(mockFrom).not.toHaveBeenCalled();
   });
 
   it('preserves a string storage status override without another billing read', async () => {
-    mockFrom
-      .mockReturnValueOnce(fakeQuery({ count: 450, error: null }))
-      .mockReturnValueOnce(fakeQuery({ count: 0, error: null }))
-      .mockReturnValueOnce(fakeQuery({ count: 450, error: null }));
+    mockStorageCountsRpcSuccess(buildCountsPayload({
+      activeCount: 450,
+      lockedCount: 0,
+      retainedTotalCount: 450,
+    }));
 
     const result = await getStorageSummaryForUser(
       userId,
@@ -307,5 +327,6 @@ describe('storageSummaryService', () => {
       cancelAtPeriodEnd: false,
       currentPeriodEnd: null,
     }));
+    expect(mockFrom).not.toHaveBeenCalled();
   });
 });
