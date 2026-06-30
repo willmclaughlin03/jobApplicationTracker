@@ -12,6 +12,10 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-06-29
+
+- `2026-06-30` - `Storage-count user-id validation`: Added schema-backed validation at the storage-count service entrypoint so malformed user ids fail before the admin RPC.
+
 ### Week of 2026-06-22
 
 - `2026-06-25` - `Job storage count RPC`: Added a service-role storage-count RPC and wired storage summaries to load active, locked, and retained job counts in one fail-closed call.

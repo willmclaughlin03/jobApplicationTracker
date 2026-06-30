@@ -12,6 +12,23 @@ BEGIN
     RAISE EXCEPTION 'public.jobs must exist before applying storage counts migration'
       USING ERRCODE = '42P01';
   END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_attribute
+    WHERE attrelid = 'public.jobs'::regclass
+      AND attname = 'user_id'
+      AND NOT attisdropped
+  ) OR NOT EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_attribute
+    WHERE attrelid = 'public.jobs'::regclass
+      AND attname = 'storage_state'
+      AND NOT attisdropped
+  ) THEN
+    RAISE EXCEPTION 'public.jobs must include user_id and storage_state before applying storage counts migration'
+      USING ERRCODE = '42703';
+  END IF;
 END;
 $$;
 

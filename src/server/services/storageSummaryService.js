@@ -8,6 +8,7 @@
  * - billingService.resolveStorageStatus() for typed storage status semantics
  * - shared storage constants for active and retained limits
  */
+import { z } from 'zod';
 import { supabaseAdmin } from '../lib/supabaseServer.js';
 import { resolveStorageStatus } from '../lib/billingService.js';
 import { logger as defaultLogger } from '../../shared/logger.js';
@@ -24,6 +25,25 @@ const STORAGE_COUNT_FIELD_NAMES = Object.freeze([
   'lockedCount',
   'retainedTotalCount',
 ]);
+const storageCountsUserIdSchema = z.string().uuid({ error: 'Invalid user id format' });
+
+/**
+ * Error type for invalid owner ids at the storage-count service boundary.
+ *
+ * Purpose: keep direct service callers on the same typed validation contract as
+ * API routes instead of leaking malformed ids into the admin RPC layer.
+ */
+export class InvalidJobStorageCountsUserIdError extends Error {
+  /**
+   * Builds the stable invalid-user-id error for storage-count callers.
+   */
+  constructor() {
+    super('Authenticated user id is required for storage counts');
+    this.name = 'InvalidJobStorageCountsUserIdError';
+    this.code = 'JOB_STORAGE_COUNTS_INVALID_USER_ID';
+    this.statusCode = 400;
+  }
+}
 
 /**
  * Normalizes Supabase count values into a non-negative integer.
@@ -288,7 +308,16 @@ export function getProjectedOverflowCount(activeCount, activeLimit = FREE_ACTIVE
  * @returns {Promise<{data: object|null, error: Error|object|null}>}
  */
 export async function getJobStorageCounts(userId, log = defaultLogger) {
-  return callJobStorageCountsRpc(userId, log);
+  const parsedUserId = storageCountsUserIdSchema.safeParse(userId);
+
+  if (!parsedUserId.success) {
+    return {
+      data: null,
+      error: new InvalidJobStorageCountsUserIdError(),
+    };
+  }
+
+  return callJobStorageCountsRpc(parsedUserId.data, log);
 }
 
 /**

@@ -36,6 +36,7 @@ jest.mock('../../../shared/logger.js', () => ({
 }));
 
 const {
+  InvalidJobStorageCountsUserIdError,
   buildStorageSummary,
   getJobStorageCounts,
   getProjectedOverflowCount,
@@ -78,7 +79,7 @@ function mockStorageCountsRpcSuccess(payload = buildCountsPayload()) {
 }
 
 describe('storageSummaryService', () => {
-  const userId = 'user-storage-summary';
+  const userId = '00000000-0000-4000-8000-000000000123';
   const mockClient = { from: jest.fn() };
   const mockLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
 
@@ -133,6 +134,20 @@ describe('storageSummaryService', () => {
     const result = await getJobStorageCounts(userId, mockLog);
 
     expect(result).toEqual({ data: payload, error: null });
+    expect(mockFrom).not.toHaveBeenCalled();
+  });
+
+  it.each([null, 'not-a-uuid'])('fails before the RPC when the user id is invalid: %p', async (invalidUserId) => {
+    const result = await getJobStorageCounts(invalidUserId, mockLog);
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(InvalidJobStorageCountsUserIdError);
+    expect(result.error).toMatchObject({
+      name: 'InvalidJobStorageCountsUserIdError',
+      code: 'JOB_STORAGE_COUNTS_INVALID_USER_ID',
+      statusCode: 400,
+    });
+    expect(mockRpc).not.toHaveBeenCalled();
     expect(mockFrom).not.toHaveBeenCalled();
   });
 
