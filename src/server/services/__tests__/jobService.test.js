@@ -536,7 +536,10 @@ describe('getJobsByUserId', () => {
       ['user_id', userId],
       ['storage_state', JOB_STORAGE_STATES.ACTIVE],
     ]);
-    expect(query._calls.order).toEqual([['created_at', { ascending: false }]]);
+    expect(query._calls.order).toEqual([
+      ['created_at', { ascending: false }],
+      ['id', { ascending: false }],
+    ]);
   });
 
   it('returns error on DB failure', async () => {
@@ -570,6 +573,10 @@ describe('getJobsByUserId', () => {
     await getJobsByUserId(userId, { from: 0, to: 9 }, mockSupabaseClient);
 
     expect(query._calls.range).toEqual([[0, 9]]);
+    expect(query._calls.order).toEqual([
+      ['created_at', { ascending: false }],
+      ['id', { ascending: false }],
+    ]);
   });
 
   it('returns teaser rows only for locked archive queries', async () => {
@@ -595,6 +602,10 @@ describe('getJobsByUserId', () => {
     expect(result.data).toEqual([lockedTeaser]);
     expect(query._calls.select).toEqual([
       ['id, created_at, locked_at, locked_reason, locked_policy_version', { count: 'exact' }],
+    ]);
+    expect(query._calls.order).toEqual([
+      ['created_at', { ascending: false }],
+      ['id', { ascending: false }],
     ]);
     expect(query._calls.eq).toEqual([
       ['user_id', userId],
@@ -624,6 +635,10 @@ describe('getJobsByUserId', () => {
     await getJobsByUserId(userId, {}, mockSupabaseClient, undefined, premiumAccessStatus);
 
     expect(query._calls.eq).toEqual([['user_id', userId]]);
+    expect(query._calls.order).toEqual([
+      ['created_at', { ascending: false }],
+      ['id', { ascending: false }],
+    ]);
   });
 });
 
