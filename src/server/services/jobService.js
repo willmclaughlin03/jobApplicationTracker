@@ -521,6 +521,7 @@ export async function getJobsByUserId(
 ) {
   try {
     const { from, to, status } = options;
+    const isPaginatedRead = from !== undefined && to !== undefined;
     const storageStatus = getStorageStatusValue(storageStatusResult);
     const listPolicy = getJobListPolicy(options, storageStatus);
 
@@ -528,10 +529,12 @@ export async function getJobsByUserId(
       return { data: null, count: 0, error: listPolicy.error };
     }
 
-    let query = supabaseAdmin
-      .from('jobs')
-      .select(listPolicy.select, { count: 'exact' })
-      .eq('user_id', userId);
+    let query = supabaseAdmin.from('jobs');
+    query = isPaginatedRead
+      ? query.select(listPolicy.select, { count: 'exact' })
+      : query.select(listPolicy.select);
+
+    query = query.eq('user_id', userId);
 
     if (listPolicy.storageStateFilter) {
       query = query.eq('storage_state', listPolicy.storageStateFilter);
@@ -545,7 +548,7 @@ export async function getJobsByUserId(
       .order('created_at', { ascending: false })
       .order('id', { ascending: false });
 
-    if (from !== undefined && to !== undefined) {
+    if (isPaginatedRead) {
       query = query.range(from, to);
     }
 
@@ -556,7 +559,11 @@ export async function getJobsByUserId(
       return { data: null, count: 0, error };
     }
 
-    return { data, count: count || 0, error: null };
+    const resolvedCount = isPaginatedRead
+      ? count || 0
+      : Array.isArray(data) ? data.length : 0;
+
+    return { data, count: resolvedCount, error: null };
   } catch (error) {
     log.error({ err: error, operation: 'getJobsByUserId', userId }, 'Unexpected error in getJobsByUserId');
     return { data: null, count: 0, error };
