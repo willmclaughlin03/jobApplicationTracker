@@ -541,7 +541,9 @@ export async function getJobsByUserId(
       query = query.eq('status', status);
     }
 
-    query = query.order('created_at', { ascending: false });
+    query = query
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false });
 
     if (from !== undefined && to !== undefined) {
       query = query.range(from, to);
