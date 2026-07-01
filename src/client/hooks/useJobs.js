@@ -192,8 +192,8 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
   /**
    * Deletes a job and applies local list/storage updates on success.
    *
-   * Purpose: keep delete on the existing fallback path for Chunk 4A while
-   * preparing the client contract for optional DELETE summaries in Chunk 4B.
+   * Purpose: use a fresh DELETE response summary when present, while
+   * keeping the storage-status refresh fallback for older or summary-less responses.
    *
    * @param {string} id - Job id selected for deletion.
    * @returns {Promise<object>} The useDeleteJob mutation result.
