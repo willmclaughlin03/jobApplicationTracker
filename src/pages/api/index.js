@@ -95,6 +95,32 @@ function sendCreateJobError(res, error) {
 }
 
 /**
+ * Send the public API response for a successful createJob call.
+ *
+ * Purpose: preserve the legacy created-job array at `data` while optionally
+ * adding count-only storage metadata that lets clients skip a follow-up
+ * storage-status read when available.
+ *
+ * @param {import('next').NextApiResponse} res - API response object.
+ * @param {Array<object>} data - Created job row array returned by createJob().
+ * @param {object|null} storageSummary - Optional count-only storage metadata.
+ * @returns {object} Next.js response chain.
+ */
+function sendCreateJobSuccess(res, data, storageSummary = null) {
+  const responseBody = {
+    data,
+    error: null,
+    message: 'Successfully added job',
+  };
+
+  if (storageSummary) {
+    responseBody.storageSummary = storageSummary;
+  }
+
+  return res.status(201).json(responseBody);
+}
+
+/**
  * Send the public API response for list access failures.
  *
  * Purpose: locked archive access can depend on confirmed billing state, so
@@ -160,6 +186,45 @@ async function repairStorageTransitionsForRequest(req, user) {
   }
 }
 
+/**
+ * Loads optional count-only storage metadata after a committed create.
+ *
+ * Purpose: POST should still succeed if the summary refresh fails after the
+ * row is created; clients can fall back to the existing storage-status route.
+ *
+ * @param {import('next').NextApiRequest & { log: object }} req - API request with logger.
+ * @param {{ id: string }} user - Authenticated user.
+ * @param {object} storageStatusResult - Storage status already resolved for create.
+ * @returns {Promise<object|null>} Storage summary metadata, or null when unavailable.
+ */
+async function loadPostCreateStorageSummary(req, user, storageStatusResult) {
+  try {
+    const storageSummaryResult = await getStorageSummaryForUser(
+      user.id,
+      req._supabaseClient,
+      req.log,
+      {
+        storageStatusResult,
+      }
+    );
+
+    if (storageSummaryResult.error) {
+      return null;
+    }
+
+    return storageSummaryResult.data ?? null;
+  } catch (error) {
+    req.log.error(
+      {
+        err: error,
+        operation: 'loadPostCreateStorageSummary',
+        userId: user.id,
+      },
+      'Post-create storage summary load failed'
+    );
+    return null;
+  }
+}
 /**
  * Handles GET requests - retrieves jobs and storage summary for authenticated user
  *
@@ -273,7 +338,13 @@ async function handlePost(req, res, user) {
     return sendCreateJobError(res, error);
   }
 
-  return sendSuccess(res, 201, data, 'Successfully added job');
+  const storageSummary = await loadPostCreateStorageSummary(
+    req,
+    user,
+    storageStatusResult
+  );
+
+  return sendCreateJobSuccess(res, data, storageSummary);
 }
 
 /**
