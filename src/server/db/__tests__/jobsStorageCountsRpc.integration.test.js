@@ -65,10 +65,14 @@ function normalizeExecSqlRows(data) {
   if (typeof data === 'string') {
     try {
       const parsed = JSON.parse(data);
-      return Array.isArray(parsed) ? parsed : [parsed];
+      return normalizeExecSqlRows(parsed);
     } catch {
       return [];
     }
+  }
+
+  if (data && Array.isArray(data.rows)) {
+    return data.rows;
   }
 
   return data && typeof data === 'object' ? [data] : [];
@@ -236,7 +240,9 @@ describeOrSkip('Suite I - Jobs storage-count RPC integration', () => {
     let lastError = null;
 
     for (let attempt = 0; attempt < 10; attempt += 1) {
-      const { data, error } = await serviceClient.rpc('exec_sql', { query });
+      const { data, error } = await serviceClient.rpc('exec_sql', {
+        query: query.trim(),
+      });
 
       if (!error) {
         return normalizeExecSqlRows(data);
