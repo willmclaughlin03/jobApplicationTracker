@@ -13,6 +13,9 @@ Use this file as a quick-running log of implemented changes.
 ## Entries
 
 ### Week of 2026-06-29
+- `2026-06-30` - `Job create storage summary response`: Added optional storage summary metadata to successful job-create responses and used it client-side to avoid a redundant status refresh when present.
+- `2026-06-30` - `Job list pagination service validation`: Added schema-backed service validation so malformed pagination options fail before querying.
+- `2026-06-30` - `Conditional job list counts`: Avoided exact database counts for unpaginated job list reads while preserving exact totals for paginated requests.
 - `2026-06-30` - `Job ordered-read index`: Added an active dashboard list index and deterministic `id DESC` list tie-breaker for stable job reads.
 
 - `2026-06-30` - `Storage-count user-id validation`: Added schema-backed validation at the storage-count service entrypoint so malformed user ids fail before the admin RPC.
