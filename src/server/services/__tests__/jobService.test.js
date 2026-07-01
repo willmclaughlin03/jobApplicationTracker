@@ -82,6 +82,7 @@ const {
   updateJob,
   deleteJob,
   JobLockedByPlanError,
+  InvalidJobReadOptionsError,
   StorageAccessUnavailableError,
   StorageCreateBlockedError,
   StorageLimitExceededError,
@@ -592,6 +593,29 @@ describe('getJobsByUserId', () => {
       ['created_at', { ascending: false }],
       ['id', { ascending: false }],
     ]);
+  });
+
+  it.each([
+    ['missing to', { from: 0 }, /both be provided/i],
+    ['missing from', { to: 9 }, /both be provided/i],
+    ['negative from', { from: -1, to: 9 }, /from must be >= 0/i],
+    ['negative to', { from: 0, to: -1 }, /to must be >= 0/i],
+    ['fractional from', { from: 1.5, to: 9 }, /from must be an integer/i],
+    ['fractional to', { from: 0, to: 9.5 }, /to must be an integer/i],
+    ['reversed range', { from: 10, to: 2 }, /to must be greater than or equal to from/i],
+  ])('rejects invalid pagination options before querying: %s', async (_label, options, messagePattern) => {
+    const result = await getJobsByUserId(userId, options, mockSupabaseClient);
+
+    expect(result.data).toBeNull();
+    expect(result.count).toBe(0);
+    expect(result.error).toBeInstanceOf(InvalidJobReadOptionsError);
+    expect(result.error).toMatchObject({
+      name: 'InvalidJobReadOptionsError',
+      code: 'JOB_READ_OPTIONS_INVALID',
+      statusCode: 400,
+    });
+    expect(result.error.message).toMatch(messagePattern);
+    expect(mockFrom).not.toHaveBeenCalled();
   });
 
   it('returns teaser rows only for locked archive queries', async () => {

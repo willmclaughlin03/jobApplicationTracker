@@ -14,6 +14,7 @@
  * must keep server-derived owner filters because service-role access bypasses
  * direct authenticated table permissions.
  */
+import { z } from 'zod';
 import { supabaseAdmin } from '../lib/supabaseServer.js';
 import { logger as defaultLogger } from '../../shared/logger.js';
 import {
@@ -55,6 +56,30 @@ const STORAGE_ACCESS_RETRYABLE_STATUS_CODES = new Map([
     STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
   ],
 ]);
+const jobReadOptionsSchema = z.object({
+  from: z.number({ error: 'from must be a number' })
+    .int('from must be an integer')
+    .min(0, 'from must be >= 0')
+    .optional(),
+  to: z.number({ error: 'to must be a number' })
+    .int('to must be an integer')
+    .min(0, 'to must be >= 0')
+    .optional(),
+  status: z.string().optional(),
+  storage_state: z.string().optional(),
+}).passthrough()
+  .refine(
+    (options) => (options.from === undefined) === (options.to === undefined),
+    { message: 'from and to must both be provided together for pagination' }
+  )
+  .refine(
+    (options) => (
+      options.from === undefined
+      || options.to === undefined
+      || options.to >= options.from
+    ),
+    { message: 'to must be greater than or equal to from' }
+  );
 
 export class StorageLimitExceededError extends Error {
   constructor(maxJobs) {
@@ -111,6 +136,20 @@ export class StorageAccessUnavailableError extends Error {
     this.code = code;
     this.statusCode = 503;
     this.retryable = true;
+  }
+}
+
+export class InvalidJobReadOptionsError extends Error {
+  /**
+   * Builds the stable invalid-options error for owner-scoped job list reads.
+   *
+   * @param {string} message - Validation failure returned from the options schema.
+   */
+  constructor(message) {
+    super(message);
+    this.name = 'InvalidJobReadOptionsError';
+    this.code = 'JOB_READ_OPTIONS_INVALID';
+    this.statusCode = 400;
   }
 }
 
@@ -323,6 +362,28 @@ function getJobListPolicy(options = {}, storageStatus = null) {
 }
 
 /**
+ * Validates owner-scoped job list options at the service boundary.
+ *
+ * Purpose: direct service callers should get the same fail-closed pagination
+ * contract as API routes instead of accidentally triggering an unbounded read.
+ *
+ * @param {unknown} options - Caller-provided list options.
+ * @returns {{ from?: number, to?: number, status?: string, storage_state?: string }} Validated options.
+ * @throws {InvalidJobReadOptionsError} When pagination bounds are malformed.
+ */
+function validateJobReadOptions(options) {
+  const parsedOptions = jobReadOptionsSchema.safeParse(options);
+
+  if (!parsedOptions.success) {
+    throw new InvalidJobReadOptionsError(
+      parsedOptions.error.issues[0]?.message ?? 'Invalid job list options'
+    );
+  }
+
+  return parsedOptions.data;
+}
+
+/**
  * Fetches only storage-policy fields for an owned job row.
  *
  * Purpose: detail, update, and delete operations must know lock state before
@@ -520,10 +581,11 @@ export async function getJobsByUserId(
   storageStatusResult = null
 ) {
   try {
-    const { from, to, status } = options;
-    const isPaginatedRead = from !== undefined && to !== undefined;
+    const validatedOptions = validateJobReadOptions(options);
+    const { from, to, status } = validatedOptions;
+    const isPaginatedRead = from !== undefined;
     const storageStatus = getStorageStatusValue(storageStatusResult);
-    const listPolicy = getJobListPolicy(options, storageStatus);
+    const listPolicy = getJobListPolicy(validatedOptions, storageStatus);
 
     if (listPolicy.error) {
       return { data: null, count: 0, error: listPolicy.error };
@@ -540,7 +602,7 @@ export async function getJobsByUserId(
       query = query.eq('storage_state', listPolicy.storageStateFilter);
     }
 
-    if (status && options.storage_state !== JOB_STORAGE_QUERY_STATES.LOCKED) {
+    if (status && validatedOptions.storage_state !== JOB_STORAGE_QUERY_STATES.LOCKED) {
       query = query.eq('status', status);
     }
 
@@ -565,6 +627,10 @@ export async function getJobsByUserId(
 
     return { data, count: resolvedCount, error: null };
   } catch (error) {
+    if (error instanceof InvalidJobReadOptionsError) {
+      return { data: null, count: 0, error };
+    }
+
     log.error({ err: error, operation: 'getJobsByUserId', userId }, 'Unexpected error in getJobsByUserId');
     return { data: null, count: 0, error };
   }
