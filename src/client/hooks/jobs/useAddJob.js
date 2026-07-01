@@ -28,12 +28,13 @@ export function useAddJob(onSuccess) {
     }
 
     const newJob = response?.data?.[0];
+    const storageSummary = response?.storageSummary ?? null;
 
     if (onSuccess && newJob) {
-      onSuccess(newJob);
+      onSuccess(newJob, storageSummary);
     }
 
-    return { success: true, data: newJob, error: null };
+    return { success: true, data: newJob, storageSummary, error: null };
   }, [onSuccess]);
 
   return {

@@ -109,6 +109,27 @@ export function useJobsQuery() {
     return { success: true, storageSummary: nextStorageSummary, error: null };
   }, []);
 
+  /**
+   * Applies server-built storage metadata from mutation responses.
+   *
+   * Purpose: mutation responses can carry the same count-only summary as the
+   * storage-status route; bumping the refresh request id prevents older
+   * in-flight refreshes from overwriting the newer mutation summary.
+   *
+   * @param {object|null|undefined} nextStorageSummary - Summary metadata from a mutation response.
+   * @returns {boolean} True when the summary was applied.
+   */
+  const applyStorageSummary = useCallback((nextStorageSummary) => {
+    if (!nextStorageSummary) {
+      return false;
+    }
+
+    storageSummaryRequestRef.current += 1;
+    setStorageSummary(nextStorageSummary);
+    setError(null);
+    return true;
+  }, []);
+
   const prependJob = useCallback((job) => {
     setJobs(prev => [job, ...prev]);
   }, []);
@@ -133,6 +154,7 @@ export function useJobsQuery() {
     clearError,
     fetchJobs,
     refreshStorageSummary,
+    applyStorageSummary,
     prependJob,
     updateJobInList,
     removeJobFromList,
