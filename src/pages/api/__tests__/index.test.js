@@ -534,11 +534,43 @@ describe('index API handler (/api/jobs)', () => {
         noopLog,
         terminalFreeStorageStatus
       );
+      expect(mockGetStorageSummaryForUser).toHaveBeenCalledWith(
+        mockUser.id,
+        mockClient,
+        noopLog,
+        { storageStatusResult: terminalFreeStorageStatus }
+      );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           data: [createdJob],
+          storageSummary: mockStorageSummary,
         })
       );
+    });
+
+    it('should return created job without storage summary when post-create summary fails', async () => {
+      const createdJob = { id: 'new-job-summary-failed', ...validJobData, user_id: mockUser.id };
+      mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
+      mockCreateJob.mockResolvedValue({ data: [createdJob], error: null });
+      mockGetStorageSummaryForUser.mockResolvedValueOnce({
+        data: null,
+        error: new Error('storage summary failed after create'),
+      });
+
+      const req = createMockRequest('POST', {}, validJobData);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: [createdJob],
+          error: null,
+          message: 'Successfully added job',
+        })
+      );
+      expect(res.json.mock.calls[0][0]).not.toHaveProperty('storageSummary');
     });
 
     it('should pass Premium storage status through to the create service', async () => {

@@ -23,11 +23,13 @@ export function useDeleteJob(onSuccess) {
       return { success: false, error: normalizedError };
     }
 
+    const storageSummary = response?.storageSummary ?? null;
+
     if (onSuccess) {
-      onSuccess(id);
+      onSuccess(id, storageSummary);
     }
 
-    return { success: true, error: null };
+    return { success: true, storageSummary, error: null };
   }, [onSuccess]);
 
   return {

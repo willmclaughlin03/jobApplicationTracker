@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useMemo } from 'react';
+import { useEffect, useCallback, useMemo, useRef } from 'react';
 import { usePagination } from './usePagination.js';
 import { useJobsQuery, useAddJob, useUpdateJob, useDeleteJob } from './jobs/index.js';
 import { filterJobs } from '../lib/filterJobs.js';
@@ -38,10 +38,12 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
     loading,
     fetchJobs,
     refreshStorageSummary,
+    applyStorageSummary,
     prependJob,
     updateJobInList,
     removeJobFromList,
   } = query;
+  const mutationSequenceRef = useRef(0);
 
   // Load all jobs once on mount; all subsequent filtering is client-side at zero API cost
   useEffect(() => {
@@ -71,18 +73,56 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
   const jobs = filteredJobs.slice(pageStart, pageStart + PAGE_SIZE);
 
   /**
-   * Applies a created job locally and refreshes count-only storage metadata.
+   * Marks the beginning of a count-changing job mutation.
    *
-   * Purpose: the POST response returns the created row, while downgrade banners
-   * and archive counts depend on the server-built storage summary.
+   * Purpose: response-carried storage summaries should only apply directly
+   * when no newer add/delete mutation has started since that request began.
    *
-   * @param {object} newJob - Created job row returned by the jobs API.
+   * @returns {number} Monotonic mutation sequence id.
+   */
+  const beginStorageMutation = useCallback(() => {
+    mutationSequenceRef.current += 1;
+    return mutationSequenceRef.current;
+  }, []);
+
+  /**
+   * Applies mutation-returned storage metadata or falls back to status refresh.
+   *
+   * Purpose: latest mutation summaries can skip the extra read, while stale or
+   * missing summaries keep using the existing count-only refresh path.
+   *
+   * @param {object|null|undefined} nextStorageSummary - Optional mutation summary metadata.
+   * @param {number} mutationSequence - Sequence id captured before the mutation request.
    * @returns {void}
    */
-  const handleAddJobSuccess = useCallback((newJob) => {
-    prependJob(newJob);
+  const syncStorageSummaryAfterMutation = useCallback((nextStorageSummary, mutationSequence) => {
+    if (
+      nextStorageSummary
+      && mutationSequence === mutationSequenceRef.current
+      && applyStorageSummary(nextStorageSummary)
+    ) {
+      return;
+    }
+
     void refreshStorageSummary();
-  }, [prependJob, refreshStorageSummary]);
+  }, [applyStorageSummary, refreshStorageSummary]);
+
+  /**
+   * Applies a created job locally and syncs count-only storage metadata.
+   *
+   * Purpose: the POST response may now carry the server-built summary; when it
+   * does not, the existing storage-status refresh remains the compatibility
+   * fallback.
+   *
+   * @param {object} newJob - Created job row returned by the jobs API.
+   * @param {object|null} nextStorageSummary - Optional storage summary returned by POST.
+   * @param {number} mutationSequence - Sequence id captured before the add request.
+   * @returns {void}
+   */
+  const handleAddJobSuccess = useCallback((newJob, nextStorageSummary, mutationSequence) => {
+    prependJob(newJob);
+    syncStorageSummaryAfterMutation(nextStorageSummary, mutationSequence);
+  }, [prependJob, syncStorageSummaryAfterMutation]);
 
   /**
    * Removes a deleted job locally and refreshes count-only storage metadata.
@@ -91,17 +131,18 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
    * though the table can update immediately from the deleted row id.
    *
    * @param {string} id - Deleted job id returned by the delete flow.
+   * @param {object|null} nextStorageSummary - Optional storage summary returned by DELETE.
+   * @param {number} mutationSequence - Sequence id captured before the delete request.
    * @returns {void}
    */
-  const handleDeleteJobSuccess = useCallback((id) => {
+  const handleDeleteJobSuccess = useCallback((id, nextStorageSummary, mutationSequence) => {
     removeJobFromList(id);
-    void refreshStorageSummary();
-  }, [removeJobFromList, refreshStorageSummary]);
+    syncStorageSummaryAfterMutation(nextStorageSummary, mutationSequence);
+  }, [removeJobFromList, syncStorageSummaryAfterMutation]);
 
-  // Pass stable list-mutation helpers directly as onSuccess callbacks
-  const add = useAddJob(handleAddJobSuccess);
+  const add = useAddJob();
   const update = useUpdateJob(updateJobInList);
-  const del = useDeleteJob(handleDeleteJobSuccess);
+  const del = useDeleteJob();
 
   const error = useMemo(
     () => query.error || add.error || update.error || del.error,
@@ -126,10 +167,47 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
     return counts;
   }, [allJobs]);
 
-  // The inner hooks already return stable useCallback references, so no wrapper needed
-  const addJob = add.addJob;
+  /**
+   * Adds a job and applies local list/storage updates on success.
+   *
+   * Purpose: capture mutation ordering before the network request so delayed
+   * POST summaries cannot overwrite newer add/delete outcomes.
+   *
+   * @param {object} jobData - Validated by the server-side job create route.
+   * @returns {Promise<object>} The useAddJob mutation result.
+   */
+  const addJob = useCallback(async (jobData) => {
+    const mutationSequence = beginStorageMutation();
+    const result = await add.addJob(jobData);
+
+    if (result.success && result.data) {
+      handleAddJobSuccess(result.data, result.storageSummary, mutationSequence);
+    }
+
+    return result;
+  }, [add.addJob, beginStorageMutation, handleAddJobSuccess]);
+
   const updateJob = update.updateJob;
-  const deleteJob = del.deleteJob;
+
+  /**
+   * Deletes a job and applies local list/storage updates on success.
+   *
+   * Purpose: keep delete on the existing fallback path for Chunk 4A while
+   * preparing the client contract for optional DELETE summaries in Chunk 4B.
+   *
+   * @param {string} id - Job id selected for deletion.
+   * @returns {Promise<object>} The useDeleteJob mutation result.
+   */
+  const deleteJob = useCallback(async (id) => {
+    const mutationSequence = beginStorageMutation();
+    const result = await del.deleteJob(id);
+
+    if (result.success) {
+      handleDeleteJobSuccess(id, result.storageSummary, mutationSequence);
+    }
+
+    return result;
+  }, [beginStorageMutation, del.deleteJob, handleDeleteJobSuccess]);
 
   return {
     jobs,

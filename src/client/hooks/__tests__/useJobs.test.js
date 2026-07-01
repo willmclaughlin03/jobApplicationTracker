@@ -40,14 +40,16 @@ let latestHook;
  * control the inner standardized API response body.
  *
  * @param {unknown} data - Standardized API response data payload.
+ * @param {object} responseFields - Additional fields on the standardized API response body.
  * @returns {object} Mock shared-client success response.
  */
-function buildApiSuccess(data) {
+function buildApiSuccess(data, responseFields = {}) {
   return {
     data: {
       data,
       error: null,
       message: 'Success',
+      ...responseFields,
     },
     error: null,
     meta: { status: 200, retryAfterSeconds: null },
@@ -279,6 +281,152 @@ describe('useJobs storage summary refresh', () => {
     expect(latestHook.loading).toBe(false);
     expect(latestHook.allJobs).toEqual([latestJob]);
     expect(latestHook.storageSummary.activeCount).toBe(280);
+  });
+
+  it('uses add response storage summary without an extra status refresh', async () => {
+    const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
+    const createdJob = { id: 'job-2', company: 'Beta', position: 'Designer', status: 'applied' };
+    const addStorageSummary = {
+      status: 'premium_canceling',
+      activeLimit: 300,
+      activeCount: 302,
+      lockedCount: 0,
+      projectedOverflowCount: 2,
+      cancelAtPeriodEnd: true,
+    };
+
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api') {
+        return Promise.resolve(buildJobsResponse({
+          jobs: [initialJob],
+          storageSummary: {
+            status: 'premium_canceling',
+            activeLimit: 300,
+            activeCount: 301,
+            lockedCount: 0,
+            projectedOverflowCount: 1,
+            cancelAtPeriodEnd: true,
+          },
+        }));
+      }
+
+      return Promise.resolve(buildApiSuccess(null));
+    });
+    mockApiPost.mockResolvedValue(buildApiSuccess([createdJob], {
+      storageSummary: addStorageSummary,
+    }));
+
+    await renderUseJobs();
+
+    let result;
+    await act(async () => {
+      result = await latestHook.addJob({ company: 'Beta', position: 'Designer' });
+      await Promise.resolve();
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      success: true,
+      data: createdJob,
+      storageSummary: addStorageSummary,
+    }));
+    expect(latestHook.allJobs[0]).toEqual(createdJob);
+    expect(latestHook.storageSummary.activeCount).toBe(302);
+    expect(mockApiGet.mock.calls.filter(([endpoint]) => endpoint === '/api/storage/status')).toHaveLength(0);
+  });
+
+  it('ignores stale add response summaries after a newer delete mutation starts', async () => {
+    const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
+    const createdJob = { id: 'job-2', company: 'Beta', position: 'Designer', status: 'applied' };
+    const addRequest = createDeferred();
+    const storageRefreshes = [];
+
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api') {
+        return Promise.resolve(buildJobsResponse({
+          jobs: [initialJob],
+          storageSummary: {
+            status: 'premium_canceling',
+            activeLimit: 300,
+            activeCount: 301,
+            lockedCount: 0,
+            projectedOverflowCount: 1,
+            cancelAtPeriodEnd: true,
+          },
+        }));
+      }
+
+      if (endpoint === '/api/storage/status') {
+        const deferred = createDeferred();
+        storageRefreshes.push(deferred);
+        return deferred.promise;
+      }
+
+      return Promise.resolve(buildApiSuccess(null));
+    });
+    mockApiPost.mockReturnValue(addRequest.promise);
+    mockApiDelete.mockResolvedValue(buildApiSuccess({ id: initialJob.id }));
+
+    await renderUseJobs();
+
+    let addPromise;
+    await act(async () => {
+      addPromise = latestHook.addJob({ company: 'Beta', position: 'Designer' });
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await latestHook.deleteJob(initialJob.id);
+      await Promise.resolve();
+    });
+
+    expect(storageRefreshes).toHaveLength(1);
+
+    await act(async () => {
+      addRequest.resolve(buildApiSuccess([createdJob], {
+        storageSummary: {
+          status: 'premium_canceling',
+          activeLimit: 300,
+          activeCount: 302,
+          lockedCount: 0,
+          projectedOverflowCount: 2,
+          cancelAtPeriodEnd: true,
+        },
+      }));
+      await addPromise;
+      await Promise.resolve();
+    });
+
+    expect(latestHook.storageSummary.activeCount).toBe(301);
+    expect(storageRefreshes).toHaveLength(2);
+
+    await act(async () => {
+      storageRefreshes[1].resolve(buildApiSuccess({
+        status: 'premium_canceling',
+        activeLimit: 300,
+        activeCount: 300,
+        lockedCount: 0,
+        projectedOverflowCount: 0,
+        cancelAtPeriodEnd: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(latestHook.storageSummary.activeCount).toBe(300);
+    expect(latestHook.storageSummary.projectedOverflowCount).toBe(0);
+
+    await act(async () => {
+      storageRefreshes[0].resolve(buildApiSuccess({
+        status: 'premium_canceling',
+        activeLimit: 300,
+        activeCount: 299,
+        lockedCount: 0,
+        projectedOverflowCount: 0,
+        cancelAtPeriodEnd: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(latestHook.storageSummary.activeCount).toBe(300);
   });
 
   it('keeps the newest storage summary when add/delete refreshes resolve out of order', async () => {
