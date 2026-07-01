@@ -36,6 +36,11 @@ jest.mock('../../../server/services/storageTransitionService.js', () => ({
   reconcileStorageTransitionsForUser: mockReconcileStorageTransitionsForUser,
 }));
 
+const mockGetStorageSummaryForUser = jest.fn();
+jest.mock('../../../server/services/storageSummaryService.js', () => ({
+  getStorageSummaryForUser: mockGetStorageSummaryForUser,
+}));
+
 // Mock logger to prevent console output during tests
 jest.mock('../../../shared/logger.js', () => ({
   logger: {
@@ -81,6 +86,17 @@ describe('[id] API handler', () => {
     user_id: 'user-123',
   };
   const terminalFreeStorageStatus = { status: STORAGE_STATUSES.TERMINAL_FREE };
+  const mockStorageSummary = {
+    status: STORAGE_STATUSES.TERMINAL_FREE,
+    activeLimit: 300,
+    absoluteRetainedLimit: 3000,
+    activeCount: 1,
+    lockedCount: 0,
+    retainedTotalCount: 1,
+    projectedOverflowCount: 0,
+    cancelAtPeriodEnd: false,
+    currentPeriodEnd: null,
+  };
 
   /**
    * Helper to create mock request with _rateLimitUser pre-set
@@ -117,6 +133,10 @@ describe('[id] API handler', () => {
         lockedCount: 0,
         storageStatusResult: terminalFreeStorageStatus,
       },
+      error: null,
+    });
+    mockGetStorageSummaryForUser.mockResolvedValue({
+      data: mockStorageSummary,
       error: null,
     });
     // Default: valid update data
@@ -546,14 +566,40 @@ describe('[id] API handler', () => {
 
       expect(res.status).toHaveBeenCalledWith(404);
       expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, undefined, noopLog);
+      expect(mockReconcileStorageTransitionsForUser).not.toHaveBeenCalled();
+      expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
     });
 
     /**
-     * Test: Valid delete
-     * Expected: Returns 200 with deleted job data
+     * Test: Valid active-row delete
+     * Expected: Returns 200 with minimal deleted job id and no summary wait
      */
-    it('should delete and return job when valid', async () => {
-      mockDeleteJob.mockResolvedValue({ data: mockJob, error: null });
+    it('should delete and return a minimal id response without loading storage summary', async () => {
+      const mockClient = { from: jest.fn() };
+      mockDeleteJob.mockResolvedValue({ data: { id: validUUID }, error: null });
+
+      const req = { ...createMockRequest('DELETE', validUUID), _supabaseClient: mockClient };
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, mockClient, noopLog);
+      expect(mockReconcileStorageTransitionsForUser).not.toHaveBeenCalled();
+      expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { id: validUUID },
+          error: null,
+          message: 'Successfully deleted job',
+        })
+      );
+      expect(res.json.mock.calls[0][0]).not.toHaveProperty('storageSummary');
+    });
+
+    it('should keep delete data minimal for locked-row deletes', async () => {
+      const lockedDeleteData = { id: validUUID };
+      mockDeleteJob.mockResolvedValue({ data: lockedDeleteData, error: null });
 
       const req = createMockRequest('DELETE', validUUID);
       const res = createMockResponse();
@@ -561,15 +607,20 @@ describe('[id] API handler', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, undefined, noopLog);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: mockJob,
+          data: lockedDeleteData,
         })
       );
+      expect(res.json.mock.calls[0][0]).not.toHaveProperty('storageSummary');
+      expect(res.json.mock.calls[0][0].data).toEqual({ id: validUUID });
+      expect(JSON.stringify(res.json.mock.calls[0][0].data)).not.toContain('company');
+      expect(JSON.stringify(res.json.mock.calls[0][0].data)).not.toContain('notes');
+      expect(JSON.stringify(res.json.mock.calls[0][0].data)).not.toContain('salary');
+      expect(JSON.stringify(res.json.mock.calls[0][0].data)).not.toContain('position');
+      expect(JSON.stringify(res.json.mock.calls[0][0].data)).not.toContain('status');
     });
   });
-
   describe('Method handling', () => {
     /**
      * Test: POST not allowed on [id] endpoint

@@ -107,17 +107,13 @@ function sendCreateJobError(res, error) {
  * @returns {object} Next.js response chain.
  */
 function sendCreateJobSuccess(res, data, storageSummary = null) {
-  const responseBody = {
+  return sendSuccess(
+    res,
+    201,
     data,
-    error: null,
-    message: 'Successfully added job',
-  };
-
-  if (storageSummary) {
-    responseBody.storageSummary = storageSummary;
-  }
-
-  return res.status(201).json(responseBody);
+    'Successfully added job',
+    storageSummary ? { storageSummary } : null
+  );
 }
 
 /**
@@ -302,7 +298,10 @@ async function handleGet(req, res, user) {
  * Handles POST requests - creates a new job application
  *
  * Purpose: Add new job application to user's tracking list
- * Connects to: jobService.createJob() for database operations
+ * Connects to:
+ * - jobService.createJob() for database operations
+ * - loadPostCreateStorageSummary() after createJob succeeds
+ * - storageSummaryService.getStorageSummaryForUser() for post-create storage summary
  * Validation: Uses jobSchema to validate request body
  */
 async function handlePost(req, res, user) {

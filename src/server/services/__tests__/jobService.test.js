@@ -942,7 +942,7 @@ describe('updateJob', () => {
 describe('deleteJob', () => {
   beforeEach(() => jest.clearAllMocks());
 
-  it('returns deleted job on success', async () => {
+  it('returns only the deleted job id on success', async () => {
     const deleteQuery = fakeQuery({ data: [mockCreatedJob], error: null });
     mockFrom
       .mockReturnValueOnce(fakeQuery({ data: activeAccessRecord, error: null }))
@@ -951,7 +951,7 @@ describe('deleteJob', () => {
     const result = await deleteJob(jobId, userId, mockSupabaseClient);
 
     expect(result.error).toBeNull();
-    expect(result.data).toEqual(mockCreatedJob);
+    expect(result.data).toEqual({ id: jobId });
     expect(mockFrom).toHaveBeenCalledWith('jobs');
     expect(mockClientFrom).not.toHaveBeenCalled();
 
@@ -962,7 +962,7 @@ describe('deleteJob', () => {
       ['user_id', userId],
       ['storage_state', JOB_STORAGE_STATES.ACTIVE],
     ]);
-    expect(deleteQuery._calls.select).toEqual([['*']]);
+    expect(deleteQuery._calls.select).toEqual([['id']]);
   });
 
   it('returns not-found error when no rows were affected', async () => {

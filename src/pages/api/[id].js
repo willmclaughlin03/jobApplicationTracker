@@ -109,6 +109,20 @@ async function repairStorageTransitionsForJobRequest(req, user) {
 }
 
 /**
+ * Send the public API response for a successful deleteJob call.
+ *
+ * Purpose: keep delete responses on the shared success envelope while returning
+ * only the minimal deleted identifier payload from the service layer.
+ *
+ * @param {import('next').NextApiResponse} res - API response object.
+ * @param {object} data - Minimal deleted job payload, currently `{ id }`.
+ * @returns {object} Next.js response chain.
+ */
+function sendDeleteJobSuccess(res, data) {
+  return sendSuccess(res, 200, data, 'Successfully deleted job');
+}
+
+/**
  * Handles GET requests - retrieves a single job by ID
  *
  * Purpose: Fetch a specific job application for the authenticated user
@@ -235,7 +249,7 @@ async function handleDelete(req, res, user, jobId) {
     return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);
   }
 
-  return sendSuccess(res, 200, data, 'Successfully deleted job');
+  return sendDeleteJobSuccess(res, data);
 }
 
 /**

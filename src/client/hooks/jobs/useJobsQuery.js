@@ -110,6 +110,20 @@ export function useJobsQuery() {
   }, []);
 
   /**
+   * Invalidates in-flight full-list fetches after local job mutations.
+   *
+   * Purpose: a delayed `/api` list response may reflect an older snapshot than
+   * a successful add/delete mutation, so mutation paths bump the list request
+   * id before applying local state and clear loading if the stale request was
+   * the only active full-list fetch.
+   *
+   * @returns {void}
+   */
+  const invalidateJobsFetches = useCallback(() => {
+    jobsRequestRef.current += 1;
+    setLoading(false);
+  }, []);
+  /**
    * Applies server-built storage metadata from mutation responses.
    *
    * Purpose: mutation responses can carry the same count-only summary as the
@@ -154,6 +168,7 @@ export function useJobsQuery() {
     clearError,
     fetchJobs,
     refreshStorageSummary,
+    invalidateJobsFetches,
     applyStorageSummary,
     prependJob,
     updateJobInList,
