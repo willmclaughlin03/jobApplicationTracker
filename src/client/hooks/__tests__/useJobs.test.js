@@ -334,6 +334,194 @@ describe('useJobs storage summary refresh', () => {
     expect(mockApiGet.mock.calls.filter(([endpoint]) => endpoint === '/api/storage/status')).toHaveLength(0);
   });
 
+  it('uses delete response storage summary without an extra status refresh', async () => {
+    const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
+    const deleteStorageSummary = {
+      status: 'premium_canceling',
+      activeLimit: 300,
+      activeCount: 300,
+      lockedCount: 0,
+      projectedOverflowCount: 0,
+      cancelAtPeriodEnd: true,
+    };
+
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api') {
+        return Promise.resolve(buildJobsResponse({
+          jobs: [initialJob],
+          storageSummary: {
+            status: 'premium_canceling',
+            activeLimit: 300,
+            activeCount: 301,
+            lockedCount: 0,
+            projectedOverflowCount: 1,
+            cancelAtPeriodEnd: true,
+          },
+        }));
+      }
+
+      return Promise.resolve(buildApiSuccess(null));
+    });
+    mockApiDelete.mockResolvedValue(buildApiSuccess({ id: initialJob.id }, {
+      storageSummary: deleteStorageSummary,
+    }));
+
+    await renderUseJobs();
+
+    let result;
+    await act(async () => {
+      result = await latestHook.deleteJob(initialJob.id);
+      await Promise.resolve();
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      success: true,
+      storageSummary: deleteStorageSummary,
+    }));
+    expect(latestHook.allJobs).toEqual([]);
+    expect(latestHook.storageSummary.activeCount).toBe(300);
+    expect(mockApiGet.mock.calls.filter(([endpoint]) => endpoint === '/api/storage/status')).toHaveLength(0);
+  });
+
+  it('falls back to storage status refresh when delete response has no summary', async () => {
+    const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
+
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api') {
+        return Promise.resolve(buildJobsResponse({
+          jobs: [initialJob],
+          storageSummary: {
+            status: 'premium_canceling',
+            activeLimit: 300,
+            activeCount: 301,
+            lockedCount: 0,
+            projectedOverflowCount: 1,
+            cancelAtPeriodEnd: true,
+          },
+        }));
+      }
+
+      if (endpoint === '/api/storage/status') {
+        return Promise.resolve(buildApiSuccess({
+          status: 'premium_canceling',
+          activeLimit: 300,
+          activeCount: 300,
+          lockedCount: 0,
+          projectedOverflowCount: 0,
+          cancelAtPeriodEnd: true,
+        }));
+      }
+
+      return Promise.resolve(buildApiSuccess(null));
+    });
+    mockApiDelete.mockResolvedValue(buildApiSuccess({ id: initialJob.id }));
+
+    await renderUseJobs();
+
+    await act(async () => {
+      await latestHook.deleteJob(initialJob.id);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockApiGet.mock.calls.filter(([endpoint]) => endpoint === '/api/storage/status')).toHaveLength(1);
+    expect(latestHook.allJobs).toEqual([]);
+    expect(latestHook.storageSummary.activeCount).toBe(300);
+    expect(latestHook.storageSummary.projectedOverflowCount).toBe(0);
+  });
+
+  it('ignores stale delete response summaries after a newer add mutation starts', async () => {
+    const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
+    const createdJob = { id: 'job-2', company: 'Beta', position: 'Designer', status: 'applied' };
+    const deleteRequest = createDeferred();
+    const storageRefreshes = [];
+    const addStorageSummary = {
+      status: 'premium_canceling',
+      activeLimit: 300,
+      activeCount: 303,
+      lockedCount: 0,
+      projectedOverflowCount: 3,
+      cancelAtPeriodEnd: true,
+    };
+
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api') {
+        return Promise.resolve(buildJobsResponse({
+          jobs: [initialJob],
+          storageSummary: {
+            status: 'premium_canceling',
+            activeLimit: 300,
+            activeCount: 301,
+            lockedCount: 0,
+            projectedOverflowCount: 1,
+            cancelAtPeriodEnd: true,
+          },
+        }));
+      }
+
+      if (endpoint === '/api/storage/status') {
+        const deferred = createDeferred();
+        storageRefreshes.push(deferred);
+        return deferred.promise;
+      }
+
+      return Promise.resolve(buildApiSuccess(null));
+    });
+    mockApiDelete.mockReturnValue(deleteRequest.promise);
+    mockApiPost.mockResolvedValue(buildApiSuccess([createdJob], {
+      storageSummary: addStorageSummary,
+    }));
+
+    await renderUseJobs();
+
+    let deletePromise;
+    await act(async () => {
+      deletePromise = latestHook.deleteJob(initialJob.id);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await latestHook.addJob({ company: 'Beta', position: 'Designer' });
+      await Promise.resolve();
+    });
+
+    expect(latestHook.storageSummary.activeCount).toBe(303);
+
+    await act(async () => {
+      deleteRequest.resolve(buildApiSuccess({ id: initialJob.id }, {
+        storageSummary: {
+          status: 'premium_canceling',
+          activeLimit: 300,
+          activeCount: 300,
+          lockedCount: 0,
+          projectedOverflowCount: 0,
+          cancelAtPeriodEnd: true,
+        },
+      }));
+      await deletePromise;
+      await Promise.resolve();
+    });
+
+    expect(latestHook.storageSummary.activeCount).toBe(303);
+    expect(latestHook.storageSummary.projectedOverflowCount).toBe(3);
+    expect(storageRefreshes).toHaveLength(1);
+
+    await act(async () => {
+      storageRefreshes[0].resolve(buildApiSuccess({
+        status: 'premium_canceling',
+        activeLimit: 300,
+        activeCount: 302,
+        lockedCount: 0,
+        projectedOverflowCount: 2,
+        cancelAtPeriodEnd: true,
+      }));
+      await Promise.resolve();
+    });
+
+    expect(latestHook.storageSummary.activeCount).toBe(302);
+    expect(latestHook.storageSummary.projectedOverflowCount).toBe(2);
+  });
+
   it('ignores stale add response summaries after a newer delete mutation starts', async () => {
     const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
     const createdJob = { id: 'job-2', company: 'Beta', position: 'Designer', status: 'applied' };
