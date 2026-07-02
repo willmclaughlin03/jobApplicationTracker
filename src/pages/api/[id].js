@@ -2,7 +2,6 @@ import { ERROR_MESSAGES } from '../../shared/errors.js';
 import { jobUpdateSchema, uuidSchema } from '../../shared/validations/jobSchema.js';
 import { sendSuccess, sendError } from '../../shared/response.js';
 import { getJobById, updateJob, deleteJob } from '../../server/services/jobService.js';
-import { getStorageSummaryForUser } from '../../server/services/storageSummaryService.js';
 import { reconcileStorageTransitionsForUser } from '../../server/services/storageTransitionService.js';
 import { STORAGE_CREATE_ERROR_CODES } from '../../shared/constants/billing.js';
 import { JOB_STORAGE_ERRORS } from '../../shared/constants/storage.js';
@@ -112,95 +111,15 @@ async function repairStorageTransitionsForJobRequest(req, user) {
 /**
  * Send the public API response for a successful deleteJob call.
  *
- * Purpose: preserve the existing deleted-row payload at `data` while
- * optionally adding count-only storage metadata that lets clients skip the
- * storage-status fallback when the summary is safe and fresh.
+ * Purpose: keep delete responses on the shared success envelope while returning
+ * only the minimal deleted identifier payload from the service layer.
  *
  * @param {import('next').NextApiResponse} res - API response object.
- * @param {object} data - Deleted job row, or `{ id }` for locked-row deletes.
- * @param {object|null} storageSummary - Optional count-only storage metadata.
+ * @param {object} data - Minimal deleted job payload, currently `{ id }`.
  * @returns {object} Next.js response chain.
  */
-function sendDeleteJobSuccess(res, data, storageSummary = null) {
-  const responseBody = {
-    data,
-    error: null,
-    message: 'Successfully deleted job',
-  };
-
-  if (storageSummary) {
-    responseBody.storageSummary = storageSummary;
-  }
-
-  return res.status(200).json(responseBody);
-}
-
-/**
- * Loads optional count-only storage metadata after a committed delete.
- *
- * Purpose: DELETE must not skip the client storage-status fallback unless it
- * has run the same transition repair first; if summary loading fails, the
- * delete response stays successful and clients fall back normally.
- *
- * @param {import('next').NextApiRequest & { log: object }} req - API request with logger.
- * @param {{ id: string }} user - Authenticated user.
- * @param {object|string|null} [storageStatusResult=null] - Existing typed status from pre-delete repair.
- * @returns {Promise<object|null>} Storage summary metadata, or null when unavailable.
- */
-async function loadPostDeleteStorageSummary(req, user, storageStatusResult = null) {
-  try {
-    let resolvedStorageStatusResult = storageStatusResult;
-
-    if (!resolvedStorageStatusResult) {
-      const repairResult = await repairStorageTransitionsForJobRequest(req, user);
-      resolvedStorageStatusResult = repairResult.data?.storageStatusResult;
-
-      if (repairResult.error || !resolvedStorageStatusResult) {
-        req.log.error(
-          {
-            err: repairResult.error ?? null,
-            operation: 'loadPostDeleteStorageSummary.repairStorageTransitions',
-            userId: user.id,
-          },
-          'Post-delete storage transition repair did not produce a summary status'
-        );
-        return null;
-      }
-    }
-
-    const storageSummaryResult = await getStorageSummaryForUser(
-      user.id,
-      req._supabaseClient,
-      req.log,
-      {
-        storageStatusResult: resolvedStorageStatusResult,
-      }
-    );
-
-    if (storageSummaryResult.error) {
-      req.log.error(
-        {
-          err: storageSummaryResult.error,
-          operation: 'loadPostDeleteStorageSummary.getStorageSummaryForUser',
-          userId: user.id,
-        },
-        'Post-delete storage summary load failed'
-      );
-      return null;
-    }
-
-    return storageSummaryResult.data ?? null;
-  } catch (error) {
-    req.log.error(
-      {
-        err: error,
-        operation: 'loadPostDeleteStorageSummary',
-        userId: user.id,
-      },
-      'Post-delete storage summary load failed'
-    );
-    return null;
-  }
+function sendDeleteJobSuccess(res, data) {
+  return sendSuccess(res, 200, data, 'Successfully deleted job');
 }
 
 /**
@@ -343,11 +262,8 @@ async function handleDelete(req, res, user, jobId) {
     return sendJobAccessError(res, error);
   }
 
-  const storageSummary = await loadPostDeleteStorageSummary(req, user, storageStatusResult);
-
-  return sendDeleteJobSuccess(res, data, storageSummary);
+  return sendDeleteJobSuccess(res, data);
 }
-
 /**
  * Main request handler for /api/jobs/[id] endpoint
  *

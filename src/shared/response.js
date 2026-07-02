@@ -15,14 +15,25 @@
  *
  * @param {*} data - The payload to return to the client
  * @param {string} message - Optional success message
- * @returns {Object} { data, error: null, message }
+ * @param {Object|null} metadata - Optional top-level response metadata
+ * @returns {Object} { data, error: null, message, ...metadata }
  */
-export function createSuccessResponse(data, message = 'Success') {
-  return {
+export function createSuccessResponse(data, message = 'Success', metadata = null) {
+  const response = {
     data,
     error: null,
     message,
   };
+
+  if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
+    for (const [key, value] of Object.entries(metadata)) {
+      if (!['data', 'error', 'message'].includes(key)) {
+        response[key] = value;
+      }
+    }
+  }
+
+  return response;
 }
 
 /**
@@ -47,9 +58,10 @@ export function createErrorResponse(errorCode, message) {
  * @param {number} statusCode - HTTP status code (e.g., 200, 201)
  * @param {*} data - The payload to return
  * @param {string} message - Success message
+ * @param {Object|null} metadata - Optional top-level response metadata
  */
-export function sendSuccess(res, statusCode, data, message) {
-  return res.status(statusCode).json(createSuccessResponse(data, message));
+export function sendSuccess(res, statusCode, data, message, metadata = null) {
+  return res.status(statusCode).json(createSuccessResponse(data, message, metadata));
 }
 
 /**
