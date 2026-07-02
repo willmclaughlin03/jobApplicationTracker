@@ -38,12 +38,15 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
     loading,
     fetchJobs,
     refreshStorageSummary,
+    invalidateJobsFetches,
     applyStorageSummary,
     prependJob,
     updateJobInList,
     removeJobFromList,
   } = query;
   const mutationSequenceRef = useRef(0);
+  const addMutationInFlightRef = useRef(false);
+  const deleteMutationInFlightRef = useRef(false);
 
   // Load all jobs once on mount; all subsequent filtering is client-side at zero API cost
   useEffect(() => {
@@ -120,9 +123,10 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
    * @returns {void}
    */
   const handleAddJobSuccess = useCallback((newJob, nextStorageSummary, mutationSequence) => {
+    invalidateJobsFetches();
     prependJob(newJob);
     syncStorageSummaryAfterMutation(nextStorageSummary, mutationSequence);
-  }, [prependJob, syncStorageSummaryAfterMutation]);
+  }, [invalidateJobsFetches, prependJob, syncStorageSummaryAfterMutation]);
 
   /**
    * Removes a deleted job locally and refreshes count-only storage metadata.
@@ -136,9 +140,10 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
    * @returns {void}
    */
   const handleDeleteJobSuccess = useCallback((id, nextStorageSummary, mutationSequence) => {
+    invalidateJobsFetches();
     removeJobFromList(id);
     syncStorageSummaryAfterMutation(nextStorageSummary, mutationSequence);
-  }, [removeJobFromList, syncStorageSummaryAfterMutation]);
+  }, [invalidateJobsFetches, removeJobFromList, syncStorageSummaryAfterMutation]);
 
   const add = useAddJob();
   const update = useUpdateJob(updateJobInList);
@@ -177,14 +182,24 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
    * @returns {Promise<object>} The useAddJob mutation result.
    */
   const addJob = useCallback(async (jobData) => {
-    const mutationSequence = beginStorageMutation();
-    const result = await add.addJob(jobData);
-
-    if (result.success && result.data) {
-      handleAddJobSuccess(result.data, result.storageSummary, mutationSequence);
+    if (addMutationInFlightRef.current) {
+      return { success: false, data: null, storageSummary: null, error: null, skipped: true };
     }
 
-    return result;
+    addMutationInFlightRef.current = true;
+    const mutationSequence = beginStorageMutation();
+
+    try {
+      const result = await add.addJob(jobData);
+
+      if (result.success && result.data) {
+        handleAddJobSuccess(result.data, result.storageSummary, mutationSequence);
+      }
+
+      return result;
+    } finally {
+      addMutationInFlightRef.current = false;
+    }
   }, [add.addJob, beginStorageMutation, handleAddJobSuccess]);
 
   const updateJob = update.updateJob;
@@ -199,14 +214,24 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
    * @returns {Promise<object>} The useDeleteJob mutation result.
    */
   const deleteJob = useCallback(async (id) => {
-    const mutationSequence = beginStorageMutation();
-    const result = await del.deleteJob(id);
-
-    if (result.success) {
-      handleDeleteJobSuccess(id, result.storageSummary, mutationSequence);
+    if (deleteMutationInFlightRef.current) {
+      return { success: false, storageSummary: null, error: null, skipped: true };
     }
 
-    return result;
+    deleteMutationInFlightRef.current = true;
+    const mutationSequence = beginStorageMutation();
+
+    try {
+      const result = await del.deleteJob(id);
+
+      if (result.success) {
+        handleDeleteJobSuccess(id, result.storageSummary, mutationSequence);
+      }
+
+      return result;
+    } finally {
+      deleteMutationInFlightRef.current = false;
+    }
   }, [beginStorageMutation, del.deleteJob, handleDeleteJobSuccess]);
 
   return {

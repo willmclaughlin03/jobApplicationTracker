@@ -13,6 +13,7 @@ Use this file as a quick-running log of implemented changes.
 ## Entries
 
 ### Week of 2026-06-29
+- `2026-07-01` - `Job delete response and mutation race hardening`: Removed DELETE storage-summary work from the synchronous response path, kept delete payloads id-only, shared success-response metadata shaping, and guarded job add/delete mutations against stale full-fetch overwrites and duplicate submits.
 - `2026-07-01` - `Job delete storage summary response`: Added optional repaired count-only storage summary metadata to successful job-delete responses so clients can skip redundant status refreshes when safe.
 - `2026-06-30` - `Job create storage summary response`: Added optional storage summary metadata to successful job-create responses and used it client-side to avoid a redundant status refresh when present.
 - `2026-06-30` - `Job list pagination service validation`: Added schema-backed service validation so malformed pagination options fail before querying.

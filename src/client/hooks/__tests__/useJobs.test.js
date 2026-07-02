@@ -383,6 +383,254 @@ describe('useJobs storage summary refresh', () => {
     expect(mockApiGet.mock.calls.filter(([endpoint]) => endpoint === '/api/storage/status')).toHaveLength(0);
   });
 
+  it('does not let a stale full fetch overwrite a successful add mutation', async () => {
+    const staleJob = { id: 'job-stale', company: 'Acme', position: 'Engineer', status: 'applied' };
+    const createdJob = { id: 'job-created', company: 'Beta', position: 'Designer', status: 'applied' };
+    const initialFetch = createDeferred();
+    const addStorageSummary = {
+      status: 'premium_canceling',
+      activeLimit: 300,
+      activeCount: 302,
+      lockedCount: 0,
+      projectedOverflowCount: 2,
+      cancelAtPeriodEnd: true,
+    };
+
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api') {
+        return initialFetch.promise;
+      }
+
+      return Promise.resolve(buildApiSuccess(null));
+    });
+    mockApiPost.mockResolvedValue(buildApiSuccess([createdJob], {
+      storageSummary: addStorageSummary,
+    }));
+
+    await renderUseJobs();
+
+    expect(latestHook.loading).toBe(true);
+
+    await act(async () => {
+      await latestHook.addJob({ company: 'Beta', position: 'Designer' });
+      await Promise.resolve();
+    });
+
+    expect(latestHook.loading).toBe(false);
+    expect(latestHook.allJobs).toEqual([createdJob]);
+    expect(latestHook.storageSummary).toEqual(addStorageSummary);
+
+    await act(async () => {
+      initialFetch.resolve(buildJobsResponse({
+        jobs: [staleJob],
+        storageSummary: {
+          status: 'premium_canceling',
+          activeLimit: 300,
+          activeCount: 301,
+          lockedCount: 0,
+          projectedOverflowCount: 1,
+          cancelAtPeriodEnd: true,
+        },
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(latestHook.allJobs).toEqual([createdJob]);
+    expect(latestHook.storageSummary).toEqual(addStorageSummary);
+  });
+
+  it('does not let a stale full refetch overwrite a successful delete mutation', async () => {
+    const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
+    const staleRefetch = createDeferred();
+    const deleteStorageSummary = {
+      status: 'premium_canceling',
+      activeLimit: 300,
+      activeCount: 300,
+      lockedCount: 0,
+      projectedOverflowCount: 0,
+      cancelAtPeriodEnd: true,
+    };
+    let jobsRequestCount = 0;
+
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api') {
+        jobsRequestCount += 1;
+
+        if (jobsRequestCount === 1) {
+          return Promise.resolve(buildJobsResponse({
+            jobs: [initialJob],
+            storageSummary: {
+              status: 'premium_canceling',
+              activeLimit: 300,
+              activeCount: 301,
+              lockedCount: 0,
+              projectedOverflowCount: 1,
+              cancelAtPeriodEnd: true,
+            },
+          }));
+        }
+
+        return staleRefetch.promise;
+      }
+
+      return Promise.resolve(buildApiSuccess(null));
+    });
+    mockApiDelete.mockResolvedValue(buildApiSuccess({ id: initialJob.id }, {
+      storageSummary: deleteStorageSummary,
+    }));
+
+    await renderUseJobs();
+
+    let refetchPromise;
+    await act(async () => {
+      refetchPromise = latestHook.refetch();
+      await Promise.resolve();
+    });
+
+    expect(latestHook.loading).toBe(true);
+
+    await act(async () => {
+      await latestHook.deleteJob(initialJob.id);
+      await Promise.resolve();
+    });
+
+    expect(latestHook.loading).toBe(false);
+    expect(latestHook.allJobs).toEqual([]);
+    expect(latestHook.storageSummary).toEqual(deleteStorageSummary);
+
+    await act(async () => {
+      staleRefetch.resolve(buildJobsResponse({
+        jobs: [initialJob],
+        storageSummary: {
+          status: 'premium_canceling',
+          activeLimit: 300,
+          activeCount: 301,
+          lockedCount: 0,
+          projectedOverflowCount: 1,
+          cancelAtPeriodEnd: true,
+        },
+      }));
+      await refetchPromise;
+      await Promise.resolve();
+    });
+
+    expect(latestHook.allJobs).toEqual([]);
+    expect(latestHook.storageSummary).toEqual(deleteStorageSummary);
+  });
+
+  it('ignores duplicate add calls while one add is in flight', async () => {
+    const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
+    const createdJob = { id: 'job-2', company: 'Beta', position: 'Designer', status: 'applied' };
+    const addRequest = createDeferred();
+    const addStorageSummary = {
+      status: 'premium_canceling',
+      activeLimit: 300,
+      activeCount: 302,
+      lockedCount: 0,
+      projectedOverflowCount: 2,
+      cancelAtPeriodEnd: true,
+    };
+
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api') {
+        return Promise.resolve(buildJobsResponse({
+          jobs: [initialJob],
+          storageSummary: {
+            status: 'premium_canceling',
+            activeLimit: 300,
+            activeCount: 301,
+            lockedCount: 0,
+            projectedOverflowCount: 1,
+            cancelAtPeriodEnd: true,
+          },
+        }));
+      }
+
+      return Promise.resolve(buildApiSuccess(null));
+    });
+    mockApiPost.mockReturnValue(addRequest.promise);
+
+    await renderUseJobs();
+
+    let firstAddPromise;
+    let secondAddResult;
+    await act(async () => {
+      firstAddPromise = latestHook.addJob({ company: 'Beta', position: 'Designer' });
+      secondAddResult = await latestHook.addJob({ company: 'Beta', position: 'Designer' });
+      await Promise.resolve();
+    });
+
+    expect(mockApiPost).toHaveBeenCalledTimes(1);
+    expect(secondAddResult).toEqual(expect.objectContaining({ skipped: true, success: false }));
+
+    await act(async () => {
+      addRequest.resolve(buildApiSuccess([createdJob], {
+        storageSummary: addStorageSummary,
+      }));
+      await firstAddPromise;
+      await Promise.resolve();
+    });
+
+    expect(latestHook.allJobs).toEqual([createdJob, initialJob]);
+    expect(latestHook.storageSummary).toEqual(addStorageSummary);
+  });
+
+  it('ignores duplicate delete calls while one delete is in flight', async () => {
+    const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
+    const deleteRequest = createDeferred();
+    const deleteStorageSummary = {
+      status: 'premium_canceling',
+      activeLimit: 300,
+      activeCount: 300,
+      lockedCount: 0,
+      projectedOverflowCount: 0,
+      cancelAtPeriodEnd: true,
+    };
+
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api') {
+        return Promise.resolve(buildJobsResponse({
+          jobs: [initialJob],
+          storageSummary: {
+            status: 'premium_canceling',
+            activeLimit: 300,
+            activeCount: 301,
+            lockedCount: 0,
+            projectedOverflowCount: 1,
+            cancelAtPeriodEnd: true,
+          },
+        }));
+      }
+
+      return Promise.resolve(buildApiSuccess(null));
+    });
+    mockApiDelete.mockReturnValue(deleteRequest.promise);
+
+    await renderUseJobs();
+
+    let firstDeletePromise;
+    let secondDeleteResult;
+    await act(async () => {
+      firstDeletePromise = latestHook.deleteJob(initialJob.id);
+      secondDeleteResult = await latestHook.deleteJob(initialJob.id);
+      await Promise.resolve();
+    });
+
+    expect(mockApiDelete).toHaveBeenCalledTimes(1);
+    expect(secondDeleteResult).toEqual(expect.objectContaining({ skipped: true, success: false }));
+
+    await act(async () => {
+      deleteRequest.resolve(buildApiSuccess({ id: initialJob.id }, {
+        storageSummary: deleteStorageSummary,
+      }));
+      await firstDeletePromise;
+      await Promise.resolve();
+    });
+
+    expect(latestHook.allJobs).toEqual([]);
+    expect(latestHook.storageSummary).toEqual(deleteStorageSummary);
+  });
   it('falls back to storage status refresh when delete response has no summary', async () => {
     const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
 
@@ -693,10 +941,10 @@ describe('useJobs storage summary refresh', () => {
     expect(latestHook.storageSummary.projectedOverflowCount).toBe(0);
   });
 
-  it('keeps full refetch loading independent from storage summary refreshes', async () => {
+  it('invalidates an in-flight full refetch after a successful add mutation', async () => {
     const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
     const createdJob = { id: 'job-2', company: 'Beta', position: 'Designer', status: 'applied' };
-    const refetchedJob = { id: 'job-3', company: 'Core', position: 'Manager', status: 'interviewing' };
+    const staleRefetchedJob = { id: 'job-3', company: 'Core', position: 'Manager', status: 'interviewing' };
     const jobsRequests = [];
     const storageRefreshes = [];
     let jobsRequestCount = 0;
@@ -766,12 +1014,13 @@ describe('useJobs storage summary refresh', () => {
       await Promise.resolve();
     });
 
-    expect(latestHook.loading).toBe(true);
+    expect(latestHook.loading).toBe(false);
+    expect(latestHook.allJobs).toEqual([createdJob, initialJob]);
     expect(latestHook.storageSummary.activeCount).toBe(302);
 
     await act(async () => {
       jobsRequests[0].resolve(buildJobsResponse({
-        jobs: [refetchedJob],
+        jobs: [staleRefetchedJob],
         storageSummary: {
           status: 'premium_canceling',
           activeLimit: 300,
@@ -786,7 +1035,7 @@ describe('useJobs storage summary refresh', () => {
     });
 
     expect(latestHook.loading).toBe(false);
-    expect(latestHook.allJobs).toEqual([refetchedJob]);
-    expect(latestHook.storageSummary.activeCount).toBe(280);
+    expect(latestHook.allJobs).toEqual([createdJob, initialJob]);
+    expect(latestHook.storageSummary.activeCount).toBe(302);
   });
 });

@@ -882,7 +882,6 @@ export async function deleteJob(jobId, userId, supabaseClient, log = defaultLogg
       return { data: null, error: accessResult.error };
     }
 
-    const isLockedDelete = isLockedJobRecord(accessResult.data);
     let query = supabaseAdmin
       .from('jobs')
       .delete()
@@ -893,7 +892,7 @@ export async function deleteJob(jobId, userId, supabaseClient, log = defaultLogg
       query = query.eq('storage_state', accessResult.data.storage_state);
     }
 
-    const { data, error } = await query.select(isLockedDelete ? 'id' : FULL_JOB_SELECT);
+    const { data, error } = await query.select('id');
 
     if (error) {
       log.error({ err: error, operation: 'deleteJob', userId, jobId }, 'Failed to delete job');
@@ -906,9 +905,7 @@ export async function deleteJob(jobId, userId, supabaseClient, log = defaultLogg
     }
 
     return {
-      data: isLockedDelete
-        ? { id: data[0]?.id ?? accessResult.data.id }
-        : data[0],
+      data: { id: data[0]?.id ?? accessResult.data.id },
       error: null,
     };
   } catch (error) {

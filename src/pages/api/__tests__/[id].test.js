@@ -572,11 +572,11 @@ describe('[id] API handler', () => {
 
     /**
      * Test: Valid active-row delete
-     * Expected: Returns 200 with deleted job data and optional storage summary
+     * Expected: Returns 200 with minimal deleted job id and no summary wait
      */
-    it('should delete and return job with a storage summary when valid', async () => {
+    it('should delete and return a minimal id response without loading storage summary', async () => {
       const mockClient = { from: jest.fn() };
-      mockDeleteJob.mockResolvedValue({ data: mockJob, error: null });
+      mockDeleteJob.mockResolvedValue({ data: { id: validUUID }, error: null });
 
       const req = { ...createMockRequest('DELETE', validUUID), _supabaseClient: mockClient };
       const res = createMockResponse();
@@ -585,37 +585,21 @@ describe('[id] API handler', () => {
 
       expect(res.status).toHaveBeenCalledWith(200);
       expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, mockClient, noopLog);
-      expect(mockReconcileStorageTransitionsForUser).toHaveBeenCalledWith(
-        mockUser.id,
-        noopLog
-      );
-      expect(mockGetStorageSummaryForUser).toHaveBeenCalledWith(
-        mockUser.id,
-        mockClient,
-        noopLog,
-        { storageStatusResult: terminalFreeStorageStatus }
-      );
+      expect(mockReconcileStorageTransitionsForUser).not.toHaveBeenCalled();
+      expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: mockJob,
-          storageSummary: mockStorageSummary,
+          data: { id: validUUID },
+          error: null,
+          message: 'Successfully deleted job',
         })
       );
+      expect(res.json.mock.calls[0][0]).not.toHaveProperty('storageSummary');
     });
 
-    it('should keep locked delete data minimal while returning top-level count metadata', async () => {
+    it('should keep delete data minimal for locked-row deletes', async () => {
       const lockedDeleteData = { id: validUUID };
-      const lockedStorageSummary = {
-        ...mockStorageSummary,
-        activeCount: 300,
-        lockedCount: 4,
-        retainedTotalCount: 304,
-      };
       mockDeleteJob.mockResolvedValue({ data: lockedDeleteData, error: null });
-      mockGetStorageSummaryForUser.mockResolvedValueOnce({
-        data: lockedStorageSummary,
-        error: null,
-      });
 
       const req = createMockRequest('DELETE', validUUID);
       const res = createMockResponse();
@@ -626,9 +610,9 @@ describe('[id] API handler', () => {
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           data: lockedDeleteData,
-          storageSummary: lockedStorageSummary,
         })
       );
+      expect(res.json.mock.calls[0][0]).not.toHaveProperty('storageSummary');
       expect(res.json.mock.calls[0][0].data).toEqual({ id: validUUID });
       expect(JSON.stringify(res.json.mock.calls[0][0].data)).not.toContain('company');
       expect(JSON.stringify(res.json.mock.calls[0][0].data)).not.toContain('notes');
@@ -636,65 +620,7 @@ describe('[id] API handler', () => {
       expect(JSON.stringify(res.json.mock.calls[0][0].data)).not.toContain('position');
       expect(JSON.stringify(res.json.mock.calls[0][0].data)).not.toContain('status');
     });
-
-    it('should return delete success without storage summary when summary loading fails', async () => {
-      const summaryError = new Error('storage summary failed after delete');
-      mockDeleteJob.mockResolvedValue({ data: mockJob, error: null });
-      mockGetStorageSummaryForUser.mockResolvedValueOnce({
-        data: null,
-        error: summaryError,
-      });
-
-      const req = createMockRequest('DELETE', validUUID);
-      const res = createMockResponse();
-
-      await handler(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: mockJob,
-          error: null,
-          message: 'Successfully deleted job',
-        })
-      );
-      expect(res.json.mock.calls[0][0]).not.toHaveProperty('storageSummary');
-      expect(noopLog.error).toHaveBeenCalledWith(
-        expect.objectContaining({
-          err: summaryError,
-          operation: 'loadPostDeleteStorageSummary.getStorageSummaryForUser',
-          userId: mockUser.id,
-        }),
-        'Post-delete storage summary load failed'
-      );
-    });
-
-    it('should return delete success without storage summary when post-delete repair fails', async () => {
-      const repairError = new Error('post-delete storage repair failed');
-      mockDeleteJob.mockResolvedValue({ data: mockJob, error: null });
-      mockReconcileStorageTransitionsForUser.mockResolvedValueOnce({
-        data: null,
-        error: repairError,
-      });
-
-      const req = createMockRequest('DELETE', validUUID);
-      const res = createMockResponse();
-
-      await handler(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: mockJob,
-          error: null,
-          message: 'Successfully deleted job',
-        })
-      );
-      expect(res.json.mock.calls[0][0]).not.toHaveProperty('storageSummary');
-      expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
-    });
   });
-
   describe('Method handling', () => {
     /**
      * Test: POST not allowed on [id] endpoint
