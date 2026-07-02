@@ -565,8 +565,42 @@ describe('[id] API handler', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(404);
-      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, undefined, noopLog);
-      expect(mockReconcileStorageTransitionsForUser).not.toHaveBeenCalled();
+      expect(mockDeleteJob).toHaveBeenCalledWith(
+        validUUID,
+        mockUser.id,
+        undefined,
+        noopLog,
+        terminalFreeStorageStatus
+      );
+      expect(mockReconcileStorageTransitionsForUser).toHaveBeenCalledWith(
+        mockUser.id,
+        noopLog
+      );
+      expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
+    });
+
+    it('should return retryable 503 when locked delete is blocked by ambiguous billing status', async () => {
+      mockDeleteJob.mockResolvedValue({
+        data: null,
+        error: {
+          code: STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+        },
+      });
+
+      const req = createMockRequest('DELETE', validUUID);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(mockDeleteJob).toHaveBeenCalledWith(
+        validUUID,
+        mockUser.id,
+        undefined,
+        noopLog,
+        terminalFreeStorageStatus
+      );
+      expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 5);
+      expect(res.status).toHaveBeenCalledWith(503);
       expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
     });
 
@@ -584,7 +618,13 @@ describe('[id] API handler', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, mockClient, noopLog);
+      expect(mockDeleteJob).toHaveBeenCalledWith(
+        validUUID,
+        mockUser.id,
+        mockClient,
+        noopLog,
+        terminalFreeStorageStatus
+      );
       expect(mockReconcileStorageTransitionsForUser).toHaveBeenCalledWith(
         mockUser.id,
         noopLog
@@ -622,6 +662,13 @@ describe('[id] API handler', () => {
 
       await handler(req, res);
 
+      expect(mockDeleteJob).toHaveBeenCalledWith(
+        validUUID,
+        mockUser.id,
+        undefined,
+        noopLog,
+        terminalFreeStorageStatus
+      );
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -669,8 +716,8 @@ describe('[id] API handler', () => {
       );
     });
 
-    it('should return delete success without storage summary when post-delete repair fails', async () => {
-      const repairError = new Error('post-delete storage repair failed');
+    it('should fail closed when storage transition repair fails before job delete', async () => {
+      const repairError = new Error('pre-delete storage repair failed');
       mockDeleteJob.mockResolvedValue({ data: mockJob, error: null });
       mockReconcileStorageTransitionsForUser.mockResolvedValueOnce({
         data: null,
@@ -682,15 +729,8 @@ describe('[id] API handler', () => {
 
       await handler(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(200);
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: mockJob,
-          error: null,
-          message: 'Successfully deleted job',
-        })
-      );
-      expect(res.json.mock.calls[0][0]).not.toHaveProperty('storageSummary');
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(mockDeleteJob).not.toHaveBeenCalled();
       expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
     });
   });

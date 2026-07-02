@@ -38,6 +38,7 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
     loading,
     fetchJobs,
     refreshStorageSummary,
+    invalidateJobsFetches,
     applyStorageSummary,
     prependJob,
     updateJobInList,
@@ -140,10 +141,24 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
     syncStorageSummaryAfterMutation(nextStorageSummary, mutationSequence);
   }, [removeJobFromList, syncStorageSummaryAfterMutation]);
 
-  const add = useAddJob();
-  const update = useUpdateJob(updateJobInList);
-  const del = useDeleteJob();
+  /**
+   * Applies an updated job locally after invalidating older full-list reads.
+   *
+   * Purpose: a delayed `/api` list response can reflect pre-update data, so
+   * successful PUT mutations bump the list request id before local state merge.
+   *
+   * @param {string} id - Updated job id.
+   * @param {object} updates - Validated update payload sent to the API.
+   * @returns {void}
+   */
+  const handleUpdateJobSuccess = useCallback((id, updates) => {
+    invalidateJobsFetches();
+    updateJobInList(id, updates);
+  }, [invalidateJobsFetches, updateJobInList]);
 
+  const add = useAddJob();
+  const update = useUpdateJob(handleUpdateJobSuccess);
+  const del = useDeleteJob();
   const error = useMemo(
     () => query.error || add.error || update.error || del.error,
     [query.error, add.error, update.error, del.error]

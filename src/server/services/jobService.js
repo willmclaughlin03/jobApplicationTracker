@@ -56,6 +56,13 @@ const STORAGE_ACCESS_RETRYABLE_STATUS_CODES = new Map([
     STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
   ],
 ]);
+const LOCKED_JOB_DELETE_AMBIGUOUS_STATUSES = new Set([
+  STORAGE_STATUSES.BILLING_RECONCILIATION_PENDING,
+  STORAGE_STATUSES.BILLING_UNAVAILABLE,
+  STORAGE_STATUSES.PAYMENT_RECOVERY,
+  STORAGE_STATUSES.SYNC_PENDING,
+]);
+
 const jobReadOptionsSchema = z.object({
   from: z.number({ error: 'from must be a number' })
     .int('from must be an integer')
@@ -319,6 +326,28 @@ function getLockedJobAccessError(storageStatus) {
   }
 
   if (!storageStatus || isStorageStatusRetryable(storageStatus)) {
+    return createStorageAccessUnavailableError(storageStatus);
+  }
+
+  return new JobLockedByPlanError();
+}
+
+/**
+ * Returns the delete policy error for a locked row, if deletion must stop.
+ *
+ * Purpose: confirmed terminal-Free users may delete their locked archive one
+ * row at a time, while Premium users may delete restored/locked rows normally.
+ * Ambiguous billing states block destructive deletion until status is settled.
+ *
+ * @param {string|null} storageStatus - Normalized storage status.
+ * @returns {Error|null} Error when locked-row deletion is not currently allowed.
+ */
+function getLockedJobDeleteError(storageStatus) {
+  if (isPremiumStorageStatus(storageStatus) || storageStatus === STORAGE_STATUSES.TERMINAL_FREE) {
+    return null;
+  }
+
+  if (!storageStatus || LOCKED_JOB_DELETE_AMBIGUOUS_STATUSES.has(storageStatus)) {
     return createStorageAccessUnavailableError(storageStatus);
   }
 
@@ -869,12 +898,13 @@ export async function updateJob(
  * @param {string} userId - The user's ID
  * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Accepted for route compatibility; jobs are deleted through supabaseAdmin.
  * @param {object} log - Request-scoped logger.
+ * @param {object|string|null} storageStatusResult - Typed storage status used for locked-row delete policy.
  * @returns {Promise<{data: Object|null, error: Error|null}>}
  *
  * Security: Enforces user ownership by requiring user_id match.
  * - This prevents users from deleting jobs they don't own
  */
-export async function deleteJob(jobId, userId, supabaseClient, log = defaultLogger) {
+export async function deleteJob(jobId, userId, supabaseClient, log = defaultLogger, storageStatusResult = null) {
   try {
     const accessResult = await getJobStorageAccessRecord(jobId, userId, log);
 
@@ -883,6 +913,13 @@ export async function deleteJob(jobId, userId, supabaseClient, log = defaultLogg
     }
 
     const isLockedDelete = isLockedJobRecord(accessResult.data);
+    const deleteAccessError = isLockedDelete
+      ? getLockedJobDeleteError(getStorageStatusValue(storageStatusResult))
+      : null;
+
+    if (deleteAccessError) {
+      return { data: null, error: deleteAccessError };
+    }
     let query = supabaseAdmin
       .from('jobs')
       .delete()

@@ -985,13 +985,36 @@ describe('deleteJob', () => {
       .mockReturnValueOnce(fakeQuery({ data: lockedAccessRecord, error: null }))
       .mockReturnValueOnce(deleteQuery);
 
-    const result = await deleteJob(jobId, userId, mockSupabaseClient);
+    const result = await deleteJob(
+      jobId,
+      userId,
+      mockSupabaseClient,
+      undefined,
+      terminalFreeAccessStatus
+    );
 
     expect(result.error).toBeNull();
     expect(result.data).toEqual({ id: jobId });
     expect(deleteQuery._calls.select).toEqual([['id']]);
     expect(JSON.stringify(result.data)).not.toContain('Hidden Corp');
     expect(JSON.stringify(result.data)).not.toContain('Hidden notes');
+  });
+
+  it('blocks locked row deletion while billing status is ambiguous', async () => {
+    mockFrom.mockReturnValueOnce(fakeQuery({ data: lockedAccessRecord, error: null }));
+
+    const result = await deleteJob(
+      jobId,
+      userId,
+      mockSupabaseClient,
+      undefined,
+      billingUnavailableAccessStatus
+    );
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(StorageAccessUnavailableError);
+    expect(result.error.code).toBe(STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE);
+    expect(mockFrom).toHaveBeenCalledTimes(1);
   });
 });
 

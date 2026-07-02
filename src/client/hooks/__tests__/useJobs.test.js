@@ -430,6 +430,118 @@ describe('useJobs storage summary refresh', () => {
     expect(latestHook.storageSummary.projectedOverflowCount).toBe(0);
   });
 
+  it('does not let a stale full refetch overwrite a successful update mutation', async () => {
+    const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied', notes: 'Original' };
+    const staleRefetch = createDeferred();
+    let jobsRequestCount = 0;
+
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api') {
+        jobsRequestCount += 1;
+
+        if (jobsRequestCount === 1) {
+          return Promise.resolve(buildJobsResponse({
+            jobs: [initialJob],
+            storageSummary: {
+              status: 'premium_canceling',
+              activeLimit: 300,
+              activeCount: 301,
+              lockedCount: 0,
+              projectedOverflowCount: 1,
+              cancelAtPeriodEnd: true,
+            },
+          }));
+        }
+
+        return staleRefetch.promise;
+      }
+
+      return Promise.resolve(buildApiSuccess(null));
+    });
+    mockApiPut.mockResolvedValue(buildApiSuccess([{ ...initialJob, notes: 'Updated' }]));
+
+    await renderUseJobs();
+
+    let refetchPromise;
+    await act(async () => {
+      refetchPromise = latestHook.refetch();
+      await Promise.resolve();
+    });
+
+    expect(latestHook.loading).toBe(true);
+
+    await act(async () => {
+      await latestHook.updateJob(initialJob.id, { notes: 'Updated' });
+      await Promise.resolve();
+    });
+
+    expect(latestHook.loading).toBe(false);
+    expect(latestHook.allJobs).toEqual([{ ...initialJob, notes: 'Updated' }]);
+
+    await act(async () => {
+      staleRefetch.resolve(buildJobsResponse({
+        jobs: [initialJob],
+        storageSummary: {
+          status: 'premium_canceling',
+          activeLimit: 300,
+          activeCount: 301,
+          lockedCount: 0,
+          projectedOverflowCount: 1,
+          cancelAtPeriodEnd: true,
+        },
+      }));
+      await refetchPromise;
+      await Promise.resolve();
+    });
+
+    expect(latestHook.loading).toBe(false);
+    expect(latestHook.allJobs).toEqual([{ ...initialJob, notes: 'Updated' }]);
+  });
+
+  it('ignores duplicate update calls while one update is in flight', async () => {
+    const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied', notes: 'Original' };
+    const updateRequest = createDeferred();
+
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api') {
+        return Promise.resolve(buildJobsResponse({
+          jobs: [initialJob],
+          storageSummary: {
+            status: 'premium_canceling',
+            activeLimit: 300,
+            activeCount: 301,
+            lockedCount: 0,
+            projectedOverflowCount: 1,
+            cancelAtPeriodEnd: true,
+          },
+        }));
+      }
+
+      return Promise.resolve(buildApiSuccess(null));
+    });
+    mockApiPut.mockReturnValue(updateRequest.promise);
+
+    await renderUseJobs();
+
+    let firstUpdatePromise;
+    let secondUpdateResult;
+    await act(async () => {
+      firstUpdatePromise = latestHook.updateJob(initialJob.id, { notes: 'Updated' });
+      secondUpdateResult = await latestHook.updateJob(initialJob.id, { notes: 'Updated again' });
+      await Promise.resolve();
+    });
+
+    expect(mockApiPut).toHaveBeenCalledTimes(1);
+    expect(secondUpdateResult).toEqual(expect.objectContaining({ skipped: true, success: false }));
+
+    await act(async () => {
+      updateRequest.resolve(buildApiSuccess([{ ...initialJob, notes: 'Updated' }]));
+      await firstUpdatePromise;
+      await Promise.resolve();
+    });
+
+    expect(latestHook.allJobs).toEqual([{ ...initialJob, notes: 'Updated' }]);
+  });
   it('ignores stale delete response summaries after a newer add mutation starts', async () => {
     const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
     const createdJob = { id: 'job-2', company: 'Beta', position: 'Designer', status: 'applied' };

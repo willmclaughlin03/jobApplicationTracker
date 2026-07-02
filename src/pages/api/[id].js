@@ -139,28 +139,33 @@ function sendDeleteJobSuccess(res, data, storageSummary = null) {
  * Loads optional count-only storage metadata after a committed delete.
  *
  * Purpose: DELETE must not skip the client storage-status fallback unless it
- * has run the same transition repair first; if repair or summary loading
- * fails, the delete response stays successful and clients fall back normally.
+ * has run the same transition repair first; if summary loading fails, the
+ * delete response stays successful and clients fall back normally.
  *
  * @param {import('next').NextApiRequest & { log: object }} req - API request with logger.
  * @param {{ id: string }} user - Authenticated user.
+ * @param {object|string|null} [storageStatusResult=null] - Existing typed status from pre-delete repair.
  * @returns {Promise<object|null>} Storage summary metadata, or null when unavailable.
  */
-async function loadPostDeleteStorageSummary(req, user) {
+async function loadPostDeleteStorageSummary(req, user, storageStatusResult = null) {
   try {
-    const repairResult = await repairStorageTransitionsForJobRequest(req, user);
-    const storageStatusResult = repairResult.data?.storageStatusResult;
+    let resolvedStorageStatusResult = storageStatusResult;
 
-    if (repairResult.error || !storageStatusResult) {
-      req.log.error(
-        {
-          err: repairResult.error ?? null,
-          operation: 'loadPostDeleteStorageSummary.repairStorageTransitions',
-          userId: user.id,
-        },
-        'Post-delete storage transition repair did not produce a summary status'
-      );
-      return null;
+    if (!resolvedStorageStatusResult) {
+      const repairResult = await repairStorageTransitionsForJobRequest(req, user);
+      resolvedStorageStatusResult = repairResult.data?.storageStatusResult;
+
+      if (repairResult.error || !resolvedStorageStatusResult) {
+        req.log.error(
+          {
+            err: repairResult.error ?? null,
+            operation: 'loadPostDeleteStorageSummary.repairStorageTransitions',
+            userId: user.id,
+          },
+          'Post-delete storage transition repair did not produce a summary status'
+        );
+        return null;
+      }
     }
 
     const storageSummaryResult = await getStorageSummaryForUser(
@@ -168,7 +173,7 @@ async function loadPostDeleteStorageSummary(req, user) {
       req._supabaseClient,
       req.log,
       {
-        storageStatusResult,
+        storageStatusResult: resolvedStorageStatusResult,
       }
     );
 
@@ -197,6 +202,7 @@ async function loadPostDeleteStorageSummary(req, user) {
     return null;
   }
 }
+
 /**
  * Handles GET requests - retrieves a single job by ID
  *
@@ -318,13 +324,26 @@ async function handlePut(req, res, user, jobId) {
  * @param {string} jobId - The job's UUID from URL path
  */
 async function handleDelete(req, res, user, jobId) {
-  const { data, error } = await deleteJob(jobId, user.id, req._supabaseClient, req.log);
+  const repairResult = await repairStorageTransitionsForJobRequest(req, user);
+  const storageStatusResult = repairResult.data?.storageStatusResult;
 
-  if (error || !data) {
-    return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);
+  if (repairResult.error || !storageStatusResult) {
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
   }
 
-  const storageSummary = await loadPostDeleteStorageSummary(req, user);
+  const { data, error } = await deleteJob(
+    jobId,
+    user.id,
+    req._supabaseClient,
+    req.log,
+    storageStatusResult
+  );
+
+  if (error || !data) {
+    return sendJobAccessError(res, error);
+  }
+
+  const storageSummary = await loadPostDeleteStorageSummary(req, user, storageStatusResult);
 
   return sendDeleteJobSuccess(res, data, storageSummary);
 }
@@ -347,7 +366,7 @@ async function handleDelete(req, res, user, jobId) {
 async function handler(req, res) {
   const { id } = req.query;
 
-  // Validate UUID format FIRST (before auth to reject malformed IDs early)
+  // Validate UUID format before database work; auth already ran in withRateLimit.
   if (!id || !validateUUID(id)) {
     req.log.warn({ operation: 'handler', id: id || 'empty', method: req.method }, 'Invalid job ID format attempted');
     return sendError(res, 400, 'INVALID_ID', ERROR_MESSAGES.INVALID_ID);

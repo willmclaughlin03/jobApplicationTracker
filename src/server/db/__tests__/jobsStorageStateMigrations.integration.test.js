@@ -19,6 +19,7 @@ import { join } from 'path';
 
 const MIGRATIONS_DIR = join(process.cwd(), 'migrations');
 const JOBS_STORAGE_MIGRATION_FILE = '016_jobs_storage_state_boundary.sql';
+const JOBS_SALARY_RANGE_MIGRATION_FILE = '023_jobs_salary_range_check.sql';
 
 const TEST_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const TEST_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -342,10 +343,10 @@ describeOrSkip('Suite C - Jobs storage-state migration + boundary integration', 
   }
 
   /**
-   * Apply migration 016 against a live schema with public.jobs.
+   * Apply additive jobs migrations against a live schema with public.jobs.
    *
-   * Purpose: Chunk 2 needs live-schema evidence because the base jobs table
-   * migration is absent from repo state.
+   * Purpose: storage-state and salary-range evidence needs live-schema checks
+   * because the base jobs table migration is absent from repo state.
    *
    * @returns {Promise<void>}
    */
@@ -361,13 +362,18 @@ describeOrSkip('Suite C - Jobs storage-state migration + boundary integration', 
       );
     }
 
-    const migrationSql = readFileSync(
-      join(MIGRATIONS_DIR, JOBS_STORAGE_MIGRATION_FILE),
-      'utf8'
-    );
+    for (const migrationFile of [
+      JOBS_STORAGE_MIGRATION_FILE,
+      JOBS_SALARY_RANGE_MIGRATION_FILE,
+    ]) {
+      const migrationSql = readFileSync(
+        join(MIGRATIONS_DIR, migrationFile),
+        'utf8'
+      );
 
-    const { error } = await serviceClient.rpc('exec_sql', { query: migrationSql });
-    expect(error).toBeNull();
+      const { error } = await serviceClient.rpc('exec_sql', { query: migrationSql });
+      expect(error).toBeNull();
+    }
 
     await reloadPostgrestSchema();
   }
@@ -413,7 +419,8 @@ describeOrSkip('Suite C - Jobs storage-state migration + boundary integration', 
             'jobs_storage_state_allowed_check',
             'jobs_locked_reason_allowed_check',
             'jobs_locked_policy_version_format_check',
-            'jobs_locked_metadata_consistency_check'
+            'jobs_locked_metadata_consistency_check',
+            'jobs_salary_range_check'
           )
       `),
       execSql(`
@@ -519,8 +526,9 @@ describeOrSkip('Suite C - Jobs storage-state migration + boundary integration', 
     }
   });
 
-  test('C1: jobs storage-state migration file exists', () => {
+  test('C1: jobs migration files exist', () => {
     expect(existsSync(join(MIGRATIONS_DIR, JOBS_STORAGE_MIGRATION_FILE))).toBe(true);
+    expect(existsSync(join(MIGRATIONS_DIR, JOBS_SALARY_RANGE_MIGRATION_FILE))).toBe(true);
   });
 
   test('C2: migration installs columns, constraints, indexes, RLS flags, and grants', async () => {
@@ -542,6 +550,7 @@ describeOrSkip('Suite C - Jobs storage-state migration + boundary integration', 
     expect(shape.constraints.get('jobs_locked_reason_allowed_check')).toContain('premium_to_free_over_plan_limit');
     expect(shape.constraints.get('jobs_locked_policy_version_format_check')).toContain('btrim');
     expect(shape.constraints.get('jobs_locked_metadata_consistency_check')).toContain('locked_at IS NOT NULL');
+    expect(shape.constraints.get('jobs_salary_range_check')).toContain('salary_max >= salary_min');
 
     for (const indexName of [
       'jobs_user_retained_count_idx',
@@ -642,6 +651,33 @@ describeOrSkip('Suite C - Jobs storage-state migration + boundary integration', 
 
     expect(blankPolicyVersion.error).toBeTruthy();
     expect(buildPermissionMessage(blankPolicyVersion.error)).toMatch(/check|constraint|23514/i);
+  });
+
+  test('C3b: salary range constraint rejects inverted salary bounds', async () => {
+    const invalidSalaryRange = await serviceClient
+      .from('jobs')
+      .insert(buildJobRow(userAId, {
+        salary_min: 125000,
+        salary_max: 90000,
+      }));
+
+    expect(invalidSalaryRange.error).toBeTruthy();
+    expect(buildPermissionMessage(invalidSalaryRange.error)).toMatch(/check|constraint|23514/i);
+
+    const validSalaryRange = await serviceClient
+      .from('jobs')
+      .insert(buildJobRow(userAId, {
+        salary_min: 90000,
+        salary_max: 125000,
+      }))
+      .select('id, salary_min, salary_max')
+      .single();
+
+    expect(validSalaryRange.error).toBeNull();
+    expect(validSalaryRange.data).toEqual(expect.objectContaining({
+      salary_min: 90000,
+      salary_max: 125000,
+    }));
   });
 
   test('C4: authenticated and anon clients cannot directly bypass jobs storage policy', async () => {
