@@ -18,6 +18,7 @@
 - Use parameterized queries (no string concatenation for SQL)
 - Sanitize all user input; validate and escape output
 - Auth checks on protected routes; rate limiting on public endpoints
+- Stripe webhooks are the documented exception to app-layer Redis rate limiting: keep raw-body byte caps and signature verification in app code, and use deployment/WAF-level coarse throttling for `/api/billing/webhook` so legitimate Stripe retries are not dropped.
 - Flag issues clearly: `⚠️ SECURITY: [specific concern]`
 
 ## 3. Input Validation

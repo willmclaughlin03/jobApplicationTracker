@@ -1786,7 +1786,11 @@ describe('billingService', () => {
         })
       );
       expect(mockStripe.customers.create).toHaveBeenCalledWith(
-        {},
+        {
+          metadata: {
+            app_user_id_hash: hashUserIdForIdempotency(userId),
+          },
+        },
         {
           idempotencyKey: `billing_customer_${hashUserIdForIdempotency(userId).slice(0, 24)}`,
         }
