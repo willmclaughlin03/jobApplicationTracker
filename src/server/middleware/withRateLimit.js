@@ -216,6 +216,96 @@ async function performRateLimitCheck(req, identifier, operation) {
 }
 
 /**
+ * Sends the shared 429 response for a failed rate-limit check.
+ *
+ * Purpose: protected auth-failure throttling should match ordinary route throttle
+ * responses for retry headers, user-facing copy, and low-noise logging rules.
+ *
+ * @param {import('next').NextApiRequest & { log: object }} req - Request with scoped logger.
+ * @param {import('next').NextApiResponse} res - Next.js response object.
+ * @param {object} rateLimitResult - Failed limiter result from checkRateLimit().
+ * @param {string} operation - Operation bucket that was checked.
+ * @returns {object} Next.js response chain.
+ */
+function sendRateLimitExceeded(req, res, rateLimitResult, operation) {
+    setRateLimitHeaders(res, rateLimitResult);
+
+    const retryAfterSeconds = rateLimitResult.reset
+        ? Math.max(0, Math.ceil((rateLimitResult.reset - Date.now()) / 1000))
+        : 60;
+
+    res.setHeader('Retry-After', retryAfterSeconds);
+
+    const rateLimitLogData = { operation, window: rateLimitResult.window, limit: rateLimitResult.limit, retryAfterSeconds };
+    if (QUIET_429_OPERATIONS.has(operation)) {
+        req.log.debug(rateLimitLogData, 'Rate limit exceeded (quiet operation)');
+    } else {
+        req.log.warn(rateLimitLogData, 'Rate limit exceeded');
+    }
+
+    return sendError(
+        res,
+        429,
+        'RATE_LIMIT_EXCEEDED',
+        formatRateLimitMessage(retryAfterSeconds)
+    );
+}
+
+/**
+ * Applies an IP-based auth bucket before returning protected-route 401s.
+ *
+ * Purpose: invalid or missing sessions should not bypass Redis entirely and
+ * amplify Supabase Auth calls without a local throttle. Successful checks fall
+ * through to the existing 401 response; exhausted checks return 429.
+ *
+ * @param {import('next').NextApiRequest & { log: object }} req - Request with auth failure.
+ * @param {import('next').NextApiResponse} res - Next.js response object.
+ * @returns {Promise<{handled: boolean, response?: object}>}
+ */
+async function limitFailedProtectedAuth(req, res) {
+    const authFailureIdentifier = extractIpIdentifier(req);
+
+    if (!authFailureIdentifier) {
+        return {
+            handled: true,
+            response: sendError(
+                res,
+                403,
+                'UNIDENTIFIABLE_CLIENT',
+                'Unable to identify client. Please try again.'
+            ),
+        };
+    }
+
+    const authFailureRateLimitResult = await performRateLimitCheck(
+        req,
+        authFailureIdentifier,
+        OPERATIONS.AUTH
+    );
+
+    if (authFailureRateLimitResult.unavailable) {
+        return {
+            handled: true,
+            response: sendError(
+                res,
+                503,
+                'SERVICE_UNAVAILABLE',
+                ERROR_MESSAGES.SERVICE_UNAVAILABLE
+            ),
+        };
+    }
+
+    if (!authFailureRateLimitResult.success) {
+        return {
+            handled: true,
+            response: sendRateLimitExceeded(req, res, authFailureRateLimitResult, OPERATIONS.AUTH),
+        };
+    }
+
+    setRateLimitHeaders(res, authFailureRateLimitResult);
+    return { handled: false };
+}
+/**
  * Rate limiting middleware wrapper for Next.js API handlers
  *
  * Applies per-user or per-IP rate limiting before handler execution.
@@ -298,7 +388,7 @@ export function withRateLimit(handler, options = {}){
 
         try {
             if(requireAuth){
-                // PROTECTED ROUTE: Auth is mandatory, no IP fallback
+                // PROTECTED ROUTE: Auth is mandatory; failed auth is IP-throttled before 401
                 try{
                     const { user, error, errorCode, supabaseClient } = await getUserFromRequest(req, res);
                     if(!user){
@@ -314,6 +404,11 @@ export function withRateLimit(handler, options = {}){
                                 'SERVICE_UNAVAILABLE',
                                 ERROR_MESSAGES.SERVICE_UNAVAILABLE
                             );
+                        }
+
+                        const authFailureLimit = await limitFailedProtectedAuth(req, res);
+                        if (authFailureLimit.handled) {
+                            return authFailureLimit.response;
                         }
 
                         req.log.warn({ authError: error || 'Unknown auth failure', authErrorCode: errorCode || null, method: req.method }, 'Auth required but failed on protected route');
@@ -403,30 +498,13 @@ export function withRateLimit(handler, options = {}){
                 ERROR_MESSAGES.SERVICE_UNAVAILABLE
             );
         }
-        // set limit headers on all res
-        setRateLimitHeaders(res, rateLimitResult);
-
         // rate limit exceeded
         if(!rateLimitResult.success){
-            const retryAfterSeconds = rateLimitResult.reset
-            ? Math.max(0, Math.ceil((rateLimitResult.reset - Date.now()) / 1000)) : 60;
-
-            res.setHeader('Retry-After', retryAfterSeconds);
-
-            const rateLimitLogData = { operation, window: rateLimitResult.window, limit: rateLimitResult.limit, retryAfterSeconds };
-            if (QUIET_429_OPERATIONS.has(operation)) {
-                req.log.debug(rateLimitLogData, 'Rate limit exceeded (quiet operation)');
-            } else {
-                req.log.warn(rateLimitLogData, 'Rate limit exceeded');
-            }
-
-            return sendError(
-                res,
-                429,
-                'RATE_LIMIT_EXCEEDED',
-                formatRateLimitMessage(retryAfterSeconds)
-            );
+            return sendRateLimitExceeded(req, res, rateLimitResult, operation);
         }
+
+        // set limit headers on all successful rate-limited responses
+        setRateLimitHeaders(res, rateLimitResult);
 
         try {
             return await handler(req, res);

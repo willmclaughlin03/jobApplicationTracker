@@ -176,6 +176,7 @@ const lockedAccessRecord = {
 const terminalFreeAccessStatus = { status: STORAGE_STATUSES.TERMINAL_FREE };
 const premiumAccessStatus = { status: STORAGE_STATUSES.PREMIUM_ACTIVE };
 const billingUnavailableAccessStatus = { status: STORAGE_STATUSES.BILLING_UNAVAILABLE };
+const nonEntitledNonTerminalAccessStatus = { status: STORAGE_STATUSES.NON_ENTITLED_NON_TERMINAL };
 
 // ---------------------------------------------------------------------------
 // createJob — storage limit enforcement
@@ -942,7 +943,7 @@ describe('updateJob', () => {
 describe('deleteJob', () => {
   beforeEach(() => jest.clearAllMocks());
 
-  it('returns deleted job on success', async () => {
+  it('returns only the deleted job id on success', async () => {
     const deleteQuery = fakeQuery({ data: [mockCreatedJob], error: null });
     mockFrom
       .mockReturnValueOnce(fakeQuery({ data: activeAccessRecord, error: null }))
@@ -951,7 +952,7 @@ describe('deleteJob', () => {
     const result = await deleteJob(jobId, userId, mockSupabaseClient);
 
     expect(result.error).toBeNull();
-    expect(result.data).toEqual(mockCreatedJob);
+    expect(result.data).toEqual({ id: jobId });
     expect(mockFrom).toHaveBeenCalledWith('jobs');
     expect(mockClientFrom).not.toHaveBeenCalled();
 
@@ -962,7 +963,7 @@ describe('deleteJob', () => {
       ['user_id', userId],
       ['storage_state', JOB_STORAGE_STATES.ACTIVE],
     ]);
-    expect(deleteQuery._calls.select).toEqual([['*']]);
+    expect(deleteQuery._calls.select).toEqual([['id']]);
   });
 
   it('returns not-found error when no rows were affected', async () => {
@@ -976,7 +977,7 @@ describe('deleteJob', () => {
     expect(result.error.message).toMatch(/not found/i);
   });
 
-  it('allows locked row deletion but returns only the id', async () => {
+  it('allows terminal-Free locked row deletion but returns only the id', async () => {
     const deleteQuery = fakeQuery({
       data: [{ id: jobId, company: 'Hidden Corp', notes: 'Hidden notes' }],
       error: null,
@@ -985,13 +986,57 @@ describe('deleteJob', () => {
       .mockReturnValueOnce(fakeQuery({ data: lockedAccessRecord, error: null }))
       .mockReturnValueOnce(deleteQuery);
 
-    const result = await deleteJob(jobId, userId, mockSupabaseClient);
+    const result = await deleteJob(
+      jobId,
+      userId,
+      mockSupabaseClient,
+      undefined,
+      terminalFreeAccessStatus
+    );
 
     expect(result.error).toBeNull();
     expect(result.data).toEqual({ id: jobId });
+    expect(deleteQuery._calls.eq).toEqual([
+      ['id', jobId],
+      ['user_id', userId],
+      ['storage_state', JOB_STORAGE_STATES.LOCKED_OVER_PLAN_LIMIT],
+    ]);
     expect(deleteQuery._calls.select).toEqual([['id']]);
     expect(JSON.stringify(result.data)).not.toContain('Hidden Corp');
     expect(JSON.stringify(result.data)).not.toContain('Hidden notes');
+  });
+
+  it('rejects locked row deletion during ambiguous billing status before delete', async () => {
+    mockFrom.mockReturnValueOnce(fakeQuery({ data: lockedAccessRecord, error: null }));
+
+    const result = await deleteJob(
+      jobId,
+      userId,
+      mockSupabaseClient,
+      undefined,
+      billingUnavailableAccessStatus
+    );
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(StorageAccessUnavailableError);
+    expect(result.error.code).toBe(STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE);
+    expect(mockFrom).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks locked row deletion for confirmed non-terminal, non-premium status', async () => {
+    mockFrom.mockReturnValueOnce(fakeQuery({ data: lockedAccessRecord, error: null }));
+
+    const result = await deleteJob(
+      jobId,
+      userId,
+      mockSupabaseClient,
+      undefined,
+      nonEntitledNonTerminalAccessStatus
+    );
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(JobLockedByPlanError);
+    expect(mockFrom).toHaveBeenCalledTimes(1);
   });
 });
 

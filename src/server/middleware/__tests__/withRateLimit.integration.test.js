@@ -313,15 +313,15 @@ describe('withRateLimit — integration', () => {
     });
 
     // =======================================================================
-    // Test 5: Unauthenticated request short-circuits
+    // Test 5: Unauthenticated request is throttled before 401
     // =======================================================================
 
     /**
-     * Confirms ordering guarantee — auth failure short-circuits before any
-     * downstream logic. CSRF and rate limit code never run on
+     * Confirms ordering guarantee — auth failure applies IP auth throttling before
+     * returning 401. CSRF and handler logic never run on
      * unauthenticated requests.
      */
-    it('returns 401 on auth failure without reaching CSRF or rate limit', async () => {
+    it('returns 401 on auth failure after IP auth-bucket throttling', async () => {
         mockCreateApiRouteClient.mockReturnValue(
             createAuthErrorClient('Invalid JWT')
         );
@@ -336,7 +336,11 @@ describe('withRateLimit — integration', () => {
         })(req, res);
 
         expect(res.status).toHaveBeenCalledWith(401);
-        expect(mockCheckRateLimit).not.toHaveBeenCalled();
+        expect(mockCheckRateLimit).toHaveBeenCalledWith(
+            'ip:127.0.0.1',
+            'free',
+            'auth'
+        );
         expect(handler).not.toHaveBeenCalled();
     });
 

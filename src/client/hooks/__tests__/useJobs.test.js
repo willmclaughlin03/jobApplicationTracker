@@ -29,9 +29,11 @@ jest.mock('../../lib/api.js', () => ({
 }));
 
 let useJobs;
+let useUpdateJob;
 let container;
 let root;
 let latestHook;
+let latestUpdateHook;
 
 /**
  * Builds the shared client response envelope used by mocked api methods.
@@ -110,7 +112,24 @@ function HookHarness() {
     latestHook.storageSummary?.activeCount ?? 'none'
   );
 }
+/**
+ * Stores the latest useUpdateJob result for focused mutation-hook assertions.
+ *
+ * Purpose: exercise update request behavior without going through useJobs'
+ * local-list success callback so callback failures can be isolated.
+ *
+ * @param {{onSuccess?: Function}} props Harness props.
+ * @returns {import('react').ReactElement} Test harness marker element.
+ */
+function UpdateHookHarness({ onSuccess }) {
+  latestUpdateHook = useUpdateJob(onSuccess);
 
+  return React.createElement(
+    'div',
+    { 'data-testid': 'update-hook' },
+    latestUpdateHook.saving ? 'saving' : 'idle'
+  );
+}
 /**
  * Flushes pending promise continuations from async React effects.
  *
@@ -145,7 +164,27 @@ async function renderUseJobs() {
   await flushEffects();
   return container;
 }
+/**
+ * Renders the focused useUpdateJob harness and waits for React state setup.
+ *
+ * Purpose: keep update-hook regression tests independent from full jobs list
+ * loading while reusing the same jsdom root cleanup path.
+ *
+ * @param {Function} onSuccess - Success callback passed to useUpdateJob.
+ * @returns {Promise<HTMLElement>} Rendered container.
+ */
+async function renderUseUpdateJob(onSuccess) {
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
 
+  await act(async () => {
+    root.render(React.createElement(UpdateHookHarness, { onSuccess }));
+  });
+
+  await flushEffects();
+  return container;
+}
 /**
  * Removes the active jsdom root and container after each test.
  *
@@ -165,11 +204,13 @@ function cleanup() {
   container = null;
   root = null;
   latestHook = null;
+  latestUpdateHook = null;
 }
 
 describe('useJobs storage summary refresh', () => {
   beforeAll(() => {
     useJobs = require('../useJobs.js').useJobs;
+    useUpdateJob = require('../jobs/useUpdateJob.js').useUpdateJob;
   });
 
   beforeEach(() => {
@@ -334,6 +375,35 @@ describe('useJobs storage summary refresh', () => {
     expect(mockApiGet.mock.calls.filter(([endpoint]) => endpoint === '/api/storage/status')).toHaveLength(0);
   });
 
+
+  it('does not treat success callback exceptions as failed PUT requests', async () => {
+    const callbackError = new Error('local update merge failed');
+    const onSuccess = jest.fn(() => {
+      throw callbackError;
+    });
+    const updates = { notes: 'Updated' };
+
+    mockApiPut.mockResolvedValue(buildApiSuccess([{ id: 'job-1', ...updates }]));
+
+    await renderUseUpdateJob(onSuccess);
+
+    let thrownError;
+    await act(async () => {
+      try {
+        await latestUpdateHook.updateJob('job-1', updates);
+      } catch (error) {
+        thrownError = error;
+      }
+
+      await Promise.resolve();
+    });
+
+    expect(mockApiPut).toHaveBeenCalledWith('/api/job-1', updates);
+    expect(onSuccess).toHaveBeenCalledWith('job-1', updates);
+    expect(thrownError).toBe(callbackError);
+    expect(latestUpdateHook.error).toBeNull();
+    expect(latestUpdateHook.saving).toBe(false);
+  });
   it('ignores stale add response summaries after a newer delete mutation starts', async () => {
     const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
     const createdJob = { id: 'job-2', company: 'Beta', position: 'Designer', status: 'applied' };
