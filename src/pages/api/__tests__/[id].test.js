@@ -565,8 +565,8 @@ describe('[id] API handler', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(404);
-      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, undefined, noopLog);
-      expect(mockReconcileStorageTransitionsForUser).not.toHaveBeenCalled();
+      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, undefined, noopLog, terminalFreeStorageStatus);
+      expect(mockReconcileStorageTransitionsForUser).toHaveBeenCalledWith(mockUser.id, noopLog);
       expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
     });
 
@@ -584,8 +584,8 @@ describe('[id] API handler', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, mockClient, noopLog);
-      expect(mockReconcileStorageTransitionsForUser).not.toHaveBeenCalled();
+      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, mockClient, noopLog, terminalFreeStorageStatus);
+      expect(mockReconcileStorageTransitionsForUser).toHaveBeenCalledWith(mockUser.id, noopLog);
       expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -619,6 +619,42 @@ describe('[id] API handler', () => {
       expect(JSON.stringify(res.json.mock.calls[0][0].data)).not.toContain('salary');
       expect(JSON.stringify(res.json.mock.calls[0][0].data)).not.toContain('position');
       expect(JSON.stringify(res.json.mock.calls[0][0].data)).not.toContain('status');
+      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, undefined, noopLog, terminalFreeStorageStatus);
+    });
+
+    it('should fail closed when storage transition repair fails before job delete', async () => {
+      mockReconcileStorageTransitionsForUser.mockResolvedValueOnce({
+        data: null,
+        error: new Error('overflow lock failed'),
+      });
+
+      const req = createMockRequest('DELETE', validUUID);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(mockDeleteJob).not.toHaveBeenCalled();
+      expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
+    });
+
+    it('should return retryable 503 when locked delete is blocked by billing ambiguity', async () => {
+      mockDeleteJob.mockResolvedValue({
+        data: null,
+        error: {
+          code: STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+        },
+      });
+
+      const req = createMockRequest('DELETE', validUUID);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 5);
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, undefined, noopLog, terminalFreeStorageStatus);
+      expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
     });
   });
   describe('Method handling', () => {

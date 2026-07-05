@@ -12,7 +12,15 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-07-05
+- `2026-07-05` - `Locked delete denial coverage`: Added deleteJob unit coverage for locked-row deletion under confirmed non-premium, non-terminal storage status returning JobLockedByPlanError.
+- `2026-07-05` - `Rate-limit 429 helper reuse`: Reused the shared rate-limit exceeded helper for ordinary route throttling so 429 headers, logging, and error responses stay aligned with auth-failure throttling.
+- `2026-07-05` - `Update callback error boundary`: Kept successful job update callbacks outside the PUT failure path so local callback exceptions are not surfaced as failed network updates.
+- `2026-07-05` - `Codex temp setup note`: Documented the repo-local `.tmp/` launch setup in `AGENTS.md` to avoid Windows split-root `apply_patch` sandbox failures.
+- `2026-07-05` - `Workspace-local temp ignore`: Added an ignored `.tmp/` workspace folder for local temporary files so future Codex launches can keep temp writes inside the repo.
+- `2026-07-05` - `Salary range constraint validation split`: Split the jobs salary range CHECK rollout into a NOT VALID add migration plus a follow-up validation migration with defensive inverted-range repair.
 ### Week of 2026-06-29
+- `2026-07-02` - `Security review race and policy fixes`: Added update double-submit/stale-fetch guards, IP throttling for failed protected-route auth, locked single-row delete storage-status gating, and a versioned jobs salary range constraint.
 - `2026-07-01` - `Job delete response and mutation race hardening`: Removed DELETE storage-summary work from the synchronous response path, kept delete payloads id-only, shared success-response metadata shaping, and guarded job add/delete mutations against stale full-fetch overwrites and duplicate submits.
 - `2026-07-01` - `Job delete storage summary response`: Added optional repaired count-only storage summary metadata to successful job-delete responses so clients can skip redundant status refreshes when safe.
 - `2026-06-30` - `Job create storage summary response`: Added optional storage summary metadata to successful job-create responses and used it client-side to avoid a redundant status refresh when present.

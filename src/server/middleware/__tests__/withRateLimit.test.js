@@ -838,8 +838,8 @@ describe('withRateLimit middleware', () => {
     // =========================================================================
     describe('requireAuth: true (protected routes)', () => {
         /**
-         * Test: Auth failure returns 401, does NOT fall back to IP
-         * Verifies: Protected routes block unauthenticated requests entirely
+         * Test: Auth failure returns 401 after IP auth-bucket throttling
+         * Verifies: Protected routes still block unauthenticated requests while metering retries
          */
         it('should return 401 when auth fails on protected route', async () => {
             mockGetUserFromRequest.mockResolvedValue({ user: null, error: 'No auth' });
@@ -850,7 +850,37 @@ describe('withRateLimit middleware', () => {
             await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(res.status).toHaveBeenCalledWith(401);
-            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'ip:10.0.0.1',
+                'free',
+                'auth'
+            );
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        it('should return 429 when protected-route auth failures exhaust the IP auth bucket', async () => {
+            const reset = Date.now() + 60000;
+            mockGetUserFromRequest.mockResolvedValue({ user: null, error: 'No auth' });
+            mockCheckRateLimit.mockResolvedValueOnce({
+                success: false,
+                limit: 15,
+                remaining: 0,
+                reset,
+                window: 'hourly',
+            });
+            const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.1' });
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'ip:10.0.0.1',
+                'free',
+                'auth'
+            );
+            expect(res.status).toHaveBeenCalledWith(429);
+            expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 60);
             expect(handler).not.toHaveBeenCalled();
         });
 

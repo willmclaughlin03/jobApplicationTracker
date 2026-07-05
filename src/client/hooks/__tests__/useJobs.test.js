@@ -29,9 +29,11 @@ jest.mock('../../lib/api.js', () => ({
 }));
 
 let useJobs;
+let useUpdateJob;
 let container;
 let root;
 let latestHook;
+let latestUpdateHook;
 
 /**
  * Builds the shared client response envelope used by mocked api methods.
@@ -110,7 +112,24 @@ function HookHarness() {
     latestHook.storageSummary?.activeCount ?? 'none'
   );
 }
+/**
+ * Stores the latest useUpdateJob result for focused mutation-hook assertions.
+ *
+ * Purpose: exercise update request behavior without going through useJobs'
+ * local-list success callback so callback failures can be isolated.
+ *
+ * @param {{onSuccess?: Function}} props Harness props.
+ * @returns {import('react').ReactElement} Test harness marker element.
+ */
+function UpdateHookHarness({ onSuccess }) {
+  latestUpdateHook = useUpdateJob(onSuccess);
 
+  return React.createElement(
+    'div',
+    { 'data-testid': 'update-hook' },
+    latestUpdateHook.saving ? 'saving' : 'idle'
+  );
+}
 /**
  * Flushes pending promise continuations from async React effects.
  *
@@ -145,7 +164,27 @@ async function renderUseJobs() {
   await flushEffects();
   return container;
 }
+/**
+ * Renders the focused useUpdateJob harness and waits for React state setup.
+ *
+ * Purpose: keep update-hook regression tests independent from full jobs list
+ * loading while reusing the same jsdom root cleanup path.
+ *
+ * @param {Function} onSuccess - Success callback passed to useUpdateJob.
+ * @returns {Promise<HTMLElement>} Rendered container.
+ */
+async function renderUseUpdateJob(onSuccess) {
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
 
+  await act(async () => {
+    root.render(React.createElement(UpdateHookHarness, { onSuccess }));
+  });
+
+  await flushEffects();
+  return container;
+}
 /**
  * Removes the active jsdom root and container after each test.
  *
@@ -165,11 +204,13 @@ function cleanup() {
   container = null;
   root = null;
   latestHook = null;
+  latestUpdateHook = null;
 }
 
 describe('useJobs storage summary refresh', () => {
   beforeAll(() => {
     useJobs = require('../useJobs.js').useJobs;
+    useUpdateJob = require('../jobs/useUpdateJob.js').useUpdateJob;
   });
 
   beforeEach(() => {
@@ -519,6 +560,74 @@ describe('useJobs storage summary refresh', () => {
     expect(latestHook.storageSummary).toEqual(deleteStorageSummary);
   });
 
+  it('does not let a stale full refetch overwrite a successful update mutation', async () => {
+    const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied', notes: 'Original' };
+    const staleRefetch = createDeferred();
+    let jobsRequestCount = 0;
+
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api') {
+        jobsRequestCount += 1;
+
+        if (jobsRequestCount === 1) {
+          return Promise.resolve(buildJobsResponse({
+            jobs: [initialJob],
+            storageSummary: {
+              status: 'premium_canceling',
+              activeLimit: 300,
+              activeCount: 301,
+              lockedCount: 0,
+              projectedOverflowCount: 1,
+              cancelAtPeriodEnd: true,
+            },
+          }));
+        }
+
+        return staleRefetch.promise;
+      }
+
+      return Promise.resolve(buildApiSuccess(null));
+    });
+    mockApiPut.mockResolvedValue(buildApiSuccess([{ ...initialJob, notes: 'Updated' }]));
+
+    await renderUseJobs();
+
+    let refetchPromise;
+    await act(async () => {
+      refetchPromise = latestHook.refetch();
+      await Promise.resolve();
+    });
+
+    expect(latestHook.loading).toBe(true);
+
+    await act(async () => {
+      await latestHook.updateJob(initialJob.id, { notes: 'Updated' });
+      await Promise.resolve();
+    });
+
+    expect(latestHook.loading).toBe(false);
+    expect(latestHook.allJobs).toEqual([{ ...initialJob, notes: 'Updated' }]);
+
+    await act(async () => {
+      staleRefetch.resolve(buildJobsResponse({
+        jobs: [initialJob],
+        storageSummary: {
+          status: 'premium_canceling',
+          activeLimit: 300,
+          activeCount: 301,
+          lockedCount: 0,
+          projectedOverflowCount: 1,
+          cancelAtPeriodEnd: true,
+        },
+      }));
+      await refetchPromise;
+      await Promise.resolve();
+    });
+
+    expect(latestHook.loading).toBe(false);
+    expect(latestHook.allJobs).toEqual([{ ...initialJob, notes: 'Updated' }]);
+  });
+
   it('ignores duplicate add calls while one add is in flight', async () => {
     const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
     const createdJob = { id: 'job-2', company: 'Beta', position: 'Designer', status: 'applied' };
@@ -631,6 +740,52 @@ describe('useJobs storage summary refresh', () => {
     expect(latestHook.allJobs).toEqual([]);
     expect(latestHook.storageSummary).toEqual(deleteStorageSummary);
   });
+
+  it('ignores duplicate update calls while one update is in flight', async () => {
+    const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied', notes: 'Original' };
+    const updateRequest = createDeferred();
+
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api') {
+        return Promise.resolve(buildJobsResponse({
+          jobs: [initialJob],
+          storageSummary: {
+            status: 'premium_canceling',
+            activeLimit: 300,
+            activeCount: 301,
+            lockedCount: 0,
+            projectedOverflowCount: 1,
+            cancelAtPeriodEnd: true,
+          },
+        }));
+      }
+
+      return Promise.resolve(buildApiSuccess(null));
+    });
+    mockApiPut.mockReturnValue(updateRequest.promise);
+
+    await renderUseJobs();
+
+    let firstUpdatePromise;
+    let secondUpdateResult;
+    await act(async () => {
+      firstUpdatePromise = latestHook.updateJob(initialJob.id, { notes: 'Updated' });
+      secondUpdateResult = await latestHook.updateJob(initialJob.id, { notes: 'Updated again' });
+      await Promise.resolve();
+    });
+
+    expect(mockApiPut).toHaveBeenCalledTimes(1);
+    expect(secondUpdateResult).toEqual(expect.objectContaining({ skipped: true, success: false }));
+
+    await act(async () => {
+      updateRequest.resolve(buildApiSuccess([{ ...initialJob, notes: 'Updated' }]));
+      await firstUpdatePromise;
+      await Promise.resolve();
+    });
+
+    expect(latestHook.allJobs).toEqual([{ ...initialJob, notes: 'Updated' }]);
+  });
+
   it('falls back to storage status refresh when delete response has no summary', async () => {
     const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
 
@@ -770,6 +925,35 @@ describe('useJobs storage summary refresh', () => {
     expect(latestHook.storageSummary.projectedOverflowCount).toBe(2);
   });
 
+
+  it('does not treat success callback exceptions as failed PUT requests', async () => {
+    const callbackError = new Error('local update merge failed');
+    const onSuccess = jest.fn(() => {
+      throw callbackError;
+    });
+    const updates = { notes: 'Updated' };
+
+    mockApiPut.mockResolvedValue(buildApiSuccess([{ id: 'job-1', ...updates }]));
+
+    await renderUseUpdateJob(onSuccess);
+
+    let thrownError;
+    await act(async () => {
+      try {
+        await latestUpdateHook.updateJob('job-1', updates);
+      } catch (error) {
+        thrownError = error;
+      }
+
+      await Promise.resolve();
+    });
+
+    expect(mockApiPut).toHaveBeenCalledWith('/api/job-1', updates);
+    expect(onSuccess).toHaveBeenCalledWith('job-1', updates);
+    expect(thrownError).toBe(callbackError);
+    expect(latestUpdateHook.error).toBeNull();
+    expect(latestUpdateHook.saving).toBe(false);
+  });
   it('ignores stale add response summaries after a newer delete mutation starts', async () => {
     const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
     const createdJob = { id: 'job-2', company: 'Beta', position: 'Designer', status: 'applied' };

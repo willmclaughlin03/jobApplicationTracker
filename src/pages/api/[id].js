@@ -243,15 +243,27 @@ async function handlePut(req, res, user, jobId) {
  * @param {string} jobId - The job's UUID from URL path
  */
 async function handleDelete(req, res, user, jobId) {
-  const { data, error } = await deleteJob(jobId, user.id, req._supabaseClient, req.log);
+  const repairResult = await repairStorageTransitionsForJobRequest(req, user);
+  const storageStatusResult = repairResult.data?.storageStatusResult;
+
+  if (repairResult.error || !storageStatusResult) {
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+  }
+
+  const { data, error } = await deleteJob(
+    jobId,
+    user.id,
+    req._supabaseClient,
+    req.log,
+    storageStatusResult
+  );
 
   if (error || !data) {
-    return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);
+    return sendJobAccessError(res, error);
   }
 
   return sendDeleteJobSuccess(res, data);
 }
-
 /**
  * Main request handler for /api/jobs/[id] endpoint
  *
@@ -270,7 +282,7 @@ async function handleDelete(req, res, user, jobId) {
 async function handler(req, res) {
   const { id } = req.query;
 
-  // Validate UUID format FIRST (before auth to reject malformed IDs early)
+  // Validate UUID format before database work; auth already ran in withRateLimit.
   if (!id || !validateUUID(id)) {
     req.log.warn({ operation: 'handler', id: id || 'empty', method: req.method }, 'Invalid job ID format attempted');
     return sendError(res, 400, 'INVALID_ID', ERROR_MESSAGES.INVALID_ID);
