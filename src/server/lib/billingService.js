@@ -2709,7 +2709,11 @@ export async function getOrCreateStripeCustomer(userId, email, log = defaultLogg
 
     const idempotencyHash = hashUserIdForIdempotency(parsedInput.data.userId);
     const stripeCustomer = await getStripeClient().customers.create(
-      {},
+      {
+        metadata: {
+          app_user_id_hash: idempotencyHash,
+        },
+      },
       {
         idempotencyKey: `billing_customer_${idempotencyHash.slice(0, 24)}`,
       }

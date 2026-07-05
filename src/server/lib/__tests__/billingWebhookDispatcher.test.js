@@ -489,6 +489,33 @@ describe('billingWebhookDispatcher', () => {
     }));
   });
 
+  it('records failed and propagates when expired Checkout Session terminalization fails', async () => {
+    const event = createEvent({
+      type: 'checkout.session.expired',
+      data: {
+        object: {
+          id: 'cs_test_expired_retry_123',
+        },
+      },
+    });
+    const terminalizeError = new Error('database temporarily unavailable');
+    mockMarkMintedCheckoutSessionTerminalByStripeSessionId.mockRejectedValueOnce(terminalizeError);
+
+    await expect(processBillingWebhookEvent(event, mockLog)).rejects.toBe(terminalizeError);
+
+    expect(mockSyncSubscriptionFromEvent).not.toHaveBeenCalled();
+    expect(mockMarkMintedCheckoutSessionTerminalByStripeSessionId).toHaveBeenCalledWith(
+      {
+        sessionId: 'cs_test_expired_retry_123',
+        status: 'expired',
+      },
+      mockLog
+    );
+    expect(mockReconcileStorageTransitionsForUser).not.toHaveBeenCalled();
+    expect(mockRecordStripeEventReceipt).toHaveBeenCalledTimes(1);
+    expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'failed', mockLog);
+  });
+
   it('records failed for malformed checkout session expired events', async () => {
     const event = createEvent({
       type: 'checkout.session.expired',

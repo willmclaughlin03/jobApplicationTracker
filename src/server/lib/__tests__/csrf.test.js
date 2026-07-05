@@ -149,7 +149,18 @@ describe('validateCsrfToken (failure paths)', () => {
     });
 
     /**
-     * Wrong userId → HMAC mismatch → false
+     * Equal character counts with unequal UTF-8 bytes should reject cleanly.
+     */
+    it('returns false without throwing for multibyte cookie/header byte-length mismatch', () => {
+        const req = makeReq('éé', 'ab');
+
+        expect(() => {
+            expect(validateCsrfToken(req, userId)).toBe(false);
+        }).not.toThrow();
+    });
+
+    /**
+     * Wrong userId -> HMAC mismatch -> false
      */
     it('returns false for a wrong userId (HMAC mismatch)', () => {
         const req = makeReq(validToken, validToken);

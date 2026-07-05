@@ -13,6 +13,7 @@ Use this file as a quick-running log of implemented changes.
 ## Entries
 
 ### Week of 2026-07-05
+- `2026-07-05` - `Stripe audit follow-ups`: Made expired Checkout webhooks retry local terminalization failures, hardened CSRF timing-safe comparisons for multibyte input, tagged new Stripe customers with a non-PII app-user hash, and documented webhook rate-limit handling.
 - `2026-07-05` - `Locked delete denial coverage`: Added deleteJob unit coverage for locked-row deletion under confirmed non-premium, non-terminal storage status returning JobLockedByPlanError.
 - `2026-07-05` - `Rate-limit 429 helper reuse`: Reused the shared rate-limit exceeded helper for ordinary route throttling so 429 headers, logging, and error responses stay aligned with auth-failure throttling.
 - `2026-07-05` - `Update callback error boundary`: Kept successful job update callbacks outside the PUT failure path so local callback exceptions are not surfaced as failed network updates.
