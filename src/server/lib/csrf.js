@@ -181,14 +181,20 @@ export function validateCsrfToken(req, userId) {
     .update(payload)
     .digest('hex');
 
-  if (signature.length !== expectedSignature.length) {
+  // Compare byte lengths, not string lengths: a multibyte signature segment can
+  // match the 64-char hex digest in UTF-16 code units while differing in UTF-8
+  // bytes, and timingSafeEqual throws on unequal buffer lengths.
+  const signatureBuffer = Buffer.from(signature, 'utf8');
+  const expectedSignatureBuffer = Buffer.from(expectedSignature, 'utf8');
+
+  if (signatureBuffer.length !== expectedSignatureBuffer.length) {
     logger.warn('CSRF validation failed: signature length mismatch');
     return false;
   }
 
   const signatureValid = crypto.timingSafeEqual(
-    Buffer.from(signature),
-    Buffer.from(expectedSignature)
+    signatureBuffer,
+    expectedSignatureBuffer
   );
 
   if (!signatureValid) {

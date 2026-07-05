@@ -160,6 +160,22 @@ describe('validateCsrfToken (failure paths)', () => {
     });
 
     /**
+     * Identical cookie/header token whose signature segment matches the hex
+     * digest in character count but not UTF-8 bytes must reject cleanly at the
+     * signature comparison instead of throwing in timingSafeEqual.
+     */
+    it('returns false without throwing for a multibyte signature segment', () => {
+        const freshTimestamp = Math.floor(Date.now() / 1000);
+        const multibyteSignature = `${'a'.repeat(63)}é`;
+        const forgedToken = `nonce.${freshTimestamp}.${multibyteSignature}`;
+        const req = makeReq(forgedToken, forgedToken);
+
+        expect(() => {
+            expect(validateCsrfToken(req, userId)).toBe(false);
+        }).not.toThrow();
+    });
+
+    /**
      * Wrong userId -> HMAC mismatch -> false
      */
     it('returns false for a wrong userId (HMAC mismatch)', () => {
