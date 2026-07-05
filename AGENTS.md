@@ -5,6 +5,7 @@
 - There are currently no paid users in this environment.
 - Current fail-closed local billing entitlement behavior does not create a live paid-user access or premium-storage regression in this environment.
 - Remaining Stripe work for Chunks 5, and repo-facing Chunk 6 is still required before any production rollout that serves paid users.
+- Windows Codex sessions should be launched with `TEMP` and `TMP` pointed at the repo-local `.tmp/` directory, which is gitignored. This avoids the `apply_patch` sandbox failure caused by split writable roots such as the repo plus `C:\tmp`, and keeps edits faster. Example: `cd C:\Users\willm\job-application-tracker`; `$env:TEMP = "$PWD\.tmp"`; `$env:TMP = "$PWD\.tmp"`; `codex`.
 
 ## 1. Code Organization
 - Small, focused modules with single responsibilities

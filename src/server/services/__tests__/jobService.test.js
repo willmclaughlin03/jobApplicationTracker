@@ -176,6 +176,7 @@ const lockedAccessRecord = {
 const terminalFreeAccessStatus = { status: STORAGE_STATUSES.TERMINAL_FREE };
 const premiumAccessStatus = { status: STORAGE_STATUSES.PREMIUM_ACTIVE };
 const billingUnavailableAccessStatus = { status: STORAGE_STATUSES.BILLING_UNAVAILABLE };
+const nonEntitledNonTerminalAccessStatus = { status: STORAGE_STATUSES.NON_ENTITLED_NON_TERMINAL };
 
 // ---------------------------------------------------------------------------
 // createJob — storage limit enforcement
@@ -1019,6 +1020,22 @@ describe('deleteJob', () => {
     expect(result.data).toBeNull();
     expect(result.error).toBeInstanceOf(StorageAccessUnavailableError);
     expect(result.error.code).toBe(STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE);
+    expect(mockFrom).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks locked row deletion for confirmed non-terminal, non-premium status', async () => {
+    mockFrom.mockReturnValueOnce(fakeQuery({ data: lockedAccessRecord, error: null }));
+
+    const result = await deleteJob(
+      jobId,
+      userId,
+      mockSupabaseClient,
+      undefined,
+      nonEntitledNonTerminalAccessStatus
+    );
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(JobLockedByPlanError);
     expect(mockFrom).toHaveBeenCalledTimes(1);
   });
 });

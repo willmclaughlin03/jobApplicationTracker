@@ -498,30 +498,13 @@ export function withRateLimit(handler, options = {}){
                 ERROR_MESSAGES.SERVICE_UNAVAILABLE
             );
         }
-        // set limit headers on all res
-        setRateLimitHeaders(res, rateLimitResult);
-
         // rate limit exceeded
         if(!rateLimitResult.success){
-            const retryAfterSeconds = rateLimitResult.reset
-            ? Math.max(0, Math.ceil((rateLimitResult.reset - Date.now()) / 1000)) : 60;
-
-            res.setHeader('Retry-After', retryAfterSeconds);
-
-            const rateLimitLogData = { operation, window: rateLimitResult.window, limit: rateLimitResult.limit, retryAfterSeconds };
-            if (QUIET_429_OPERATIONS.has(operation)) {
-                req.log.debug(rateLimitLogData, 'Rate limit exceeded (quiet operation)');
-            } else {
-                req.log.warn(rateLimitLogData, 'Rate limit exceeded');
-            }
-
-            return sendError(
-                res,
-                429,
-                'RATE_LIMIT_EXCEEDED',
-                formatRateLimitMessage(retryAfterSeconds)
-            );
+            return sendRateLimitExceeded(req, res, rateLimitResult, operation);
         }
+
+        // set limit headers on all successful rate-limited responses
+        setRateLimitHeaders(res, rateLimitResult);
 
         try {
             return await handler(req, res);

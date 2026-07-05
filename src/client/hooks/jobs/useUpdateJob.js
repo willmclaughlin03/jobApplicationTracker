@@ -18,6 +18,8 @@ export function useUpdateJob(onSuccess) {
     setSaving(true);
     setError(null);
 
+    let result;
+
     try {
       // RESTful endpoint: ID in URL path, updates in body
       const { data: response, error: apiError } = await api.put(`/api/${id}`, updates);
@@ -28,22 +30,24 @@ export function useUpdateJob(onSuccess) {
           : apiError;
         const normalizedError = normalizeError(errorData, ERROR_MESSAGES.UPDATE_FAILED);
         setError(normalizedError);
-        return { success: false, data: null, error: normalizedError };
+        result = { success: false, data: null, error: normalizedError };
+      } else {
+        result = { success: true, data: response?.data?.[0], error: null };
       }
-
-      if (onSuccess) {
-        onSuccess(id, updates);
-      }
-
-      return { success: true, data: response?.data?.[0], error: null };
     } catch (requestError) {
       const normalizedError = normalizeError(requestError, ERROR_MESSAGES.UPDATE_FAILED);
       setError(normalizedError);
-      return { success: false, data: null, error: normalizedError };
+      result = { success: false, data: null, error: normalizedError };
     } finally {
       updateInFlightRef.current = false;
       setSaving(false);
     }
+
+    if (result.success && onSuccess) {
+      onSuccess(id, updates);
+    }
+
+    return result;
   }, [onSuccess]);
 
   return {

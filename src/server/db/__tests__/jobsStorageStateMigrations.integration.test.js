@@ -20,6 +20,7 @@ import { join } from 'path';
 const MIGRATIONS_DIR = join(process.cwd(), 'migrations');
 const JOBS_STORAGE_MIGRATION_FILE = '016_jobs_storage_state_boundary.sql';
 const JOBS_SALARY_RANGE_MIGRATION_FILE = '023_jobs_salary_range_check.sql';
+const JOBS_SALARY_RANGE_VALIDATE_MIGRATION_FILE = '024_jobs_salary_range_check_validate.sql';
 
 const TEST_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const TEST_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -362,7 +363,11 @@ describeOrSkip('Suite C - Jobs storage-state migration + boundary integration', 
       );
     }
 
-    for (const migrationFile of [JOBS_STORAGE_MIGRATION_FILE, JOBS_SALARY_RANGE_MIGRATION_FILE]) {
+    for (const migrationFile of [
+      JOBS_STORAGE_MIGRATION_FILE,
+      JOBS_SALARY_RANGE_MIGRATION_FILE,
+      JOBS_SALARY_RANGE_VALIDATE_MIGRATION_FILE,
+    ]) {
       const migrationSql = readFileSync(
         join(MIGRATIONS_DIR, migrationFile),
         'utf8'
@@ -403,7 +408,8 @@ describeOrSkip('Suite C - Jobs storage-state migration + boundary integration', 
       execSql(`
         SELECT
           con.conname AS constraint_name,
-          pg_catalog.pg_get_constraintdef(con.oid, true) AS constraint_definition
+          pg_catalog.pg_get_constraintdef(con.oid, true) AS constraint_definition,
+          con.convalidated AS constraint_validated
         FROM pg_catalog.pg_constraint con
         JOIN pg_catalog.pg_class cls
           ON cls.oid = con.conrelid
@@ -458,6 +464,9 @@ describeOrSkip('Suite C - Jobs storage-state migration + boundary integration', 
       columns: new Map(columnRows.map((row) => [row.column_name, row])),
       constraints: new Map(
         constraintRows.map((row) => [row.constraint_name, row.constraint_definition || ''])
+      ),
+      constraintValidation: new Map(
+        constraintRows.map((row) => [row.constraint_name, row.constraint_validated])
       ),
       indexes: new Map(indexRows.map((row) => [row.indexname, row.indexdef || ''])),
       rls: rlsRows[0] ?? {},
@@ -525,6 +534,7 @@ describeOrSkip('Suite C - Jobs storage-state migration + boundary integration', 
   test('C1: jobs storage-state migration file exists', () => {
     expect(existsSync(join(MIGRATIONS_DIR, JOBS_STORAGE_MIGRATION_FILE))).toBe(true);
     expect(existsSync(join(MIGRATIONS_DIR, JOBS_SALARY_RANGE_MIGRATION_FILE))).toBe(true);
+    expect(existsSync(join(MIGRATIONS_DIR, JOBS_SALARY_RANGE_VALIDATE_MIGRATION_FILE))).toBe(true);
   });
 
   test('C2: migration installs columns, constraints, indexes, RLS flags, and grants', async () => {
@@ -547,6 +557,7 @@ describeOrSkip('Suite C - Jobs storage-state migration + boundary integration', 
     expect(shape.constraints.get('jobs_locked_policy_version_format_check')).toContain('btrim');
     expect(shape.constraints.get('jobs_locked_metadata_consistency_check')).toContain('locked_at IS NOT NULL');
     expect(shape.constraints.get('jobs_salary_range_check')).toContain('salary_max >= salary_min');
+    expect(shape.constraintValidation.get('jobs_salary_range_check')).toBe(true);
 
     for (const indexName of [
       'jobs_user_retained_count_idx',
