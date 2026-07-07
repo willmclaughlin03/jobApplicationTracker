@@ -282,7 +282,7 @@ async function handleGet(req, res, user) {
     return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
   }
 
-  const { data, count, error } = await getJobsByUserId(
+  const { data, count, truncated = false, error } = await getJobsByUserId(
     user.id,
     options,
     req._supabaseClient,
@@ -297,7 +297,7 @@ async function handleGet(req, res, user) {
   return sendSuccess(
     res,
     200,
-    { data, count, storageSummary: storageSummaryResult.data },
+    { data, count, truncated, storageSummary: storageSummaryResult.data },
     'Jobs retrieved successfully'
   );
 }

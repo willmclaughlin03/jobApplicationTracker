@@ -565,7 +565,70 @@ describe('getJobsByUserId', () => {
     expect(result.error).toBeNull();
     expect(result.data).toBeNull();
     expect(result.count).toBe(0);
+    expect(result.truncated).toBe(false);
     expect(query._calls.select).toEqual([['*']]);
+  });
+
+  it('does not warn when an unpaginated Premium list is exactly at the retained limit', async () => {
+    const jobs = Array.from({ length: ABSOLUTE_RETAINED_JOB_LIMIT }, (_, index) => ({
+      ...mockCreatedJob,
+      id: `job-${index}`,
+    }));
+    const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+    const query = fakeQuery({ data: jobs, count: 9999, error: null });
+    mockFrom.mockReturnValueOnce(query);
+
+    const result = await getJobsByUserId(
+      userId,
+      {},
+      mockSupabaseClient,
+      log,
+      {
+        ...premiumAccessStatus,
+        retainedTotalCount: ABSOLUTE_RETAINED_JOB_LIMIT,
+      }
+    );
+
+    expect(result.error).toBeNull();
+    expect(result.count).toBe(ABSOLUTE_RETAINED_JOB_LIMIT);
+    expect(result.truncated).toBe(false);
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it('warns and marks unpaginated Premium lists as truncated when retained totals exceed returned rows', async () => {
+    const retainedTotalCount = ABSOLUTE_RETAINED_JOB_LIMIT + 25;
+    const jobs = Array.from({ length: ABSOLUTE_RETAINED_JOB_LIMIT }, (_, index) => ({
+      ...mockCreatedJob,
+      id: `job-${index}`,
+    }));
+    const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+    const query = fakeQuery({ data: jobs, count: 9999, error: null });
+    mockFrom.mockReturnValueOnce(query);
+
+    const result = await getJobsByUserId(
+      userId,
+      {},
+      mockSupabaseClient,
+      log,
+      {
+        ...premiumAccessStatus,
+        retainedTotalCount,
+      }
+    );
+
+    expect(result.error).toBeNull();
+    expect(result.count).toBe(ABSOLUTE_RETAINED_JOB_LIMIT);
+    expect(result.truncated).toBe(true);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operation: 'getJobsByUserId',
+        userId,
+        returnedCount: ABSOLUTE_RETAINED_JOB_LIMIT,
+        retainedTotalCount,
+        limit: ABSOLUTE_RETAINED_JOB_LIMIT,
+      }),
+      'Retained job list truncated at absolute retained job limit'
+    );
   });
 
   it('applies status filter when provided', async () => {
@@ -589,6 +652,7 @@ describe('getJobsByUserId', () => {
     const result = await getJobsByUserId(userId, { from: 0, to: 9 }, mockSupabaseClient);
 
     expect(result.count).toBe(42);
+    expect(result.truncated).toBe(false);
     expect(query._calls.select).toEqual([['*', { count: 'exact' }]]);
     expect(query._calls.range).toEqual([[0, 9]]);
     expect(query._calls.limit).toBeUndefined();
