@@ -640,6 +640,8 @@ export async function getJobsByUserId(
 
     if (isPaginatedRead) {
       query = query.range(from, to);
+    } else {
+      query = query.limit(ABSOLUTE_RETAINED_JOB_LIMIT);
     }
 
     const { data, error, count } = await query;

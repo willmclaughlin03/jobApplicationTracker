@@ -1,8 +1,8 @@
 /**
  * Suite J - Jobs ordered-read index integration tests.
  *
- * Purpose: Verify the dashboard active-list ordered-read index installs without
- * replacing the existing storage-state indexes used by other jobs workflows.
+ * Purpose: Verify dashboard ordered-read indexes install without replacing the
+ * existing storage-state indexes used by other jobs workflows.
  */
 
 import { existsSync, readFileSync } from 'fs';
@@ -11,6 +11,7 @@ import { join } from 'path';
 const MIGRATIONS_DIR = join(process.cwd(), 'migrations');
 const JOBS_STORAGE_MIGRATION_FILE = '016_jobs_storage_state_boundary.sql';
 const JOBS_ORDERED_READS_MIGRATION_FILE = '022_jobs_ordered_reads_indexes.sql';
+const JOBS_RETAINED_LIST_MIGRATION_FILE = '025_jobs_retained_list_idx.sql';
 
 const TEST_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const TEST_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -185,7 +186,7 @@ describeOrSkip('Suite J - Jobs ordered-read index integration', () => {
   /**
    * Apply prerequisite and ordered-read migrations.
    *
-   * Purpose: the ordered-read index depends on the storage_state boundary and
+   * Purpose: the ordered-read indexes depend on the storage_state boundary and
    * the existing public.jobs schema.
    *
    * @returns {Promise<void>}
@@ -205,6 +206,7 @@ describeOrSkip('Suite J - Jobs ordered-read index integration', () => {
     for (const migrationFile of [
       JOBS_STORAGE_MIGRATION_FILE,
       JOBS_ORDERED_READS_MIGRATION_FILE,
+      JOBS_RETAINED_LIST_MIGRATION_FILE,
     ]) {
       const migrationPath = join(MIGRATIONS_DIR, migrationFile);
 
@@ -219,10 +221,10 @@ describeOrSkip('Suite J - Jobs ordered-read index integration', () => {
   }
 
   /**
-   * Read the jobs index definitions touched by the ordered-read migration.
+   * Read the jobs index definitions touched by the ordered-read migrations.
    *
-   * Purpose: catalog assertions verify the new active-list index and confirm
-   * existing storage-state indexes remain installed.
+   * Purpose: catalog assertions verify the active and retained list indexes and
+   * confirm existing storage-state indexes remain installed.
    *
    * @returns {Promise<Map<string, string>>} Index definitions by index name.
    */
@@ -234,6 +236,7 @@ describeOrSkip('Suite J - Jobs ordered-read index integration', () => {
         AND tablename = 'jobs'
         AND indexname IN (
           'jobs_active_list_idx',
+          'jobs_retained_list_idx',
           'jobs_active_count_idx',
           'jobs_active_lock_selection_idx',
           'jobs_locked_bulk_delete_idx'
@@ -253,19 +256,27 @@ describeOrSkip('Suite J - Jobs ordered-read index integration', () => {
     await ensureJobsOrderedReadsMigrationsApplied();
   });
 
-  test('J1: ordered-read migration file exists', () => {
+  test('J1: ordered-read migration files exist', () => {
     expect(existsSync(join(MIGRATIONS_DIR, JOBS_ORDERED_READS_MIGRATION_FILE))).toBe(true);
+    expect(existsSync(join(MIGRATIONS_DIR, JOBS_RETAINED_LIST_MIGRATION_FILE))).toBe(true);
   });
 
-  test('J2: migration installs active-list index without replacing storage indexes', async () => {
+  test('J2: migrations install list indexes without replacing storage indexes', async () => {
     const indexes = await getJobsIndexDefinitions();
     const activeListIndex = indexes.get('jobs_active_list_idx') ?? '';
+    const retainedListIndex = indexes.get('jobs_retained_list_idx') ?? '';
 
     expect(activeListIndex).toContain('jobs_active_list_idx');
     expect(activeListIndex).toContain('user_id');
     expect(activeListIndex).toContain('created_at DESC');
     expect(activeListIndex).toContain('id DESC');
     expect(activeListIndex).toContain("storage_state = 'active'");
+
+    expect(retainedListIndex).toContain('jobs_retained_list_idx');
+    expect(retainedListIndex).toContain('user_id');
+    expect(retainedListIndex).toContain('created_at DESC');
+    expect(retainedListIndex).toContain('id DESC');
+    expect(retainedListIndex).not.toMatch(/\bWHERE\b/i);
 
     for (const indexName of [
       'jobs_active_count_idx',

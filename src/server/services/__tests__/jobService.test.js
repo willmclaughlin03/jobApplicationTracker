@@ -543,6 +543,7 @@ describe('getJobsByUserId', () => {
       ['created_at', { ascending: false }],
       ['id', { ascending: false }],
     ]);
+    expect(query._calls.limit).toEqual([[ABSOLUTE_RETAINED_JOB_LIMIT]]);
   });
 
   it('returns error on DB failure', async () => {
@@ -590,6 +591,7 @@ describe('getJobsByUserId', () => {
     expect(result.count).toBe(42);
     expect(query._calls.select).toEqual([['*', { count: 'exact' }]]);
     expect(query._calls.range).toEqual([[0, 9]]);
+    expect(query._calls.limit).toBeUndefined();
     expect(query._calls.order).toEqual([
       ['created_at', { ascending: false }],
       ['id', { ascending: false }],
@@ -714,6 +716,7 @@ describe('getJobsByUserId', () => {
       ['created_at', { ascending: false }],
       ['id', { ascending: false }],
     ]);
+    expect(query._calls.limit).toEqual([[ABSOLUTE_RETAINED_JOB_LIMIT]]);
   });
 });
 

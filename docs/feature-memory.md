@@ -13,6 +13,7 @@ Use this file as a quick-running log of implemented changes.
 ## Entries
 
 ### Week of 2026-07-05
+- `2026-07-07` - `Premium retained job list guardrails`: Added an absolute retained limit to unpaginated job list reads and a retained-list ordered index for Premium dashboard reads.
 - `2026-07-07` - `Job route body size limits`: Added 16kb Next.js body-parser limits to the job collection and item API routes with focused route-contract coverage.
 - `2026-07-05` - `Stripe audit follow-ups`: Made expired Checkout webhooks retry local terminalization failures, hardened CSRF timing-safe comparisons for multibyte input, tagged new Stripe customers with a non-PII app-user hash, and documented webhook rate-limit handling.
 - `2026-07-05` - `Locked delete denial coverage`: Added deleteJob unit coverage for locked-row deletion under confirmed non-premium, non-terminal storage status returning JobLockedByPlanError.
