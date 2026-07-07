@@ -59,7 +59,8 @@ jest.mock('../../../shared/logger.js', () => ({
   },
 }));
 
-const handler = require('../index.js').default;
+const indexRoute = require('../index.js');
+const handler = indexRoute.default;
 const { ERROR_MESSAGES } = require('../../../shared/errors.js');
 const {
   STORAGE_CREATE_ACTIONS,
@@ -147,6 +148,17 @@ describe('index API handler (/api/jobs)', () => {
       },
       error: null,
     });
+  });
+
+  it('exports the small job body-parser route contract', () => {
+    expect(indexRoute.config).toEqual({
+      api: {
+        bodyParser: {
+          sizeLimit: '16kb',
+        },
+      },
+    });
+    expect(typeof handler).toBe('function');
   });
 
   describe('GET /api/jobs', () => {

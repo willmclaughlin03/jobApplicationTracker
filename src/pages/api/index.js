@@ -7,6 +7,14 @@ import { reconcileStorageTransitionsForUser } from '../../server/services/storag
 import { withRateLimit } from '../../server/middleware/withRateLimit.js';
 import { STORAGE_CREATE_ERROR_CODES } from '../../shared/constants/billing.js';
 
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '16kb',
+    },
+  },
+};
+
 const STORAGE_CREATE_RETRY_AFTER_SECONDS = 5;
 
 /**
