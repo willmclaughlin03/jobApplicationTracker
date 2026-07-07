@@ -69,7 +69,8 @@ jest.mock('../../../shared/validations/jobSchema.js', () => ({
   },
 }));
 
-const handler = require('../[id].js').default;
+const jobByIdRoute = require('../[id].js');
+const handler = jobByIdRoute.default;
 const { ERROR_MESSAGES } = require('../../../shared/errors.js');
 const { STORAGE_CREATE_ERROR_CODES, STORAGE_STATUSES } = require('../../../shared/constants/billing.js');
 const { JOB_STORAGE_ERRORS } = require('../../../shared/constants/storage.js');
@@ -141,6 +142,17 @@ describe('[id] API handler', () => {
     });
     // Default: valid update data
     mockSafeParse.mockReturnValue({ success: true, data: {} });
+  });
+
+  it('exports the small job body-parser route contract', () => {
+    expect(jobByIdRoute.config).toEqual({
+      api: {
+        bodyParser: {
+          sizeLimit: '16kb',
+        },
+      },
+    });
+    expect(typeof handler).toBe('function');
   });
 
   describe('UUID Validation', () => {

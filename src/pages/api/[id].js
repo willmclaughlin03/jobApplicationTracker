@@ -8,6 +8,14 @@ import { JOB_STORAGE_ERRORS } from '../../shared/constants/storage.js';
 
 import { withRateLimit } from '../../server/middleware/withRateLimit.js';
 
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '16kb',
+    },
+  },
+};
+
 const STORAGE_ACCESS_RETRY_AFTER_SECONDS = 5;
 
 /**
