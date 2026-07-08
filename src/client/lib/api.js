@@ -127,9 +127,9 @@ function addBoundedJitter(milliseconds) {
 /**
  * Computes the delay before the next SERVICE_UNAVAILABLE retry.
  *
- * Purpose: prefer server Retry-After guidance when present, otherwise use
- * capped exponential backoff plus jitter. The attempt is zero-based for the
- * request that just failed.
+ * Purpose: use server Retry-After guidance as the capped base delay when
+ * present, otherwise use capped exponential backoff. Both paths add bounded
+ * jitter so clients do not retry in lockstep.
  *
  * @param {number} attempt - Zero-based failed attempt number.
  * @param {{ retryAfterSeconds: number|null }} meta - Response metadata.
@@ -137,10 +137,12 @@ function addBoundedJitter(milliseconds) {
  */
 function getClientRetryDelayMs(attempt, meta) {
     if (Number.isFinite(meta?.retryAfterSeconds)) {
-        return Math.min(
+        const cappedRetryAfter = Math.min(
             MAX_CLIENT_RETRY_DELAY_MS,
             Math.max(0, meta.retryAfterSeconds * 1000)
         );
+
+        return addBoundedJitter(cappedRetryAfter);
     }
 
     const exponentialDelay = BASE_CLIENT_RETRY_DELAY_MS * (2 ** attempt);
