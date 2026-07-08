@@ -652,6 +652,10 @@ export async function getJobsByUserId(
       return { data: null, count: 0, truncated: false, error };
     }
 
+    // Non-paginated (retained list) reads overfetch by one row beyond
+    // ABSOLUTE_RETAINED_JOB_LIMIT so truncation can be detected from the
+    // returned row count alone, avoiding a costly exact `count` scan.
+    // If the extra row is present, drop it and report `truncated: true`.
     const fetchedCount = Array.isArray(data) ? data.length : 0;
     const truncated = !isPaginatedRead && fetchedCount > ABSOLUTE_RETAINED_JOB_LIMIT;
     const responseData = truncated
