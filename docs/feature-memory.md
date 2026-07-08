@@ -13,6 +13,7 @@ Use this file as a quick-running log of implemented changes.
 ## Entries
 
 ### Week of 2026-07-05
+- `2026-07-08` - `Client retry backoff`: Made shared API retries honor Retry-After with capped delays and jittered backoff, with fake-timer retry coverage.
 - `2026-07-08` - `Unpaginated job list count simplification`: Replaced exact counts on unpaginated job list reads with limit-plus-one truncation detection while preserving exact counts for paginated reads.
 - `2026-07-08` - `Job list truncation query count`: Based unpaginated list truncation on the exact count from the same filtered jobs query so status-filtered and locked-archive reads do not inherit broader retained totals.
 - `2026-07-07` - `Retained job list truncation signal`: Added a confirmed truncation flag and structured warning for bounded unpaginated retained-job reads when storage counts prove older rows were omitted.

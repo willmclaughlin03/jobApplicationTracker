@@ -2,7 +2,9 @@ import { ERROR_MESSAGES } from '../../shared/errors.js';
 import { CSRF_COOKIE_NAME } from '../../shared/constants/csrf.js';
 
 const MAX_CLIENT_RETRIES = 2;
-const CLIENT_RETRY_DELAY_MS = 500;
+const BASE_CLIENT_RETRY_DELAY_MS = 500;
+const MAX_CLIENT_RETRY_DELAY_MS = 8000;
+const CLIENT_RETRY_JITTER_RATIO = 0.25;
 const EMPTY_API_RESPONSE_META = Object.freeze({
     status: null,
     retryAfterSeconds: null,
@@ -89,6 +91,63 @@ function buildApiResponseMeta(response) {
 }
 
 /**
+ * Sleeps before the next client-side retry attempt.
+ *
+ * Purpose: keep retry scheduling isolated so executeWithRetry() can focus on
+ * request/response handling while tests can drive the timeout with fake timers.
+ *
+ * @param {number} milliseconds - Non-negative delay before retrying.
+ * @returns {Promise<void>}
+ */
+function sleep(milliseconds) {
+    return new Promise(resolve => setTimeout(resolve, milliseconds));
+}
+
+/**
+ * Adds bounded jitter to a client-generated retry delay.
+ *
+ * Purpose: avoid synchronized retry bursts when the server did not provide
+ * explicit Retry-After guidance.
+ *
+ * @param {number} milliseconds - Base delay before jitter.
+ * @returns {number} Delay with jitter applied and capped for UI responsiveness.
+ */
+function addBoundedJitter(milliseconds) {
+    const cappedDelay = Math.min(MAX_CLIENT_RETRY_DELAY_MS, Math.max(0, milliseconds));
+    const jitterRange = Math.floor(cappedDelay * CLIENT_RETRY_JITTER_RATIO);
+
+    if (jitterRange <= 0) {
+        return cappedDelay;
+    }
+
+    const offset = Math.floor(Math.random() * ((jitterRange * 2) + 1)) - jitterRange;
+    return Math.min(MAX_CLIENT_RETRY_DELAY_MS, Math.max(0, cappedDelay + offset));
+}
+
+/**
+ * Computes the delay before the next SERVICE_UNAVAILABLE retry.
+ *
+ * Purpose: prefer server Retry-After guidance when present, otherwise use
+ * capped exponential backoff plus jitter. The attempt is zero-based for the
+ * request that just failed.
+ *
+ * @param {number} attempt - Zero-based failed attempt number.
+ * @param {{ retryAfterSeconds: number|null }} meta - Response metadata.
+ * @returns {number} Delay in milliseconds before the next retry.
+ */
+function getClientRetryDelayMs(attempt, meta) {
+    if (Number.isFinite(meta?.retryAfterSeconds)) {
+        return Math.min(
+            MAX_CLIENT_RETRY_DELAY_MS,
+            Math.max(0, meta.retryAfterSeconds * 1000)
+        );
+    }
+
+    const exponentialDelay = BASE_CLIENT_RETRY_DELAY_MS * (2 ** attempt);
+    return addBoundedJitter(exponentialDelay);
+}
+
+/**
  * Makes an authenticated API request using the current Supabase session.
  * For state-changing methods (POST/PUT/DELETE/PATCH), reads the CSRF token
  * from the non-httpOnly cookie and sends it as x-csrf-token.
@@ -108,7 +167,9 @@ export async function apiRequest(endpoint, options = {}) {
     const isStateChanging = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(options.method);
 
     /**
-     * Inner: execute one fetch with the SERVICE_UNAVAILABLE retry loop.
+     * Inner: execute one fetch sequence with a per-execution
+     * SERVICE_UNAVAILABLE retry budget.
+     *
      * @param {string|null} csrfToken
      */
     async function executeWithRetry(csrfToken) {
@@ -125,20 +186,19 @@ export async function apiRequest(endpoint, options = {}) {
 
         let response;
         let data;
+        let meta = EMPTY_API_RESPONSE_META;
 
         for (let attempt = 0; attempt <= MAX_CLIENT_RETRIES; attempt++) {
-            if (attempt > 0) {
-                await new Promise(resolve => setTimeout(resolve, CLIENT_RETRY_DELAY_MS));
-            }
             response = await fetch(endpoint, fetchOptions);
             data = await response.json().catch(() => null);
+            meta = buildApiResponseMeta(response);
 
             // Only retry on SERVICE_UNAVAILABLE (Redis cold start), not on other errors
             const isServiceUnavailable = !response.ok && data?.error === 'SERVICE_UNAVAILABLE';
             if (!isServiceUnavailable || attempt === MAX_CLIENT_RETRIES) break;
-        }
 
-        const meta = buildApiResponseMeta(response);
+            await sleep(getClientRetryDelayMs(attempt, meta));
+        }
 
         if (response.status === 401) {
             return { data: null, error: ERROR_MESSAGES.UNAUTHORIZED, meta };
