@@ -12,6 +12,10 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-07-05
+
+- `2026-07-08` - `Collection GET parallelization`: Ran storage summary counts and job list reads concurrently after storage repair while keeping fresh policy status separate from response metadata.
+
 ### Week of 2026-06-22
 
 - `2026-06-24` - `Premium storage Chunk 11 coverage hardening`: Gated the remaining destructive DB suites, updated final restore RPC evidence, and added concurrency, strict-route, and hostile-CSV coverage.

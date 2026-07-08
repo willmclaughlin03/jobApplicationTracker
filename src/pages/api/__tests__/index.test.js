@@ -169,7 +169,7 @@ describe('index API handler (/api/jobs)', () => {
         {},
         undefined,
         noopLog,
-        mockStorageSummary
+        terminalFreeStorageStatus
       );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -200,7 +200,7 @@ describe('index API handler (/api/jobs)', () => {
         { from: 0, to: 10 },
         undefined,
         noopLog,
-        mockStorageSummary
+        terminalFreeStorageStatus
       );
     });
 
@@ -222,7 +222,7 @@ describe('index API handler (/api/jobs)', () => {
         { status: 'Applied' },
         undefined,
         noopLog,
-        mockStorageSummary
+        terminalFreeStorageStatus
       );
     });
 
@@ -252,7 +252,7 @@ describe('index API handler (/api/jobs)', () => {
         { storage_state: 'locked' },
         undefined,
         noopLog,
-        mockStorageSummary
+        terminalFreeStorageStatus
       );
       expect(res.status).toHaveBeenCalledWith(200);
       expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('company');
@@ -282,7 +282,7 @@ describe('index API handler (/api/jobs)', () => {
         },
         undefined,
         noopLog,
-        mockStorageSummary
+        terminalFreeStorageStatus
       );
     });
 
@@ -290,7 +290,7 @@ describe('index API handler (/api/jobs)', () => {
      * Test: Service error on fetch
      * Expected: Returns 503
      */
-    it('should return 503 when service returns error', async () => {
+    it('should return the mapped fetch error when job loading resolves an error envelope', async () => {
       mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: {} });
       mockGetJobsByUserId.mockResolvedValue({ data: null, count: 0, error: 'DB error' });
 
@@ -299,7 +299,20 @@ describe('index API handler (/api/jobs)', () => {
 
       await handler(req, res);
 
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(
+        mockUser.id,
+        {},
+        undefined,
+        noopLog,
+        terminalFreeStorageStatus
+      );
       expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: 'FETCH_FAILED',
+          message: ERROR_MESSAGES.FETCH_FAILED,
+        })
+      );
     });
 
     it('should fail closed when lazy storage transition repair fails before listing jobs', async () => {
@@ -438,7 +451,7 @@ describe('index API handler (/api/jobs)', () => {
         {},
         mockClient,
         noopLog,
-        mockStorageSummary
+        terminalFreeStorageStatus
       );
       expect(mockGetStorageSummaryForUser).toHaveBeenCalledWith(
         mockUser.id,
@@ -477,7 +490,7 @@ describe('index API handler (/api/jobs)', () => {
      * Test: Storage summary failure
      * Expected: Returns 503 without a partial success envelope
      */
-    it('should return 503 when storage summary metadata cannot be loaded', async () => {
+    it('should return 503 when storage summary metadata resolves an error envelope', async () => {
       mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: {} });
       mockGetJobsByUserId.mockResolvedValue({ data: mockJobs, count: 2, error: null });
       mockGetStorageSummaryForUser.mockResolvedValueOnce({
@@ -490,11 +503,63 @@ describe('index API handler (/api/jobs)', () => {
 
       await handler(req, res);
 
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(
+        mockUser.id,
+        {},
+        undefined,
+        noopLog,
+        terminalFreeStorageStatus
+      );
       expect(res.status).toHaveBeenCalledWith(503);
-      expect(mockGetJobsByUserId).not.toHaveBeenCalled();
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           error: 'SERVICE_UNAVAILABLE',
+        })
+      );
+    });
+
+    /**
+     * Test: Parallel GET failures preserve previous sequential precedence.
+     * Expected: Summary failure wins over jobs failure and does not set retry headers.
+     */
+    it('should keep summary failure precedence when both parallel results fail', async () => {
+      mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: {} });
+      mockGetStorageSummaryForUser.mockResolvedValueOnce({
+        data: null,
+        error: new Error('storage summary failed'),
+      });
+      mockGetJobsByUserId.mockResolvedValueOnce({
+        data: null,
+        count: 0,
+        error: {
+          code: STORAGE_CREATE_ERROR_CODES.BILLING_RECONCILIATION_PENDING,
+        },
+      });
+
+      const req = createMockRequest('GET');
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(mockGetStorageSummaryForUser).toHaveBeenCalledWith(
+        mockUser.id,
+        undefined,
+        noopLog,
+        { storageStatusResult: terminalFreeStorageStatus }
+      );
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(
+        mockUser.id,
+        {},
+        undefined,
+        noopLog,
+        terminalFreeStorageStatus
+      );
+      expect(res.setHeader).not.toHaveBeenCalledWith('Retry-After', 5);
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: 'SERVICE_UNAVAILABLE',
+          message: ERROR_MESSAGES.SERVICE_UNAVAILABLE,
         })
       );
     });
