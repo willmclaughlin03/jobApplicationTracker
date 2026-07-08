@@ -188,8 +188,36 @@ describe('index API handler (/api/jobs)', () => {
           data: {
             data: mockJobs,
             count: 2,
+            truncated: false,
             storageSummary: mockStorageSummary,
           },
+        })
+      );
+    });
+
+    it('should expose confirmed list truncation in the response payload', async () => {
+      mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: {} });
+      mockGetJobsByUserId.mockResolvedValue({
+        data: mockJobs,
+        count: 3000,
+        truncated: true,
+        error: null,
+      });
+
+      const req = createMockRequest('GET');
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            data: mockJobs,
+            count: 3000,
+            truncated: true,
+            storageSummary: mockStorageSummary,
+          }),
         })
       );
     });
@@ -479,6 +507,7 @@ describe('index API handler (/api/jobs)', () => {
           data: {
             data: [],
             count: 0,
+            truncated: false,
             storageSummary: mockStorageSummary,
           },
         })

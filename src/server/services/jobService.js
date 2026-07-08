@@ -597,7 +597,7 @@ function getStorageCreatePolicy(storageStatusResult) {
  * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Accepted for route compatibility; jobs are queried through supabaseAdmin.
  * @param {object} log - Request-scoped logger.
  * @param {object|string|null} storageStatusResult - Typed storage status used for locked-row policy.
- * @returns {Promise<{data: Array|null, count: number, error: Error|null}>}
+ * @returns {Promise<{data: Array|null, count: number, truncated: boolean, error: Error|null}>}
  *
  * Security: Only returns jobs where user_id matches the authenticated user.
  */
@@ -616,10 +616,11 @@ export async function getJobsByUserId(
     const listPolicy = getJobListPolicy(validatedOptions, storageStatus);
 
     if (listPolicy.error) {
-      return { data: null, count: 0, error: listPolicy.error };
+      return { data: null, count: 0, truncated: false, error: listPolicy.error };
     }
 
     let query = supabaseAdmin.from('jobs');
+
     query = isPaginatedRead
       ? query.select(listPolicy.select, { count: 'exact' })
       : query.select(listPolicy.select);
@@ -640,27 +641,52 @@ export async function getJobsByUserId(
 
     if (isPaginatedRead) {
       query = query.range(from, to);
+    } else {
+      query = query.limit(ABSOLUTE_RETAINED_JOB_LIMIT + 1);
     }
 
     const { data, error, count } = await query;
 
     if (error) {
       log.error({ err: error, operation: 'getJobsByUserId', userId }, 'Database query failed');
-      return { data: null, count: 0, error };
+      return { data: null, count: 0, truncated: false, error };
     }
 
-    const resolvedCount = isPaginatedRead
-      ? count || 0
-      : Array.isArray(data) ? data.length : 0;
+    // Non-paginated (retained list) reads overfetch by one row beyond
+    // ABSOLUTE_RETAINED_JOB_LIMIT so truncation can be detected from the
+    // returned row count alone, avoiding a costly exact `count` scan.
+    // If the extra row is present, drop it and report `truncated: true`.
+    const fetchedCount = Array.isArray(data) ? data.length : 0;
+    const truncated = !isPaginatedRead && fetchedCount > ABSOLUTE_RETAINED_JOB_LIMIT;
+    const responseData = truncated
+      ? data.slice(0, ABSOLUTE_RETAINED_JOB_LIMIT)
+      : data;
+    const returnedCount = Array.isArray(responseData) ? responseData.length : 0;
+    const matchingCount = isPaginatedRead && Array.isArray(data) && Number.isSafeInteger(count) && count >= 0
+      ? count
+      : returnedCount;
 
-    return { data, count: resolvedCount, error: null };
+    if (truncated) {
+      log.warn(
+        {
+          operation: 'getJobsByUserId',
+          userId,
+          returnedCount,
+          fetchedCount,
+          limit: ABSOLUTE_RETAINED_JOB_LIMIT,
+        },
+        'Job list truncated at absolute retained job limit'
+      );
+    }
+
+    return { data: responseData, count: matchingCount, truncated, error: null };
   } catch (error) {
     if (error instanceof InvalidJobReadOptionsError) {
-      return { data: null, count: 0, error };
+      return { data: null, count: 0, truncated: false, error };
     }
 
     log.error({ err: error, operation: 'getJobsByUserId', userId }, 'Unexpected error in getJobsByUserId');
-    return { data: null, count: 0, error };
+    return { data: null, count: 0, truncated: false, error };
   }
 }
 
