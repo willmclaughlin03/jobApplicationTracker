@@ -1152,7 +1152,13 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
     expect(lockedUpdateResult.data).toBeNull();
     expect(lockedUpdateResult.error?.code).toBe('JOB_LOCKED_BY_PLAN');
 
-    const deleteResult = await deleteJob(lockedDeleteJob.id, owner.id, serviceClient, testLog);
+    const deleteResult = await deleteJob(
+      lockedDeleteJob.id,
+      owner.id,
+      serviceClient,
+      testLog,
+      terminalFreeStatus
+    );
     expect(deleteResult.error).toBeNull();
     expect(deleteResult.data).toEqual({ id: lockedDeleteJob.id });
     expect(JSON.stringify(deleteResult.data)).not.toContain('Hidden Delete Corp');

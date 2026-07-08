@@ -109,6 +109,41 @@ export function useJobsQuery() {
     return { success: true, storageSummary: nextStorageSummary, error: null };
   }, []);
 
+  /**
+   * Invalidates in-flight full-list fetches after local job mutations.
+   *
+   * Purpose: a delayed `/api` list response may reflect an older snapshot than
+   * a successful add/delete mutation, so mutation paths bump the list request
+   * id before applying local state and clear loading if the stale request was
+   * the only active full-list fetch.
+   *
+   * @returns {void}
+   */
+  const invalidateJobsFetches = useCallback(() => {
+    jobsRequestRef.current += 1;
+    setLoading(false);
+  }, []);
+  /**
+   * Applies server-built storage metadata from mutation responses.
+   *
+   * Purpose: mutation responses can carry the same count-only summary as the
+   * storage-status route; bumping the refresh request id prevents older
+   * in-flight refreshes from overwriting the newer mutation summary.
+   *
+   * @param {object|null|undefined} nextStorageSummary - Summary metadata from a mutation response.
+   * @returns {boolean} True when the summary was applied.
+   */
+  const applyStorageSummary = useCallback((nextStorageSummary) => {
+    if (!nextStorageSummary) {
+      return false;
+    }
+
+    storageSummaryRequestRef.current += 1;
+    setStorageSummary(nextStorageSummary);
+    setError(null);
+    return true;
+  }, []);
+
   const prependJob = useCallback((job) => {
     setJobs(prev => [job, ...prev]);
   }, []);
@@ -133,6 +168,8 @@ export function useJobsQuery() {
     clearError,
     fetchJobs,
     refreshStorageSummary,
+    invalidateJobsFetches,
+    applyStorageSummary,
     prependJob,
     updateJobInList,
     removeJobFromList,

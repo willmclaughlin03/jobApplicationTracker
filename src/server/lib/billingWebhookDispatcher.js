@@ -447,7 +447,13 @@ async function dispatchCheckoutSessionExpiredEvent(event, log) {
     );
   }
 
-  await terminalizeCheckoutSessionQuietly(checkoutSessionId, 'expired', log);
+  await markMintedCheckoutSessionTerminalByStripeSessionId(
+    {
+      sessionId: checkoutSessionId,
+      status: 'expired',
+    },
+    log
+  );
 
   return {
     outcome: BILLING_WRITE_OUTCOMES.PROCESSED,

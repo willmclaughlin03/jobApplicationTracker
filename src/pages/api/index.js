@@ -7,6 +7,14 @@ import { reconcileStorageTransitionsForUser } from '../../server/services/storag
 import { withRateLimit } from '../../server/middleware/withRateLimit.js';
 import { STORAGE_CREATE_ERROR_CODES } from '../../shared/constants/billing.js';
 
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '16kb',
+    },
+  },
+};
+
 const STORAGE_CREATE_RETRY_AFTER_SECONDS = 5;
 
 /**
@@ -235,13 +243,15 @@ async function handleGet(req, res, user) {
     return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
   }
 
-  const { data, count, error } = await getJobsByUserId(
+  const jobsResult = await getJobsByUserId(
     user.id,
     options,
     req._supabaseClient,
     req.log,
-    storageSummaryResult.data
+    storageStatusResult
   );
+
+  const { data, count, truncated = false, error } = jobsResult;
 
   if (error) {
     return sendGetJobsError(res, error);
@@ -250,7 +260,7 @@ async function handleGet(req, res, user) {
   return sendSuccess(
     res,
     200,
-    { data, count, storageSummary: storageSummaryResult.data },
+    { data, count, truncated, storageSummary: storageSummaryResult.data },
     'Jobs retrieved successfully'
   );
 }

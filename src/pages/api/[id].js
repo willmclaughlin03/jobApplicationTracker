@@ -3,11 +3,18 @@ import { jobUpdateSchema, uuidSchema } from '../../shared/validations/jobSchema.
 import { sendSuccess, sendError } from '../../shared/response.js';
 import { getJobById, updateJob, deleteJob } from '../../server/services/jobService.js';
 import { reconcileStorageTransitionsForUser } from '../../server/services/storageTransitionService.js';
-import { getStorageSummaryForUser } from '../../server/services/storageSummaryService.js';
 import { STORAGE_CREATE_ERROR_CODES } from '../../shared/constants/billing.js';
 import { JOB_STORAGE_ERRORS } from '../../shared/constants/storage.js';
 
 import { withRateLimit } from '../../server/middleware/withRateLimit.js';
+
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '16kb',
+    },
+  },
+};
 
 const STORAGE_ACCESS_RETRY_AFTER_SECONDS = 5;
 
@@ -117,57 +124,10 @@ async function repairStorageTransitionsForJobRequest(req, user) {
  *
  * @param {import('next').NextApiResponse} res - API response object.
  * @param {object} data - Minimal deleted job payload, currently `{ id }`.
- * @param {object|null} storageSummary - Optional count-only storage metadata.
  * @returns {object} Next.js response chain.
  */
-function sendDeleteJobSuccess(res, data, storageSummary = null) {
-  return sendSuccess(
-    res,
-    200,
-    data,
-    'Successfully deleted job',
-    storageSummary ? { storageSummary } : null
-  );
-}
-
-/**
- * Loads optional count-only storage metadata after a committed delete.
- *
- * Purpose: DELETE should still succeed if the summary refresh fails after the
- * row is removed; clients can fall back to the existing storage-status route.
- *
- * @param {import('next').NextApiRequest & { log: object }} req - API request with logger.
- * @param {{ id: string }} user - Authenticated user.
- * @param {object} storageStatusResult - Storage status already resolved for delete.
- * @returns {Promise<object|null>} Storage summary metadata, or null when unavailable.
- */
-async function loadPostDeleteStorageSummary(req, user, storageStatusResult) {
-  try {
-    const storageSummaryResult = await getStorageSummaryForUser(
-      user.id,
-      req._supabaseClient,
-      req.log,
-      {
-        storageStatusResult,
-      }
-    );
-
-    if (storageSummaryResult.error) {
-      return null;
-    }
-
-    return storageSummaryResult.data ?? null;
-  } catch (error) {
-    req.log.error(
-      {
-        err: error,
-        operation: 'loadPostDeleteStorageSummary',
-        userId: user.id,
-      },
-      'Post-delete storage summary load failed'
-    );
-    return null;
-  }
+function sendDeleteJobSuccess(res, data) {
+  return sendSuccess(res, 200, data, 'Successfully deleted job');
 }
 
 /**
@@ -233,7 +193,7 @@ async function handlePut(req, res, user, jobId) {
   const updatedData = updateResult.data;
 
   // Server-side only: auto-set status_date when status is being changed.
-  // status_date is never accepted from the client - it's injected here to
+  // status_date is never accepted from the client — it's injected here to
   // ensure timestamp integrity.
   if (updatedData.status !== undefined) {
     updatedData.status_date = new Date().toISOString();
@@ -283,9 +243,7 @@ async function handlePut(req, res, user, jobId) {
  * Handles DELETE requests - removes an existing job by ID
  *
  * Purpose: Delete job application from user's tracking list
- * Connects to:
- * - jobService.deleteJob() for database operations
- * - loadPostDeleteStorageSummary() for optional count-only metadata
+ * Connects to: jobService.deleteJob() for database operations
  *
  * @param {Object} req - Next.js request object
  * @param {Object} res - Next.js response object
@@ -312,15 +270,8 @@ async function handleDelete(req, res, user, jobId) {
     return sendJobAccessError(res, error);
   }
 
-  const storageSummary = await loadPostDeleteStorageSummary(
-    req,
-    user,
-    storageStatusResult
-  );
-
-  return sendDeleteJobSuccess(res, data, storageSummary);
+  return sendDeleteJobSuccess(res, data);
 }
-
 /**
  * Main request handler for /api/jobs/[id] endpoint
  *
@@ -339,7 +290,7 @@ async function handleDelete(req, res, user, jobId) {
 async function handler(req, res) {
   const { id } = req.query;
 
-  // Validate UUID format FIRST (before auth to reject malformed IDs early)
+  // Validate UUID format before database work; auth already ran in withRateLimit.
   if (!id || !validateUUID(id)) {
     req.log.warn({ operation: 'handler', id: id || 'empty', method: req.method }, 'Invalid job ID format attempted');
     return sendError(res, 400, 'INVALID_ID', ERROR_MESSAGES.INVALID_ID);

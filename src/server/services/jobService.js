@@ -14,6 +14,7 @@
  * must keep server-derived owner filters because service-role access bypasses
  * direct authenticated table permissions.
  */
+import { z } from 'zod';
 import { supabaseAdmin } from '../lib/supabaseServer.js';
 import { logger as defaultLogger } from '../../shared/logger.js';
 import {
@@ -56,6 +57,36 @@ const STORAGE_ACCESS_RETRYABLE_STATUS_CODES = new Map([
     STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
   ],
 ]);
+const LOCKED_JOB_DELETE_AMBIGUOUS_STATUSES = new Set([
+  STORAGE_STATUSES.BILLING_RECONCILIATION_PENDING,
+  STORAGE_STATUSES.BILLING_UNAVAILABLE,
+  STORAGE_STATUSES.PAYMENT_RECOVERY,
+  STORAGE_STATUSES.SYNC_PENDING,
+]);
+const jobReadOptionsSchema = z.object({
+  from: z.number({ error: 'from must be a number' })
+    .int('from must be an integer')
+    .min(0, 'from must be >= 0')
+    .optional(),
+  to: z.number({ error: 'to must be a number' })
+    .int('to must be an integer')
+    .min(0, 'to must be >= 0')
+    .optional(),
+  status: z.string().optional(),
+  storage_state: z.string().optional(),
+}).passthrough()
+  .refine(
+    (options) => (options.from === undefined) === (options.to === undefined),
+    { message: 'from and to must both be provided together for pagination' }
+  )
+  .refine(
+    (options) => (
+      options.from === undefined
+      || options.to === undefined
+      || options.to >= options.from
+    ),
+    { message: 'to must be greater than or equal to from' }
+  );
 
 export class StorageLimitExceededError extends Error {
   constructor(maxJobs) {
@@ -112,6 +143,20 @@ export class StorageAccessUnavailableError extends Error {
     this.code = code;
     this.statusCode = 503;
     this.retryable = true;
+  }
+}
+
+export class InvalidJobReadOptionsError extends Error {
+  /**
+   * Builds the stable invalid-options error for owner-scoped job list reads.
+   *
+   * @param {string} message - Validation failure returned from the options schema.
+   */
+  constructor(message) {
+    super(message);
+    this.name = 'InvalidJobReadOptionsError';
+    this.code = 'JOB_READ_OPTIONS_INVALID';
+    this.statusCode = 400;
   }
 }
 
@@ -288,6 +333,28 @@ function getLockedJobAccessError(storageStatus) {
 }
 
 /**
+ * Returns the delete policy error for a locked row, if deletion must stop.
+ *
+ * Purpose: confirmed terminal-Free users may delete their locked archive one
+ * row at a time, while Premium users may delete restored/locked rows normally.
+ * Ambiguous billing states block destructive deletion until status is settled.
+ *
+ * @param {string|null} storageStatus - Normalized storage status.
+ * @returns {Error|null} Error when locked-row deletion is not currently allowed.
+ */
+function getLockedJobDeleteError(storageStatus) {
+  if (isPremiumStorageStatus(storageStatus) || storageStatus === STORAGE_STATUSES.TERMINAL_FREE) {
+    return null;
+  }
+
+  if (!storageStatus || LOCKED_JOB_DELETE_AMBIGUOUS_STATUSES.has(storageStatus)) {
+    return createStorageAccessUnavailableError(storageStatus);
+  }
+
+  return new JobLockedByPlanError();
+}
+
+/**
  * Builds the row projection and filters for owner-scoped job list queries.
  *
  * Purpose: normal non-Premium lists return active full rows only, while the
@@ -321,6 +388,28 @@ function getJobListPolicy(options = {}, storageStatus = null) {
       : JOB_STORAGE_STATES.ACTIVE,
     error: null,
   };
+}
+
+/**
+ * Validates owner-scoped job list options at the service boundary.
+ *
+ * Purpose: direct service callers should get the same fail-closed pagination
+ * contract as API routes instead of accidentally triggering an unbounded read.
+ *
+ * @param {unknown} options - Caller-provided list options.
+ * @returns {{ from?: number, to?: number, status?: string, storage_state?: string }} Validated options.
+ * @throws {InvalidJobReadOptionsError} When pagination bounds are malformed.
+ */
+function validateJobReadOptions(options) {
+  const parsedOptions = jobReadOptionsSchema.safeParse(options);
+
+  if (!parsedOptions.success) {
+    throw new InvalidJobReadOptionsError(
+      parsedOptions.error.issues[0]?.message ?? 'Invalid job list options'
+    );
+  }
+
+  return parsedOptions.data;
 }
 
 /**
@@ -557,7 +646,7 @@ function getStorageCreatePolicy(storageStatusResult) {
  * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Accepted for route compatibility; jobs are queried through supabaseAdmin.
  * @param {object} log - Request-scoped logger.
  * @param {object|string|null} storageStatusResult - Typed storage status used for locked-row policy.
- * @returns {Promise<{data: Array|null, count: number, error: Error|null}>}
+ * @returns {Promise<{data: Array|null, count: number, truncated: boolean, error: Error|null}>}
  *
  * Security: Only returns jobs where user_id matches the authenticated user.
  */
@@ -569,44 +658,84 @@ export async function getJobsByUserId(
   storageStatusResult = null
 ) {
   try {
-    const { from, to, status } = options;
+    const validatedOptions = validateJobReadOptions(options);
+    const { from, to, status } = validatedOptions;
+    const isPaginatedRead = from !== undefined;
     const storageStatus = getStorageStatusValue(storageStatusResult);
-    const listPolicy = getJobListPolicy(options, storageStatus);
+    const listPolicy = getJobListPolicy(validatedOptions, storageStatus);
 
     if (listPolicy.error) {
-      return { data: null, count: 0, error: listPolicy.error };
+      return { data: null, count: 0, truncated: false, error: listPolicy.error };
     }
 
-    let query = supabaseAdmin
-      .from('jobs')
-      .select(listPolicy.select, { count: 'exact' })
-      .eq('user_id', userId);
+    let query = supabaseAdmin.from('jobs');
+
+    query = isPaginatedRead
+      ? query.select(listPolicy.select, { count: 'exact' })
+      : query.select(listPolicy.select);
+
+    query = query.eq('user_id', userId);
 
     if (listPolicy.storageStateFilter) {
       query = query.eq('storage_state', listPolicy.storageStateFilter);
     }
 
-    if (status && options.storage_state !== JOB_STORAGE_QUERY_STATES.LOCKED) {
+    if (status && validatedOptions.storage_state !== JOB_STORAGE_QUERY_STATES.LOCKED) {
       query = query.eq('status', status);
     }
 
-    query = query.order('created_at', { ascending: false });
+    query = query
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false });
 
-    if (from !== undefined && to !== undefined) {
+    if (isPaginatedRead) {
       query = query.range(from, to);
+    } else {
+      query = query.limit(ABSOLUTE_RETAINED_JOB_LIMIT + 1);
     }
 
     const { data, error, count } = await query;
 
     if (error) {
       log.error({ err: error, operation: 'getJobsByUserId', userId }, 'Database query failed');
-      return { data: null, count: 0, error };
+      return { data: null, count: 0, truncated: false, error };
     }
 
-    return { data, count: count || 0, error: null };
+    // Non-paginated (retained list) reads overfetch by one row beyond
+    // ABSOLUTE_RETAINED_JOB_LIMIT so truncation can be detected from the
+    // returned row count alone, avoiding a costly exact `count` scan.
+    // If the extra row is present, drop it and report `truncated: true`.
+    const fetchedCount = Array.isArray(data) ? data.length : 0;
+    const truncated = !isPaginatedRead && fetchedCount > ABSOLUTE_RETAINED_JOB_LIMIT;
+    const responseData = truncated
+      ? data.slice(0, ABSOLUTE_RETAINED_JOB_LIMIT)
+      : data;
+    const returnedCount = Array.isArray(responseData) ? responseData.length : 0;
+    const matchingCount = isPaginatedRead && Array.isArray(data) && Number.isSafeInteger(count) && count >= 0
+      ? count
+      : returnedCount;
+
+    if (truncated) {
+      log.warn(
+        {
+          operation: 'getJobsByUserId',
+          userId,
+          returnedCount,
+          fetchedCount,
+          limit: ABSOLUTE_RETAINED_JOB_LIMIT,
+        },
+        'Job list truncated at absolute retained job limit'
+      );
+    }
+
+    return { data: responseData, count: matchingCount, truncated, error: null };
   } catch (error) {
+    if (error instanceof InvalidJobReadOptionsError) {
+      return { data: null, count: 0, truncated: false, error };
+    }
+
     log.error({ err: error, operation: 'getJobsByUserId', userId }, 'Unexpected error in getJobsByUserId');
-    return { data: null, count: 0, error };
+    return { data: null, count: 0, truncated: false, error };
   }
 }
 
@@ -847,12 +976,13 @@ export async function updateJob(
  * @param {string} userId - The user's ID
  * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Accepted for route compatibility; jobs are deleted through supabaseAdmin.
  * @param {object} log - Request-scoped logger.
+ * @param {object|string|null} storageStatusResult - Typed storage status used for locked-row delete policy.
  * @returns {Promise<{data: Object|null, error: Error|null}>}
  *
  * Security: Enforces user ownership by requiring user_id match.
  * - This prevents users from deleting jobs they don't own
  */
-export async function deleteJob(jobId, userId, supabaseClient, log = defaultLogger) {
+export async function deleteJob(jobId, userId, supabaseClient, log = defaultLogger, storageStatusResult = null) {
   try {
     const accessResult = await getJobStorageAccessRecord(jobId, userId, log);
 
@@ -860,7 +990,14 @@ export async function deleteJob(jobId, userId, supabaseClient, log = defaultLogg
       return { data: null, error: accessResult.error };
     }
 
-    const isLockedDelete = isLockedJobRecord(accessResult.data);
+    const deleteAccessError = isLockedJobRecord(accessResult.data)
+      ? getLockedJobDeleteError(getStorageStatusValue(storageStatusResult))
+      : null;
+
+    if (deleteAccessError) {
+      return { data: null, error: deleteAccessError };
+    }
+
     let query = supabaseAdmin
       .from('jobs')
       .delete()
@@ -871,7 +1008,7 @@ export async function deleteJob(jobId, userId, supabaseClient, log = defaultLogg
       query = query.eq('storage_state', accessResult.data.storage_state);
     }
 
-    const { data, error } = await query.select(isLockedDelete ? 'id' : FULL_JOB_SELECT);
+    const { data, error } = await query.select('id');
 
     if (error) {
       log.error({ err: error, operation: 'deleteJob', userId, jobId }, 'Failed to delete job');
@@ -884,9 +1021,7 @@ export async function deleteJob(jobId, userId, supabaseClient, log = defaultLogg
     }
 
     return {
-      data: isLockedDelete
-        ? { id: data[0]?.id ?? accessResult.data.id }
-        : data[0],
+      data: { id: data[0]?.id ?? accessResult.data.id },
       error: null,
     };
   } catch (error) {
