@@ -13,6 +13,7 @@ Use this file as a quick-running log of implemented changes.
 ## Entries
 
 ### Week of 2026-07-05
+- `2026-07-08` - `Repo-local Codex PR workflow`: Documented the repo-local `.tmp/worktrees` workflow, linked-worktree Jest command, and remaining Git metadata approval expectation to reduce Windows sandbox friction when pushing review branches.
 - `2026-07-08` - `Client Retry-After jitter`: Applied bounded jitter to capped Retry-After retry delays so shared API clients avoid synchronized retries while preserving the server-provided base.
 - `2026-07-08` - `Client retry backoff`: Made shared API retries honor Retry-After with capped delays and jittered backoff, with fake-timer retry coverage.
 - `2026-07-08` - `Unpaginated job list count simplification`: Replaced exact counts on unpaginated job list reads with limit-plus-one truncation detection while preserving exact counts for paginated reads.
