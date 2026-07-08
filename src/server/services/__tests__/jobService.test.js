@@ -534,7 +534,7 @@ describe('getJobsByUserId', () => {
     expect(mockClientFrom).not.toHaveBeenCalled();
 
     // Verify query was built correctly
-    expect(query._calls.select).toEqual([['*', { count: 'exact' }]]);
+    expect(query._calls.select).toEqual([['*']]);
     expect(query._calls.eq).toEqual([
       ['user_id', userId],
       ['storage_state', JOB_STORAGE_STATES.ACTIVE],
@@ -543,7 +543,7 @@ describe('getJobsByUserId', () => {
       ['created_at', { ascending: false }],
       ['id', { ascending: false }],
     ]);
-    expect(query._calls.limit).toEqual([[ABSOLUTE_RETAINED_JOB_LIMIT]]);
+    expect(query._calls.limit).toEqual([[ABSOLUTE_RETAINED_JOB_LIMIT + 1]]);
   });
 
   it('returns error on DB failure', async () => {
@@ -566,16 +566,16 @@ describe('getJobsByUserId', () => {
     expect(result.data).toBeNull();
     expect(result.count).toBe(0);
     expect(result.truncated).toBe(false);
-    expect(query._calls.select).toEqual([['*', { count: 'exact' }]]);
+    expect(query._calls.select).toEqual([['*']]);
   });
 
-  it('does not warn when an unpaginated Premium query count exactly matches returned rows', async () => {
+  it('does not warn when an unpaginated Premium query returns the retained limit', async () => {
     const jobs = Array.from({ length: ABSOLUTE_RETAINED_JOB_LIMIT }, (_, index) => ({
       ...mockCreatedJob,
       id: `job-${index}`,
     }));
     const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
-    const query = fakeQuery({ data: jobs, count: ABSOLUTE_RETAINED_JOB_LIMIT, error: null });
+    const query = fakeQuery({ data: jobs, error: null });
     mockFrom.mockReturnValueOnce(query);
 
     const result = await getJobsByUserId(
@@ -595,14 +595,13 @@ describe('getJobsByUserId', () => {
     expect(log.warn).not.toHaveBeenCalled();
   });
 
-  it('warns and marks unpaginated Premium lists as truncated when query count exceeds returned rows', async () => {
-    const matchingCount = ABSOLUTE_RETAINED_JOB_LIMIT + 25;
-    const jobs = Array.from({ length: ABSOLUTE_RETAINED_JOB_LIMIT }, (_, index) => ({
+  it('warns and marks unpaginated Premium lists as truncated when one extra row is fetched', async () => {
+    const jobs = Array.from({ length: ABSOLUTE_RETAINED_JOB_LIMIT + 1 }, (_, index) => ({
       ...mockCreatedJob,
       id: `job-${index}`,
     }));
     const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
-    const query = fakeQuery({ data: jobs, count: matchingCount, error: null });
+    const query = fakeQuery({ data: jobs, error: null });
     mockFrom.mockReturnValueOnce(query);
 
     const result = await getJobsByUserId(
@@ -617,14 +616,16 @@ describe('getJobsByUserId', () => {
     );
 
     expect(result.error).toBeNull();
-    expect(result.count).toBe(matchingCount);
+    expect(result.data).toHaveLength(ABSOLUTE_RETAINED_JOB_LIMIT);
+    expect(result.data[result.data.length - 1].id).toBe(`job-${ABSOLUTE_RETAINED_JOB_LIMIT - 1}`);
+    expect(result.count).toBe(ABSOLUTE_RETAINED_JOB_LIMIT);
     expect(result.truncated).toBe(true);
     expect(log.warn).toHaveBeenCalledWith(
       expect.objectContaining({
         operation: 'getJobsByUserId',
         userId,
         returnedCount: ABSOLUTE_RETAINED_JOB_LIMIT,
-        matchingCount,
+        fetchedCount: ABSOLUTE_RETAINED_JOB_LIMIT + 1,
         limit: ABSOLUTE_RETAINED_JOB_LIMIT,
       }),
       'Job list truncated at absolute retained job limit'
@@ -652,7 +653,7 @@ describe('getJobsByUserId', () => {
       status: 'applied',
     }));
     const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
-    const query = fakeQuery({ data: jobs, count: ABSOLUTE_RETAINED_JOB_LIMIT, error: null });
+    const query = fakeQuery({ data: jobs, error: null });
     mockFrom.mockReturnValueOnce(query);
 
     const result = await getJobsByUserId(
@@ -740,7 +741,7 @@ describe('getJobsByUserId', () => {
     expect(result.data).toEqual([lockedTeaser]);
     expect(result.count).toBe(1);
     expect(query._calls.select).toEqual([
-      ['id, created_at, locked_at, locked_reason, locked_policy_version', { count: 'exact' }],
+      ['id, created_at, locked_at, locked_reason, locked_policy_version'],
     ]);
     expect(query._calls.order).toEqual([
       ['created_at', { ascending: false }],
@@ -845,7 +846,7 @@ describe('getJobsByUserId', () => {
       ['created_at', { ascending: false }],
       ['id', { ascending: false }],
     ]);
-    expect(query._calls.limit).toEqual([[ABSOLUTE_RETAINED_JOB_LIMIT]]);
+    expect(query._calls.limit).toEqual([[ABSOLUTE_RETAINED_JOB_LIMIT + 1]]);
   });
 });
 

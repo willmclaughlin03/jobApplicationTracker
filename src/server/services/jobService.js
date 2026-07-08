@@ -619,9 +619,11 @@ export async function getJobsByUserId(
       return { data: null, count: 0, truncated: false, error: listPolicy.error };
     }
 
-    let query = supabaseAdmin
-      .from('jobs')
-      .select(listPolicy.select, { count: 'exact' });
+    let query = supabaseAdmin.from('jobs');
+
+    query = isPaginatedRead
+      ? query.select(listPolicy.select, { count: 'exact' })
+      : query.select(listPolicy.select);
 
     query = query.eq('user_id', userId);
 
@@ -640,7 +642,7 @@ export async function getJobsByUserId(
     if (isPaginatedRead) {
       query = query.range(from, to);
     } else {
-      query = query.limit(ABSOLUTE_RETAINED_JOB_LIMIT);
+      query = query.limit(ABSOLUTE_RETAINED_JOB_LIMIT + 1);
     }
 
     const { data, error, count } = await query;
@@ -650,13 +652,15 @@ export async function getJobsByUserId(
       return { data: null, count: 0, truncated: false, error };
     }
 
-    const returnedCount = Array.isArray(data) ? data.length : 0;
-    const matchingCount = Array.isArray(data) && Number.isSafeInteger(count) && count >= 0
+    const fetchedCount = Array.isArray(data) ? data.length : 0;
+    const truncated = !isPaginatedRead && fetchedCount > ABSOLUTE_RETAINED_JOB_LIMIT;
+    const responseData = truncated
+      ? data.slice(0, ABSOLUTE_RETAINED_JOB_LIMIT)
+      : data;
+    const returnedCount = Array.isArray(responseData) ? responseData.length : 0;
+    const matchingCount = isPaginatedRead && Array.isArray(data) && Number.isSafeInteger(count) && count >= 0
       ? count
       : returnedCount;
-    const truncated = !isPaginatedRead
-      && returnedCount === ABSOLUTE_RETAINED_JOB_LIMIT
-      && matchingCount > returnedCount;
 
     if (truncated) {
       log.warn(
@@ -664,14 +668,14 @@ export async function getJobsByUserId(
           operation: 'getJobsByUserId',
           userId,
           returnedCount,
-          matchingCount,
+          fetchedCount,
           limit: ABSOLUTE_RETAINED_JOB_LIMIT,
         },
         'Job list truncated at absolute retained job limit'
       );
     }
 
-    return { data, count: matchingCount, truncated, error: null };
+    return { data: responseData, count: matchingCount, truncated, error: null };
   } catch (error) {
     if (error instanceof InvalidJobReadOptionsError) {
       return { data: null, count: 0, truncated: false, error };
