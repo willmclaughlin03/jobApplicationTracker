@@ -95,6 +95,28 @@ function sendCreateJobError(res, error) {
 }
 
 /**
+ * Send the public API response for a successful createJob call.
+ *
+ * Purpose: preserve the legacy created-job array at `data` while optionally
+ * adding count-only storage metadata that lets clients skip a follow-up
+ * storage-status read when available.
+ *
+ * @param {import('next').NextApiResponse} res - API response object.
+ * @param {Array<object>} data - Created job row array returned by createJob().
+ * @param {object|null} storageSummary - Optional count-only storage metadata.
+ * @returns {object} Next.js response chain.
+ */
+function sendCreateJobSuccess(res, data, storageSummary = null) {
+  return sendSuccess(
+    res,
+    201,
+    data,
+    'Successfully added job',
+    storageSummary ? { storageSummary } : null
+  );
+}
+
+/**
  * Send the public API response for list access failures.
  *
  * Purpose: locked archive access can depend on confirmed billing state, so
@@ -237,7 +259,8 @@ async function handleGet(req, res, user) {
  * Handles POST requests - creates a new job application
  *
  * Purpose: Add new job application to user's tracking list
- * Connects to: jobService.createJob() for database operations
+ * Connects to:
+ * - jobService.createJob() for database operations and optional count metadata
  * Validation: Uses jobSchema to validate request body
  */
 async function handlePost(req, res, user) {
@@ -261,7 +284,7 @@ async function handlePost(req, res, user) {
     return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
   }
 
-  const { data, error } = await createJob(
+  const { data, error, storageSummary = null } = await createJob(
     finalizedData,
     user.id,
     req._supabaseClient,
@@ -273,7 +296,7 @@ async function handlePost(req, res, user) {
     return sendCreateJobError(res, error);
   }
 
-  return sendSuccess(res, 201, data, 'Successfully added job');
+  return sendCreateJobSuccess(res, data, storageSummary);
 }
 
 /**

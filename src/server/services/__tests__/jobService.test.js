@@ -207,14 +207,23 @@ describe('createJob - atomic storage quota enforcement', () => {
    * @param {object} job Created job row.
    * @param {object} options Fixture options.
    * @param {boolean} options.stringifyData Whether to return the RPC data as a JSON string.
+   * @param {number} options.activeCountBeforeCreate Active rows before the create RPC inserted the job.
+   * @param {number} options.retainedTotalCountBeforeCreate Retained rows before the create RPC inserted the job.
    * @returns {object} Supabase RPC response shape.
    */
-  function rpcCreated(job = mockCreatedJob, { stringifyData = false } = {}) {
+  function rpcCreated(
+    job = mockCreatedJob,
+    {
+      stringifyData = false,
+      activeCountBeforeCreate = 0,
+      retainedTotalCountBeforeCreate = 0,
+    } = {}
+  ) {
     const data = {
       created: true,
       job,
-      activeCountBeforeCreate: 0,
-      retainedTotalCountBeforeCreate: 0,
+      activeCountBeforeCreate,
+      retainedTotalCountBeforeCreate,
       activeLimit: FREE_ACTIVE_JOB_LIMIT,
       absoluteRetainedLimit: ABSOLUTE_RETAINED_JOB_LIMIT,
     };
@@ -252,6 +261,17 @@ describe('createJob - atomic storage quota enforcement', () => {
 
     expect(result.error).toBeNull();
     expect(result.data).toEqual([mockCreatedJob]);
+    expect(result.storageSummary).toEqual({
+      status: STORAGE_STATUSES.TERMINAL_FREE,
+      activeLimit: FREE_ACTIVE_JOB_LIMIT,
+      absoluteRetainedLimit: ABSOLUTE_RETAINED_JOB_LIMIT,
+      activeCount: 1,
+      lockedCount: 0,
+      retainedTotalCount: 1,
+      projectedOverflowCount: 0,
+      cancelAtPeriodEnd: false,
+      currentPeriodEnd: null,
+    });
     expect(mockRpc).toHaveBeenCalledWith('create_job_with_storage_quota', {
       p_user_id: userId,
       p_job_data: validJobData,
@@ -263,6 +283,44 @@ describe('createJob - atomic storage quota enforcement', () => {
     expect(mockClientFrom).not.toHaveBeenCalled();
   });
 
+  it('derives storage summary counts when locked rows exist before create', async () => {
+    mockRpc.mockResolvedValueOnce(rpcCreated(mockCreatedJob, {
+      activeCountBeforeCreate: FREE_ACTIVE_JOB_LIMIT - 1,
+      retainedTotalCountBeforeCreate: FREE_ACTIVE_JOB_LIMIT + 5,
+    }));
+
+    const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, terminalFreeStatus);
+
+    expect(result.error).toBeNull();
+    expect(result.storageSummary).toEqual(expect.objectContaining({
+      status: STORAGE_STATUSES.TERMINAL_FREE,
+      activeCount: FREE_ACTIVE_JOB_LIMIT,
+      lockedCount: 6,
+      retainedTotalCount: FREE_ACTIVE_JOB_LIMIT + 6,
+      projectedOverflowCount: 0,
+    }));
+  });
+
+  it('omits storage summary when create RPC count hints are malformed', async () => {
+    mockRpc.mockResolvedValueOnce({
+      data: {
+        created: true,
+        job: mockCreatedJob,
+        activeCountBeforeCreate: 5,
+        retainedTotalCountBeforeCreate: 4,
+        activeLimit: FREE_ACTIVE_JOB_LIMIT,
+        absoluteRetainedLimit: ABSOLUTE_RETAINED_JOB_LIMIT,
+      },
+      error: null,
+    });
+
+    const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, terminalFreeStatus);
+
+    expect(result.error).toBeNull();
+    expect(result.data).toEqual([mockCreatedJob]);
+    expect(result.storageSummary).toBeNull();
+  });
+
   it('creates a job when the atomic quota RPC returns JSON string data', async () => {
     mockRpc.mockResolvedValueOnce(rpcCreated(mockCreatedJob, { stringifyData: true }));
 
@@ -270,6 +328,17 @@ describe('createJob - atomic storage quota enforcement', () => {
 
     expect(result.error).toBeNull();
     expect(result.data).toEqual([mockCreatedJob]);
+    expect(result.storageSummary).toEqual({
+      status: STORAGE_STATUSES.TERMINAL_FREE,
+      activeLimit: FREE_ACTIVE_JOB_LIMIT,
+      absoluteRetainedLimit: ABSOLUTE_RETAINED_JOB_LIMIT,
+      activeCount: 1,
+      lockedCount: 0,
+      retainedTotalCount: 1,
+      projectedOverflowCount: 0,
+      cancelAtPeriodEnd: false,
+      currentPeriodEnd: null,
+    });
     expect(mockRpc).toHaveBeenCalledWith('create_job_with_storage_quota', {
       p_user_id: userId,
       p_job_data: validJobData,
@@ -440,6 +509,10 @@ describe('createJob - atomic storage quota enforcement', () => {
     const result = await createJob(validJobData, userId, mockSupabaseClient, undefined, STORAGE_STATUSES.TERMINAL_FREE);
 
     expect(result.error).toBeNull();
+    expect(result.storageSummary).toEqual(expect.objectContaining({
+      status: STORAGE_STATUSES.TERMINAL_FREE,
+      activeCount: 1,
+    }));
     expect(mockClassifyStorageCreateFlow).toHaveBeenCalledWith(STORAGE_STATUSES.TERMINAL_FREE);
     expect(mockRpc).toHaveBeenCalledWith(
       'create_job_with_storage_quota',

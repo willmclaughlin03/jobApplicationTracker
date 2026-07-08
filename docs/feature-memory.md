@@ -12,6 +12,10 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-07-05
+
+- `2026-07-08` - `Mutation response storage summaries`: Derived POST storage summaries from atomic create RPC count hints and added optional count-only DELETE summaries so clients can skip follow-up storage-status reads when safe.
+
 ### Week of 2026-06-22
 
 - `2026-06-24` - `Premium storage Chunk 11 coverage hardening`: Gated the remaining destructive DB suites, updated final restore RPC evidence, and added concurrency, strict-route, and hostile-CSV coverage.

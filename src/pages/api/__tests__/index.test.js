@@ -509,12 +509,12 @@ describe('index API handler (/api/jobs)', () => {
 
     /**
      * Test: Successful job creation
-     * Expected: Returns 201 with created job data
+     * Expected: Returns 201 with created job data and optional storage summary metadata.
      */
-    it('should create job and return 201', async () => {
+    it('should create job and return 201 with the service storage summary', async () => {
       const createdJob = { id: 'new-job-1', ...validJobData, user_id: mockUser.id };
       mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
-      mockCreateJob.mockResolvedValue({ data: [createdJob], error: null });
+      mockCreateJob.mockResolvedValue({ data: [createdJob], error: null, storageSummary: mockStorageSummary });
       const mockClient = { from: jest.fn() };
 
       const req = { ...createMockRequest('POST', {}, validJobData), _supabaseClient: mockClient };
@@ -534,11 +534,28 @@ describe('index API handler (/api/jobs)', () => {
         noopLog,
         terminalFreeStorageStatus
       );
+      expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           data: [createdJob],
+          storageSummary: mockStorageSummary,
         })
       );
+    });
+
+    it('should omit storage summary on create when the service cannot derive it', async () => {
+      const createdJob = { id: 'new-job-1', ...validJobData, user_id: mockUser.id };
+      mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
+      mockCreateJob.mockResolvedValue({ data: [createdJob], error: null, storageSummary: null });
+
+      const req = createMockRequest('POST', {}, validJobData);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
+      expect(res.json.mock.calls[0][0]).not.toHaveProperty('storageSummary');
     });
 
     it('should pass Premium storage status through to the create service', async () => {

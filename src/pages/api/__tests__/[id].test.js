@@ -36,6 +36,11 @@ jest.mock('../../../server/services/storageTransitionService.js', () => ({
   reconcileStorageTransitionsForUser: mockReconcileStorageTransitionsForUser,
 }));
 
+const mockGetStorageSummaryForUser = jest.fn();
+jest.mock('../../../server/services/storageSummaryService.js', () => ({
+  getStorageSummaryForUser: mockGetStorageSummaryForUser,
+}));
+
 // Mock logger to prevent console output during tests
 jest.mock('../../../shared/logger.js', () => ({
   logger: {
@@ -81,6 +86,17 @@ describe('[id] API handler', () => {
     user_id: 'user-123',
   };
   const terminalFreeStorageStatus = { status: STORAGE_STATUSES.TERMINAL_FREE };
+  const mockStorageSummary = {
+    status: STORAGE_STATUSES.TERMINAL_FREE,
+    activeLimit: 300,
+    absoluteRetainedLimit: 3000,
+    activeCount: 1,
+    lockedCount: 0,
+    retainedTotalCount: 1,
+    projectedOverflowCount: 0,
+    cancelAtPeriodEnd: false,
+    currentPeriodEnd: null,
+  };
 
   /**
    * Helper to create mock request with _rateLimitUser pre-set
@@ -117,6 +133,10 @@ describe('[id] API handler', () => {
         lockedCount: 0,
         storageStatusResult: terminalFreeStorageStatus,
       },
+      error: null,
+    });
+    mockGetStorageSummaryForUser.mockResolvedValue({
+      data: mockStorageSummary,
       error: null,
     });
     // Default: valid update data
@@ -531,7 +551,7 @@ describe('[id] API handler', () => {
   describe('DELETE /api/jobs/[id]', () => {
     /**
      * Test: Job not found or unauthorized
-     * Expected: Returns 404
+     * Expected: Returns 404 after storage transition repair succeeds.
      */
     it('should return 404 when job not found or unauthorized', async () => {
       mockDeleteJob.mockResolvedValue({
@@ -545,15 +565,57 @@ describe('[id] API handler', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(404);
-      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, undefined, noopLog);
+      expect(mockDeleteJob).toHaveBeenCalledWith(
+        validUUID,
+        mockUser.id,
+        undefined,
+        noopLog,
+        terminalFreeStorageStatus
+      );
+      expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
     });
 
     /**
      * Test: Valid delete
-     * Expected: Returns 200 with deleted job data
+     * Expected: Returns 200 with minimal deleted job data and storage summary metadata.
      */
-    it('should delete and return job when valid', async () => {
-      mockDeleteJob.mockResolvedValue({ data: mockJob, error: null });
+    it('should delete and return minimal job data with storage summary when valid', async () => {
+      const mockClient = { from: jest.fn() };
+      mockDeleteJob.mockResolvedValue({ data: { id: validUUID }, error: null });
+
+      const req = { ...createMockRequest('DELETE', validUUID), _supabaseClient: mockClient };
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(mockDeleteJob).toHaveBeenCalledWith(
+        validUUID,
+        mockUser.id,
+        mockClient,
+        noopLog,
+        terminalFreeStorageStatus
+      );
+      expect(mockGetStorageSummaryForUser).toHaveBeenCalledWith(
+        mockUser.id,
+        mockClient,
+        noopLog,
+        { storageStatusResult: terminalFreeStorageStatus }
+      );
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { id: validUUID },
+          storageSummary: mockStorageSummary,
+        })
+      );
+    });
+
+    it('should still return 200 when the post-delete storage summary refresh fails', async () => {
+      mockDeleteJob.mockResolvedValue({ data: { id: validUUID }, error: null });
+      mockGetStorageSummaryForUser.mockResolvedValueOnce({
+        data: null,
+        error: new Error('summary failed'),
+      });
 
       const req = createMockRequest('DELETE', validUUID);
       const res = createMockResponse();
@@ -561,12 +623,43 @@ describe('[id] API handler', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(mockDeleteJob).toHaveBeenCalledWith(validUUID, mockUser.id, undefined, noopLog);
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: mockJob,
-        })
-      );
+      expect(res.json.mock.calls[0][0]).not.toHaveProperty('storageSummary');
+    });
+
+    it('should fail closed when storage transition repair fails before delete', async () => {
+      mockReconcileStorageTransitionsForUser.mockResolvedValueOnce({
+        data: null,
+        error: new Error('overflow lock failed'),
+      });
+
+      const req = createMockRequest('DELETE', validUUID);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(mockDeleteJob).not.toHaveBeenCalled();
+      expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
+    });
+
+    it('should return retryable 503 when delete access is blocked by billing ambiguity', async () => {
+      mockDeleteJob.mockResolvedValue({
+        data: null,
+        error: {
+          code: STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+          message: 'Internal billing read failed',
+        },
+      });
+
+      const req = createMockRequest('DELETE', validUUID);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 5);
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
+      expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('Internal billing read failed');
     });
   });
 
