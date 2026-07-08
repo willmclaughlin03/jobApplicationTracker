@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-05
 
+- `2026-07-08` - `Collection GET summary failure gating`: Deferred job list reads until storage summary metadata succeeds so summary failures return the existing service-unavailable response without spending a jobs query.
 - `2026-07-08` - `Collection GET parallelization`: Ran storage summary counts and job list reads concurrently after storage repair while keeping fresh policy status separate from response metadata.
 
 ### Week of 2026-06-22

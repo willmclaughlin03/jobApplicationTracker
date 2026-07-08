@@ -503,13 +503,7 @@ describe('index API handler (/api/jobs)', () => {
 
       await handler(req, res);
 
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(
-        mockUser.id,
-        {},
-        undefined,
-        noopLog,
-        terminalFreeStorageStatus
-      );
+      expect(mockGetJobsByUserId).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(503);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -519,10 +513,10 @@ describe('index API handler (/api/jobs)', () => {
     });
 
     /**
-     * Test: Parallel GET failures preserve previous sequential precedence.
-     * Expected: Summary failure wins over jobs failure and does not set retry headers.
+     * Test: Storage summary failures preserve error precedence before jobs loading.
+     * Expected: Summary failure wins without running or mapping jobs errors.
      */
-    it('should keep summary failure precedence when both parallel results fail', async () => {
+    it('should keep summary failure precedence by skipping jobs loading', async () => {
       mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: {} });
       mockGetStorageSummaryForUser.mockResolvedValueOnce({
         data: null,
@@ -547,13 +541,7 @@ describe('index API handler (/api/jobs)', () => {
         noopLog,
         { storageStatusResult: terminalFreeStorageStatus }
       );
-      expect(mockGetJobsByUserId).toHaveBeenCalledWith(
-        mockUser.id,
-        {},
-        undefined,
-        noopLog,
-        terminalFreeStorageStatus
-      );
+      expect(mockGetJobsByUserId).not.toHaveBeenCalled();
       expect(res.setHeader).not.toHaveBeenCalledWith('Retry-After', 5);
       expect(res.status).toHaveBeenCalledWith(503);
       expect(res.json).toHaveBeenCalledWith(
