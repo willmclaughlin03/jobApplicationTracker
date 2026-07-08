@@ -5,6 +5,10 @@
 - There are currently no paid users in this environment.
 - Current fail-closed local billing entitlement behavior does not create a live paid-user access or premium-storage regression in this environment.
 - Remaining Stripe work for Chunks 5, and repo-facing Chunk 6 is still required before any production rollout that serves paid users.
+- Windows Codex sessions should be launched with `TEMP` and `TMP` pointed at the repo-local `.tmp/` directory, which is gitignored. This avoids the `apply_patch` sandbox failure caused by split writable roots such as the repo plus `C:\tmp`, and keeps edits faster. Example: `cd C:\Users\willm\job-application-tracker`; `$env:TEMP = "$PWD\.tmp"`; `$env:TMP = "$PWD\.tmp"`; `codex`.
+- For clean PR branch work, prefer repo-local linked worktrees under `.tmp/worktrees/<branch-name>` instead of `C:\tmp\...`. This keeps source edits inside the main writable workspace while still separating branch files from the dirty main checkout. Example: `git worktree add .tmp/worktrees/chunk3Latency chunk3Latency`.
+- When running tests from a linked worktree that does not have its own `node_modules`, point Node at the main checkout dependencies before invoking Jest. Example: `$repo='C:\Users\willm\job-application-tracker'`; `$env:NODE_PATH="$repo\node_modules"`; `node "$repo\node_modules\jest\bin\jest.js" --runTestsByPath src/client/lib/__tests__/api.test.js --runInBand --no-cache`.
+- Linked worktree Git metadata still lives under the main checkout's `.git/worktrees/...`; staging and committing from linked worktrees may need sandbox approval even when file edits are inside `.tmp/worktrees`.
 
 ## 1. Code Organization
 - Small, focused modules with single responsibilities
@@ -17,6 +21,7 @@
 - Use parameterized queries (no string concatenation for SQL)
 - Sanitize all user input; validate and escape output
 - Auth checks on protected routes; rate limiting on public endpoints
+- Stripe webhooks are the documented exception to app-layer Redis rate limiting: keep raw-body byte caps and signature verification in app code, and use deployment/WAF-level coarse throttling for `/api/billing/webhook` so legitimate Stripe retries are not dropped.
 - Flag issues clearly: `⚠️ SECURITY: [specific concern]`
 
 ## 3. Input Validation

@@ -59,7 +59,8 @@ jest.mock('../../../shared/logger.js', () => ({
   },
 }));
 
-const handler = require('../index.js').default;
+const indexRoute = require('../index.js');
+const handler = indexRoute.default;
 const { ERROR_MESSAGES } = require('../../../shared/errors.js');
 const {
   STORAGE_CREATE_ACTIONS,
@@ -149,6 +150,17 @@ describe('index API handler (/api/jobs)', () => {
     });
   });
 
+  it('exports the small job body-parser route contract', () => {
+    expect(indexRoute.config).toEqual({
+      api: {
+        bodyParser: {
+          sizeLimit: '16kb',
+        },
+      },
+    });
+    expect(typeof handler).toBe('function');
+  });
+
   describe('GET /api/jobs', () => {
     /**
      * Test: Successful retrieval of jobs list
@@ -176,8 +188,36 @@ describe('index API handler (/api/jobs)', () => {
           data: {
             data: mockJobs,
             count: 2,
+            truncated: false,
             storageSummary: mockStorageSummary,
           },
+        })
+      );
+    });
+
+    it('should expose confirmed list truncation in the response payload', async () => {
+      mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: {} });
+      mockGetJobsByUserId.mockResolvedValue({
+        data: mockJobs,
+        count: 3000,
+        truncated: true,
+        error: null,
+      });
+
+      const req = createMockRequest('GET');
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            data: mockJobs,
+            count: 3000,
+            truncated: true,
+            storageSummary: mockStorageSummary,
+          }),
         })
       );
     });
@@ -480,6 +520,7 @@ describe('index API handler (/api/jobs)', () => {
           data: {
             data: [],
             count: 0,
+            truncated: false,
             storageSummary: mockStorageSummary,
           },
         })
@@ -587,11 +628,43 @@ describe('index API handler (/api/jobs)', () => {
         noopLog,
         terminalFreeStorageStatus
       );
+      expect(mockGetStorageSummaryForUser).toHaveBeenCalledWith(
+        mockUser.id,
+        mockClient,
+        noopLog,
+        { storageStatusResult: terminalFreeStorageStatus }
+      );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           data: [createdJob],
+          storageSummary: mockStorageSummary,
         })
       );
+    });
+
+    it('should return created job without storage summary when post-create summary fails', async () => {
+      const createdJob = { id: 'new-job-summary-failed', ...validJobData, user_id: mockUser.id };
+      mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
+      mockCreateJob.mockResolvedValue({ data: [createdJob], error: null });
+      mockGetStorageSummaryForUser.mockResolvedValueOnce({
+        data: null,
+        error: new Error('storage summary failed after create'),
+      });
+
+      const req = createMockRequest('POST', {}, validJobData);
+      const res = createMockResponse();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: [createdJob],
+          error: null,
+          message: 'Successfully added job',
+        })
+      );
+      expect(res.json.mock.calls[0][0]).not.toHaveProperty('storageSummary');
     });
 
     it('should pass Premium storage status through to the create service', async () => {

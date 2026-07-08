@@ -8,6 +8,14 @@ import { JOB_STORAGE_ERRORS } from '../../shared/constants/storage.js';
 
 import { withRateLimit } from '../../server/middleware/withRateLimit.js';
 
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '16kb',
+    },
+  },
+};
+
 const STORAGE_ACCESS_RETRY_AFTER_SECONDS = 5;
 
 /**
@@ -106,6 +114,20 @@ async function repairStorageTransitionsForJobRequest(req, user) {
     );
     return { data: null, error };
   }
+}
+
+/**
+ * Send the public API response for a successful deleteJob call.
+ *
+ * Purpose: keep delete responses on the shared success envelope while returning
+ * only the minimal deleted identifier payload from the service layer.
+ *
+ * @param {import('next').NextApiResponse} res - API response object.
+ * @param {object} data - Minimal deleted job payload, currently `{ id }`.
+ * @returns {object} Next.js response chain.
+ */
+function sendDeleteJobSuccess(res, data) {
+  return sendSuccess(res, 200, data, 'Successfully deleted job');
 }
 
 /**
@@ -229,15 +251,27 @@ async function handlePut(req, res, user, jobId) {
  * @param {string} jobId - The job's UUID from URL path
  */
 async function handleDelete(req, res, user, jobId) {
-  const { data, error } = await deleteJob(jobId, user.id, req._supabaseClient, req.log);
+  const repairResult = await repairStorageTransitionsForJobRequest(req, user);
+  const storageStatusResult = repairResult.data?.storageStatusResult;
 
-  if (error || !data) {
-    return sendError(res, 404, 'NOT_FOUND', ERROR_MESSAGES.NOT_FOUND);
+  if (repairResult.error || !storageStatusResult) {
+    return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
   }
 
-  return sendSuccess(res, 200, data, 'Successfully deleted job');
-}
+  const { data, error } = await deleteJob(
+    jobId,
+    user.id,
+    req._supabaseClient,
+    req.log,
+    storageStatusResult
+  );
 
+  if (error || !data) {
+    return sendJobAccessError(res, error);
+  }
+
+  return sendDeleteJobSuccess(res, data);
+}
 /**
  * Main request handler for /api/jobs/[id] endpoint
  *
@@ -256,7 +290,7 @@ async function handleDelete(req, res, user, jobId) {
 async function handler(req, res) {
   const { id } = req.query;
 
-  // Validate UUID format FIRST (before auth to reject malformed IDs early)
+  // Validate UUID format before database work; auth already ran in withRateLimit.
   if (!id || !validateUUID(id)) {
     req.log.warn({ operation: 'handler', id: id || 'empty', method: req.method }, 'Invalid job ID format attempted');
     return sendError(res, 400, 'INVALID_ID', ERROR_MESSAGES.INVALID_ID);

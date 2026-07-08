@@ -54,6 +54,8 @@ const { withRateLimit } = require('../withRateLimit.js');
 
 describe('withRateLimit middleware', () => {
     const mockUser = { id: 'user-abc-123', email: 'test@example.com' };
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalRequestDurationLogAll = process.env.REQUEST_DURATION_LOG_ALL;
 
     const createMockRequest = (method, headers = {}, socket = {}) => ({
         method,
@@ -69,13 +71,32 @@ describe('withRateLimit middleware', () => {
 
     const createMockResponse = () => {
         const res = {
-            status: jest.fn().mockReturnThis(),
+            statusCode: 200,
+            headersSent: false,
             json: jest.fn().mockReturnThis(),
             setHeader: jest.fn(),
             end: jest.fn().mockReturnThis(),
         };
+        res.status = jest.fn((statusCode) => {
+            res.statusCode = statusCode;
+            return res;
+        });
         return res;
     };
+
+    /**
+     * Finds the structured request-duration log emitted by the middleware.
+     *
+     * Purpose: observability tests need to ignore unrelated warning/error logs
+     * and assert only the Axiom-facing duration event shape.
+     *
+     * @returns {Array|undefined} The matching logger call tuple, if emitted.
+     */
+    function getRequestDurationLogCall() {
+        return mockLog.info.mock.calls.find(
+            ([logData, message]) => logData?.event === 'api_request_duration' && message === 'API request duration'
+        );
+    }
 
     beforeEach(() => {
         jest.clearAllMocks();
@@ -87,6 +108,20 @@ describe('withRateLimit middleware', () => {
             reset: Date.now() + 3600000,
             window: 'hourly',
         });
+    });
+
+    afterEach(() => {
+        if (originalNodeEnv === undefined) {
+            delete process.env.NODE_ENV;
+        } else {
+            process.env.NODE_ENV = originalNodeEnv;
+        }
+        if (originalRequestDurationLogAll === undefined) {
+            delete process.env.REQUEST_DURATION_LOG_ALL;
+        } else {
+            process.env.REQUEST_DURATION_LOG_ALL = originalRequestDurationLogAll;
+        }
+        jest.restoreAllMocks();
     });
 
     // =========================================================================
@@ -707,6 +742,190 @@ describe('withRateLimit middleware', () => {
     });
 
     // =========================================================================
+    // Request-duration observability
+    // =========================================================================
+    describe('request-duration observability', () => {
+        /**
+         * Test: Successful protected requests emit structured duration metadata.
+         * Verifies: Axiom-facing logs include method, operation, status, request
+         * id, duration, rate-limit window, and skipped=false without body data.
+         */
+        it('logs duration metadata for successful protected requests', async () => {
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn((innerReq, innerRes) => innerRes.status(200).json({ data: true }));
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            const durationLog = getRequestDurationLogCall();
+            expect(durationLog).toBeDefined();
+            expect(durationLog[0]).toEqual(
+                expect.objectContaining({
+                    event: 'api_request_duration',
+                    requestId: 'test-request-id',
+                    method: 'GET',
+                    operation: 'read',
+                    statusCode: 200,
+                    durationMs: expect.any(Number),
+                    rateLimitWindow: 'hourly',
+                    rateLimitSkipped: false,
+                })
+            );
+        });
+
+        /**
+         * Test: Duration logging survives failed rate-limit checks.
+         * Verifies: Redis/unavailable responses still produce timing evidence
+         * without invoking the wrapped handler or requiring a successful window.
+         */
+        it('logs duration metadata when the rate-limit check is unavailable', async () => {
+            mockCheckRateLimit.mockResolvedValue({ success: false, unavailable: true });
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(handler).not.toHaveBeenCalled();
+            const durationLog = getRequestDurationLogCall();
+            expect(durationLog[0]).toEqual(
+                expect.objectContaining({
+                    event: 'api_request_duration',
+                    method: 'GET',
+                    operation: 'read',
+                    statusCode: 503,
+                    rateLimitWindow: null,
+                    rateLimitSkipped: false,
+                })
+            );
+        });
+
+        /**
+         * Test: Emergency skip paths annotate the duration log.
+         * Verifies: skipped rate limiting is observable without calling Redis.
+         */
+        it('logs when a request skips Redis-backed rate limiting', async () => {
+            const req = createMockRequest('POST');
+            const res = createMockResponse();
+            const handler = jest.fn((innerReq, innerRes) => innerRes.status(503).json({
+                data: null,
+                error: 'BILLING_CHECKOUT_DISABLED',
+            }));
+
+            await withRateLimit(handler, {
+                allowedMethods: ['POST'],
+                operation: 'billing_write',
+                skipRateLimitWhen: () => true,
+            })(req, res);
+
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            const durationLog = getRequestDurationLogCall();
+            expect(durationLog[0]).toEqual(
+                expect.objectContaining({
+                    operation: 'billing_write',
+                    statusCode: 503,
+                    rateLimitWindow: null,
+                    rateLimitSkipped: true,
+                })
+            );
+        });
+
+        /**
+         * Test: Production sampling suppresses ordinary fast 2xx timing logs.
+         * Verifies: head-based sampling controls log volume when neither slow
+         * duration nor 5xx status forces an event.
+         */
+        it('suppresses unsampled fast successful requests in production', async () => {
+            process.env.NODE_ENV = 'production';
+            jest.spyOn(Math, 'random').mockReturnValue(0.5);
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn((innerReq, innerRes) => innerRes.status(200).json({ data: true }));
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            expect(getRequestDurationLogCall()).toBeUndefined();
+        });
+
+        /**
+         * Test: Explicit pre-production all-log mode bypasses sampling.
+         * Verifies: deployed pre-production builds can log every duration event
+         * even when NODE_ENV is production-shaped.
+         */
+        it('logs all production-shaped requests when the duration all-log flag is enabled', async () => {
+            process.env.NODE_ENV = 'production';
+            process.env.REQUEST_DURATION_LOG_ALL = 'true';
+            jest.spyOn(Math, 'random').mockReturnValue(0.5);
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn((innerReq, innerRes) => innerRes.status(200).json({ data: true }));
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            const durationLog = getRequestDurationLogCall();
+            expect(durationLog[0]).toEqual(
+                expect.objectContaining({
+                    statusCode: 200,
+                    rateLimitWindow: 'hourly',
+                    rateLimitSkipped: false,
+                })
+            );
+        });
+
+        /**
+         * Test: Production 5xx responses bypass sampling.
+         * Verifies: error responses stay observable even when the request was
+         * outside the sampled head-based cohort.
+         */
+        it('logs unsampled 5xx requests in production', async () => {
+            process.env.NODE_ENV = 'production';
+            jest.spyOn(Math, 'random').mockReturnValue(0.5);
+            mockCheckRateLimit.mockResolvedValue({ success: false, unavailable: true });
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            const durationLog = getRequestDurationLogCall();
+            expect(durationLog[0]).toEqual(
+                expect.objectContaining({
+                    statusCode: 503,
+                    rateLimitSkipped: false,
+                })
+            );
+        });
+
+        /**
+         * Test: Production slow requests bypass sampling.
+         * Verifies: high-latency 2xx requests remain visible even when the
+         * request did not hit the 1% head sample.
+         */
+        it('logs unsampled slow successful requests in production', async () => {
+            process.env.NODE_ENV = 'production';
+            jest.spyOn(Math, 'random').mockReturnValue(0.5);
+            jest.spyOn(Date, 'now')
+                .mockReturnValueOnce(1000)
+                .mockReturnValueOnce(2501);
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn((innerReq, innerRes) => innerRes.status(200).json({ data: true }));
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            const durationLog = getRequestDurationLogCall();
+            expect(durationLog[0]).toEqual(
+                expect.objectContaining({
+                    statusCode: 200,
+                    durationMs: 1501,
+                    rateLimitWindow: 'hourly',
+                })
+            );
+        });
+    });
+
+    // =========================================================================
     // Method handling
     // =========================================================================
     describe('unmapped methods', () => {
@@ -838,8 +1057,8 @@ describe('withRateLimit middleware', () => {
     // =========================================================================
     describe('requireAuth: true (protected routes)', () => {
         /**
-         * Test: Auth failure returns 401, does NOT fall back to IP
-         * Verifies: Protected routes block unauthenticated requests entirely
+         * Test: Auth failure returns 401 after IP auth-bucket throttling
+         * Verifies: Protected routes still block unauthenticated requests while metering retries
          */
         it('should return 401 when auth fails on protected route', async () => {
             mockGetUserFromRequest.mockResolvedValue({ user: null, error: 'No auth' });
@@ -850,7 +1069,37 @@ describe('withRateLimit middleware', () => {
             await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(res.status).toHaveBeenCalledWith(401);
-            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'ip:10.0.0.1',
+                'free',
+                'auth'
+            );
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        it('should return 429 when protected-route auth failures exhaust the IP auth bucket', async () => {
+            const reset = Date.now() + 60000;
+            mockGetUserFromRequest.mockResolvedValue({ user: null, error: 'No auth' });
+            mockCheckRateLimit.mockResolvedValueOnce({
+                success: false,
+                limit: 15,
+                remaining: 0,
+                reset,
+                window: 'hourly',
+            });
+            const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.1' });
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledWith(
+                'ip:10.0.0.1',
+                'free',
+                'auth'
+            );
+            expect(res.status).toHaveBeenCalledWith(429);
+            expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 60);
             expect(handler).not.toHaveBeenCalled();
         });
 

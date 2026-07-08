@@ -65,6 +65,29 @@ function clearCsrfCookie() {
     });
 }
 
+/**
+ * Flushes mocked fetch/json promise continuations before timer assertions.
+ *
+ * @returns {Promise<void>}
+ */
+async function flushAsyncWork() {
+    for (let step = 0; step < 20; step++) {
+        await Promise.resolve();
+    }
+}
+
+/**
+ * Advances the currently scheduled retry timer after pending promises settle.
+ *
+ * @param {number} milliseconds - Fake milliseconds to advance.
+ * @returns {Promise<void>}
+ */
+async function advanceRetryTimerBy(milliseconds) {
+    await flushAsyncWork();
+    await jest.advanceTimersByTimeAsync(milliseconds);
+    await flushAsyncWork();
+}
+
 // =========================================================================
 // GET requests (no CSRF)
 // =========================================================================
@@ -218,21 +241,42 @@ describe('apiRequest — state-changing requests', () => {
 // =========================================================================
 // SERVICE_UNAVAILABLE retry logic
 // =========================================================================
-describe('apiRequest — SERVICE_UNAVAILABLE retry', () => {
+describe('apiRequest - SERVICE_UNAVAILABLE retry', () => {
+    let setTimeoutSpy;
+
     beforeEach(() => {
         jest.clearAllMocks();
         clearCsrfCookie();
+        jest.useFakeTimers();
+        jest.setSystemTime(new Date('2026-07-08T12:00:00.000Z'));
+        setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+        jest.spyOn(Math, 'random').mockReturnValue(0.5);
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+        jest.useRealTimers();
     });
 
     /**
-     * Test: First attempt fails with SERVICE_UNAVAILABLE, second succeeds
+     * Test: First attempt fails with SERVICE_UNAVAILABLE, second succeeds.
      */
     it('retries on SERVICE_UNAVAILABLE and returns data on success', async () => {
         global.fetch = jest.fn()
             .mockResolvedValueOnce(mockFetchOnce(503, { error: 'SERVICE_UNAVAILABLE' }, false))
             .mockResolvedValueOnce(mockFetchOnce(200, { jobs: [] }));
 
-        const { data, error } = await apiRequest('/api/jobs', { method: 'GET' });
+        const requestPromise = apiRequest('/api/jobs', { method: 'GET' });
+
+        await flushAsyncWork();
+        expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 500);
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+
+        await jest.advanceTimersByTimeAsync(499);
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+
+        await jest.advanceTimersByTimeAsync(1);
+        const { data, error } = await requestPromise;
 
         expect(global.fetch).toHaveBeenCalledTimes(2);
         expect(error).toBeNull();
@@ -240,39 +284,169 @@ describe('apiRequest — SERVICE_UNAVAILABLE retry', () => {
     });
 
     /**
-     * Test: All attempts return SERVICE_UNAVAILABLE — last response body returned
-     * Note: This test takes ~1s due to retry delays (2 × 500 ms) — intentional
+     * Test: All attempts return SERVICE_UNAVAILABLE; last response body wins.
      */
     it('stops after max retries and returns the last response', async () => {
         global.fetch = jest.fn().mockResolvedValue(
             mockFetchOnce(503, { error: 'SERVICE_UNAVAILABLE' }, false)
         );
 
-        const { data, meta } = await apiRequest('/api/jobs', { method: 'GET' });
+        const requestPromise = apiRequest('/api/jobs', { method: 'GET' });
 
-        // MAX_CLIENT_RETRIES = 2 → 3 total attempts (attempt 0, 1, 2)
+        await flushAsyncWork();
+        expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 500);
+
+        await advanceRetryTimerBy(500);
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+        expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 1000);
+
+        await jest.advanceTimersByTimeAsync(1000);
+        const { data, meta } = await requestPromise;
+
         expect(global.fetch).toHaveBeenCalledTimes(3);
+        expect(setTimeoutSpy).toHaveBeenCalledTimes(2);
         expect(data).toEqual({ error: 'SERVICE_UNAVAILABLE' });
         expect(meta).toEqual({
             status: 503,
             retryAfterSeconds: null,
         });
-    }, 10000);
-
-    /**
-     * Test: Non-SERVICE_UNAVAILABLE error — no retry
-     */
-    it('does not retry on non-SERVICE_UNAVAILABLE errors', async () => {
-        global.fetch = jest.fn().mockResolvedValue(
-            mockFetchOnce(404, { error: 'NOT_FOUND' }, false)
-        );
-
-        await apiRequest('/api/jobs', { method: 'GET' });
-
-        expect(global.fetch).toHaveBeenCalledTimes(1);
     });
 
-    it('surfaces Retry-After metadata on rate-limited responses', async () => {
+    /**
+     * Test: Numeric Retry-After controls the next retry delay with jitter.
+     */
+    it('uses jittered numeric Retry-After as the retry delay', async () => {
+        Math.random.mockReturnValue(0.75);
+        global.fetch = jest.fn()
+            .mockResolvedValueOnce(mockFetchOnce(
+                503,
+                { error: 'SERVICE_UNAVAILABLE' },
+                false,
+                { 'retry-after': '3' }
+            ))
+            .mockResolvedValueOnce(mockFetchOnce(200, { jobs: [] }));
+
+        const requestPromise = apiRequest('/api/jobs', { method: 'GET' });
+
+        await flushAsyncWork();
+        expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 3375);
+
+        await jest.advanceTimersByTimeAsync(3374);
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+
+        await jest.advanceTimersByTimeAsync(1);
+        const { data } = await requestPromise;
+
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+        expect(data).toEqual({ jobs: [] });
+    });
+
+    /**
+     * Test: HTTP-date Retry-After controls the next retry delay with jitter.
+     */
+    it('uses jittered date-form Retry-After as the retry delay', async () => {
+        Math.random.mockReturnValue(0.75);
+        const retryAt = new Date(Date.now() + 4000).toUTCString();
+        global.fetch = jest.fn()
+            .mockResolvedValueOnce(mockFetchOnce(
+                503,
+                { error: 'SERVICE_UNAVAILABLE' },
+                false,
+                { 'retry-after': retryAt }
+            ))
+            .mockResolvedValueOnce(mockFetchOnce(200, { jobs: [] }));
+
+        const requestPromise = apiRequest('/api/jobs', { method: 'GET' });
+
+        await flushAsyncWork();
+        expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 4500);
+
+        await advanceRetryTimerBy(4500);
+        const { data } = await requestPromise;
+
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+        expect(data).toEqual({ jobs: [] });
+    });
+
+    /**
+     * Test: Retry-After values are capped before bounded jitter is applied.
+     */
+    it('caps and jitters very long Retry-After delays', async () => {
+        Math.random.mockReturnValue(0.25);
+        global.fetch = jest.fn()
+            .mockResolvedValueOnce(mockFetchOnce(
+                503,
+                { error: 'SERVICE_UNAVAILABLE' },
+                false,
+                { 'retry-after': '120' }
+            ))
+            .mockResolvedValueOnce(mockFetchOnce(200, { jobs: [] }));
+
+        const requestPromise = apiRequest('/api/jobs', { method: 'GET' });
+
+        await flushAsyncWork();
+        expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 7000);
+
+        await advanceRetryTimerBy(7000);
+        const { data } = await requestPromise;
+
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+        expect(data).toEqual({ jobs: [] });
+    });
+
+    /**
+     * Test: Backoff and jitter are used when Retry-After is absent.
+     */
+    it('uses jittered exponential backoff without Retry-After', async () => {
+        Math.random.mockReturnValue(0.75);
+        global.fetch = jest.fn()
+            .mockResolvedValueOnce(mockFetchOnce(503, { error: 'SERVICE_UNAVAILABLE' }, false))
+            .mockResolvedValueOnce(mockFetchOnce(503, { error: 'SERVICE_UNAVAILABLE' }, false))
+            .mockResolvedValueOnce(mockFetchOnce(200, { jobs: [] }));
+
+        const requestPromise = apiRequest('/api/jobs', { method: 'GET' });
+
+        await flushAsyncWork();
+        expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 563);
+
+        await advanceRetryTimerBy(563);
+        expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 1125);
+
+        await advanceRetryTimerBy(1125);
+        const { data } = await requestPromise;
+
+        expect(global.fetch).toHaveBeenCalledTimes(3);
+        expect(data).toEqual({ jobs: [] });
+    });
+
+    /**
+     * Test: Retry-After alone does not make other errors retryable.
+     */
+    it('does not retry non-SERVICE_UNAVAILABLE errors', async () => {
+        global.fetch = jest.fn().mockResolvedValue(
+            mockFetchOnce(
+                503,
+                { error: 'BILLING_RECONCILIATION_PENDING' },
+                false,
+                { 'retry-after': '5' }
+            )
+        );
+
+        const { data, meta } = await apiRequest('/api/jobs', { method: 'GET' });
+
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+        expect(setTimeoutSpy).not.toHaveBeenCalled();
+        expect(data).toEqual({ error: 'BILLING_RECONCILIATION_PENDING' });
+        expect(meta).toEqual({
+            status: 503,
+            retryAfterSeconds: 5,
+        });
+    });
+
+    /**
+     * Test: 429 Retry-After metadata is exposed but not retried.
+     */
+    it('surfaces Retry-After metadata on rate-limited responses without retrying', async () => {
         global.fetch = jest.fn().mockResolvedValue(
             mockFetchOnce(
                 429,
@@ -284,6 +458,8 @@ describe('apiRequest — SERVICE_UNAVAILABLE retry', () => {
 
         const { data, error, meta } = await apiRequest('/api/jobs', { method: 'GET' });
 
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+        expect(setTimeoutSpy).not.toHaveBeenCalled();
         expect(error).toBeNull();
         expect(data).toEqual({ error: 'RATE_LIMIT_EXCEEDED' });
         expect(meta).toEqual({
@@ -292,7 +468,6 @@ describe('apiRequest — SERVICE_UNAVAILABLE retry', () => {
         });
     });
 });
-
 // =========================================================================
 // CSRF retry logic
 // =========================================================================
@@ -300,6 +475,11 @@ describe('apiRequest — CSRF retry', () => {
     beforeEach(() => {
         jest.clearAllMocks();
         clearCsrfCookie();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+        jest.useRealTimers();
     });
 
     /**
@@ -373,5 +553,45 @@ describe('apiRequest — CSRF retry', () => {
 
         // Only the original request — no CSRF refresh call
         expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    /**
+     * Test: CSRF refresh starts a fresh SERVICE_UNAVAILABLE retry execution.
+     */
+    it('uses a fresh SERVICE_UNAVAILABLE retry budget after CSRF refresh', async () => {
+        jest.useFakeTimers();
+        jest.setSystemTime(new Date('2026-07-08T12:00:00.000Z'));
+        const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+        jest.spyOn(Math, 'random').mockReturnValue(0.5);
+        setCsrfCookie('stale-token');
+
+        global.fetch = jest.fn()
+            .mockResolvedValueOnce(mockFetchOnce(403, { error: 'CSRF_VALIDATION_FAILED' }, false))
+            .mockImplementationOnce(async (url) => {
+                expect(url).toBe('/api/auth/csrf');
+                setCsrfCookie('fresh-token');
+                return mockFetchOnce(200, null);
+            })
+            .mockResolvedValueOnce(mockFetchOnce(503, { error: 'SERVICE_UNAVAILABLE' }, false))
+            .mockResolvedValueOnce(mockFetchOnce(503, { error: 'SERVICE_UNAVAILABLE' }, false))
+            .mockResolvedValueOnce(mockFetchOnce(200, { ok: true }));
+
+        const requestPromise = apiRequest('/api/jobs', { method: 'POST', body: '{}' });
+
+        await flushAsyncWork();
+        expect(global.fetch).toHaveBeenCalledTimes(3);
+        expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 500);
+
+        await advanceRetryTimerBy(500);
+        expect(global.fetch).toHaveBeenCalledTimes(4);
+        expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 1000);
+
+        await advanceRetryTimerBy(1000);
+        const { data } = await requestPromise;
+
+        expect(global.fetch).toHaveBeenCalledTimes(5);
+        expect(setTimeoutSpy).toHaveBeenCalledTimes(2);
+        expect(global.fetch.mock.calls[4][1].headers['x-csrf-token']).toBe('fresh-token');
+        expect(data).toEqual({ ok: true });
     });
 });

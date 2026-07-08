@@ -126,15 +126,26 @@ export function validateCsrfToken(req, userId) {
     return false;
   }
 
+  if (typeof cookieValue !== 'string' || typeof headerValue !== 'string') {
+    logger.warn(
+      { cookieType: typeof cookieValue, headerType: typeof headerValue },
+      'CSRF validation failed: token values must be strings'
+    );
+    return false;
+  }
+
+  const cookieBuffer = Buffer.from(cookieValue, 'utf8');
+  const headerBuffer = Buffer.from(headerValue, 'utf8');
+
   // Double-submit check — cookie and header must match (timing-safe)
-  if (cookieValue.length !== headerValue.length) {
+  if (cookieBuffer.length !== headerBuffer.length) {
     logger.warn('CSRF validation failed: cookie/header length mismatch');
     return false;
   }
 
   const cookieMatches = crypto.timingSafeEqual(
-    Buffer.from(cookieValue),
-    Buffer.from(headerValue)
+    cookieBuffer,
+    headerBuffer
   );
 
   if (!cookieMatches) {
@@ -170,14 +181,20 @@ export function validateCsrfToken(req, userId) {
     .update(payload)
     .digest('hex');
 
-  if (signature.length !== expectedSignature.length) {
+  // Compare byte lengths, not string lengths: a multibyte signature segment can
+  // match the 64-char hex digest in UTF-16 code units while differing in UTF-8
+  // bytes, and timingSafeEqual throws on unequal buffer lengths.
+  const signatureBuffer = Buffer.from(signature, 'utf8');
+  const expectedSignatureBuffer = Buffer.from(expectedSignature, 'utf8');
+
+  if (signatureBuffer.length !== expectedSignatureBuffer.length) {
     logger.warn('CSRF validation failed: signature length mismatch');
     return false;
   }
 
   const signatureValid = crypto.timingSafeEqual(
-    Buffer.from(signature),
-    Buffer.from(expectedSignature)
+    signatureBuffer,
+    expectedSignatureBuffer
   );
 
   if (!signatureValid) {
