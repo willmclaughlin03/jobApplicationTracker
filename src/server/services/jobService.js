@@ -266,26 +266,6 @@ function getStorageStatusValue(storageStatusResult) {
 }
 
 /**
- * Reads a trusted retained-total count from storage summary metadata.
- *
- * Purpose: unpaginated list reads return only fetched rows, so callers need the
- * separate count-only summary to know whether a bounded read omitted older jobs.
- *
- * @param {object|string|null|undefined} storageStatusResult - Storage summary or status-only value.
- * @returns {number|null} Non-negative retained total count, or null when unavailable.
- */
-function getRetainedTotalCount(storageStatusResult) {
-  if (typeof storageStatusResult !== 'object' || storageStatusResult === null) {
-    return null;
-  }
-
-  return Number.isSafeInteger(storageStatusResult.retainedTotalCount)
-    && storageStatusResult.retainedTotalCount >= 0
-    ? storageStatusResult.retainedTotalCount
-    : null;
-}
-
-/**
  * Determines whether storage policy permits full locked-row access.
  *
  * Purpose: Premium and canceling Premium users keep full access, while Free
@@ -639,10 +619,9 @@ export async function getJobsByUserId(
       return { data: null, count: 0, truncated: false, error: listPolicy.error };
     }
 
-    let query = supabaseAdmin.from('jobs');
-    query = isPaginatedRead
-      ? query.select(listPolicy.select, { count: 'exact' })
-      : query.select(listPolicy.select);
+    let query = supabaseAdmin
+      .from('jobs')
+      .select(listPolicy.select, { count: 'exact' });
 
     query = query.eq('user_id', userId);
 
@@ -671,29 +650,28 @@ export async function getJobsByUserId(
       return { data: null, count: 0, truncated: false, error };
     }
 
-    const resolvedCount = isPaginatedRead
-      ? count || 0
-      : Array.isArray(data) ? data.length : 0;
-    const retainedTotalCount = getRetainedTotalCount(storageStatusResult);
+    const returnedCount = Array.isArray(data) ? data.length : 0;
+    const matchingCount = Array.isArray(data) && Number.isSafeInteger(count) && count >= 0
+      ? count
+      : returnedCount;
     const truncated = !isPaginatedRead
-      && resolvedCount === ABSOLUTE_RETAINED_JOB_LIMIT
-      && retainedTotalCount !== null
-      && retainedTotalCount > resolvedCount;
+      && returnedCount === ABSOLUTE_RETAINED_JOB_LIMIT
+      && matchingCount > returnedCount;
 
     if (truncated) {
       log.warn(
         {
           operation: 'getJobsByUserId',
           userId,
-          returnedCount: resolvedCount,
-          retainedTotalCount,
+          returnedCount,
+          matchingCount,
           limit: ABSOLUTE_RETAINED_JOB_LIMIT,
         },
-        'Retained job list truncated at absolute retained job limit'
+        'Job list truncated at absolute retained job limit'
       );
     }
 
-    return { data, count: resolvedCount, truncated, error: null };
+    return { data, count: matchingCount, truncated, error: null };
   } catch (error) {
     if (error instanceof InvalidJobReadOptionsError) {
       return { data: null, count: 0, truncated: false, error };
