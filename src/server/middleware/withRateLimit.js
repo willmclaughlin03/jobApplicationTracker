@@ -20,6 +20,124 @@ import { logger, attachRequestLogger } from '../../shared/logger.js';
 
 const MAX_IP_LENGTH = 45;
 const AUTH_UNAVAILABLE_RETRY_AFTER_SECONDS = 5;
+const REQUEST_DURATION_EVENT = 'api_request_duration';
+const REQUEST_DURATION_LOG_ALL_VALUES = new Set(['1', 'true', 'yes', 'on']);
+const REQUEST_DURATION_PRODUCTION_SAMPLE_RATE = 0.01;
+const SLOW_REQUEST_DURATION_MS = 1000;
+
+/**
+ * Returns the current monotonic-enough timestamp for request duration logs.
+ *
+ * Purpose: keep timing reads behind one helper so tests can control elapsed
+ * time without touching route behavior. Date.now() is sufficient because this
+ * chunk only needs coarse API latency evidence.
+ *
+ * @returns {number} Timestamp in milliseconds.
+ */
+function getRequestTimingNowMs() {
+    return Date.now();
+}
+
+/**
+ * Checks whether request-duration logging should bypass production sampling.
+ *
+ * Purpose: deployed pre-production environments may still run with
+ * NODE_ENV=production, so an explicit non-secret flag lets those environments
+ * emit every duration event without changing production defaults.
+ *
+ * @returns {boolean} True when every request-duration event should be logged.
+ */
+function shouldLogAllRequestDurations() {
+    if (process.env.NODE_ENV !== 'production') return true;
+    const logAllValue = process.env.REQUEST_DURATION_LOG_ALL;
+    return REQUEST_DURATION_LOG_ALL_VALUES.has(String(logAllValue || '').trim().toLowerCase());
+}
+
+/**
+ * Decides whether this request is in the production sampling cohort.
+ *
+ * Purpose: production duration logs need head-based sampling to control Axiom
+ * ingest volume, while non-production requests log every timing event.
+ *
+ * @returns {boolean} True when this request should be sampled.
+ */
+function shouldSampleRequestDuration() {
+    if (shouldLogAllRequestDurations()) return true;
+    return Math.random() < REQUEST_DURATION_PRODUCTION_SAMPLE_RATE;
+}
+
+/**
+ * Reads the response status code once the middleware path has settled.
+ *
+ * Purpose: Next.js responses expose statusCode directly, but tests and partial
+ * mocks may not. Returning null keeps timing logs honest instead of inventing
+ * a status when the response object cannot provide one.
+ *
+ * @param {import('next').NextApiResponse} res - Next.js response object.
+ * @returns {number|null} Final response status when available.
+ */
+function getResponseStatusCode(res) {
+    return Number.isInteger(res?.statusCode) ? res.statusCode : null;
+}
+
+/**
+ * Determines whether a request-duration event should be emitted.
+ *
+ * Purpose: log all timing evidence outside production, but keep production
+ * volume bounded while preserving slow requests and 5xx responses.
+ *
+ * @param {object} details - Timing decision inputs.
+ * @param {number|null} details.statusCode - Final response status, if known.
+ * @param {number} details.durationMs - Measured request duration.
+ * @param {boolean} details.sampled - Head-based sampling decision.
+ * @returns {boolean} True when the duration event should be logged.
+ */
+function shouldLogRequestDuration({ statusCode, durationMs, sampled }) {
+    if (shouldLogAllRequestDurations()) return true;
+    if (sampled) return true;
+    if (Number.isInteger(statusCode) && statusCode >= 500) return true;
+    return durationMs > SLOW_REQUEST_DURATION_MS;
+}
+
+/**
+ * Emits the structured request-duration event for the middleware wrapper.
+ *
+ * Purpose: provide low-cost route/middleware timing evidence through the
+ * request-scoped logger without logging bodies, cookies, auth headers, or raw
+ * error objects.
+ *
+ * @param {import('next').NextApiRequest & { log?: object }} req - Request with scoped logger.
+ * @param {import('next').NextApiResponse} res - Next.js response object.
+ * @param {object} details - Request timing context.
+ * @param {string} details.requestId - Request correlation id.
+ * @param {number} details.startedAtMs - Start timestamp in milliseconds.
+ * @param {string|null} details.operation - Rate-limit operation for this route.
+ * @param {object|undefined} details.rateLimitResult - Rate-limit result envelope, if available.
+ * @param {boolean} details.sampled - Head-based sampling decision.
+ * @returns {void}
+ */
+function logRequestDuration(req, res, { requestId, startedAtMs, operation, rateLimitResult, sampled }) {
+    const durationMs = Math.max(0, Math.round(getRequestTimingNowMs() - startedAtMs));
+    const statusCode = getResponseStatusCode(res);
+
+    if (!shouldLogRequestDuration({ statusCode, durationMs, sampled })) {
+        return;
+    }
+
+    req.log.info(
+        {
+            event: REQUEST_DURATION_EVENT,
+            requestId,
+            method: req.method,
+            operation: operation || null,
+            statusCode,
+            durationMs,
+            rateLimitWindow: rateLimitResult?.window ?? null,
+            rateLimitSkipped: rateLimitResult?.skipped === true,
+        },
+        'API request duration'
+    );
+}
 
 /**
  * Normalizes a header expected to have a single string value.
@@ -260,7 +378,7 @@ function sendRateLimitExceeded(req, res, rateLimitResult, operation) {
  *
  * @param {import('next').NextApiRequest & { log: object }} req - Request with auth failure.
  * @param {import('next').NextApiResponse} res - Next.js response object.
- * @returns {Promise<{handled: boolean, response?: object}>}
+ * @returns {Promise<{handled: boolean, response?: object, rateLimitResult?: object}>}
  */
 async function limitFailedProtectedAuth(req, res) {
     const authFailureIdentifier = extractIpIdentifier(req);
@@ -286,6 +404,7 @@ async function limitFailedProtectedAuth(req, res) {
     if (authFailureRateLimitResult.unavailable) {
         return {
             handled: true,
+            rateLimitResult: authFailureRateLimitResult,
             response: sendError(
                 res,
                 503,
@@ -298,12 +417,13 @@ async function limitFailedProtectedAuth(req, res) {
     if (!authFailureRateLimitResult.success) {
         return {
             handled: true,
+            rateLimitResult: authFailureRateLimitResult,
             response: sendRateLimitExceeded(req, res, authFailureRateLimitResult, OPERATIONS.AUTH),
         };
     }
 
     setRateLimitHeaders(res, authFailureRateLimitResult);
-    return { handled: false };
+    return { handled: false, rateLimitResult: authFailureRateLimitResult };
 }
 /**
  * Rate limiting middleware wrapper for Next.js API handlers
@@ -363,121 +483,151 @@ export function withRateLimit(handler, options = {}){
         // Attach a child logger with requestId for request-scoped correlation
         const requestId = attachRequestLogger(req);
         res.setHeader('x-request-id', requestId);
-
-        // Same-origin app — no CORS headers are served, so OPTIONS has no purpose.
-        // Reject with 405 rather than silently succeeding with an empty 204.
-        if(req.method === 'OPTIONS'){
-            return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
-        }
-
-        // Fail-closed: 405 if allowedMethods not declared or method not in list.
-        // Prevents quota drain from mis-routed or scanner requests on mapped methods.
-        if(!allowedMethods || !allowedMethods.includes(req.method)){
-            return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
-        }
-
-        const operation = operationByMethod?.[req.method] ?? operationOverride ?? METHOD_TO_OPERATIONS[req.method];
-
-        // Safety net: allowed method with no operation mapping and no override
-        if(!operation){
-            return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
-        }
-
+        const startedAtMs = getRequestTimingNowMs();
+        const sampled = shouldSampleRequestDuration();
+        const operation = operationByMethod?.[req.method] ?? operationOverride ?? METHOD_TO_OPERATIONS[req.method] ?? null;
         let identifier;
         let rateLimitResult;
 
         try {
-            if(requireAuth){
-                // PROTECTED ROUTE: Auth is mandatory; failed auth is IP-throttled before 401
-                try{
-                    const { user, error, errorCode, supabaseClient } = await getUserFromRequest(req, res);
-                    if(!user){
-                        if (errorCode === AUTH_ERROR_CODES.AUTH_UNAVAILABLE) {
-                            req.log.error(
-                                { event: 'auth_backend_unavailable', method: req.method },
-                                'Auth backend unavailable on protected route'
-                            );
-                            res.setHeader('Retry-After', AUTH_UNAVAILABLE_RETRY_AFTER_SECONDS);
+            // Same-origin app - no CORS headers are served, so OPTIONS has no purpose.
+            // Reject with 405 rather than silently succeeding with an empty 204.
+            if(req.method === 'OPTIONS'){
+                return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
+            }
+
+            // Fail-closed: 405 if allowedMethods not declared or method not in list.
+            // Prevents quota drain from mis-routed or scanner requests on mapped methods.
+            if(!allowedMethods || !allowedMethods.includes(req.method)){
+                return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
+            }
+
+            // Safety net: allowed method with no operation mapping and no override
+            if(!operation){
+                return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
+            }
+
+            try {
+                if(requireAuth){
+                    // PROTECTED ROUTE: Auth is mandatory; failed auth is IP-throttled before 401
+                    try{
+                        const { user, error, errorCode, supabaseClient } = await getUserFromRequest(req, res);
+                        if(!user){
+                            if (errorCode === AUTH_ERROR_CODES.AUTH_UNAVAILABLE) {
+                                req.log.error(
+                                    { event: 'auth_backend_unavailable', method: req.method },
+                                    'Auth backend unavailable on protected route'
+                                );
+                                res.setHeader('Retry-After', AUTH_UNAVAILABLE_RETRY_AFTER_SECONDS);
+                                return sendError(
+                                    res,
+                                    503,
+                                    'SERVICE_UNAVAILABLE',
+                                    ERROR_MESSAGES.SERVICE_UNAVAILABLE
+                                );
+                            }
+
+                            const authFailureLimit = await limitFailedProtectedAuth(req, res);
+                            rateLimitResult = authFailureLimit.rateLimitResult;
+                            if (authFailureLimit.handled) {
+                                return authFailureLimit.response;
+                            }
+
+                            req.log.warn({ authError: error || 'Unknown auth failure', authErrorCode: errorCode || null, method: req.method }, 'Auth required but failed on protected route');
                             return sendError(
                                 res,
-                                503,
-                                'SERVICE_UNAVAILABLE',
-                                ERROR_MESSAGES.SERVICE_UNAVAILABLE
+                                401,
+                                'UNAUTHORIZED',
+                                ERROR_MESSAGES.UNAUTHORIZED
                             );
                         }
-
-                        const authFailureLimit = await limitFailedProtectedAuth(req, res);
-                        if (authFailureLimit.handled) {
-                            return authFailureLimit.response;
-                        }
-
-                        req.log.warn({ authError: error || 'Unknown auth failure', authErrorCode: errorCode || null, method: req.method }, 'Auth required but failed on protected route');
+                        req._rateLimitUser = user;
+                        req._supabaseClient = supabaseClient;
+                        identifier = `user:${user.id}`;
+                    }catch(error){
+                        req.log.error(
+                            { event: 'auth_backend_unavailable', method: req.method },
+                            'Auth service error on protected route'
+                        );
+                        res.setHeader('Retry-After', AUTH_UNAVAILABLE_RETRY_AFTER_SECONDS);
                         return sendError(
                             res,
-                            401,
-                            'UNAUTHORIZED',
-                            ERROR_MESSAGES.UNAUTHORIZED
+                            503,
+                            'SERVICE_UNAVAILABLE',
+                            ERROR_MESSAGES.SERVICE_UNAVAILABLE
                         );
                     }
-                    req._rateLimitUser = user;
-                    req._supabaseClient = supabaseClient;
-                    identifier = `user:${user.id}`;
-                }catch(error){
-                    req.log.error(
-                        { event: 'auth_backend_unavailable', method: req.method },
-                        'Auth service error on protected route'
-                    );
-                    res.setHeader('Retry-After', AUTH_UNAVAILABLE_RETRY_AFTER_SECONDS);
-                    return sendError(
-                        res,
-                        503,
-                        'SERVICE_UNAVAILABLE',
-                        ERROR_MESSAGES.SERVICE_UNAVAILABLE
-                    );
+                }else{
+                    // PUBLIC ROUTE: IP-based rate limiting, no auth needed
+                    identifier = extractIpIdentifier(req);
+                    if(!identifier){
+                        return sendError(
+                            res,
+                            403,
+                            'UNIDENTIFIABLE_CLIENT',
+                            'Unable to identify client. Please try again.'
+                        );
+                    }
                 }
-            }else{
-                // PUBLIC ROUTE: IP-based rate limiting, no auth needed
-                identifier = extractIpIdentifier(req);
-                if(!identifier){
-                    return sendError(
-                        res,
-                        403,
-                        'UNIDENTIFIABLE_CLIENT',
-                        'Unable to identify client. Please try again.'
-                    );
+
+                // CSRF validation - runs after auth (userId available), before rate limit
+                // so forged tokens don't consume quota
+                if (shouldCsrfProtect && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+                    const userId = req._rateLimitUser?.id;
+                    if (!userId || !validateCsrfToken(req, userId)) {
+                        req.log.warn({ method: req.method, hasUser: !!userId }, 'CSRF validation failed');
+                        return sendError(res, 403, 'CSRF_VALIDATION_FAILED', ERROR_MESSAGES.CSRF_VALIDATION_FAILED);
+                    }
+                }
+
+                if (typeof skipRateLimitWhen === 'function' && await skipRateLimitWhen(req)) {
+                    rateLimitResult = { success: true, skipped: true };
+                }
+
+                if (!rateLimitResult?.skipped) {
+                    rateLimitResult = await performRateLimitCheck(req, identifier, operation);
+                }
+            } catch(error) {
+                // Safety net for unexpected errors outside checkRateLimit (e.g. auth layer)
+                req.log.error({ err: error, method: req.method, operation }, 'Unexpected middleware error');
+                return sendError(
+                    res,
+                    503,
+                    'SERVICE_UNAVAILABLE',
+                    ERROR_MESSAGES.SERVICE_UNAVAILABLE
+                );
+            }
+
+            // block req on redis down - one-time log already fired in redis.js
+            if(rateLimitResult?.skipped){
+                try {
+                    return await handler(req, res);
+                } catch(handlerError) {
+                    req.log.error({ err: handlerError, method: req.method, operation }, 'Unhandled handler error');
+                    if (res.headersSent) {
+                        res.end();
+                        return;
+                    }
+                    return sendError(res, 500, 'INTERNAL_SERVER_ERROR', ERROR_MESSAGES.INTERNAL_SERVER_ERROR);
                 }
             }
 
-            // CSRF validation — runs after auth (userId available), before rate limit
-            // so forged tokens don't consume quota
-            if (shouldCsrfProtect && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
-                const userId = req._rateLimitUser?.id;
-                if (!userId || !validateCsrfToken(req, userId)) {
-                    req.log.warn({ method: req.method, hasUser: !!userId }, 'CSRF validation failed');
-                    return sendError(res, 403, 'CSRF_VALIDATION_FAILED', ERROR_MESSAGES.CSRF_VALIDATION_FAILED);
-                }
+            if(rateLimitResult.unavailable){
+                return sendError(
+                    res,
+                    503,
+                    'SERVICE_UNAVAILABLE',
+                    ERROR_MESSAGES.SERVICE_UNAVAILABLE
+                );
+            }
+            // rate limit exceeded
+            if(!rateLimitResult.success){
+                return sendRateLimitExceeded(req, res, rateLimitResult, operation);
             }
 
-            if (typeof skipRateLimitWhen === 'function' && await skipRateLimitWhen(req)) {
-                rateLimitResult = { success: true, skipped: true };
-            }
+            // set limit headers on all successful rate-limited responses
+            setRateLimitHeaders(res, rateLimitResult);
 
-            if (!rateLimitResult?.skipped) {
-                rateLimitResult = await performRateLimitCheck(req, identifier, operation);
-            }
-        } catch(error) {
-            // Safety net for unexpected errors outside checkRateLimit (e.g. auth layer)
-            req.log.error({ err: error, method: req.method, operation }, 'Unexpected middleware error');
-            return sendError(
-                res,
-                503,
-                'SERVICE_UNAVAILABLE',
-                ERROR_MESSAGES.SERVICE_UNAVAILABLE
-            );
-        }
-
-        // block req on redis down — one-time log already fired in redis.js
-        if(rateLimitResult?.skipped){
             try {
                 return await handler(req, res);
             } catch(handlerError) {
@@ -488,33 +638,14 @@ export function withRateLimit(handler, options = {}){
                 }
                 return sendError(res, 500, 'INTERNAL_SERVER_ERROR', ERROR_MESSAGES.INTERNAL_SERVER_ERROR);
             }
-        }
-
-        if(rateLimitResult.unavailable){
-            return sendError(
-                res,
-                503,
-                'SERVICE_UNAVAILABLE',
-                ERROR_MESSAGES.SERVICE_UNAVAILABLE
-            );
-        }
-        // rate limit exceeded
-        if(!rateLimitResult.success){
-            return sendRateLimitExceeded(req, res, rateLimitResult, operation);
-        }
-
-        // set limit headers on all successful rate-limited responses
-        setRateLimitHeaders(res, rateLimitResult);
-
-        try {
-            return await handler(req, res);
-        } catch(handlerError) {
-            req.log.error({ err: handlerError, method: req.method, operation }, 'Unhandled handler error');
-            if (res.headersSent) {
-                res.end();
-                return;
-            }
-            return sendError(res, 500, 'INTERNAL_SERVER_ERROR', ERROR_MESSAGES.INTERNAL_SERVER_ERROR);
+        } finally {
+            logRequestDuration(req, res, {
+                requestId,
+                startedAtMs,
+                operation,
+                rateLimitResult,
+                sampled,
+            });
         }
     }
 
