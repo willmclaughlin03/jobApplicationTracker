@@ -134,6 +134,20 @@ describe('index API handler (/api/jobs)', () => {
     return res;
   };
 
+  /**
+   * Creates a manually resolved promise for concurrent GET orchestration tests.
+   *
+   * @returns {{promise: Promise, resolve: Function}} Deferred promise controls.
+   */
+  function createDeferred() {
+    let resolve;
+    const promise = new Promise((resolvePromise) => {
+      resolve = resolvePromise;
+    });
+
+    return { promise, resolve };
+  }
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetStorageSummaryForUser.mockResolvedValue({
@@ -193,6 +207,45 @@ describe('index API handler (/api/jobs)', () => {
           },
         })
       );
+    });
+
+    it('should start storage summary and jobs reads concurrently after storage repair', async () => {
+      const storageSummaryRead = createDeferred();
+      const jobsRead = createDeferred();
+      mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: {} });
+      mockGetStorageSummaryForUser.mockReturnValueOnce(storageSummaryRead.promise);
+      mockGetJobsByUserId.mockReturnValueOnce(jobsRead.promise);
+
+      const req = createMockRequest('GET');
+      const res = createMockResponse();
+      const responsePromise = handler(req, res);
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mockGetStorageSummaryForUser).toHaveBeenCalledWith(
+        mockUser.id,
+        undefined,
+        noopLog,
+        { storageStatusResult: terminalFreeStorageStatus }
+      );
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(
+        mockUser.id,
+        {},
+        undefined,
+        noopLog,
+        terminalFreeStorageStatus
+      );
+      expect(res.status).not.toHaveBeenCalled();
+
+      storageSummaryRead.resolve({ data: mockStorageSummary, error: null });
+      await Promise.resolve();
+      expect(res.status).not.toHaveBeenCalled();
+
+      jobsRead.resolve({ data: mockJobs, count: 2, truncated: false, error: null });
+      await responsePromise;
+
+      expect(res.status).toHaveBeenCalledWith(200);
     });
 
     it('should expose confirmed list truncation in the response payload', async () => {
@@ -544,7 +597,13 @@ describe('index API handler (/api/jobs)', () => {
 
       await handler(req, res);
 
-      expect(mockGetJobsByUserId).not.toHaveBeenCalled();
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(
+        mockUser.id,
+        {},
+        undefined,
+        noopLog,
+        terminalFreeStorageStatus
+      );
       expect(res.status).toHaveBeenCalledWith(503);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -554,10 +613,10 @@ describe('index API handler (/api/jobs)', () => {
     });
 
     /**
-     * Test: Storage summary failures preserve error precedence before jobs loading.
-     * Expected: Summary failure wins without running or mapping jobs errors.
+     * Test: Parallel GET failures preserve previous sequential precedence.
+     * Expected: Summary failure wins over jobs failure and does not set retry headers.
      */
-    it('should keep summary failure precedence by skipping jobs loading', async () => {
+    it('should keep summary failure precedence when both parallel results fail', async () => {
       mockGetQuerySchemaSafeParse.mockReturnValue({ success: true, data: {} });
       mockGetStorageSummaryForUser.mockResolvedValueOnce({
         data: null,
@@ -582,7 +641,13 @@ describe('index API handler (/api/jobs)', () => {
         noopLog,
         { storageStatusResult: terminalFreeStorageStatus }
       );
-      expect(mockGetJobsByUserId).not.toHaveBeenCalled();
+      expect(mockGetJobsByUserId).toHaveBeenCalledWith(
+        mockUser.id,
+        {},
+        undefined,
+        noopLog,
+        terminalFreeStorageStatus
+      );
       expect(res.setHeader).not.toHaveBeenCalledWith('Retry-After', 5);
       expect(res.status).toHaveBeenCalledWith(503);
       expect(res.json).toHaveBeenCalledWith(

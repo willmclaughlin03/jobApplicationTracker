@@ -14,9 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-05
 
+- `2026-07-09` - `Collection GET parallel follow-up`: Restored `GET /api` storage-summary and job-list reads to start concurrently after storage repair while preserving summary-error precedence and `storageStatusResult` policy input.
 - `2026-07-08` - `Mutation create response storage summaries`: Derived POST storage summaries from atomic create RPC count hints so successful creates can skip a follow-up storage-status read when safe while preserving id-only DELETE responses from current main.
-- `2026-07-08` - `Chunk 5 latency conflict resolution`: Resolved the PR merge conflicts toward the current local route/docs state while preserving summary-failure gating.
-- `2026-07-08` - `Collection GET summary failure gating`: Deferred job list reads until storage summary metadata succeeds so summary failures return the existing service-unavailable response without spending a jobs query.
 - `2026-07-08` - `Collection GET parallelization`: Ran storage summary counts and job list reads concurrently after storage repair while keeping fresh policy status separate from response metadata.
 - `2026-07-08` - `Latency duration observability`: Added sampled structured API request-duration logging through the request-scoped logger with middleware coverage for success, rate-limit failures, skipped limits, 5xx, and slow requests.
 - `2026-07-08` - `Repo-local Codex PR workflow`: Documented the repo-local `.tmp/worktrees` workflow, linked-worktree Jest command, and remaining Git metadata approval expectation to reduce Windows sandbox friction when pushing review branches.
