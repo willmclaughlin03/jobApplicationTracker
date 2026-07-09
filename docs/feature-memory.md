@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-05
 
+- `2026-07-09` - `Custom error pages`: Added branded, public-safe error pages for 403, 404, 429, 500, 502, 503, and 504 with shared recovery actions and middleware access for direct error routes.
 - `2026-07-09` - `Retry-After additive jitter`: Kept shared API Retry-After retries from undercutting server cooldown guidance while preserving jitter for client-generated backoff.
 - `2026-07-09` - `Collection GET parallel follow-up`: Restored `GET /api` storage-summary and job-list reads to start concurrently after storage repair while preserving summary-error precedence and `storageStatusResult` policy input.
 - `2026-07-08` - `Mutation create response storage summaries`: Derived POST storage summaries from atomic create RPC count hints so successful creates can skip a follow-up storage-status read when safe while preserving id-only DELETE responses from current main.
