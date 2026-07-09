@@ -313,10 +313,10 @@ describe('apiRequest - SERVICE_UNAVAILABLE retry', () => {
     });
 
     /**
-     * Test: Numeric Retry-After controls the next retry delay with jitter.
+     * Test: Numeric Retry-After remains the minimum retry delay.
      */
-    it('uses jittered numeric Retry-After as the retry delay', async () => {
-        Math.random.mockReturnValue(0.75);
+    it('does not undercut numeric Retry-After as the retry delay', async () => {
+        Math.random.mockReturnValue(0);
         global.fetch = jest.fn()
             .mockResolvedValueOnce(mockFetchOnce(
                 503,
@@ -329,9 +329,9 @@ describe('apiRequest - SERVICE_UNAVAILABLE retry', () => {
         const requestPromise = apiRequest('/api/jobs', { method: 'GET' });
 
         await flushAsyncWork();
-        expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 3375);
+        expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 3000);
 
-        await jest.advanceTimersByTimeAsync(3374);
+        await jest.advanceTimersByTimeAsync(2999);
         expect(global.fetch).toHaveBeenCalledTimes(1);
 
         await jest.advanceTimersByTimeAsync(1);
@@ -342,9 +342,9 @@ describe('apiRequest - SERVICE_UNAVAILABLE retry', () => {
     });
 
     /**
-     * Test: HTTP-date Retry-After controls the next retry delay with jitter.
+     * Test: HTTP-date Retry-After uses additive jitter without retrying early.
      */
-    it('uses jittered date-form Retry-After as the retry delay', async () => {
+    it('uses additive-jittered date-form Retry-After as the retry delay', async () => {
         Math.random.mockReturnValue(0.75);
         const retryAt = new Date(Date.now() + 4000).toUTCString();
         global.fetch = jest.fn()
@@ -359,9 +359,9 @@ describe('apiRequest - SERVICE_UNAVAILABLE retry', () => {
         const requestPromise = apiRequest('/api/jobs', { method: 'GET' });
 
         await flushAsyncWork();
-        expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 4500);
+        expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 4750);
 
-        await advanceRetryTimerBy(4500);
+        await advanceRetryTimerBy(4750);
         const { data } = await requestPromise;
 
         expect(global.fetch).toHaveBeenCalledTimes(2);
@@ -369,9 +369,9 @@ describe('apiRequest - SERVICE_UNAVAILABLE retry', () => {
     });
 
     /**
-     * Test: Retry-After values are capped before bounded jitter is applied.
+     * Test: Very long Retry-After values remain capped after additive jitter.
      */
-    it('caps and jitters very long Retry-After delays', async () => {
+    it('caps additive-jittered very long Retry-After delays', async () => {
         Math.random.mockReturnValue(0.25);
         global.fetch = jest.fn()
             .mockResolvedValueOnce(mockFetchOnce(
@@ -385,9 +385,9 @@ describe('apiRequest - SERVICE_UNAVAILABLE retry', () => {
         const requestPromise = apiRequest('/api/jobs', { method: 'GET' });
 
         await flushAsyncWork();
-        expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 7000);
+        expect(setTimeoutSpy).toHaveBeenLastCalledWith(expect.any(Function), 8000);
 
-        await advanceRetryTimerBy(7000);
+        await advanceRetryTimerBy(8000);
         const { data } = await requestPromise;
 
         expect(global.fetch).toHaveBeenCalledTimes(2);

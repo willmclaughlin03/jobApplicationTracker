@@ -125,11 +125,32 @@ function addBoundedJitter(milliseconds) {
 }
 
 /**
+ * Adds additive-only jitter to server-provided retry guidance.
+ *
+ * Purpose: keep clients from retrying before Retry-After while still avoiding
+ * synchronized retries immediately after the server's cooldown window.
+ *
+ * @param {number} milliseconds - Server-guided base delay before jitter.
+ * @returns {number} Delay with additive jitter applied and capped.
+ */
+function addAdditiveBoundedJitter(milliseconds) {
+    const cappedDelay = Math.min(MAX_CLIENT_RETRY_DELAY_MS, Math.max(0, milliseconds));
+    const jitterRange = Math.floor(cappedDelay * CLIENT_RETRY_JITTER_RATIO);
+
+    if (jitterRange <= 0) {
+        return cappedDelay;
+    }
+
+    const offset = Math.floor(Math.random() * (jitterRange + 1));
+    return Math.min(MAX_CLIENT_RETRY_DELAY_MS, cappedDelay + offset);
+}
+
+/**
  * Computes the delay before the next SERVICE_UNAVAILABLE retry.
  *
  * Purpose: use server Retry-After guidance as the capped base delay when
- * present, otherwise use capped exponential backoff. Both paths add bounded
- * jitter so clients do not retry in lockstep.
+ * present without retrying early, otherwise use capped exponential backoff.
+ * Both paths add bounded jitter so clients do not retry in lockstep.
  *
  * @param {number} attempt - Zero-based failed attempt number.
  * @param {{ retryAfterSeconds: number|null }} meta - Response metadata.
@@ -142,7 +163,7 @@ function getClientRetryDelayMs(attempt, meta) {
             Math.max(0, meta.retryAfterSeconds * 1000)
         );
 
-        return addBoundedJitter(cappedRetryAfter);
+        return addAdditiveBoundedJitter(cappedRetryAfter);
     }
 
     const exponentialDelay = BASE_CLIENT_RETRY_DELAY_MS * (2 ** attempt);
