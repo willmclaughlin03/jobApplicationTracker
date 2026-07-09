@@ -230,27 +230,22 @@ async function handleGet(req, res, user) {
     return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
   }
 
-  const storageSummaryResult = await getStorageSummaryForUser(
-    user.id,
-    req._supabaseClient,
-    req.log,
-    {
+  const [storageSummaryResult, jobsResult] = await Promise.all([
+    getStorageSummaryForUser(user.id, req._supabaseClient, req.log, {
       storageStatusResult,
-    }
-  );
+    }),
+    getJobsByUserId(
+      user.id,
+      options,
+      req._supabaseClient,
+      req.log,
+      storageStatusResult
+    ),
+  ]);
 
   if (storageSummaryResult.error) {
     return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
   }
-
-  const jobsResult = await getJobsByUserId(
-    user.id,
-    options,
-    req._supabaseClient,
-    req.log,
-    storageStatusResult
-  );
-
   const { data, count, truncated = false, error } = jobsResult;
 
   if (error) {
