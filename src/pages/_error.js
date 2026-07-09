@@ -1,4 +1,5 @@
 import ErrorPage, { getErrorPageContent } from '../client/components/ErrorPage';
+import { logger } from '../shared/logger.js';
 
 /**
  * Resolves the HTTP status code provided by Next.js for framework errors.
@@ -43,7 +44,13 @@ export default function NextErrorPage({ statusCode }) {
  * @returns {{ statusCode: number }} Error page props.
  */
 NextErrorPage.getInitialProps = function getInitialProps({ res, err }) {
+  const statusCode = resolveStatusCode(res, err);
+
+  if (typeof window === 'undefined' && err) {
+    logger.error({ err, statusCode }, 'Unhandled page error');
+  }
+
   return {
-    statusCode: resolveStatusCode(res, err),
+    statusCode,
   };
 };

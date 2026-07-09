@@ -104,13 +104,19 @@ afterEach(cleanup);
 describe('ErrorPage', () => {
   let ErrorPage;
   let ERROR_PAGE_CONTENT;
+  let ERROR_STATUS_CODES;
   let getErrorPageContent;
 
   beforeAll(() => {
     const module = require('../ErrorPage.jsx');
     ErrorPage = module.default;
     ERROR_PAGE_CONTENT = module.ERROR_PAGE_CONTENT;
+    ERROR_STATUS_CODES = module.ERROR_STATUS_CODES;
     getErrorPageContent = module.getErrorPageContent;
+  });
+
+  it('keeps page content aligned with the shared public error statuses', () => {
+    expect(Object.keys(ERROR_PAGE_CONTENT).map(Number).sort()).toEqual([...ERROR_STATUS_CODES].sort());
   });
 
   it('renders the 429 recovery page with vague public-safe copy', () => {

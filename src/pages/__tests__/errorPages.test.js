@@ -17,6 +17,14 @@ const { act } = require('react');
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
+const mockLoggerError = jest.fn();
+
+jest.mock('../../shared/logger.js', () => ({
+  logger: {
+    error: mockLoggerError,
+  },
+}));
+
 jest.mock('next/router', () => ({
   useRouter: () => ({
     back: jest.fn(),
@@ -74,6 +82,7 @@ function cleanup() {
 
   container = null;
   root = null;
+  mockLoggerError.mockClear();
 }
 
 afterEach(cleanup);
@@ -128,6 +137,48 @@ describe('custom error pages', () => {
       res: null,
       err: { statusCode: 502 },
     })).toEqual({ statusCode: 502 });
+  });
+
+  it('logs thrown framework errors on the server without changing safe props', () => {
+    const NextErrorPage = require('../_error.js').default;
+    const err = new Error('server-only diagnostic');
+    err.statusCode = 503;
+    const originalWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
+
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: undefined,
+    });
+
+    try {
+      expect(NextErrorPage.getInitialProps({
+        res: null,
+        err,
+      })).toEqual({ statusCode: 503 });
+    } finally {
+      if (originalWindowDescriptor) {
+        Object.defineProperty(globalThis, 'window', originalWindowDescriptor);
+      } else {
+        delete globalThis.window;
+      }
+    }
+
+    expect(mockLoggerError).toHaveBeenCalledWith(
+      { err, statusCode: 503 },
+      'Unhandled page error'
+    );
+  });
+
+  it('does not log framework errors during client-side error rendering', () => {
+    const NextErrorPage = require('../_error.js').default;
+    const err = new Error('client-side diagnostic');
+    err.statusCode = 500;
+
+    expect(NextErrorPage.getInitialProps({
+      res: null,
+      err,
+    })).toEqual({ statusCode: 500 });
+    expect(mockLoggerError).not.toHaveBeenCalled();
   });
 
   it('renders unknown framework errors as the generic 500 page without raw details', () => {

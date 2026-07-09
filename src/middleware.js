@@ -27,17 +27,12 @@
  */
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse } from 'next/server';
+import { ERROR_STATUS_CODES } from './shared/constants/errorStatusCodes';
 
 const PUBLIC_PATHS = [
   { path: '/login', allowSubpaths: false },
   { path: '/auth/callback', allowSubpaths: false },
-  { path: '/403', allowSubpaths: false },
-  { path: '/404', allowSubpaths: false },
-  { path: '/429', allowSubpaths: false },
-  { path: '/500', allowSubpaths: false },
-  { path: '/502', allowSubpaths: false },
-  { path: '/503', allowSubpaths: false },
-  { path: '/504', allowSubpaths: false },
+  ...ERROR_STATUS_CODES.map((statusCode) => ({ path: `/${statusCode}`, allowSubpaths: false })),
 ];
 
 /**

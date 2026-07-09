@@ -24,21 +24,19 @@ jest.mock('next/server', () => ({
 
 describe('isPublicPath', () => {
   let isPublicPath;
+  let ERROR_STATUS_CODES;
 
   beforeAll(() => {
     ({ isPublicPath } = require('../middleware.js'));
+    ({ ERROR_STATUS_CODES } = require('../shared/constants/errorStatusCodes.js'));
   });
 
   it('allows login, callback, and custom error pages', () => {
     expect(isPublicPath('/login')).toBe(true);
     expect(isPublicPath('/auth/callback')).toBe(true);
-    expect(isPublicPath('/403')).toBe(true);
-    expect(isPublicPath('/404')).toBe(true);
-    expect(isPublicPath('/429')).toBe(true);
-    expect(isPublicPath('/500')).toBe(true);
-    expect(isPublicPath('/502')).toBe(true);
-    expect(isPublicPath('/503')).toBe(true);
-    expect(isPublicPath('/504')).toBe(true);
+    ERROR_STATUS_CODES.forEach((statusCode) => {
+      expect(isPublicPath(`/${statusCode}`)).toBe(true);
+    });
   });
 
   it('keeps unrelated app paths protected', () => {

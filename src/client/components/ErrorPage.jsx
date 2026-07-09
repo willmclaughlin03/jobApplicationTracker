@@ -1,5 +1,10 @@
 import Head from 'next/head';
 import { useRouter } from 'next/router';
+import { ERROR_STATUS_CODES } from '../../shared/constants/errorStatusCodes';
+
+export { ERROR_STATUS_CODES };
+
+const ERROR_STATUS_CODE_SET = new Set(ERROR_STATUS_CODES);
 
 export const ERROR_PAGE_CONTENT = {
   403: {
@@ -79,7 +84,7 @@ export const ERROR_PAGE_CONTENT = {
 export function getErrorPageContent(statusCode) {
   const normalizedStatus = Number(statusCode);
 
-  if (Number.isInteger(normalizedStatus) && ERROR_PAGE_CONTENT[normalizedStatus]) {
+  if (Number.isInteger(normalizedStatus) && ERROR_STATUS_CODE_SET.has(normalizedStatus)) {
     return ERROR_PAGE_CONTENT[normalizedStatus];
   }
 
