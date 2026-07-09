@@ -191,45 +191,6 @@ async function repairStorageTransitionsForRequest(req, user) {
 }
 
 /**
- * Loads optional count-only storage metadata after a committed create.
- *
- * Purpose: POST should still succeed if the summary refresh fails after the
- * row is created; clients can fall back to the existing storage-status route.
- *
- * @param {import('next').NextApiRequest & { log: object }} req - API request with logger.
- * @param {{ id: string }} user - Authenticated user.
- * @param {object} storageStatusResult - Storage status already resolved for create.
- * @returns {Promise<object|null>} Storage summary metadata, or null when unavailable.
- */
-async function loadPostCreateStorageSummary(req, user, storageStatusResult) {
-  try {
-    const storageSummaryResult = await getStorageSummaryForUser(
-      user.id,
-      req._supabaseClient,
-      req.log,
-      {
-        storageStatusResult,
-      }
-    );
-
-    if (storageSummaryResult.error) {
-      return null;
-    }
-
-    return storageSummaryResult.data ?? null;
-  } catch (error) {
-    req.log.error(
-      {
-        err: error,
-        operation: 'loadPostCreateStorageSummary',
-        userId: user.id,
-      },
-      'Post-create storage summary load failed'
-    );
-    return null;
-  }
-}
-/**
  * Handles GET requests - retrieves jobs and storage summary for authenticated user
  *
  * Purpose: Fetch user's job application history with optional pagination/filtering
@@ -309,9 +270,7 @@ async function handleGet(req, res, user) {
  *
  * Purpose: Add new job application to user's tracking list
  * Connects to:
- * - jobService.createJob() for database operations
- * - loadPostCreateStorageSummary() after createJob succeeds
- * - storageSummaryService.getStorageSummaryForUser() for post-create storage summary
+ * - jobService.createJob() for database operations and optional count metadata
  * Validation: Uses jobSchema to validate request body
  */
 async function handlePost(req, res, user) {
@@ -335,7 +294,7 @@ async function handlePost(req, res, user) {
     return sendError(res, 503, 'SERVICE_UNAVAILABLE', ERROR_MESSAGES.SERVICE_UNAVAILABLE);
   }
 
-  const { data, error } = await createJob(
+  const { data, error, storageSummary = null } = await createJob(
     finalizedData,
     user.id,
     req._supabaseClient,
@@ -346,12 +305,6 @@ async function handlePost(req, res, user) {
   if (error) {
     return sendCreateJobError(res, error);
   }
-
-  const storageSummary = await loadPostCreateStorageSummary(
-    req,
-    user,
-    storageStatusResult
-  );
 
   return sendCreateJobSuccess(res, data, storageSummary);
 }

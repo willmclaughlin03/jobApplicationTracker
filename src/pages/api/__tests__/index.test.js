@@ -603,12 +603,12 @@ describe('index API handler (/api/jobs)', () => {
 
     /**
      * Test: Successful job creation
-     * Expected: Returns 201 with created job data
+     * Expected: Returns 201 with created job data and optional storage summary metadata.
      */
-    it('should create job and return 201', async () => {
+    it('should create job and return 201 with the service storage summary', async () => {
       const createdJob = { id: 'new-job-1', ...validJobData, user_id: mockUser.id };
       mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
-      mockCreateJob.mockResolvedValue({ data: [createdJob], error: null });
+      mockCreateJob.mockResolvedValue({ data: [createdJob], error: null, storageSummary: mockStorageSummary });
       const mockClient = { from: jest.fn() };
 
       const req = { ...createMockRequest('POST', {}, validJobData), _supabaseClient: mockClient };
@@ -628,12 +628,7 @@ describe('index API handler (/api/jobs)', () => {
         noopLog,
         terminalFreeStorageStatus
       );
-      expect(mockGetStorageSummaryForUser).toHaveBeenCalledWith(
-        mockUser.id,
-        mockClient,
-        noopLog,
-        { storageStatusResult: terminalFreeStorageStatus }
-      );
+      expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           data: [createdJob],
@@ -642,14 +637,10 @@ describe('index API handler (/api/jobs)', () => {
       );
     });
 
-    it('should return created job without storage summary when post-create summary fails', async () => {
-      const createdJob = { id: 'new-job-summary-failed', ...validJobData, user_id: mockUser.id };
+    it('should omit storage summary on create when the service cannot derive it', async () => {
+      const createdJob = { id: 'new-job-1', ...validJobData, user_id: mockUser.id };
       mockJobSchemaSafeParse.mockReturnValue({ success: true, data: validJobData });
-      mockCreateJob.mockResolvedValue({ data: [createdJob], error: null });
-      mockGetStorageSummaryForUser.mockResolvedValueOnce({
-        data: null,
-        error: new Error('storage summary failed after create'),
-      });
+      mockCreateJob.mockResolvedValue({ data: [createdJob], error: null, storageSummary: null });
 
       const req = createMockRequest('POST', {}, validJobData);
       const res = createMockResponse();
@@ -657,13 +648,7 @@ describe('index API handler (/api/jobs)', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(201);
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: [createdJob],
-          error: null,
-          message: 'Successfully added job',
-        })
-      );
+      expect(mockGetStorageSummaryForUser).not.toHaveBeenCalled();
       expect(res.json.mock.calls[0][0]).not.toHaveProperty('storageSummary');
     });
 

@@ -21,6 +21,7 @@ import {
   classifyStorageCreateFlow,
   isStorageStatusRetryable,
 } from '../lib/billingService.js';
+import { buildStorageSummary } from './storageSummaryService.js';
 import {
   STORAGE_CREATE_ACTIONS,
   STORAGE_CREATE_ERROR_CODES,
@@ -528,6 +529,54 @@ function normalizeStorageCreateRpcData(data) {
 }
 
 /**
+ * Checks whether a create-RPC count hint can be used for a response summary.
+ *
+ * Purpose: post-create summaries are optional metadata; malformed count hints
+ * should omit the summary instead of becoming misleading zeroes.
+ *
+ * @param {unknown} count - Raw count value returned by the create RPC.
+ * @returns {boolean} True when the count is a safe non-negative integer.
+ */
+function isValidCreateSummaryCount(count) {
+  return Number.isSafeInteger(count) && count >= 0;
+}
+
+/**
+ * Builds a count-only storage summary from successful create-RPC hints.
+ *
+ * Purpose: avoid a post-create storage-count RPC when the atomic create already
+ * returned fresh pre-insert counts from the same transaction boundary.
+ *
+ * @param {object|string|null} storageStatusResult - Fresh storage status used for create.
+ * @param {object} createResult - Normalized successful create RPC payload.
+ * @returns {object|null} Response-safe summary, or null when hints are unusable.
+ */
+function buildPostCreateStorageSummary(storageStatusResult, createResult) {
+  const activeCountBeforeCreate = createResult?.activeCountBeforeCreate;
+  const retainedTotalCountBeforeCreate = createResult?.retainedTotalCountBeforeCreate;
+
+  if (
+    !isValidCreateSummaryCount(activeCountBeforeCreate)
+    || !isValidCreateSummaryCount(retainedTotalCountBeforeCreate)
+    || retainedTotalCountBeforeCreate < activeCountBeforeCreate
+    || activeCountBeforeCreate >= Number.MAX_SAFE_INTEGER
+    || retainedTotalCountBeforeCreate >= Number.MAX_SAFE_INTEGER
+  ) {
+    return null;
+  }
+
+  const summaryStatusResult = typeof storageStatusResult === 'string'
+    ? { status: storageStatusResult, billingStatus: null }
+    : storageStatusResult;
+
+  return buildStorageSummary(summaryStatusResult, {
+    activeCount: activeCountBeforeCreate + 1,
+    lockedCount: retainedTotalCountBeforeCreate - activeCountBeforeCreate,
+    retainedTotalCount: retainedTotalCountBeforeCreate + 1,
+  });
+}
+
+/**
  * Calls the database-side atomic job create quota boundary.
  *
  * Purpose: active and retained create eligibility must be checked in the same
@@ -750,7 +799,7 @@ export async function getJobById(
  * @param {import('@supabase/supabase-js').SupabaseClient} supabaseClient - Accepted for route compatibility; jobs are inserted through supabaseAdmin RPC.
  * @param {object} log - Request-scoped logger.
  * @param {object|string} storageStatusResult - Typed storage status from resolveStorageStatus().
- * @returns {Promise<{data: Object|null, error: Error|null}>}
+ * @returns {Promise<{data: Object|null, error: Error|null, storageSummary?: object|null}>}
  *
  * Security: Associates job with server-derived user_id to enforce ownership.
  * Storage: Rejects creates from ambiguous billing states and uses the database
@@ -839,7 +888,11 @@ export async function createJob(jobData, userId, supabaseClient, log = defaultLo
 
     log.info({ operation: 'createJob', userId, jobId: createResult.job?.id }, 'Job created successfully');
 
-    return { data: [createResult.job], error: null };
+    return {
+      data: [createResult.job],
+      error: null,
+      storageSummary: buildPostCreateStorageSummary(storageStatusResult, createResult),
+    };
 
   } catch (error) {
     log.error({ err: error, operation: 'createJob', userId }, 'Unexpected error in createJob');
