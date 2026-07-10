@@ -337,9 +337,12 @@ rules:
 - Other equal-time conflicting business snapshots return a distinct
   `equal_timestamp_conflict`/`reconcile_required` reason without applying
   either as if it were known-newer.
-- A genuinely different subscription may replace a terminal old subscription
-  under the existing safe replacement rule; terminal stickiness must not bind
-  unrelated subscription ids together.
+- A strictly newer event for a genuinely different subscription may replace a
+  terminal old subscription under the existing safe replacement rule.
+- Equal-time different-subscription snapshots are not chronologically ordered:
+  return `equal_cross_subscription_conflict` without mutation. Only the
+  verified `checkout_completion` authoritative path may replace that terminal
+  row at the same timestamp; event arrival and a different id are insufficient.
 
 Canonical equality should compare every entitlement-relevant field with null-
 safe SQL equality: subscription id, customer id, price id, status, period end,
@@ -353,10 +356,14 @@ and `cancel_at_period_end`.
    unresolved equal-time conflict.
 3. Map identical equality and terminal preservation to safe processed webhook
    outcomes. They must not mutate local state back to nonterminal.
-4. Map an unresolved conflict to a fresh authoritative reconciliation using the
-   Chunk 1 `reconcile_current` contract. Capture the local id/version snapshot
-   only after the conflict result, require that it still names the event's
-   subscription, then retrieve Stripe again.
+4. Map an unresolved same-subscription conflict to a fresh authoritative
+   reconciliation using the Chunk 1 `reconcile_current` contract. Perform a
+   strict privileged reread with `loadBillingStatusOrThrow()` only after the
+   conflict result; never use the fail-soft privileged status helper. Capture
+   the local id/version snapshot, require that it still names the event's
+   subscription, then retrieve Stripe again. An equal-time cross-subscription
+   conflict fails before Stripe retrieval and remains retryable until verified
+   Checkout completion or a strictly newer event establishes the replacement.
 5. If that bounded reconcile fails or loses its compare-and-swap, throw through
    the dispatcher so the event receipt remains `failed`/retryable and Stripe's
    delivery retry remains the durable recovery boundary.
@@ -365,6 +372,10 @@ and `cancel_at_period_end`.
    A queue with no consumer is weaker than the existing failed-receipt retry.
 7. Preserve direct canceled handling for deletion events, including the
    future-timestamp and livemode checks already in place.
+8. Add a central dispatcher assertion before storage repair and receipt
+   finalization that rejects any remaining `reconcile_required` result. Branch-
+   local recovery is not sufficient protection against future handlers that
+   forget to resolve the outcome.
 
 ### Guardrails
 
@@ -373,7 +384,8 @@ and `cancel_at_period_end`.
   that share a timestamp.
 - Do not report an unresolved conflict as terminal `stale_ignored`; that would
   suppress recovery.
-- Do not make canceled sticky across a different new subscription id.
+- Do not make canceled sticky against a strictly newer different subscription,
+  but do not use equal timestamps alone as proof that the different id is new.
 - Keep event receipt envelope integrity and duplicate-id behavior unchanged.
 - Do not acknowledge a webhook as processed before required reconciliation or
   an explicitly safe terminal-preservation outcome is durable.
@@ -395,6 +407,11 @@ Add or update tests for:
   the strict row now names a different subscription.
 - Failed reconciliation records a retryable failure rather than a terminal
   receipt.
+- Equal-time different-subscription events cannot replace a terminal row; a
+  strictly newer event or verified Checkout completion remains able to do so.
+- A strict conflict reread failure cannot be converted into absent/Free state.
+- The central dispatcher boundary rejects an unresolved conflict even if an
+  event-specific branch omits recovery.
 - The existing test that currently expects conflicting equality to apply is
   replaced, not left contradicting the new contract.
 
@@ -411,6 +428,29 @@ Start at the `>=` predicate and fallback reason in migration `015`, then inspect
 the event branch around `callSubscriptionEventRpc()` in `billingService.js`.
 Read the receipt claim/finalization flow before changing dispatcher outcomes;
 different event ids intentionally bypass duplicate-id suppression.
+
+### Residual Risks And Required Production Follow-Ups
+
+The local snapshot CAS, terminal stickiness, and cross-subscription equality
+rule permanently prevent the confirmed same-second entitlement restoration
+paths, but two distributed-system limits remain:
+
+- Stripe webhook delivery retries are finite. A durable autonomous recovery
+  mechanism requires a claimed retry task, bounded backoff, attempt limits,
+  monitoring, a worker, and an actual deployment trigger. Do not add a queue
+  table without that consumer, and do not take migration `028` from Chunk 3.
+  Before paid rollout, track this as a separate implementation chunk rather
+  than treating logs or a manual runbook as permanent recovery.
+- Stripe can change after an authoritative GET and before PostgreSQL commits;
+  Stripe exposes no transaction shared with the local database. The guarded
+  write prevents newer local state from being overwritten, but cannot prove
+  that the provider will not change immediately afterward. Before paid rollout,
+  add a bounded periodic drift reconciler through the same snapshot-guarded
+  contract if product operations require autonomous eventual convergence.
+
+These are production-readiness follow-ups, not current live paid-user
+regressions in this pre-production environment. Neither should expand Chunk 2
+into an untriggered queue or a new Checkout state machine.
 
 ## Chunk 3 - Keep Completed Checkout Claims Pending Until Reconciled
 
@@ -1753,7 +1793,7 @@ Use this checklist when each lane converges and again before production rollout.
 | Area | Expected proof |
 | --- | --- |
 | Authoritative sync | Every authoritative caller supplies exact-existing id/version or exact-absent local state plus an allowed purpose; unguarded or unsafe-replacement SQL calls fail. |
-| Stripe event ties | Same-subscription terminal state cannot be restored by a delayed equal-time nonterminal snapshot. |
+| Stripe event ties | Same-subscription terminal state cannot be restored by a delayed equal-time nonterminal snapshot; equal-time different-subscription replacement requires verified Checkout authority instead of arrival order. |
 | Checkout dedupe | `reconciliation_pending` blocks another Checkout until strict canonical reconciliation; the claim RPC also rechecks billing eligibility under the billing-transition lock before insert. |
 | Receipt recovery | Unresolved billing conflicts remain retryable and are never terminally acknowledged as stale without proof. |
 | Auth bucket isolation | Session, logout, callback, failed-auth, and CSRF-failure terminal policies are separate; protected traffic intentionally also consumes the generous shared PRE_AUTH IP overlay. |

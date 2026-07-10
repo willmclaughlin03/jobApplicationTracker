@@ -75,6 +75,7 @@ const {
   markSubscriptionDeletedFromEvent,
   mapCheckoutStatus,
   PENDING_CHECKOUT_SESSION_OUTCOMES,
+  reconcileSubscriptionEventConflict,
   recordStripeEventReceipt,
   redactStripeId,
   resolveStorageEntitlement,
@@ -2059,6 +2060,7 @@ describe('billingService', () => {
           upsert_billing_subscription_if_newer_or_equal: {
             data: {
               applied: true,
+              reason: 'applied',
               subscription: {
                 user_id: userId,
                 stripe_subscription_id: 'sub_sync_123',
@@ -2117,6 +2119,120 @@ describe('billingService', () => {
       });
     });
 
+    it.each([
+      ['idempotent_equal', BILLING_WRITE_OUTCOMES.PROCESSED],
+      ['terminal_preserved', BILLING_WRITE_OUTCOMES.PROCESSED],
+      ['stale_ignored', BILLING_WRITE_OUTCOMES.STALE_IGNORED],
+      ['equal_timestamp_conflict', BILLING_WRITE_OUTCOMES.RECONCILE_REQUIRED],
+      ['equal_cross_subscription_conflict', BILLING_WRITE_OUTCOMES.RECONCILE_REQUIRED],
+    ])('maps non-applied event RPC reason %s to %s', async (reason, expectedOutcome) => {
+      useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: { user_id: userId, stripe_customer_id: 'cus_sync_123' },
+            error: null,
+          },
+        },
+        billing_subscriptions: {
+          maybeSingle: {
+            data: {
+              user_id: userId,
+              stripe_subscription_id: 'sub_sync_123',
+              stripe_customer_id: 'cus_sync_123',
+              price_id: 'price_premium_monthly',
+              status: 'active',
+              current_period_end: '2029-11-20T00:00:00.000Z',
+              cancel_at_period_end: false,
+              last_stripe_event_created: '2029-11-14T00:00:00.000Z',
+              snapshot_version: 9,
+            },
+            error: null,
+          },
+        },
+        rpc: {
+          upsert_billing_subscription_if_newer_or_equal: {
+            data: {
+              applied: false,
+              reason,
+              subscription: {
+                user_id: userId,
+                stripe_subscription_id: 'sub_sync_123',
+                status: reason === 'terminal_preserved' ? 'canceled' : 'active',
+                snapshot_version: 9,
+              },
+            },
+            error: null,
+          },
+        },
+      }));
+      mockStripe.subscriptions.retrieve.mockResolvedValue({
+        id: 'sub_sync_123',
+        customer: 'cus_sync_123',
+        status: 'active',
+        livemode: false,
+        cancel_at_period_end: false,
+        items: {
+          data: [{
+            price: { id: 'price_premium_monthly' },
+            current_period_end: 1889827200,
+          }],
+        },
+      });
+
+      const result = await syncSubscriptionFromStripe(
+        'sub_sync_123',
+        { mode: BILLING_SYNC_MODES.EVENT, eventCreated: '2029-11-14T00:00:00.000Z' },
+        mockLog
+      );
+
+      expect(result).toEqual(expect.objectContaining({
+        outcome: expectedOutcome,
+        reason,
+        userId,
+      }));
+    });
+
+    it('rejects legacy or malformed event RPC reasons instead of acknowledging them', async () => {
+      useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: { user_id: userId, stripe_customer_id: 'cus_sync_123' },
+            error: null,
+          },
+        },
+        billing_subscriptions: {
+          maybeSingle: { data: null, error: null },
+        },
+        rpc: {
+          upsert_billing_subscription_if_newer_or_equal: {
+            data: {
+              applied: false,
+              reason: 'not_applied',
+              subscription: {
+                user_id: userId,
+                stripe_subscription_id: 'sub_sync_123',
+              },
+            },
+            error: null,
+          },
+        },
+      }));
+      mockStripe.subscriptions.retrieve.mockResolvedValue({
+        id: 'sub_sync_123',
+        customer: 'cus_sync_123',
+        status: 'active',
+        livemode: false,
+        cancel_at_period_end: false,
+        items: { data: [{ price: { id: 'price_premium_monthly' } }] },
+      });
+
+      await expect(syncSubscriptionFromStripe(
+        'sub_sync_123',
+        { mode: BILLING_SYNC_MODES.EVENT, eventCreated: '2029-11-14T00:00:00.000Z' },
+        mockLog
+      )).rejects.toMatchObject({ code: 'BILLING_RPC_INVALID_RESPONSE' });
+    });
+
     it('uses the persisted local price when event item periods include multiple prices', async () => {
       const adminClient = useAdminClient(createSupabaseClient({
         billing_customers: {
@@ -2144,6 +2260,7 @@ describe('billingService', () => {
           upsert_billing_subscription_if_newer_or_equal: {
             data: {
               applied: true,
+              reason: 'applied',
               subscription: {
                 user_id: userId,
                 stripe_subscription_id: 'sub_sync_123',
@@ -2983,6 +3100,206 @@ describe('billingService', () => {
     });
   });
 
+  describe('reconcileSubscriptionEventConflict', () => {
+    const userId = 'user-event-conflict';
+
+    it('strictly rereads and uses reconcile_current for a fresh guarded retrieval', async () => {
+      const customerRow = {
+        user_id: userId,
+        stripe_customer_id: 'cus_event_conflict_123',
+      };
+      const adminClient = useAdminClient(createSupabaseClient({
+        billing_customers: [
+          { maybeSingle: { data: customerRow, error: null } },
+          { maybeSingle: { data: customerRow, error: null } },
+        ],
+        billing_subscriptions: {
+          maybeSingle: {
+            data: {
+              user_id: userId,
+              stripe_subscription_id: 'sub_event_conflict_123',
+              stripe_customer_id: 'cus_event_conflict_123',
+              price_id: 'price_premium_monthly',
+              status: 'active',
+              snapshot_version: 21,
+            },
+            error: null,
+          },
+        },
+        rpc: {
+          upsert_billing_subscription_authoritative: {
+            data: {
+              applied: true,
+              reason: 'applied',
+              subscription: {
+                user_id: userId,
+                stripe_subscription_id: 'sub_event_conflict_123',
+                status: 'past_due',
+                snapshot_version: 22,
+              },
+            },
+            error: null,
+          },
+        },
+      }));
+      mockStripe.subscriptions.retrieve.mockResolvedValue({
+        id: 'sub_event_conflict_123',
+        customer: 'cus_event_conflict_123',
+        status: 'past_due',
+        livemode: false,
+        cancel_at_period_end: false,
+        items: {
+          data: [{
+            price: { id: 'price_premium_monthly' },
+            current_period_end: 1889827200,
+          }],
+        },
+      });
+
+      const result = await reconcileSubscriptionEventConflict(
+        'sub_event_conflict_123',
+        userId,
+        mockLog
+      );
+
+      expect(result.outcome).toBe(BILLING_WRITE_OUTCOMES.PROCESSED);
+      expect(mockStripe.subscriptions.retrieve).toHaveBeenCalledTimes(1);
+      expect(
+        adminClient.rpcCallsByName.upsert_billing_subscription_authoritative[0].args
+      ).toEqual({
+        payload: expect.objectContaining({
+          _expected_subscription_exists: true,
+          _expected_stripe_subscription_id: 'sub_event_conflict_123',
+          _expected_subscription_snapshot_version: 21,
+          _authoritative_sync_purpose: 'reconcile_current',
+        }),
+      });
+    });
+
+    it('stops before Stripe when the strict reread names a different subscription', async () => {
+      useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: { user_id: userId, stripe_customer_id: 'cus_event_conflict_123' },
+            error: null,
+          },
+        },
+        billing_subscriptions: {
+          maybeSingle: {
+            data: {
+              user_id: userId,
+              stripe_subscription_id: 'sub_different_456',
+              snapshot_version: 22,
+            },
+            error: null,
+          },
+        },
+      }));
+
+      await expect(reconcileSubscriptionEventConflict(
+        'sub_event_conflict_123',
+        userId,
+        mockLog
+      )).rejects.toMatchObject({
+        code: 'BILLING_EVENT_RECONCILIATION_TARGET_CHANGED',
+      });
+
+      expect(mockStripe.subscriptions.retrieve).not.toHaveBeenCalled();
+      expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
+    });
+
+    it('fails closed on a strict billing reread error without inferring absence', async () => {
+      const readError = new Error('database unavailable');
+      useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: { user_id: userId, stripe_customer_id: 'cus_event_conflict_123' },
+            error: null,
+          },
+        },
+        billing_subscriptions: {
+          maybeSingle: { data: null, error: readError },
+        },
+      }));
+
+      await expect(reconcileSubscriptionEventConflict(
+        'sub_event_conflict_123',
+        userId,
+        mockLog
+      )).rejects.toMatchObject({ code: 'BILLING_STATUS_UNAVAILABLE' });
+
+      expect(mockStripe.subscriptions.retrieve).not.toHaveBeenCalled();
+      expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
+    });
+
+    it('throws when guarded reconciliation loses to a different local target', async () => {
+      const customerRow = {
+        user_id: userId,
+        stripe_customer_id: 'cus_event_conflict_123',
+      };
+      useAdminClient(createSupabaseClient({
+        billing_customers: [
+          { maybeSingle: { data: customerRow, error: null } },
+          { maybeSingle: { data: customerRow, error: null } },
+        ],
+        billing_subscriptions: [
+          {
+            maybeSingle: {
+              data: {
+                user_id: userId,
+                stripe_subscription_id: 'sub_event_conflict_123',
+                snapshot_version: 21,
+              },
+              error: null,
+            },
+          },
+          {
+            maybeSingle: {
+              data: {
+                user_id: userId,
+                stripe_subscription_id: 'sub_different_456',
+                snapshot_version: 22,
+              },
+              error: null,
+            },
+          },
+        ],
+        rpc: {
+          upsert_billing_subscription_authoritative: {
+            data: {
+              applied: false,
+              reason: 'billing_snapshot_changed',
+              subscription: {
+                user_id: userId,
+                stripe_subscription_id: 'sub_different_456',
+                snapshot_version: 22,
+              },
+            },
+            error: null,
+          },
+        },
+      }));
+      mockStripe.subscriptions.retrieve.mockResolvedValue({
+        id: 'sub_event_conflict_123',
+        customer: 'cus_event_conflict_123',
+        status: 'active',
+        livemode: false,
+        cancel_at_period_end: false,
+        items: { data: [{ price: { id: 'price_premium_monthly' } }] },
+      });
+
+      await expect(reconcileSubscriptionEventConflict(
+        'sub_event_conflict_123',
+        userId,
+        mockLog
+      )).rejects.toMatchObject({
+        code: 'BILLING_EVENT_RECONCILIATION_INCOMPLETE',
+      });
+
+      expect(mockStripe.subscriptions.retrieve).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('recordStripeEventReceipt', () => {
     it('pre-reads an existing receipt and normalizes envelope comparison timestamps', async () => {
       const adminClient = useAdminClient(createSupabaseClient({
@@ -3320,6 +3637,7 @@ describe('billingService', () => {
           upsert_billing_subscription_if_newer_or_equal: {
             data: {
               applied: true,
+              reason: 'applied',
               subscription: {
                 user_id: userId,
                 stripe_subscription_id: 'sub_delete_123',
@@ -3409,6 +3727,7 @@ describe('billingService', () => {
           upsert_billing_subscription_if_newer_or_equal: {
             data: {
               applied: true,
+              reason: 'applied',
               subscription: {
                 user_id: userId,
                 stripe_subscription_id: 'sub_delete_123',

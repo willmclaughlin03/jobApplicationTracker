@@ -15,9 +15,10 @@
  *   - 014_billing_checkout_premium_plan_rename.sql
  *   - 015_fix_billing_subscription_event_rpc_ambiguity.sql
  *   - 026_require_authoritative_billing_snapshot.sql
+ *   - 027_resolve_equal_stripe_event_timestamps.sql
  *
  * Notes:
- *   1. This suite may apply 005-015 plus additive migration 026 when the billing tables are absent, or
+ *   1. This suite may apply 005-015 plus additive migrations 026-027 when the billing tables are absent, or
  *      apply additive follow-ups alone when the base tables exist without the
  *      follow-up migrations.
  *   2. That is not the same as a full fresh-schema replay for the project.
@@ -69,6 +70,7 @@ const BILLING_MIGRATION_FILES = [
   '014_billing_checkout_premium_plan_rename.sql',
   '015_fix_billing_subscription_event_rpc_ambiguity.sql',
   '026_require_authoritative_billing_snapshot.sql',
+  '027_resolve_equal_stripe_event_timestamps.sql',
 ];
 
 const BASE_BILLING_TABLE_NAMES = [
@@ -169,6 +171,10 @@ const ADDITIVE_BILLING_MIGRATIONS = [
   {
     filename: '026_require_authoritative_billing_snapshot.sql',
     isApplied: isAuthoritativeSubscriptionSnapshotGuardApplied,
+  },
+  {
+    filename: '027_resolve_equal_stripe_event_timestamps.sql',
+    isApplied: isEqualTimestampEventOrderingApplied,
   },
 ];
 
@@ -324,6 +330,10 @@ function isBillingSubscriptionEventRpcAmbiguityFixApplied(shape) {
   const functionDefinition =
     shape.functionDefinitions.get(BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION) ?? '';
 
+  if (isEqualTimestampEventOrderingApplied(shape)) {
+    return true;
+  }
+
   return /v_applied\s+boolean/i.test(functionDefinition)
     && /result_applied/i.test(functionDefinition)
     && !/\bapplied\s+boolean\s*;/i.test(functionDefinition)
@@ -349,6 +359,26 @@ function isAuthoritativeSubscriptionSnapshotGuardApplied(shape) {
     && functionDefinition.includes('_authoritative_sync_purpose')
     && functionDefinition.includes('authoritative_sync_purpose IS NULL')
     && functionDefinition.includes('subscription_replacement_blocked');
+}
+
+/**
+ * Check whether the event RPC has deterministic equal-timestamp outcomes.
+ *
+ * Purpose: migration 015 installed the same function name with blanket >=
+ * ordering, so additive setup must inspect the function body for Chunk 2's
+ * idempotent, terminal-preservation, and unresolved-conflict reasons.
+ *
+ * @param {object} shape installed billing schema shape from introspection.
+ * @returns {boolean}
+ */
+function isEqualTimestampEventOrderingApplied(shape) {
+  const functionDefinition =
+    shape.functionDefinitions.get(BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION) ?? '';
+
+  return functionDefinition.includes('idempotent_equal')
+    && functionDefinition.includes('terminal_preserved')
+    && functionDefinition.includes('equal_timestamp_conflict')
+    && functionDefinition.includes('equal_cross_subscription_conflict');
 }
 
 function isRpcSchemaCacheError(error) {
@@ -415,6 +445,7 @@ jest.setTimeout(30_000);
 
 describeOrSkip('Suite B - Billing migration + RLS integration', () => {
   let serviceClient;
+  let eventServiceClient;
   let anonClient;
   let clientA;
   let clientB;
@@ -503,6 +534,40 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
     return callBillingRpc(serviceClient, fn, args, {
       retryOnSchemaLag: !billingRpcSchemaPrimed,
     });
+  }
+
+  /**
+   * Build a complete event-RPC subscription snapshot for ordering tests.
+   *
+   * Purpose: migration 027 rejects partial event snapshots, so concurrency
+   * cases share one explicit fixture builder while varying only the canonical
+   * fields that establish ordering or conflict behavior.
+   *
+   * @param {object} input canonical event snapshot fields and identifiers.
+   * @returns {{ payload: object }} RPC arguments for the event upsert function.
+   */
+  function buildSubscriptionEventRpcArgs({
+    userId,
+    subscriptionId,
+    customerId,
+    eventCreated,
+    status = 'active',
+    priceId = 'price_event_ordering',
+    currentPeriodEnd = '2030-03-01T00:00:00.000Z',
+    cancelAtPeriodEnd = false,
+  }) {
+    return {
+      payload: {
+        user_id: userId,
+        stripe_subscription_id: subscriptionId,
+        stripe_customer_id: customerId,
+        price_id: priceId,
+        status,
+        current_period_end: currentPeriodEnd,
+        cancel_at_period_end: cancelAtPeriodEnd,
+        last_stripe_event_created: eventCreated,
+      },
+    };
   }
 
   async function getBillingTableState() {
@@ -733,6 +798,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
 
     expect(isBillingSubscriptionEventRpcAmbiguityFixApplied(shape)).toBe(true);
     expect(isAuthoritativeSubscriptionSnapshotGuardApplied(shape)).toBe(true);
+    expect(isEqualTimestampEventOrderingApplied(shape)).toBe(true);
   }
 
   /**
@@ -781,6 +847,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
             || migration.filename === '014_billing_checkout_premium_plan_rename.sql'
             || migration.filename === '015_fix_billing_subscription_event_rpc_ambiguity.sql'
             || migration.filename === '026_require_authoritative_billing_snapshot.sql'
+            || migration.filename === '027_resolve_equal_stripe_event_timestamps.sql'
           ) {
             appliedRpcMigration = true;
           }
@@ -818,6 +885,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
         || filename === '014_billing_checkout_premium_plan_rename.sql'
         || filename === '015_fix_billing_subscription_event_rpc_ambiguity.sql'
         || filename === '026_require_authoritative_billing_snapshot.sql'
+        || filename === '027_resolve_equal_stripe_event_timestamps.sql'
       ) {
         appliedRpcMigration = true;
       }
@@ -915,6 +983,9 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
     serviceClient = createClient(TEST_URL, TEST_SERVICE_KEY, {
       auth: { persistSession: false },
     });
+    eventServiceClient = createClient(TEST_URL, TEST_SERVICE_KEY, {
+      auth: { persistSession: false },
+    });
     anonClient = createClient(TEST_URL, TEST_ANON_KEY, {
       auth: { persistSession: false },
     });
@@ -968,7 +1039,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
     }
   });
 
-  test('B1: local/session billing migrations through additive 026 exist in the repo-root migrations folder', () => {
+  test('B1: local/session billing migrations through additive 027 exist in the repo-root migrations folder', () => {
     for (const filename of BILLING_MIGRATION_FILES) {
       expect(existsSync(join(MIGRATIONS_DIR, filename))).toBe(true);
     }
@@ -1893,10 +1964,11 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
     expect(mismatch.error).toBeTruthy();
   });
 
-  test('B28: upsert_billing_subscription_if_newer_or_equal enforces newer-or-equal event ordering and rejects null staleness keys', async () => {
+  test('B28: event upserts resolve equal timestamps without mutating safe no-op snapshots', async () => {
     const rpcUserId = await createTempUser('billing-rpc-event-upsert');
     const seededSubscriptionId = `sub_rpc_seed_${Date.now()}`;
     const seededCustomerId = `cus_rpc_seed_${Date.now()}`;
+    const newerEventCreated = '2030-01-11T00:00:00.000Z';
 
     await ensureBillingCustomer(rpcUserId);
 
@@ -1912,18 +1984,18 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
     });
     expect(seededSubscription.error).toBeNull();
 
-    const newer = await callServiceBillingRpc(BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION, {
-      payload: {
-        user_id: rpcUserId,
-        stripe_subscription_id: seededSubscriptionId,
-        stripe_customer_id: seededCustomerId,
-        price_id: 'price_newer',
-        status: 'active',
-        current_period_end: '2030-03-01T00:00:00.000Z',
-        cancel_at_period_end: true,
-        last_stripe_event_created: '2030-01-11T00:00:00.000Z',
-      },
+    const newerArgs = buildSubscriptionEventRpcArgs({
+      userId: rpcUserId,
+      subscriptionId: seededSubscriptionId,
+      customerId: seededCustomerId,
+      eventCreated: newerEventCreated,
+      priceId: 'price_newer',
+      cancelAtPeriodEnd: true,
     });
+    const newer = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+      newerArgs
+    );
 
     expect(newer.error).toBeNull();
     expect(newer.data).toEqual(expect.objectContaining({
@@ -1936,76 +2008,337 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
       }),
     }));
 
-    const equalTimestamp = await callServiceBillingRpc(BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION, {
-      payload: {
-        user_id: rpcUserId,
-        stripe_subscription_id: newer.data.subscription.stripe_subscription_id,
-        stripe_customer_id: newer.data.subscription.stripe_customer_id,
-        price_id: 'price_equal',
+    const identical = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+      newerArgs
+    );
+
+    expect(identical.error).toBeNull();
+    expect(identical.data).toEqual(expect.objectContaining({
+      applied: false,
+      reason: 'idempotent_equal',
+      subscription: expect.objectContaining({
+        snapshot_version: newer.data.subscription.snapshot_version,
+        updated_at: newer.data.subscription.updated_at,
+        status_changed_at: newer.data.subscription.status_changed_at,
+      }),
+    }));
+
+    const unresolvedEqual = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+      buildSubscriptionEventRpcArgs({
+        userId: rpcUserId,
+        subscriptionId: seededSubscriptionId,
+        customerId: seededCustomerId,
+        eventCreated: newerEventCreated,
         status: 'past_due',
-        current_period_end: '2030-04-01T00:00:00.000Z',
-        cancel_at_period_end: false,
-        last_stripe_event_created: '2030-01-11T00:00:00.000Z',
-      },
-    });
+        priceId: 'price_equal_conflict',
+        currentPeriodEnd: '2030-04-01T00:00:00.000Z',
+      })
+    );
 
-    expect(equalTimestamp.error).toBeNull();
-    expect(equalTimestamp.data.applied).toBe(true);
-    expect(equalTimestamp.data.subscription.price_id).toBe('price_equal');
-    expect(equalTimestamp.data.subscription.status).toBe('past_due');
-
-    const older = await callServiceBillingRpc(BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION, {
-      payload: {
-        user_id: rpcUserId,
-        stripe_subscription_id: newer.data.subscription.stripe_subscription_id,
-        stripe_customer_id: newer.data.subscription.stripe_customer_id,
-        price_id: 'price_older',
+    expect(unresolvedEqual.error).toBeNull();
+    expect(unresolvedEqual.data).toEqual(expect.objectContaining({
+      applied: false,
+      reason: 'equal_timestamp_conflict',
+      subscription: expect.objectContaining({
         status: 'active',
-        current_period_end: '2030-05-01T00:00:00.000Z',
-        cancel_at_period_end: true,
-        last_stripe_event_created: '2030-01-09T00:00:00.000Z',
-      },
-    });
+        price_id: 'price_newer',
+        snapshot_version: newer.data.subscription.snapshot_version,
+      }),
+    }));
+
+    const canceled = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+      buildSubscriptionEventRpcArgs({
+        userId: rpcUserId,
+        subscriptionId: seededSubscriptionId,
+        customerId: seededCustomerId,
+        eventCreated: newerEventCreated,
+        status: 'canceled',
+        priceId: 'price_terminal',
+        currentPeriodEnd: '2030-04-01T00:00:00.000Z',
+      })
+    );
+
+    expect(canceled.error).toBeNull();
+    expect(canceled.data).toEqual(expect.objectContaining({
+      applied: true,
+      reason: 'applied',
+      subscription: expect.objectContaining({
+        status: 'canceled',
+        snapshot_version: newer.data.subscription.snapshot_version + 1,
+      }),
+    }));
+
+    const delayedActive = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+      newerArgs
+    );
+
+    expect(delayedActive.error).toBeNull();
+    expect(delayedActive.data).toEqual(expect.objectContaining({
+      applied: false,
+      reason: 'terminal_preserved',
+      subscription: expect.objectContaining({
+        status: 'canceled',
+        snapshot_version: canceled.data.subscription.snapshot_version,
+        updated_at: canceled.data.subscription.updated_at,
+      }),
+    }));
+
+    const equalDifferentSubscription = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+      buildSubscriptionEventRpcArgs({
+        userId: rpcUserId,
+        subscriptionId: `sub_rpc_equal_different_${Date.now()}`,
+        customerId: seededCustomerId,
+        eventCreated: newerEventCreated,
+        priceId: 'price_equal_different',
+      })
+    );
+
+    expect(equalDifferentSubscription.error).toBeNull();
+    expect(equalDifferentSubscription.data).toEqual(expect.objectContaining({
+      applied: false,
+      reason: 'equal_cross_subscription_conflict',
+      subscription: expect.objectContaining({
+        stripe_subscription_id: seededSubscriptionId,
+        status: 'canceled',
+      }),
+    }));
+
+    const replacementSubscriptionId = `sub_rpc_newer_replacement_${Date.now()}`;
+    const newerReplacement = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+      buildSubscriptionEventRpcArgs({
+        userId: rpcUserId,
+        subscriptionId: replacementSubscriptionId,
+        customerId: seededCustomerId,
+        eventCreated: '2030-01-12T00:00:00.000Z',
+        priceId: 'price_newer_replacement',
+      })
+    );
+
+    expect(newerReplacement.error).toBeNull();
+    expect(newerReplacement.data).toEqual(expect.objectContaining({
+      applied: true,
+      subscription: expect.objectContaining({
+        stripe_subscription_id: replacementSubscriptionId,
+        status: 'active',
+      }),
+    }));
+
+    const older = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+      buildSubscriptionEventRpcArgs({
+        userId: rpcUserId,
+        subscriptionId: replacementSubscriptionId,
+        customerId: seededCustomerId,
+        eventCreated: '2030-01-09T00:00:00.000Z',
+        priceId: 'price_older',
+      })
+    );
 
     expect(older.error).toBeNull();
     expect(older.data.applied).toBe(false);
     expect(older.data.reason).toBe('stale_ignored');
-    expect(older.data.subscription.price_id).toBe('price_equal');
-    expect(older.data.subscription.status).toBe('past_due');
+    expect(older.data.subscription.price_id).toBe('price_newer_replacement');
+    expect(older.data.subscription.status).toBe('active');
 
-    const nonCurrent = await callServiceBillingRpc(BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION, {
-      payload: {
-        user_id: rpcUserId,
-        stripe_subscription_id: `sub_rpc_noncurrent_${Date.now()}`,
-        stripe_customer_id: seededCustomerId,
-        price_id: 'price_noncurrent',
-        status: 'active',
-        current_period_end: '2030-06-01T00:00:00.000Z',
-        cancel_at_period_end: true,
-        last_stripe_event_created: '2030-01-12T00:00:00.000Z',
-      },
-    });
+    const nonCurrent = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+      buildSubscriptionEventRpcArgs({
+        userId: rpcUserId,
+        subscriptionId: `sub_rpc_noncurrent_${Date.now()}`,
+        customerId: seededCustomerId,
+        eventCreated: '2030-01-13T00:00:00.000Z',
+        priceId: 'price_noncurrent',
+      })
+    );
 
     expect(nonCurrent.error).toBeNull();
     expect(nonCurrent.data.applied).toBe(false);
     expect(nonCurrent.data.reason).toBe('non_current_ignored');
-    expect(nonCurrent.data.subscription.stripe_subscription_id).toBe(seededSubscriptionId);
-    expect(nonCurrent.data.subscription.price_id).toBe('price_equal');
+    expect(nonCurrent.data.subscription.stripe_subscription_id).toBe(replacementSubscriptionId);
 
-    const missingStalenessKey = await callServiceBillingRpc(BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION, {
-      payload: {
-        user_id: rpcUserId,
-        stripe_subscription_id: newer.data.subscription.stripe_subscription_id,
-        stripe_customer_id: newer.data.subscription.stripe_customer_id,
-        price_id: 'price_invalid',
-        status: 'active',
-        current_period_end: '2030-05-01T00:00:00.000Z',
-        cancel_at_period_end: true,
-      },
+    const missingStalenessKeyArgs = buildSubscriptionEventRpcArgs({
+      userId: rpcUserId,
+      subscriptionId: replacementSubscriptionId,
+      customerId: seededCustomerId,
+      eventCreated: '2030-01-14T00:00:00.000Z',
     });
+    delete missingStalenessKeyArgs.payload.last_stripe_event_created;
+    const missingStalenessKey = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+      missingStalenessKeyArgs
+    );
 
     expect(missingStalenessKey.error).toBeTruthy();
-    expect(buildPermissionMessage(missingStalenessKey.error)).toMatch(/last_stripe_event_created|required|23502/i);
+    expect(buildPermissionMessage(missingStalenessKey.error)).toMatch(/complete event-driven billing snapshot|22023/i);
+  });
+
+  test('B28a: same-second terminal events win in both orders and under overlapping RPC calls', async () => {
+    const orderedActiveFirstUserId = await createTempUser('billing-rpc-active-first');
+    const orderedCanceledFirstUserId = await createTempUser('billing-rpc-canceled-first');
+    const incompleteExpiredUserId = await createTempUser('billing-rpc-incomplete-expired');
+    const concurrentUserId = await createTempUser('billing-rpc-concurrent-equal');
+    const eventCreated = '2030-01-21T00:00:00.000Z';
+    const userCases = [
+      [orderedActiveFirstUserId, 'active-first'],
+      [orderedCanceledFirstUserId, 'canceled-first'],
+      [incompleteExpiredUserId, 'incomplete-expired'],
+      [concurrentUserId, 'concurrent'],
+    ];
+
+    for (const [userId, suffix] of userCases) {
+      await ensureBillingCustomer(userId);
+      const seeded = await serviceClient.from('billing_subscriptions').insert({
+        user_id: userId,
+        stripe_subscription_id: `sub_rpc_${suffix}_${Date.now()}`,
+        stripe_customer_id: `cus_rpc_${suffix}_${Date.now()}`,
+        price_id: 'price_seeded_ordering',
+        status: 'active',
+        current_period_end: '2030-02-01T00:00:00.000Z',
+        cancel_at_period_end: false,
+        last_stripe_event_created: '2030-01-20T00:00:00.000Z',
+      }).select('*').single();
+      expect(seeded.error).toBeNull();
+    }
+
+    const activeFirstRow = await serviceClient.from('billing_subscriptions')
+      .select('*').eq('user_id', orderedActiveFirstUserId).single();
+    const activeFirstArgs = buildSubscriptionEventRpcArgs({
+      userId: orderedActiveFirstUserId,
+      subscriptionId: activeFirstRow.data.stripe_subscription_id,
+      customerId: activeFirstRow.data.stripe_customer_id,
+      eventCreated,
+      priceId: 'price_active_first',
+    });
+    const canceledAfterArgs = buildSubscriptionEventRpcArgs({
+      userId: orderedActiveFirstUserId,
+      subscriptionId: activeFirstRow.data.stripe_subscription_id,
+      customerId: activeFirstRow.data.stripe_customer_id,
+      eventCreated,
+      status: 'canceled',
+      priceId: 'price_canceled_after',
+    });
+    const activeFirst = await callBillingRpc(
+      serviceClient,
+      BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+      activeFirstArgs
+    );
+    const canceledAfter = await callBillingRpc(
+      eventServiceClient,
+      BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+      canceledAfterArgs
+    );
+    expect(activeFirst.error).toBeNull();
+    expect(canceledAfter.error).toBeNull();
+    expect(canceledAfter.data.subscription.status).toBe('canceled');
+
+    const canceledFirstRow = await serviceClient.from('billing_subscriptions')
+      .select('*').eq('user_id', orderedCanceledFirstUserId).single();
+    const canceledFirstArgs = buildSubscriptionEventRpcArgs({
+      userId: orderedCanceledFirstUserId,
+      subscriptionId: canceledFirstRow.data.stripe_subscription_id,
+      customerId: canceledFirstRow.data.stripe_customer_id,
+      eventCreated,
+      status: 'canceled',
+      priceId: 'price_canceled_first',
+    });
+    const activeAfterArgs = buildSubscriptionEventRpcArgs({
+      userId: orderedCanceledFirstUserId,
+      subscriptionId: canceledFirstRow.data.stripe_subscription_id,
+      customerId: canceledFirstRow.data.stripe_customer_id,
+      eventCreated,
+      priceId: 'price_active_after',
+    });
+    const canceledFirst = await callBillingRpc(
+      eventServiceClient,
+      BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+      canceledFirstArgs
+    );
+    const activeAfter = await callBillingRpc(
+      serviceClient,
+      BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+      activeAfterArgs
+    );
+    expect(canceledFirst.error).toBeNull();
+    expect(activeAfter.error).toBeNull();
+    expect(activeAfter.data).toEqual(expect.objectContaining({
+      applied: false,
+      reason: 'terminal_preserved',
+      subscription: expect.objectContaining({ status: 'canceled' }),
+    }));
+
+    const incompleteRow = await serviceClient.from('billing_subscriptions')
+      .select('*').eq('user_id', incompleteExpiredUserId).single();
+    const incompleteExpired = await callBillingRpc(
+      eventServiceClient,
+      BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+      buildSubscriptionEventRpcArgs({
+        userId: incompleteExpiredUserId,
+        subscriptionId: incompleteRow.data.stripe_subscription_id,
+        customerId: incompleteRow.data.stripe_customer_id,
+        eventCreated,
+        status: 'incomplete_expired',
+      })
+    );
+    const activeAfterIncomplete = await callBillingRpc(
+      serviceClient,
+      BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+      buildSubscriptionEventRpcArgs({
+        userId: incompleteExpiredUserId,
+        subscriptionId: incompleteRow.data.stripe_subscription_id,
+        customerId: incompleteRow.data.stripe_customer_id,
+        eventCreated,
+      })
+    );
+    expect(incompleteExpired.error).toBeNull();
+    expect(activeAfterIncomplete.error).toBeNull();
+    expect(activeAfterIncomplete.data).toEqual(expect.objectContaining({
+      applied: false,
+      reason: 'terminal_preserved',
+      subscription: expect.objectContaining({ status: 'incomplete_expired' }),
+    }));
+
+    const concurrentRow = await serviceClient.from('billing_subscriptions')
+      .select('*').eq('user_id', concurrentUserId).single();
+    const concurrentActiveArgs = buildSubscriptionEventRpcArgs({
+      userId: concurrentUserId,
+      subscriptionId: concurrentRow.data.stripe_subscription_id,
+      customerId: concurrentRow.data.stripe_customer_id,
+      eventCreated,
+      priceId: 'price_concurrent_active',
+    });
+    const concurrentCanceledArgs = buildSubscriptionEventRpcArgs({
+      userId: concurrentUserId,
+      subscriptionId: concurrentRow.data.stripe_subscription_id,
+      customerId: concurrentRow.data.stripe_customer_id,
+      eventCreated,
+      status: 'canceled',
+      priceId: 'price_concurrent_canceled',
+    });
+    const [concurrentActive, concurrentCanceled] = await Promise.all([
+      callBillingRpc(
+        serviceClient,
+        BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+        concurrentActiveArgs
+      ),
+      callBillingRpc(
+        eventServiceClient,
+        BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION,
+        concurrentCanceledArgs
+      ),
+    ]);
+    expect(concurrentActive.error).toBeNull();
+    expect(concurrentCanceled.error).toBeNull();
+
+    const finalConcurrentRow = await serviceClient.from('billing_subscriptions')
+      .select('*').eq('user_id', concurrentUserId).single();
+    expect(finalConcurrentRow.error).toBeNull();
+    expect(finalConcurrentRow.data.status).toBe('canceled');
   });
 
   test('B29: upsert_billing_subscription_authoritative honors present-vs-omitted fields and preserves the staleness key when omitted or null', async () => {

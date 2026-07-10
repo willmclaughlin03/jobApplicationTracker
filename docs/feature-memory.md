@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-05
 
+- `2026-07-10` - `Deterministic same-second Stripe event handling`: Added locked canonical equality decisions, sticky terminal snapshots, fail-closed equal-time cross-subscription handling, strict guarded conflict reconciliation, and retryable webhook receipts for unresolved ties.
+  - impact: Delayed same-second Stripe events can no longer restore Premium or replace a terminal subscription from arrival order alone, while safe no-op deliveries avoid subscription version and timestamp churn.
 - `2026-07-10` - `Authoritative sync purpose validation`: Rejected empty and whitespace-only authoritative billing sync purposes and added integration coverage for both inputs.
 - `2026-07-10` - `Snapshot-guarded authoritative Stripe sync`: Added a database-owned subscription version, mandatory exact-existing/exact-absent authoritative guards, purpose-enforced Checkout replacement rules, strict caller snapshots, and a single fresh same-subscription retry after conflicts.
   - impact: Stale Stripe reads can no longer overwrite a newer local subscription snapshot, timestamp collisions no longer weaken the CAS token, and failed billing reads cannot be mistaken for confirmed row absence.
