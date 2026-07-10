@@ -11,6 +11,30 @@ const mockResolveStorageStatusPrivileged = jest.fn();
 const mockSyncSubscriptionFromStripe = jest.fn();
 
 /**
+ * Mirror the strict billing snapshot converter for downgrade-service mocks.
+ *
+ * Purpose: preserve the production absent/existing discriminator while failing
+ * malformed fixtures instead of silently treating them as absent.
+ *
+ * @param {object|null|undefined} billingStatus
+ * @returns {object}
+ */
+const mockBuildAuthoritativeSubscriptionSnapshot = jest.fn((billingStatus) => {
+  if (billingStatus?.subscription === null) return { exists: false };
+
+  const subscription = billingStatus?.subscription;
+  if (!subscription?.stripe_subscription_id || !subscription?.snapshot_version) {
+    throw new Error('invalid strict snapshot');
+  }
+
+  return {
+    exists: true,
+    subscriptionId: subscription.stripe_subscription_id,
+    snapshotVersion: subscription.snapshot_version,
+  };
+});
+
+/**
  * Mirror the production terminal-Free-only lock eligibility rule in tests.
  *
  * @param {string|object|null|undefined} storageStatus - Storage status fixture.
@@ -33,9 +57,13 @@ jest.mock('../../lib/supabaseServer.js', () => ({
 }));
 
 jest.mock('../../lib/billingService.js', () => ({
+  BILLING_AUTHORITATIVE_SYNC_PURPOSES: {
+    RECONCILE_CURRENT: 'reconcile_current',
+  },
   BILLING_SYNC_MODES: {
     AUTHORITATIVE: 'authoritative',
   },
+  buildAuthoritativeSubscriptionSnapshot: mockBuildAuthoritativeSubscriptionSnapshot,
   isAutomaticOverflowLockEligible: mockIsAutomaticOverflowLockEligible,
   resolveStorageStatusPrivileged: mockResolveStorageStatusPrivileged,
   syncSubscriptionFromStripe: mockSyncSubscriptionFromStripe,
@@ -257,7 +285,8 @@ describe('storageDowngradeService', () => {
             billingStatus: {
               stripeSubscriptionId: 'sub_stale_123',
               subscription: {
-                updated_at: '2026-06-13T12:00:00.000Z',
+                stripe_subscription_id: 'sub_stale_123',
+                snapshot_version: 7,
               },
             },
           }
@@ -283,8 +312,12 @@ describe('storageDowngradeService', () => {
         {
           mode: 'authoritative',
           expectedUserId: userId,
-          expectedSubscriptionId: 'sub_stale_123',
-          expectedSubscriptionUpdatedAt: '2026-06-13T12:00:00.000Z',
+          expectedSubscriptionSnapshot: {
+            exists: true,
+            subscriptionId: 'sub_stale_123',
+            snapshotVersion: 7,
+          },
+          authoritativeSyncPurpose: 'reconcile_current',
         },
         mockLog
       );
@@ -299,10 +332,11 @@ describe('storageDowngradeService', () => {
           retryable: true,
           lockEligible: false,
           billingStatus: {
-            stripeSubscriptionId: 'sub_stale_123',
-            subscription: {
-              updated_at: '2026-06-13T12:00:00.000Z',
-            },
+              stripeSubscriptionId: 'sub_stale_123',
+              subscription: {
+                stripe_subscription_id: 'sub_stale_123',
+                snapshot_version: 8,
+              },
           },
         }
       ));
@@ -364,7 +398,8 @@ describe('storageDowngradeService', () => {
             billingStatus: {
               stripeSubscriptionId: 'sub_recovered_123',
               subscription: {
-                updated_at: '2026-06-13T12:00:00.000Z',
+                stripe_subscription_id: 'sub_recovered_123',
+                snapshot_version: 9,
               },
             },
           }

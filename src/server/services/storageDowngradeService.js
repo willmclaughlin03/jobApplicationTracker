@@ -17,7 +17,9 @@ import {
 } from '../../shared/constants/storage.js';
 import { supabaseAdmin } from '../lib/supabaseServer.js';
 import {
+  BILLING_AUTHORITATIVE_SYNC_PURPOSES,
   BILLING_SYNC_MODES,
+  buildAuthoritativeSubscriptionSnapshot,
   isAutomaticOverflowLockEligible,
   resolveStorageStatusPrivileged,
   syncSubscriptionFromStripe,
@@ -255,23 +257,29 @@ function getStripeSubscriptionIdForReconcile(storageStatusResult) {
  *
  * Purpose: downgrade repair must prove that the local subscription row did not
  * change while Stripe was being fetched, otherwise an old cancellation
- * snapshot could overwrite a newer subscription or re-entitlement.
+ * id/version snapshot could overwrite a newer subscription or re-entitlement.
  *
  * @param {object|null|undefined} storageStatusResult
- * @returns {{subscriptionId: string, updatedAt: string}|null}
+ * @returns {{exists: true, subscriptionId: string, snapshotVersion: number}|null}
  */
 function getExpectedSubscriptionSnapshot(storageStatusResult) {
   const subscriptionId = getStripeSubscriptionIdForReconcile(storageStatusResult);
-  const subscription = storageStatusResult?.billingStatus?.subscription;
-  const updatedAt = typeof subscription?.updated_at === 'string'
-    ? subscription.updated_at.trim()
-    : '';
 
-  if (!subscriptionId || !updatedAt) {
+  if (!subscriptionId) {
     return null;
   }
 
-  return { subscriptionId, updatedAt };
+  try {
+    const snapshot = buildAuthoritativeSubscriptionSnapshot(
+      storageStatusResult?.billingStatus
+    );
+
+    return snapshot.exists && snapshot.subscriptionId === subscriptionId
+      ? snapshot
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -303,8 +311,9 @@ async function reconcilePendingBillingStatus(userId, storageStatusResult, log) {
       {
         mode: BILLING_SYNC_MODES.AUTHORITATIVE,
         expectedUserId: userId,
-        expectedSubscriptionId: expectedSnapshot.subscriptionId,
-        expectedSubscriptionUpdatedAt: expectedSnapshot.updatedAt,
+        expectedSubscriptionSnapshot: expectedSnapshot,
+        authoritativeSyncPurpose:
+          BILLING_AUTHORITATIVE_SYNC_PURPOSES.RECONCILE_CURRENT,
       },
       log
     );
