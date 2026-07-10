@@ -20,6 +20,7 @@ const MIGRATIONS_DIR = join(process.cwd(), 'migrations');
 const JOBS_STORAGE_MIGRATION_FILE = '016_jobs_storage_state_boundary.sql';
 const JOBS_ATOMIC_CREATE_MIGRATION_FILE = '017_jobs_atomic_create_quota.sql';
 const JOBS_OVERFLOW_LOCKING_MIGRATION_FILE = '018_jobs_overflow_locking.sql';
+const AUTHORITATIVE_SNAPSHOT_MIGRATION_FILE = '026_require_authoritative_billing_snapshot.sql';
 
 const TEST_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const TEST_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -236,6 +237,7 @@ describeOrSkip('Suite E - Jobs downgrade overflow locking integration', () => {
       JOBS_STORAGE_MIGRATION_FILE,
       JOBS_ATOMIC_CREATE_MIGRATION_FILE,
       JOBS_OVERFLOW_LOCKING_MIGRATION_FILE,
+      AUTHORITATIVE_SNAPSHOT_MIGRATION_FILE,
     ]) {
       const migrationSql = readFileSync(join(MIGRATIONS_DIR, migrationFile), 'utf8');
       const { error } = await serviceClient.rpc('exec_sql', { query: migrationSql });
@@ -488,6 +490,7 @@ describeOrSkip('Suite E - Jobs downgrade overflow locking integration', () => {
 
   test('E1: overflow locking migration file exists', () => {
     expect(existsSync(join(MIGRATIONS_DIR, JOBS_OVERFLOW_LOCKING_MIGRATION_FILE))).toBe(true);
+    expect(existsSync(join(MIGRATIONS_DIR, AUTHORITATIVE_SNAPSHOT_MIGRATION_FILE))).toBe(true);
   });
 
   test('E2: exactly 301 active jobs locks one row and a second run is a no-op', async () => {
@@ -676,10 +679,12 @@ describeOrSkip('Suite E - Jobs downgrade overflow locking integration', () => {
         .single();
 
       if (newerResult.error) throw newerResult.error;
-      if (newerResult.data?.updated_at !== originalSubscription.updated_at) break;
+      if (newerResult.data?.snapshot_version !== originalSubscription.snapshot_version) break;
     }
 
-    expect(newerResult.data?.updated_at).not.toBe(originalSubscription.updated_at);
+    expect(newerResult.data?.snapshot_version).toBeGreaterThan(
+      originalSubscription.snapshot_version
+    );
 
     const { data, error } = await serviceClient.rpc(
       'upsert_billing_subscription_authoritative',
@@ -692,8 +697,10 @@ describeOrSkip('Suite E - Jobs downgrade overflow locking integration', () => {
           status: 'canceled',
           current_period_end: originalSubscription.current_period_end,
           cancel_at_period_end: false,
+          _expected_subscription_exists: true,
           _expected_stripe_subscription_id: originalSubscription.stripe_subscription_id,
-          _expected_subscription_updated_at: originalSubscription.updated_at,
+          _expected_subscription_snapshot_version: originalSubscription.snapshot_version,
+          _authoritative_sync_purpose: 'reconcile_current',
         },
       }
     );

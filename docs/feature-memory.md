@@ -13,13 +13,45 @@ Use this file as a quick-running log of implemented changes.
 ## Entries
 
 ### Week of 2026-07-05
+- `2026-07-10` - `Snapshot-guarded authoritative Stripe sync`: Added a database-owned subscription version, mandatory exact-existing/exact-absent authoritative guards, purpose-enforced Checkout replacement rules, strict caller snapshots, and a single fresh same-subscription retry after conflicts.
+  - impact: Stale Stripe reads can no longer overwrite a newer local subscription snapshot, timestamp collisions no longer weaken the CAS token, and failed billing reads cannot be mistaken for confirmed row absence.
+- `2026-07-09` - `Verified security scan patch plan`: Validated ten billing, auth, rate-limit, admin-deletion, UUID, and request-body findings against the current tree and converted them into dependency-ordered implementation chunks for separate agents.
+  - impact: Security remediation now has explicit migration ownership, concurrency guardrails, corrected finding scope, and focused verification requirements before production rollout.
+- `2026-07-09` - `Status page factory`: Centralized custom status-page rendering and direct-response status setters for branded error pages.
+- `2026-07-09` - `Framework error logging`: Logged uncaught Next.js page errors on the server while preserving safe error-page props and client rendering.
+- `2026-07-09` - `Shared error status codes`: Centralized branded error page status codes for middleware public-route access and ErrorPage content lookup, with focused coverage.
+- `2026-07-09` - `Custom error pages`: Added branded, public-safe error pages for 403, 404, 429, 500, 502, 503, and 504 with shared recovery actions and middleware access for direct error routes.
+- `2026-07-09` - `Retry-After additive jitter`: Kept shared API Retry-After retries from undercutting server cooldown guidance while preserving jitter for client-generated backoff.
+- `2026-07-09` - `Chunk 7 latency probe script`: Added a local operator script for measuring cooldown-candidate dashboard reads against storage-repair bypass paths with request ids for matching terminal duration logs.
+- `2026-07-08` - `Mutation response storage summaries`: Derived POST storage summaries from atomic create RPC count hints and added optional count-only DELETE summaries so clients can skip follow-up storage-status reads when safe.
+- `2026-07-08` - `Collection GET summary failure gating`: Deferred job list reads until storage summary metadata succeeds so summary failures return the existing service-unavailable response without spending a jobs query.
+- `2026-07-08` - `Collection GET parallelization`: Ran storage summary counts and job list reads concurrently after storage repair while keeping fresh policy status separate from response metadata.
+- `2026-07-08` - `Latency duration observability`: Added sampled structured API request-duration logging through the request-scoped logger with middleware coverage for success, rate-limit failures, skipped limits, 5xx, and slow requests.
+- `2026-07-08` - `Repo-local Codex PR workflow`: Documented the repo-local `.tmp/worktrees` workflow, linked-worktree Jest command, and remaining Git metadata approval expectation to reduce Windows sandbox friction when pushing review branches.
+- `2026-07-08` - `Client Retry-After jitter`: Applied bounded jitter to capped Retry-After retry delays so shared API clients avoid synchronized retries while preserving the server-provided base.
+- `2026-07-08` - `Client retry backoff`: Made shared API retries honor Retry-After with capped delays and jittered backoff, with fake-timer retry coverage.
+- `2026-07-08` - `Unpaginated job list count simplification`: Replaced exact counts on unpaginated job list reads with limit-plus-one truncation detection while preserving exact counts for paginated reads.
+- `2026-07-08` - `Job list truncation query count`: Based unpaginated list truncation on the exact count from the same filtered jobs query so status-filtered and locked-archive reads do not inherit broader retained totals.
+- `2026-07-07` - `Retained job list truncation signal`: Added a confirmed truncation flag and structured warning for bounded unpaginated retained-job reads when storage counts prove older rows were omitted.
+- `2026-07-07` - `Premium retained job list guardrails`: Added an absolute retained limit to unpaginated job list reads and a retained-list ordered index for Premium dashboard reads.
+- `2026-07-07` - `Job route body size limits`: Added 16kb Next.js body-parser limits to the job collection and item API routes with focused route-contract coverage.
+- `2026-07-07` - `Latency audit review corrections`: Updated the latency-audit implementation plan with append-only retained-index migration guidance, retry/sampling/error-precedence specs, and explicit deferrals for summary caching and PUT hot-path consolidation.
+- `2026-07-05` - `CSRF signature comparison byte-length fix`: Completed the multibyte CSRF hardening by converting the HMAC signature comparison in `validateCsrfToken` to UTF-8 buffer byte-length checks, closing the remaining `timingSafeEqual` RangeError path; added an identical-token multibyte signature regression test.
+- `2026-07-05` - `Stripe audit follow-ups`: Made expired Checkout webhooks retry local terminalization failures, hardened CSRF timing-safe comparisons for multibyte input, tagged new Stripe customers with a non-PII app-user hash, and documented webhook rate-limit handling.
 - `2026-07-05` - `Locked delete denial coverage`: Added deleteJob unit coverage for locked-row deletion under confirmed non-premium, non-terminal storage status returning JobLockedByPlanError.
 - `2026-07-05` - `Rate-limit 429 helper reuse`: Reused the shared rate-limit exceeded helper for ordinary route throttling so 429 headers, logging, and error responses stay aligned with auth-failure throttling.
+- `2026-07-05` - `Agentic loop Stage S setup`: Reconciled `CLAUDE.md` <-> `AGENTS.md` (kept the stronger of each drifted rule: CLAUDE section 2 `.env`, AGENTS section 5 per-function comments, AGENTS section 6 permission detail); added a `## Review guidelines` section to `AGENTS.md` for `@codex review`; scaffolded `docs/plans/` with plan/findings templates + README (the loop file-based message bus); added `.claude/commands/` shortcuts `plan-feature`, `converge`, `pr-fixes` mapped to Stages 0/2/3. Codex plugin + CodeRabbit CLI installs left for Will to run interactively.
 - `2026-07-05` - `Update callback error boundary`: Kept successful job update callbacks outside the PUT failure path so local callback exceptions are not surfaced as failed network updates.
 - `2026-07-05` - `Codex temp setup note`: Documented the repo-local `.tmp/` launch setup in `AGENTS.md` to avoid Windows split-root `apply_patch` sandbox failures.
 - `2026-07-05` - `Workspace-local temp ignore`: Added an ignored `.tmp/` workspace folder for local temporary files so future Codex launches can keep temp writes inside the repo.
+- `2026-07-05` - `Agentic loop workflow runbook`: Added `docs/agentic-loop-workflow.md`, a staged Codex x Claude x CodeRabbit development process (adversarial planning, chunked implementation with hot review, pre-PR convergence gate, PR fix loop) with three human approval gates, plan-contract and findings-ledger templates, and sources.
 - `2026-07-05` - `Salary range constraint validation split`: Split the jobs salary range CHECK rollout into a NOT VALID add migration plus a follow-up validation migration with defensive inverted-range repair.
+
 ### Week of 2026-06-29
+- `2026-07-02` - `Security review race and policy fixes`: Added update double-submit/stale-fetch guards, IP throttling for failed protected-route auth, locked single-row delete storage-status gating, and a versioned jobs salary range constraint.
+- `2026-07-01` - `Job delete response and mutation race hardening`: Removed DELETE storage-summary work from the synchronous response path, kept delete payloads id-only, shared success-response metadata shaping, and guarded job add/delete mutations against stale full-fetch overwrites and duplicate submits.
+- `2026-07-01` - `Onboarding design plan`: Added a design document for first-run dashboard onboarding, persistent info/help access, implementation chunks, review points, reference files, and testing guidance.
+- `2026-07-01` - `Job delete storage summary response`: Added optional repaired count-only storage summary metadata to successful job-delete responses so clients can skip redundant status refreshes when safe.
 - `2026-06-30` - `Job create storage summary response`: Added optional storage summary metadata to successful job-create responses and used it client-side to avoid a redundant status refresh when present.
 - `2026-06-30` - `Job list pagination service validation`: Added schema-backed service validation so malformed pagination options fail before querying.
 - `2026-06-30` - `Conditional job list counts`: Avoided exact database counts for unpaginated job list reads while preserving exact totals for paginated requests.

@@ -27,6 +27,7 @@ const BILLING_SUBSCRIPTION_SELECT = [
   'current_period_end',
   'cancel_at_period_end',
   'last_stripe_event_created',
+  'snapshot_version',
   'status_changed_at',
   'created_at',
   'updated_at',
@@ -71,6 +72,11 @@ export const BILLING_WRITE_OUTCOMES = Object.freeze({
   SNAPSHOT_CHANGED: 'snapshot_changed',
 });
 
+export const BILLING_AUTHORITATIVE_SYNC_PURPOSES = Object.freeze({
+  RECONCILE_CURRENT: 'reconcile_current',
+  CHECKOUT_COMPLETION: 'checkout_completion',
+});
+
 export const CHECKOUT_STATUS_STATES = Object.freeze({
   PENDING: 'pending',
   ACTIVE: 'active',
@@ -97,6 +103,9 @@ const BILLING_PLAN_VALUES = Object.values(BILLING_PLANS);
 const CHECKOUT_ATTEMPT_NONCE_PATTERN = /^[A-Fa-f0-9]{32}$/;
 const STRIPE_EVENT_RECEIPT_RESULT_VALUES = Object.values(STRIPE_EVENT_RECEIPT_RESULTS);
 const BILLING_SYNC_MODE_VALUES = Object.values(BILLING_SYNC_MODES);
+const BILLING_AUTHORITATIVE_SYNC_PURPOSE_VALUES = Object.values(
+  BILLING_AUTHORITATIVE_SYNC_PURPOSES
+);
 const PENDING_CHECKOUT_SESSION_STATUS_VALUES = Object.values(PENDING_CHECKOUT_SESSION_STATUSES);
 const PENDING_CHECKOUT_SESSION_OUTCOME_VALUES = Object.values(PENDING_CHECKOUT_SESSION_OUTCOMES);
 const CHECKOUT_START_ALLOWED_STATUSES = new Set([
@@ -125,6 +134,18 @@ const STRIPE_EVENT_RECEIPT_ENVELOPE_MISMATCH_PATTERN =
   /stripe_event_receipts envelope mismatch/i;
 
 const nonEmptyStringSchema = z.string().trim().min(1);
+const existingAuthoritativeSubscriptionSnapshotSchema = z.object({
+  exists: z.literal(true),
+  subscriptionId: nonEmptyStringSchema,
+  snapshotVersion: z.number().int().positive().safe(),
+}).strict();
+const absentAuthoritativeSubscriptionSnapshotSchema = z.object({
+  exists: z.literal(false),
+}).strict();
+const authoritativeSubscriptionSnapshotSchema = z.discriminatedUnion('exists', [
+  existingAuthoritativeSubscriptionSnapshotSchema,
+  absentAuthoritativeSubscriptionSnapshotSchema,
+]);
 const billingPlanSchema = z.enum(BILLING_PLAN_VALUES);
 const checkoutAttemptNonceSchema = z.string()
   .trim()
@@ -953,24 +974,44 @@ export function assertStripeLivemode(livemode, context = {}) {
 }
 
 /**
- * Validate a billing snapshot timestamp without discarding database precision.
+ * Build the mandatory authoritative compare-and-swap token from a strict local
+ * billing read.
  *
- * Purpose: PostgreSQL updated_at values can include microseconds that
- * Date#toISOString would truncate. Compare-and-swap tokens must preserve a
- * valid source string exactly while still normalizing Date/number inputs.
+ * Purpose: callers must distinguish a confirmed missing row from a failed or
+ * synthesized Free read, and existing rows must carry the database-owned
+ * mutation version without relying on timestamp precision.
  *
- * @param {string|number|Date} value
- * @returns {string|null}
+ * @param {{ subscription: object|null }} billingStatus
+ * @returns {{ exists: false }|{ exists: true, subscriptionId: string, snapshotVersion: number }}
  */
-function normalizeBillingSnapshotTimestamp(value) {
-  if (typeof value === 'string') {
-    const normalized = value.trim();
-    return normalized && !Number.isNaN(Date.parse(normalized))
-      ? normalized
-      : null;
+export function buildAuthoritativeSubscriptionSnapshot(billingStatus) {
+  if (
+    !billingStatus
+    || typeof billingStatus !== 'object'
+    || !Object.prototype.hasOwnProperty.call(billingStatus, 'subscription')
+  ) {
+    throw createBillingError('Strict local billing subscription snapshot is required');
   }
 
-  return toIsoTimestamp(value);
+  if (billingStatus.subscription === null) {
+    return { exists: false };
+  }
+
+  if (!billingStatus.subscription || typeof billingStatus.subscription !== 'object') {
+    throw createBillingError('Strict local billing subscription snapshot is invalid');
+  }
+
+  const parsedSnapshot = existingAuthoritativeSubscriptionSnapshotSchema.safeParse({
+    exists: true,
+    subscriptionId: billingStatus.subscription.stripe_subscription_id,
+    snapshotVersion: billingStatus.subscription.snapshot_version,
+  });
+
+  if (!parsedSnapshot.success) {
+    throw createBillingError('Strict local billing subscription snapshot is invalid');
+  }
+
+  return parsedSnapshot.data;
 }
 
 /**
@@ -984,8 +1025,8 @@ function normalizeBillingSnapshotTimestamp(value) {
  * that the resolved local customer mapping still belongs to the caller before
  * any authoritative write runs.
  *
- * @param {{ mode?: string, eventCreated?: string | number | Date, expectedUserId?: string, expectedSubscriptionId?: string, expectedSubscriptionUpdatedAt?: string | number | Date }} options
- * @returns {{ mode: string, eventCreated: string | undefined, expectedUserId: string | undefined, expectedSubscriptionId: string | undefined, expectedSubscriptionUpdatedAt: string | undefined }}
+ * @param {{ mode?: string, eventCreated?: string | number | Date, expectedUserId?: string, expectedSubscriptionSnapshot?: object, authoritativeSyncPurpose?: string }} options
+ * @returns {{ mode: string, eventCreated: string | undefined, expectedUserId: string | undefined, expectedSubscriptionSnapshot: object | undefined, authoritativeSyncPurpose: string | undefined }}
  */
 function parseSyncSubscriptionOptions(options) {
   const parsedMode = nonEmptyStringSchema.safeParse(options?.mode);
@@ -1019,39 +1060,67 @@ function parseSyncSubscriptionOptions(options) {
     throw createBillingError('Invalid expectedUserId for subscription sync');
   }
 
-  const hasExpectedSubscriptionId = options?.expectedSubscriptionId !== undefined;
-  const expectedSubscriptionId = hasExpectedSubscriptionId
-    ? normalizeString(options.expectedSubscriptionId)
-    : undefined;
-  const hasExpectedSubscriptionUpdatedAt = options?.expectedSubscriptionUpdatedAt !== undefined;
-  const expectedSubscriptionUpdatedAt = hasExpectedSubscriptionUpdatedAt
-    ? normalizeBillingSnapshotTimestamp(options.expectedSubscriptionUpdatedAt)
-    : undefined;
+  const hasLegacySnapshotOption = [
+    'expectedSubscriptionId',
+    'expectedSubscriptionUpdatedAt',
+  ].some((key) => Object.prototype.hasOwnProperty.call(options ?? {}, key));
 
-  if (hasExpectedSubscriptionId !== hasExpectedSubscriptionUpdatedAt) {
-    throw createBillingError('Complete expected subscription snapshot is required');
+  if (hasLegacySnapshotOption) {
+    throw createBillingError('Legacy expected subscription snapshot options are not supported');
   }
 
-  if (
-    hasExpectedSubscriptionId
-    && (!expectedSubscriptionId || !expectedSubscriptionUpdatedAt)
-  ) {
+  const hasExpectedSubscriptionSnapshot = Object.prototype.hasOwnProperty.call(
+    options ?? {},
+    'expectedSubscriptionSnapshot'
+  );
+  const parsedExpectedSubscriptionSnapshot = hasExpectedSubscriptionSnapshot
+    ? authoritativeSubscriptionSnapshotSchema.safeParse(options.expectedSubscriptionSnapshot)
+    : null;
+
+  if (hasExpectedSubscriptionSnapshot && !parsedExpectedSubscriptionSnapshot.success) {
     throw createBillingError('Invalid expected subscription snapshot');
   }
 
+  const hasAuthoritativeSyncPurpose = Object.prototype.hasOwnProperty.call(
+    options ?? {},
+    'authoritativeSyncPurpose'
+  );
+  const authoritativeSyncPurpose = hasAuthoritativeSyncPurpose
+    ? normalizeString(options.authoritativeSyncPurpose)
+    : undefined;
+
   if (
-    parsedMode.data !== BILLING_SYNC_MODES.AUTHORITATIVE
-    && hasExpectedSubscriptionId
+    hasAuthoritativeSyncPurpose
+    && !BILLING_AUTHORITATIVE_SYNC_PURPOSE_VALUES.includes(authoritativeSyncPurpose)
   ) {
-    throw createBillingError('Expected subscription snapshot requires authoritative sync');
+    throw createBillingError('Invalid authoritative subscription sync purpose');
+  }
+
+  if (parsedMode.data === BILLING_SYNC_MODES.AUTHORITATIVE) {
+    if (!hasExpectedSubscriptionSnapshot) {
+      throw createBillingError('Authoritative subscription sync requires a local snapshot');
+    }
+
+    if (!hasAuthoritativeSyncPurpose) {
+      throw createBillingError('Authoritative subscription sync requires a purpose');
+    }
+
+    if (
+      authoritativeSyncPurpose === BILLING_AUTHORITATIVE_SYNC_PURPOSES.RECONCILE_CURRENT
+      && !parsedExpectedSubscriptionSnapshot.data.exists
+    ) {
+      throw createBillingError('Current-subscription reconciliation requires an existing snapshot');
+    }
+  } else if (hasExpectedSubscriptionSnapshot || hasAuthoritativeSyncPurpose) {
+    throw createBillingError('Authoritative snapshot options require authoritative sync');
   }
 
   return {
     mode: parsedMode.data,
     eventCreated,
     expectedUserId,
-    expectedSubscriptionId,
-    expectedSubscriptionUpdatedAt,
+    expectedSubscriptionSnapshot: parsedExpectedSubscriptionSnapshot?.data,
+    authoritativeSyncPurpose,
   };
 }
 
@@ -1350,8 +1419,8 @@ function buildEventDrivenSubscriptionPayload({
  * Purpose: direct Stripe fetches can refresh the canonical local snapshot even
  * when no webhook event timestamp is available. `last_stripe_event_created`
  * stays optional so callers do not accidentally invent event ordering data.
- * Downgrade repair can also supply an expected local snapshot so the database
- * rejects a stale Stripe fetch after a concurrent subscription replacement.
+ * Every caller supplies an exact local snapshot and a purpose so the database
+ * rejects stale fetches and unsafe cross-subscription replacement independently.
  *
  * @param {object} params
  * @returns {object}
@@ -1365,8 +1434,8 @@ function buildAuthoritativeSubscriptionPayload({
   currentPeriodEnd,
   cancelAtPeriodEnd = false,
   lastStripeEventCreated,
-  expectedSubscriptionId,
-  expectedSubscriptionUpdatedAt,
+  expectedSubscriptionSnapshot,
+  authoritativeSyncPurpose,
 }) {
   const payload = {
     user_id: userId,
@@ -1376,18 +1445,18 @@ function buildAuthoritativeSubscriptionPayload({
     status,
     current_period_end: currentPeriodEnd,
     cancel_at_period_end: Boolean(cancelAtPeriodEnd),
+    _expected_subscription_exists: expectedSubscriptionSnapshot.exists,
+    _authoritative_sync_purpose: authoritativeSyncPurpose,
   };
 
   if (lastStripeEventCreated !== undefined) {
     payload.last_stripe_event_created = lastStripeEventCreated;
   }
 
-  if (
-    expectedSubscriptionId !== undefined
-    && expectedSubscriptionUpdatedAt !== undefined
-  ) {
-    payload._expected_stripe_subscription_id = expectedSubscriptionId;
-    payload._expected_subscription_updated_at = expectedSubscriptionUpdatedAt;
+  if (expectedSubscriptionSnapshot.exists) {
+    payload._expected_stripe_subscription_id = expectedSubscriptionSnapshot.subscriptionId;
+    payload._expected_subscription_snapshot_version =
+      expectedSubscriptionSnapshot.snapshotVersion;
   }
 
   return payload;
@@ -2709,7 +2778,11 @@ export async function getOrCreateStripeCustomer(userId, email, log = defaultLogg
 
     const idempotencyHash = hashUserIdForIdempotency(parsedInput.data.userId);
     const stripeCustomer = await getStripeClient().customers.create(
-      {},
+      {
+        metadata: {
+          app_user_id_hash: idempotencyHash,
+        },
+      },
       {
         idempotencyKey: `billing_customer_${idempotencyHash.slice(0, 24)}`,
       }
@@ -2798,28 +2871,12 @@ export async function getOrCreateStripeCustomer(userId, email, log = defaultLogg
  * local write occurred; the prior local entitlement can remain in place until a
  * later supported sync or manual intervention.
  *
- * @param {string} subscriptionId
- * `expectedUserId` may be supplied by authenticated routes that want the
- * service to fail closed unless the resolved Stripe customer mapping still
- * belongs to that same user before any authoritative write is attempted.
- *
- * @param {{ mode: 'event' | 'authoritative', eventCreated?: number | string | Date, expectedUserId?: string, expectedSubscriptionId?: string, expectedSubscriptionUpdatedAt?: number | string | Date }} options
+ * @param {{ success: true, data: string }} parsedSubscriptionId
+ * @param {{ mode: string, eventCreated?: string, expectedUserId?: string, expectedSubscriptionSnapshot?: object, authoritativeSyncPurpose?: string }} parsedOptions
  * @param {object} log
  * @returns {Promise<object>}
  */
-export async function syncSubscriptionFromStripe(
-  subscriptionId,
-  options,
-  log = defaultLogger
-) {
-  const parsedSubscriptionId = nonEmptyStringSchema.safeParse(subscriptionId);
-
-  if (!parsedSubscriptionId.success) {
-    throw createBillingError('Invalid Stripe subscription id');
-  }
-
-  const parsedOptions = parseSyncSubscriptionOptions(options);
-
+async function syncSubscriptionFromStripeAttempt(parsedSubscriptionId, parsedOptions, log) {
   try {
     const stripeSubscription = await getStripeClient().subscriptions.retrieve(parsedSubscriptionId.data, {
       expand: ['customer', 'items.data.price'],
@@ -2976,18 +3033,27 @@ export async function syncSubscriptionFromStripe(
         currentPeriodEnd: extractStripeCurrentPeriodEnd(stripeSubscription),
         cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end,
         lastStripeEventCreated: parsedOptions.eventCreated,
-        expectedSubscriptionId: parsedOptions.expectedSubscriptionId,
-        expectedSubscriptionUpdatedAt: parsedOptions.expectedSubscriptionUpdatedAt,
+        expectedSubscriptionSnapshot: parsedOptions.expectedSubscriptionSnapshot,
+        authoritativeSyncPurpose: parsedOptions.authoritativeSyncPurpose,
       })
     );
 
-    if (!rpcResult.applied && rpcResult.reason === 'billing_snapshot_changed') {
+    if (
+      !rpcResult.applied
+      && ['billing_snapshot_changed', 'subscription_replacement_blocked'].includes(rpcResult.reason)
+    ) {
       return {
         outcome: BILLING_WRITE_OUTCOMES.SNAPSHOT_CHANGED,
         userId: localCustomer.user_id,
         subscription: stripeSubscription,
         localSubscription: rpcResult.subscription ?? null,
       };
+    }
+
+    if (!rpcResult.applied) {
+      throw createBillingRpcError(
+        'Billing authoritative subscription RPC returned an unsupported non-applied outcome'
+      );
     }
 
     return {
@@ -3010,6 +3076,99 @@ export async function syncSubscriptionFromStripe(
 
     throw error;
   }
+}
+
+/**
+ * Fetch the canonical Stripe subscription and reconcile it into local billing
+ * state with one optional same-subscription retry after a lost local snapshot.
+ *
+ * Purpose: public callers validate the mandatory snapshot/purpose contract once,
+ * while each attempt performs a fresh provider retrieval. A retry is allowed
+ * only when a strict privileged reread still names the original target id.
+ *
+ * @param {string} subscriptionId
+ * @param {{ mode: 'event' | 'authoritative', eventCreated?: number | string | Date, expectedUserId?: string, expectedSubscriptionSnapshot?: object, authoritativeSyncPurpose?: string }} options
+ * @param {object} log
+ * @returns {Promise<object>}
+ */
+export async function syncSubscriptionFromStripe(
+  subscriptionId,
+  options,
+  log = defaultLogger
+) {
+  const parsedSubscriptionId = nonEmptyStringSchema.safeParse(subscriptionId);
+
+  if (!parsedSubscriptionId.success) {
+    throw createBillingError('Invalid Stripe subscription id');
+  }
+
+  const parsedOptions = parseSyncSubscriptionOptions(options);
+
+  if (
+    parsedOptions.authoritativeSyncPurpose
+      === BILLING_AUTHORITATIVE_SYNC_PURPOSES.RECONCILE_CURRENT
+    && parsedOptions.expectedSubscriptionSnapshot.subscriptionId
+      !== parsedSubscriptionId.data
+  ) {
+    throw createBillingError('Current-subscription reconciliation target does not match its snapshot');
+  }
+
+  const firstResult = await syncSubscriptionFromStripeAttempt(
+    parsedSubscriptionId,
+    parsedOptions,
+    log
+  );
+
+  if (
+    parsedOptions.mode !== BILLING_SYNC_MODES.AUTHORITATIVE
+    || firstResult.outcome !== BILLING_WRITE_OUTCOMES.SNAPSHOT_CHANGED
+    || !firstResult.userId
+  ) {
+    return firstResult;
+  }
+
+  let currentSubscription;
+
+  try {
+    currentSubscription = await loadBillingSubscriptionByUserId(
+      firstResult.userId,
+      supabaseAdmin
+    );
+  } catch (error) {
+    log.error(
+      {
+        err: error,
+        operation: 'syncSubscriptionFromStripeSnapshotRetryRead',
+        userIdHash: hashUserIdForLog(firstResult.userId),
+        stripeSubscriptionId: formatStripeIdForLog(parsedSubscriptionId.data, 'error'),
+      },
+      'Failed to strictly reread local billing state after an authoritative snapshot change'
+    );
+    throw error;
+  }
+
+  if (
+    normalizeString(currentSubscription?.stripe_subscription_id)
+      !== parsedSubscriptionId.data
+  ) {
+    return {
+      ...firstResult,
+      localSubscription: currentSubscription ?? null,
+    };
+  }
+
+  const retrySnapshot = buildAuthoritativeSubscriptionSnapshot({
+    subscription: currentSubscription,
+  });
+
+  return syncSubscriptionFromStripeAttempt(
+    parsedSubscriptionId,
+    {
+      ...parsedOptions,
+      expectedSubscriptionSnapshot: retrySnapshot,
+    },
+    log
+  );
 }
 
 /**

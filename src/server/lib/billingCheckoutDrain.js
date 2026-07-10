@@ -3,8 +3,11 @@ import { logger as defaultLogger } from '../../shared/logger.js';
 import { getStripeClient } from './stripeRuntime.js';
 import { supabaseAdmin } from './supabaseServer.js';
 import {
+  BILLING_AUTHORITATIVE_SYNC_PURPOSES,
   BILLING_SYNC_MODES,
+  buildAuthoritativeSubscriptionSnapshot,
   formatStripeIdForLog,
+  loadBillingStatusOrThrow,
   markMintedCheckoutSessionTerminalByStripeSessionId,
   syncSubscriptionFromStripe,
 } from './billingService.js';
@@ -227,11 +230,22 @@ async function reconcileCompleteCheckoutSession(localSession, stripeSession, log
     );
   }
 
+  const billingStatus = await loadBillingStatusOrThrow(
+    localSession.userId,
+    supabaseAdmin,
+    log
+  );
+  const expectedSubscriptionSnapshot =
+    buildAuthoritativeSubscriptionSnapshot(billingStatus);
+
   const syncResult = await syncSubscriptionFromStripe(
     subscriptionId,
     {
       mode: BILLING_SYNC_MODES.AUTHORITATIVE,
       expectedUserId: localSession.userId,
+      expectedSubscriptionSnapshot,
+      authoritativeSyncPurpose:
+        BILLING_AUTHORITATIVE_SYNC_PURPOSES.CHECKOUT_COMPLETION,
     },
     log
   );

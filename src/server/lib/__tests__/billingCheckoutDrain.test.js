@@ -5,6 +5,8 @@ const mockRetrieveCheckoutSession = jest.fn();
 const mockExpireCheckoutSession = jest.fn();
 const mockGetStripeClient = jest.fn();
 const mockFormatStripeIdForLog = jest.fn((value) => value);
+const mockBuildAuthoritativeSubscriptionSnapshot = jest.fn();
+const mockLoadBillingStatusOrThrow = jest.fn();
 const mockMarkMintedCheckoutSessionTerminalByStripeSessionId = jest.fn();
 const mockSyncSubscriptionFromStripe = jest.fn();
 
@@ -17,10 +19,15 @@ jest.mock('../stripeRuntime.js', () => ({
 }));
 
 jest.mock('../billingService.js', () => ({
+  BILLING_AUTHORITATIVE_SYNC_PURPOSES: {
+    CHECKOUT_COMPLETION: 'checkout_completion',
+  },
   BILLING_SYNC_MODES: {
     AUTHORITATIVE: 'authoritative',
   },
+  buildAuthoritativeSubscriptionSnapshot: mockBuildAuthoritativeSubscriptionSnapshot,
   formatStripeIdForLog: mockFormatStripeIdForLog,
+  loadBillingStatusOrThrow: mockLoadBillingStatusOrThrow,
   markMintedCheckoutSessionTerminalByStripeSessionId:
     mockMarkMintedCheckoutSessionTerminalByStripeSessionId,
   syncSubscriptionFromStripe: mockSyncSubscriptionFromStripe,
@@ -93,6 +100,8 @@ describe('billingCheckoutDrain', () => {
       id: 42,
       status: 'expired',
     });
+    mockLoadBillingStatusOrThrow.mockResolvedValue({ subscription: null });
+    mockBuildAuthoritativeSubscriptionSnapshot.mockReturnValue({ exists: false });
     mockSyncSubscriptionFromStripe.mockResolvedValue({ outcome: 'processed' });
   });
 
@@ -148,6 +157,8 @@ describe('billingCheckoutDrain', () => {
       {
         mode: 'authoritative',
         expectedUserId: 'user-drain-123',
+        expectedSubscriptionSnapshot: { exists: false },
+        authoritativeSyncPurpose: 'checkout_completion',
       },
       mockLog
     );
@@ -156,6 +167,11 @@ describe('billingCheckoutDrain', () => {
         sessionId: 'cs_test_complete_123',
         status: 'complete',
       },
+      mockLog
+    );
+    expect(mockLoadBillingStatusOrThrow).toHaveBeenCalledWith(
+      'user-drain-123',
+      mockSupabaseAdmin,
       mockLog
     );
     expect(summary).toEqual(expect.objectContaining({
@@ -232,6 +248,28 @@ describe('billingCheckoutDrain', () => {
     expect(summary.results[0]).toEqual(expect.objectContaining({
       outcome: 'failed',
       errorCode: 'BILLING_CHECKOUT_DRAIN_SUBSCRIPTION_MISSING',
+    }));
+  });
+
+  it('does not treat a strict privileged billing read failure as row absence', async () => {
+    const row = createOpenRow({
+      stripe_checkout_session_id: 'cs_test_complete_read_failure_123',
+    });
+    mockOpenRows([row]);
+    mockRetrieveCheckoutSession.mockResolvedValue({
+      id: row.stripe_checkout_session_id,
+      status: 'complete',
+      subscription: 'sub_checkout_complete_123',
+    });
+    mockLoadBillingStatusOrThrow.mockRejectedValue(new Error('billing read unavailable'));
+
+    const summary = await drainOpenCheckoutSessions({}, mockLog);
+
+    expect(mockBuildAuthoritativeSubscriptionSnapshot).not.toHaveBeenCalled();
+    expect(mockSyncSubscriptionFromStripe).not.toHaveBeenCalled();
+    expect(mockMarkMintedCheckoutSessionTerminalByStripeSessionId).not.toHaveBeenCalled();
+    expect(summary.results[0]).toEqual(expect.objectContaining({
+      outcome: 'failed',
     }));
   });
 });

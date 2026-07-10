@@ -14,9 +14,10 @@
  *   - 013_billing_checkout_sessions.sql
  *   - 014_billing_checkout_premium_plan_rename.sql
  *   - 015_fix_billing_subscription_event_rpc_ambiguity.sql
+ *   - 026_require_authoritative_billing_snapshot.sql
  *
  * Notes:
- *   1. This suite may apply 005-015 when the billing tables are absent, or
+ *   1. This suite may apply 005-015 plus additive migration 026 when the billing tables are absent, or
  *      apply additive follow-ups alone when the base tables exist without the
  *      follow-up migrations.
  *   2. That is not the same as a full fresh-schema replay for the project.
@@ -67,6 +68,7 @@ const BILLING_MIGRATION_FILES = [
   '013_billing_checkout_sessions.sql',
   '014_billing_checkout_premium_plan_rename.sql',
   '015_fix_billing_subscription_event_rpc_ambiguity.sql',
+  '026_require_authoritative_billing_snapshot.sql',
 ];
 
 const BASE_BILLING_TABLE_NAMES = [
@@ -100,6 +102,12 @@ const BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION =
 
 const BILLING_SUBSCRIPTION_AUTHORITATIVE_UPSERT_FUNCTION =
   'upsert_billing_subscription_authoritative';
+const BILLING_SUBSCRIPTION_SNAPSHOT_VERSION_FUNCTION =
+  'advance_billing_subscription_snapshot_version';
+const BILLING_SUBSCRIPTION_SNAPSHOT_VERSION_TRIGGER =
+  'advance_billing_subscription_snapshot_version';
+const BILLING_SUBSCRIPTION_SNAPSHOT_VERSION_CONSTRAINT =
+  'billing_subscriptions_snapshot_version_check';
 
 const STRIPE_EVENT_RECEIPT_MERGE_FUNCTION =
   'merge_stripe_event_receipt';
@@ -157,6 +165,10 @@ const ADDITIVE_BILLING_MIGRATIONS = [
   {
     filename: '015_fix_billing_subscription_event_rpc_ambiguity.sql',
     isApplied: isBillingSubscriptionEventRpcAmbiguityFixApplied,
+  },
+  {
+    filename: '026_require_authoritative_billing_snapshot.sql',
+    isApplied: isAuthoritativeSubscriptionSnapshotGuardApplied,
   },
 ];
 
@@ -316,6 +328,26 @@ function isBillingSubscriptionEventRpcAmbiguityFixApplied(shape) {
     && /result_applied/i.test(functionDefinition)
     && !/\bapplied\s+boolean\s*;/i.test(functionDefinition)
     && !/INTO\s+applied\s*,\s*subscription\s*,\s*reason/i.test(functionDefinition);
+}
+
+/**
+ * Check whether the authoritative RPC requires the versioned snapshot contract.
+ *
+ * Purpose: function existence alone can describe the older optional timestamp
+ * guard, so additive setup inspects the durable function body for the mandatory
+ * existence marker, monotonic version, and purpose discriminator.
+ *
+ * @param {object} shape installed billing schema shape from introspection.
+ * @returns {boolean}
+ */
+function isAuthoritativeSubscriptionSnapshotGuardApplied(shape) {
+  const functionDefinition =
+    shape.functionDefinitions.get(BILLING_SUBSCRIPTION_AUTHORITATIVE_UPSERT_FUNCTION) ?? '';
+
+  return functionDefinition.includes('_expected_subscription_exists')
+    && functionDefinition.includes('_expected_subscription_snapshot_version')
+    && functionDefinition.includes('_authoritative_sync_purpose')
+    && functionDefinition.includes('subscription_replacement_blocked');
 }
 
 function isRpcSchemaCacheError(error) {
@@ -510,6 +542,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
             '${BILLING_STATUS_CHANGED_AT_FUNCTION}',
             '${BILLING_SUBSCRIPTION_EVENT_UPSERT_FUNCTION}',
             '${BILLING_SUBSCRIPTION_AUTHORITATIVE_UPSERT_FUNCTION}',
+            '${BILLING_SUBSCRIPTION_SNAPSHOT_VERSION_FUNCTION}',
             '${STRIPE_EVENT_RECEIPT_MERGE_FUNCTION}',
             '${BILLING_CHECKOUT_SESSION_CLAIM_FUNCTION}'
           )
@@ -596,6 +629,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
       'set_billing_customers_updated_at',
       BILLING_STATUS_CHANGED_AT_TRIGGER,
       'set_billing_subscriptions_updated_at',
+      BILLING_SUBSCRIPTION_SNAPSHOT_VERSION_TRIGGER,
       'set_billing_checkout_sessions_updated_at',
     ];
 
@@ -603,6 +637,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
       'touch_billing_updated_at',
       BILLING_STATUS_CHANGED_AT_FUNCTION,
       ...BILLING_RPC_FUNCTIONS,
+      BILLING_SUBSCRIPTION_SNAPSHOT_VERSION_FUNCTION,
       BILLING_CHECKOUT_SESSION_CLAIM_FUNCTION,
     ];
 
@@ -635,6 +670,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
       'billing_subscriptions_stripe_customer_id_format_check',
       'billing_subscriptions_user_id_fkey',
       'billing_subscriptions_stripe_subscription_id_key',
+      BILLING_SUBSCRIPTION_SNAPSHOT_VERSION_CONSTRAINT,
       'stripe_event_receipts_pkey',
       'stripe_event_receipts_event_id_format_check',
       'stripe_event_receipts_result_check',
@@ -695,13 +731,15 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
     expect(checkoutClaimFunctionDefinition).not.toMatch(/resume_tailor_monthly/i);
 
     expect(isBillingSubscriptionEventRpcAmbiguityFixApplied(shape)).toBe(true);
+    expect(isAuthoritativeSubscriptionSnapshotGuardApplied(shape)).toBe(true);
   }
 
   /**
    * Ensure the billing migration set required by this suite is installed.
    *
    * Purpose: the integration database may already have base tables, so setup
-   * applies only missing additive migrations or performs a full 005-015 apply.
+   * applies only missing additive migrations or performs a full base apply plus
+   * the reserved authoritative snapshot migration.
    *
    * @returns {Promise<void>}
    * Important vars: existingBaseTables gates partial-schema errors,
@@ -741,6 +779,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
             || migration.filename === '013_billing_checkout_sessions.sql'
             || migration.filename === '014_billing_checkout_premium_plan_rename.sql'
             || migration.filename === '015_fix_billing_subscription_event_rpc_ambiguity.sql'
+            || migration.filename === '026_require_authoritative_billing_snapshot.sql'
           ) {
             appliedRpcMigration = true;
           }
@@ -777,6 +816,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
         || filename === '013_billing_checkout_sessions.sql'
         || filename === '014_billing_checkout_premium_plan_rename.sql'
         || filename === '015_fix_billing_subscription_event_rpc_ambiguity.sql'
+        || filename === '026_require_authoritative_billing_snapshot.sql'
       ) {
         appliedRpcMigration = true;
       }
@@ -927,7 +967,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
     }
   });
 
-  test('B1: local/session billing migration files 005 through 015 exist in the repo-root migrations folder', () => {
+  test('B1: local/session billing migrations through additive 026 exist in the repo-root migrations folder', () => {
     for (const filename of BILLING_MIGRATION_FILES) {
       expect(existsSync(join(MIGRATIONS_DIR, filename))).toBe(true);
     }
@@ -1975,16 +2015,20 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
     const stripeSubscriptionId = `sub_rpc_authoritative_${Date.now()}`;
     const stripeCustomerId = `cus_rpc_authoritative_${Date.now()}`;
 
-    const seededSubscription = await serviceClient.from('billing_subscriptions').upsert({
-      user_id: rpcUserId,
-      stripe_subscription_id: stripeSubscriptionId,
-      stripe_customer_id: stripeCustomerId,
-      price_id: 'price_seed',
-      status: 'active',
-      current_period_end: '2030-02-01T00:00:00.000Z',
-      cancel_at_period_end: false,
-      last_stripe_event_created: '2030-01-10T00:00:00.000Z',
-    });
+    const seededSubscription = await serviceClient
+      .from('billing_subscriptions')
+      .upsert({
+        user_id: rpcUserId,
+        stripe_subscription_id: stripeSubscriptionId,
+        stripe_customer_id: stripeCustomerId,
+        price_id: 'price_seed',
+        status: 'active',
+        current_period_end: '2030-02-01T00:00:00.000Z',
+        cancel_at_period_end: false,
+        last_stripe_event_created: '2030-01-10T00:00:00.000Z',
+      })
+      .select('*')
+      .single();
     expect(seededSubscription.error).toBeNull();
 
     const omittedCurrentPeriodEnd = await callServiceBillingRpc(
@@ -1997,6 +2041,11 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
           price_id: 'price_overwritten',
           status: 'active',
           cancel_at_period_end: true,
+          _expected_subscription_exists: true,
+          _expected_stripe_subscription_id: stripeSubscriptionId,
+          _expected_subscription_snapshot_version:
+            seededSubscription.data.snapshot_version,
+          _authoritative_sync_purpose: 'reconcile_current',
         },
       }
     );
@@ -2019,6 +2068,11 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
           status: 'canceled',
           current_period_end: null,
           last_stripe_event_created: null,
+          _expected_subscription_exists: true,
+          _expected_stripe_subscription_id: stripeSubscriptionId,
+          _expected_subscription_snapshot_version:
+            omittedCurrentPeriodEnd.data.subscription.snapshot_version,
+          _authoritative_sync_purpose: 'reconcile_current',
         },
       }
     );
@@ -2029,6 +2083,211 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
       status: 'canceled',
       current_period_end: null,
       last_stripe_event_created: '2030-01-10T00:00:00+00:00',
+    }));
+  });
+
+  test('B29a: authoritative snapshots require exact guards, advance versions, and block unsafe replacement', async () => {
+    const rpcUserId = await createTempUser('billing-rpc-authoritative-guard');
+    const stripeCustomerId = `cus_rpc_authoritative_guard_${Date.now()}`;
+    const stripeSubscriptionId = `sub_rpc_authoritative_guard_${Date.now()}`;
+
+    await ensureBillingCustomer(rpcUserId, {
+      stripe_customer_id: stripeCustomerId,
+    });
+
+    const missingGuard = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_AUTHORITATIVE_UPSERT_FUNCTION,
+      {
+        payload: {
+          user_id: rpcUserId,
+          stripe_subscription_id: stripeSubscriptionId,
+          stripe_customer_id: stripeCustomerId,
+          price_id: 'price_guard_missing',
+          status: 'active',
+          cancel_at_period_end: false,
+        },
+      }
+    );
+    expect(missingGuard.error).toBeTruthy();
+    expect(buildPermissionMessage(missingGuard.error)).toMatch(/existence marker|boolean|22023/i);
+
+    const contradictoryAbsence = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_AUTHORITATIVE_UPSERT_FUNCTION,
+      {
+        payload: {
+          user_id: rpcUserId,
+          stripe_subscription_id: stripeSubscriptionId,
+          _expected_subscription_exists: false,
+          _expected_stripe_subscription_id: stripeSubscriptionId,
+          _authoritative_sync_purpose: 'checkout_completion',
+        },
+      }
+    );
+    expect(contradictoryAbsence.error).toBeTruthy();
+    expect(buildPermissionMessage(contradictoryAbsence.error)).toMatch(/absent billing snapshot|22023/i);
+
+    const nullVersion = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_AUTHORITATIVE_UPSERT_FUNCTION,
+      {
+        payload: {
+          user_id: rpcUserId,
+          stripe_subscription_id: stripeSubscriptionId,
+          _expected_subscription_exists: true,
+          _expected_stripe_subscription_id: stripeSubscriptionId,
+          _expected_subscription_snapshot_version: null,
+          _authoritative_sync_purpose: 'reconcile_current',
+        },
+      }
+    );
+    expect(nullVersion.error).toBeTruthy();
+    expect(buildPermissionMessage(nullVersion.error)).toMatch(/valid expected billing snapshot|22023/i);
+
+    const reconcileAbsent = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_AUTHORITATIVE_UPSERT_FUNCTION,
+      {
+        payload: {
+          user_id: rpcUserId,
+          stripe_subscription_id: stripeSubscriptionId,
+          _expected_subscription_exists: false,
+          _authoritative_sync_purpose: 'reconcile_current',
+        },
+      }
+    );
+    expect(reconcileAbsent.error).toBeTruthy();
+    expect(buildPermissionMessage(reconcileAbsent.error)).toMatch(/existing subscription snapshot|22023/i);
+
+    const inserted = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_AUTHORITATIVE_UPSERT_FUNCTION,
+      {
+        payload: {
+          user_id: rpcUserId,
+          stripe_subscription_id: stripeSubscriptionId,
+          stripe_customer_id: stripeCustomerId,
+          price_id: 'price_guard_inserted',
+          status: 'active',
+          current_period_end: '2030-02-01T00:00:00.000Z',
+          cancel_at_period_end: false,
+          _expected_subscription_exists: false,
+          _authoritative_sync_purpose: 'checkout_completion',
+        },
+      }
+    );
+    expect(inserted.error).toBeNull();
+    expect(inserted.data.subscription.snapshot_version).toBe(1);
+
+    const staleAbsence = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_AUTHORITATIVE_UPSERT_FUNCTION,
+      {
+        payload: {
+          user_id: rpcUserId,
+          stripe_subscription_id: stripeSubscriptionId,
+          stripe_customer_id: stripeCustomerId,
+          price_id: 'price_guard_stale_absence',
+          status: 'active',
+          cancel_at_period_end: false,
+          _expected_subscription_exists: false,
+          _authoritative_sync_purpose: 'checkout_completion',
+        },
+      }
+    );
+    expect(staleAbsence.error).toBeNull();
+    expect(staleAbsence.data).toEqual(expect.objectContaining({
+      applied: false,
+      reason: 'billing_snapshot_changed',
+      subscription: expect.objectContaining({
+        stripe_subscription_id: stripeSubscriptionId,
+        snapshot_version: 1,
+      }),
+    }));
+
+    const directUpdate = await serviceClient
+      .from('billing_subscriptions')
+      .update({ price_id: 'price_guard_direct_update' })
+      .eq('user_id', rpcUserId)
+      .select('*')
+      .single();
+    expect(directUpdate.error).toBeNull();
+    expect(directUpdate.data.snapshot_version).toBe(2);
+
+    const reconciled = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_AUTHORITATIVE_UPSERT_FUNCTION,
+      {
+        payload: {
+          user_id: rpcUserId,
+          price_id: 'price_guard_reconciled',
+          _expected_subscription_exists: true,
+          _expected_stripe_subscription_id: stripeSubscriptionId,
+          _expected_subscription_snapshot_version: directUpdate.data.snapshot_version,
+          _authoritative_sync_purpose: 'reconcile_current',
+        },
+      }
+    );
+    expect(reconciled.error).toBeNull();
+    expect(reconciled.data.subscription.snapshot_version).toBe(3);
+
+    const blockedReplacement = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_AUTHORITATIVE_UPSERT_FUNCTION,
+      {
+        payload: {
+          user_id: rpcUserId,
+          stripe_subscription_id: `${stripeSubscriptionId}_replacement`,
+          stripe_customer_id: stripeCustomerId,
+          price_id: 'price_guard_replacement',
+          status: 'active',
+          cancel_at_period_end: false,
+          _expected_subscription_exists: true,
+          _expected_stripe_subscription_id: stripeSubscriptionId,
+          _expected_subscription_snapshot_version:
+            reconciled.data.subscription.snapshot_version,
+          _authoritative_sync_purpose: 'checkout_completion',
+        },
+      }
+    );
+    expect(blockedReplacement.error).toBeNull();
+    expect(blockedReplacement.data).toEqual(expect.objectContaining({
+      applied: false,
+      reason: 'subscription_replacement_blocked',
+      subscription: expect.objectContaining({
+        stripe_subscription_id: stripeSubscriptionId,
+        snapshot_version: 3,
+      }),
+    }));
+
+    const terminalRow = await serviceClient
+      .from('billing_subscriptions')
+      .update({ status: 'canceled' })
+      .eq('user_id', rpcUserId)
+      .select('*')
+      .single();
+    expect(terminalRow.error).toBeNull();
+    expect(terminalRow.data.snapshot_version).toBe(4);
+
+    const allowedReplacementId = `${stripeSubscriptionId}_allowed`;
+    const allowedReplacement = await callServiceBillingRpc(
+      BILLING_SUBSCRIPTION_AUTHORITATIVE_UPSERT_FUNCTION,
+      {
+        payload: {
+          user_id: rpcUserId,
+          stripe_subscription_id: allowedReplacementId,
+          stripe_customer_id: stripeCustomerId,
+          price_id: 'price_guard_allowed_replacement',
+          status: 'active',
+          cancel_at_period_end: false,
+          _expected_subscription_exists: true,
+          _expected_stripe_subscription_id: stripeSubscriptionId,
+          _expected_subscription_snapshot_version: terminalRow.data.snapshot_version,
+          _authoritative_sync_purpose: 'checkout_completion',
+        },
+      }
+    );
+    expect(allowedReplacement.error).toBeNull();
+    expect(allowedReplacement.data).toEqual(expect.objectContaining({
+      applied: true,
+      subscription: expect.objectContaining({
+        stripe_subscription_id: allowedReplacementId,
+        status: 'active',
+        snapshot_version: 5,
+      }),
     }));
   });
 
@@ -2069,6 +2328,12 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
         payload: {
           user_id: rpcUserId,
           price_id: 'price_service_permissions_updated',
+          _expected_subscription_exists: true,
+          _expected_stripe_subscription_id:
+            eventUpsert.data.subscription.stripe_subscription_id,
+          _expected_subscription_snapshot_version:
+            eventUpsert.data.subscription.snapshot_version,
+          _authoritative_sync_purpose: 'reconcile_current',
         },
       }
     );
