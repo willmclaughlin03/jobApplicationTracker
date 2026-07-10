@@ -3,6 +3,7 @@ jest.mock('../../../middleware/withRateLimit.js', () => ({
 }));
 
 const mockAssertStripeLivemode = jest.fn();
+const mockBuildAuthoritativeSubscriptionSnapshot = jest.fn();
 const mockFormatStripeIdForLog = jest.fn((value) => value);
 const mockGetMintedCheckoutSessionForUser = jest.fn();
 const mockLoadBillingStatusOrThrow = jest.fn();
@@ -14,6 +15,9 @@ const mockRetrieveCheckoutSession = jest.fn();
 
 jest.mock('../../../lib/billingService.js', () => ({
   assertStripeLivemode: mockAssertStripeLivemode,
+  BILLING_AUTHORITATIVE_SYNC_PURPOSES: {
+    CHECKOUT_COMPLETION: 'checkout_completion',
+  },
   BILLING_SYNC_MODES: {
     AUTHORITATIVE: 'authoritative',
   },
@@ -22,6 +26,7 @@ jest.mock('../../../lib/billingService.js', () => ({
     PROCESSED: 'processed',
     UNSUPPORTED_STATUS_IGNORED: 'unsupported_status_ignored',
   },
+  buildAuthoritativeSubscriptionSnapshot: mockBuildAuthoritativeSubscriptionSnapshot,
   formatStripeIdForLog: mockFormatStripeIdForLog,
   getMintedCheckoutSessionForUser: mockGetMintedCheckoutSessionForUser,
   loadBillingStatusOrThrow: mockLoadBillingStatusOrThrow,
@@ -78,6 +83,7 @@ describe('/api/billing/checkout-status handler', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockAssertStripeLivemode.mockReset();
+    mockBuildAuthoritativeSubscriptionSnapshot.mockReset();
     mockLoadBillingStatusOrThrow.mockReset();
     mockMarkMintedCheckoutSessionTerminal.mockReset();
     mockMapCheckoutStatus.mockReset();
@@ -107,7 +113,23 @@ describe('/api/billing/checkout-status handler', () => {
     mockLoadBillingStatusOrThrow.mockResolvedValue({
       entitled: false,
       stripeCustomerId: 'cus_local_123',
+      subscription: null,
     });
+    /**
+     * Mirror the route-facing strict snapshot conversion for local fixtures.
+     *
+     * @param {object|null|undefined} billingStatus
+     * @returns {object}
+     */
+    mockBuildAuthoritativeSubscriptionSnapshot.mockImplementation((billingStatus) => (
+      billingStatus?.subscription
+        ? {
+          exists: true,
+          subscriptionId: billingStatus.subscription.stripe_subscription_id,
+          snapshotVersion: billingStatus.subscription.snapshot_version,
+        }
+        : { exists: false }
+    ));
     mockMarkMintedCheckoutSessionTerminal.mockResolvedValue(null);
     mockMapCheckoutStatus.mockReturnValue('pending');
     mockSyncSubscriptionFromStripe.mockResolvedValue({ outcome: 'processed' });
@@ -343,7 +365,14 @@ describe('/api/billing/checkout-status handler', () => {
       subscription: 'sub_checkout_123',
     });
     mockLoadBillingStatusOrThrow
-      .mockResolvedValueOnce({ entitled: false, stripeCustomerId: 'cus_local_123' })
+      .mockResolvedValueOnce({
+        entitled: false,
+        stripeCustomerId: 'cus_local_123',
+        subscription: {
+          stripe_subscription_id: 'sub_previous_canceled_456',
+          snapshot_version: 9,
+        },
+      })
       .mockResolvedValueOnce({ entitled: true, stripeCustomerId: 'cus_local_123' });
     mockMapCheckoutStatus.mockReturnValue('active');
     const req = createMockReq();
@@ -357,6 +386,12 @@ describe('/api/billing/checkout-status handler', () => {
       {
         mode: 'authoritative',
         expectedUserId: mockUser.id,
+        expectedSubscriptionSnapshot: {
+          exists: true,
+          subscriptionId: 'sub_previous_canceled_456',
+          snapshotVersion: 9,
+        },
+        authoritativeSyncPurpose: 'checkout_completion',
       },
       mockLog
     );
@@ -391,6 +426,16 @@ describe('/api/billing/checkout-status handler', () => {
     await handler(req, res);
 
     expect(mockSyncSubscriptionFromStripe).toHaveBeenCalledTimes(1);
+    expect(mockSyncSubscriptionFromStripe).toHaveBeenCalledWith(
+      'sub_checkout_123',
+      {
+        mode: 'authoritative',
+        expectedUserId: mockUser.id,
+        expectedSubscriptionSnapshot: { exists: false },
+        authoritativeSyncPurpose: 'checkout_completion',
+      },
+      mockLog
+    );
     expect(mockLoadBillingStatusOrThrow).toHaveBeenCalledTimes(2);
     expect(mockMapCheckoutStatus).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(200);
@@ -422,7 +467,10 @@ describe('/api/billing/checkout-status handler', () => {
     expect(mockMarkMintedCheckoutSessionTerminal).not.toHaveBeenCalled();
     expect(mockSyncSubscriptionFromStripe).not.toHaveBeenCalled();
     expect(mockMapCheckoutStatus).toHaveBeenCalledWith({
-      billingStatus: { entitled: false, stripeCustomerId: 'cus_local_123' },
+      billingStatus: expect.objectContaining({
+        entitled: false,
+        stripeCustomerId: 'cus_local_123',
+      }),
       checkoutSessionStatus: 'open',
     });
     expect(res.status).toHaveBeenCalledWith(200);
@@ -496,7 +544,10 @@ describe('/api/billing/checkout-status handler', () => {
     );
     expect(mockSyncSubscriptionFromStripe).not.toHaveBeenCalled();
     expect(mockMapCheckoutStatus).toHaveBeenCalledWith({
-      billingStatus: { entitled: false, stripeCustomerId: 'cus_local_123' },
+      billingStatus: expect.objectContaining({
+        entitled: false,
+        stripeCustomerId: 'cus_local_123',
+      }),
       checkoutSessionStatus: 'expired',
     });
     expect(res.status).toHaveBeenCalledWith(200);
@@ -524,7 +575,10 @@ describe('/api/billing/checkout-status handler', () => {
 
     expect(mockMarkMintedCheckoutSessionTerminal).toHaveBeenCalledTimes(1);
     expect(mockMapCheckoutStatus).toHaveBeenCalledWith({
-      billingStatus: { entitled: false, stripeCustomerId: 'cus_local_123' },
+      billingStatus: expect.objectContaining({
+        entitled: false,
+        stripeCustomerId: 'cus_local_123',
+      }),
       checkoutSessionStatus: 'expired',
     });
     expect(res.status).toHaveBeenCalledWith(200);

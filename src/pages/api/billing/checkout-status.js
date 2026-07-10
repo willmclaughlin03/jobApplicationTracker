@@ -5,8 +5,10 @@ import { OPERATIONS } from '../../../shared/constants/tiers.js';
 import { billingCheckoutStatusSchema } from '../../../shared/validations/billingSchema.js';
 import {
   assertStripeLivemode,
+  BILLING_AUTHORITATIVE_SYNC_PURPOSES,
   BILLING_SYNC_MODES,
   BILLING_WRITE_OUTCOMES,
+  buildAuthoritativeSubscriptionSnapshot,
   formatStripeIdForLog,
   getMintedCheckoutSessionForUser,
   loadBillingStatusOrThrow,
@@ -351,6 +353,9 @@ async function handler(req, res) {
         {
           mode: BILLING_SYNC_MODES.AUTHORITATIVE,
           expectedUserId: req._rateLimitUser.id,
+          expectedSubscriptionSnapshot: buildAuthoritativeSubscriptionSnapshot(billingStatus),
+          authoritativeSyncPurpose:
+            BILLING_AUTHORITATIVE_SYNC_PURPOSES.CHECKOUT_COMPLETION,
         },
         req.log
       );

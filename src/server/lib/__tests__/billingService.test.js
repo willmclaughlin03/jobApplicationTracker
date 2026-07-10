@@ -44,10 +44,12 @@ jest.mock('../supabaseServer.js', () => ({
 }));
 
 const {
+  BILLING_AUTHORITATIVE_SYNC_PURPOSES,
   BILLING_SYNC_MODES,
   BILLING_WRITE_OUTCOMES,
   CHECKOUT_STATUS_STATES,
   canStartCheckout,
+  buildAuthoritativeSubscriptionSnapshot,
   claimStripeEventReceiptProcessing,
   claimPendingCheckoutSession,
   failPendingCheckoutSession,
@@ -1942,8 +1944,105 @@ describe('billingService', () => {
     });
   });
 
+  describe('buildAuthoritativeSubscriptionSnapshot', () => {
+    it('builds exact existing and absent snapshots from strict billing results', () => {
+      expect(buildAuthoritativeSubscriptionSnapshot({ subscription: null })).toEqual({
+        exists: false,
+      });
+      expect(buildAuthoritativeSubscriptionSnapshot({
+        subscription: {
+          stripe_subscription_id: 'sub_snapshot_123',
+          snapshot_version: 17,
+          updated_at: '2029-11-14T00:00:00.123456+00:00',
+        },
+      })).toEqual({
+        exists: true,
+        subscriptionId: 'sub_snapshot_123',
+        snapshotVersion: 17,
+      });
+    });
+
+    it('rejects missing or malformed strict billing results instead of inferring absence', () => {
+      expect(() => buildAuthoritativeSubscriptionSnapshot({})).toThrow(
+        'Strict local billing subscription snapshot is required'
+      );
+      expect(() => buildAuthoritativeSubscriptionSnapshot({
+        subscription: {
+          stripe_subscription_id: 'sub_snapshot_123',
+          snapshot_version: '17',
+        },
+      })).toThrow('Strict local billing subscription snapshot is invalid');
+    });
+  });
+
   describe('syncSubscriptionFromStripe', () => {
     const userId = 'user-sync';
+
+    it('rejects missing, malformed, legacy, or event-mode authoritative guards before Stripe work', async () => {
+      const invalidOptions = [
+        { mode: BILLING_SYNC_MODES.AUTHORITATIVE },
+        {
+          mode: BILLING_SYNC_MODES.AUTHORITATIVE,
+          expectedSubscriptionSnapshot: { exists: false },
+        },
+        {
+          mode: BILLING_SYNC_MODES.AUTHORITATIVE,
+          expectedSubscriptionSnapshot: {
+            exists: true,
+            subscriptionId: 'sub_sync_123',
+            snapshotVersion: 0,
+          },
+          authoritativeSyncPurpose:
+            BILLING_AUTHORITATIVE_SYNC_PURPOSES.RECONCILE_CURRENT,
+        },
+        {
+          mode: BILLING_SYNC_MODES.AUTHORITATIVE,
+          expectedSubscriptionId: 'sub_sync_123',
+          expectedSubscriptionUpdatedAt: '2029-11-14T00:00:00.123456+00:00',
+        },
+        {
+          mode: BILLING_SYNC_MODES.EVENT,
+          eventCreated: '2029-11-14T00:00:00.000Z',
+          expectedSubscriptionSnapshot: { exists: false },
+          authoritativeSyncPurpose:
+            BILLING_AUTHORITATIVE_SYNC_PURPOSES.CHECKOUT_COMPLETION,
+        },
+      ];
+
+      for (const options of invalidOptions) {
+        await expect(
+          syncSubscriptionFromStripe('sub_sync_123', options, mockLog)
+        ).rejects.toMatchObject({ code: 'BILLING_INVALID_INPUT' });
+      }
+
+      expect(mockStripe.subscriptions.retrieve).not.toHaveBeenCalled();
+      expect(mockSupabaseAdmin.from).not.toHaveBeenCalled();
+      expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
+    });
+
+    it('requires reconcile_current to target the subscription named by its snapshot', async () => {
+      await expect(
+        syncSubscriptionFromStripe(
+          'sub_sync_123',
+          {
+            mode: BILLING_SYNC_MODES.AUTHORITATIVE,
+            expectedSubscriptionSnapshot: {
+              exists: true,
+              subscriptionId: 'sub_other_456',
+              snapshotVersion: 3,
+            },
+            authoritativeSyncPurpose:
+              BILLING_AUTHORITATIVE_SYNC_PURPOSES.RECONCILE_CURRENT,
+          },
+          mockLog
+        )
+      ).rejects.toMatchObject({
+        code: 'BILLING_INVALID_INPUT',
+        message: 'Current-subscription reconciliation target does not match its snapshot',
+      });
+
+      expect(mockStripe.subscriptions.retrieve).not.toHaveBeenCalled();
+    });
 
     it('reconciles event-driven subscription updates through the event RPC', async () => {
       const adminClient = useAdminClient(createSupabaseClient({
@@ -2138,7 +2237,12 @@ describe('billingService', () => {
 
       const result = await syncSubscriptionFromStripe(
         'sub_sync_123',
-        { mode: BILLING_SYNC_MODES.AUTHORITATIVE },
+        {
+          mode: BILLING_SYNC_MODES.AUTHORITATIVE,
+          expectedSubscriptionSnapshot: { exists: false },
+          authoritativeSyncPurpose:
+            BILLING_AUTHORITATIVE_SYNC_PURPOSES.CHECKOUT_COMPLETION,
+        },
         mockLog
       );
 
@@ -2157,6 +2261,8 @@ describe('billingService', () => {
           status: 'active',
           current_period_end: '2029-11-20T00:00:00.000Z',
           cancel_at_period_end: false,
+          _expected_subscription_exists: false,
+          _authoritative_sync_purpose: 'checkout_completion',
         },
       });
     });
@@ -2166,6 +2272,17 @@ describe('billingService', () => {
         billing_customers: {
           maybeSingle: {
             data: { user_id: userId, stripe_customer_id: 'cus_sync_123' },
+            error: null,
+          },
+        },
+        billing_subscriptions: {
+          maybeSingle: {
+            data: {
+              user_id: userId,
+              stripe_subscription_id: 'sub_newer_456',
+              status: 'active',
+              snapshot_version: 12,
+            },
             error: null,
           },
         },
@@ -2203,8 +2320,13 @@ describe('billingService', () => {
         {
           mode: BILLING_SYNC_MODES.AUTHORITATIVE,
           expectedUserId: userId,
-          expectedSubscriptionId: 'sub_sync_123',
-          expectedSubscriptionUpdatedAt: '2029-11-14T00:00:00.123456+00:00',
+          expectedSubscriptionSnapshot: {
+            exists: true,
+            subscriptionId: 'sub_sync_123',
+            snapshotVersion: 11,
+          },
+          authoritativeSyncPurpose:
+            BILLING_AUTHORITATIVE_SYNC_PURPOSES.RECONCILE_CURRENT,
         },
         mockLog
       );
@@ -2220,9 +2342,272 @@ describe('billingService', () => {
       ).toEqual({
         payload: expect.objectContaining({
           _expected_stripe_subscription_id: 'sub_sync_123',
-          _expected_subscription_updated_at: '2029-11-14T00:00:00.123456+00:00',
+          _expected_subscription_snapshot_version: 11,
+          _expected_subscription_exists: true,
+          _authoritative_sync_purpose: 'reconcile_current',
         }),
       });
+    });
+
+    it('strictly rereads and performs one fresh Stripe retrieval when the same subscription changed', async () => {
+      const customerPlan = {
+        maybeSingle: {
+          data: { user_id: userId, stripe_customer_id: 'cus_sync_123' },
+          error: null,
+        },
+      };
+      const adminClient = useAdminClient(createSupabaseClient({
+        billing_customers: [customerPlan, customerPlan],
+        billing_subscriptions: {
+          maybeSingle: {
+            data: {
+              user_id: userId,
+              stripe_subscription_id: 'sub_sync_123',
+              status: 'canceled',
+              snapshot_version: 12,
+            },
+            error: null,
+          },
+        },
+        rpc: {
+          upsert_billing_subscription_authoritative: [
+            {
+              data: {
+                applied: false,
+                reason: 'billing_snapshot_changed',
+                subscription: {
+                  user_id: userId,
+                  stripe_subscription_id: 'sub_sync_123',
+                  snapshot_version: 12,
+                },
+              },
+              error: null,
+            },
+            {
+              data: {
+                applied: true,
+                reason: 'applied',
+                subscription: {
+                  user_id: userId,
+                  stripe_subscription_id: 'sub_sync_123',
+                  status: 'canceled',
+                  snapshot_version: 13,
+                },
+              },
+              error: null,
+            },
+          ],
+        },
+      }));
+      mockStripe.subscriptions.retrieve
+        .mockResolvedValueOnce({
+          id: 'sub_sync_123',
+          customer: 'cus_sync_123',
+          status: 'active',
+          livemode: false,
+          cancel_at_period_end: false,
+          items: {
+            data: [{
+              price: { id: 'price_premium_monthly' },
+              current_period_end: 1889827200,
+            }],
+          },
+        })
+        .mockResolvedValueOnce({
+          id: 'sub_sync_123',
+          customer: 'cus_sync_123',
+          status: 'canceled',
+          livemode: false,
+          cancel_at_period_end: false,
+          items: {
+            data: [{
+              price: { id: 'price_premium_monthly' },
+              current_period_end: 1889827200,
+            }],
+          },
+        });
+
+      const result = await syncSubscriptionFromStripe(
+        'sub_sync_123',
+        {
+          mode: BILLING_SYNC_MODES.AUTHORITATIVE,
+          expectedUserId: userId,
+          expectedSubscriptionSnapshot: {
+            exists: true,
+            subscriptionId: 'sub_sync_123',
+            snapshotVersion: 11,
+          },
+          authoritativeSyncPurpose:
+            BILLING_AUTHORITATIVE_SYNC_PURPOSES.RECONCILE_CURRENT,
+        },
+        mockLog
+      );
+
+      expect(result.outcome).toBe(BILLING_WRITE_OUTCOMES.PROCESSED);
+      expect(mockStripe.subscriptions.retrieve).toHaveBeenCalledTimes(2);
+      expect(
+        adminClient.rpcCallsByName.upsert_billing_subscription_authoritative[1].args
+      ).toEqual({
+        payload: expect.objectContaining({
+          status: 'canceled',
+          _expected_stripe_subscription_id: 'sub_sync_123',
+          _expected_subscription_snapshot_version: 12,
+        }),
+      });
+    });
+
+    it('stops after one fresh retry when the same subscription changes again', async () => {
+      const customerPlan = {
+        maybeSingle: {
+          data: { user_id: userId, stripe_customer_id: 'cus_sync_123' },
+          error: null,
+        },
+      };
+      useAdminClient(createSupabaseClient({
+        billing_customers: [customerPlan, customerPlan],
+        billing_subscriptions: {
+          maybeSingle: {
+            data: {
+              user_id: userId,
+              stripe_subscription_id: 'sub_sync_123',
+              status: 'active',
+              snapshot_version: 12,
+            },
+            error: null,
+          },
+        },
+        rpc: {
+          upsert_billing_subscription_authoritative: [
+            {
+              data: {
+                applied: false,
+                reason: 'billing_snapshot_changed',
+                subscription: {
+                  user_id: userId,
+                  stripe_subscription_id: 'sub_sync_123',
+                  snapshot_version: 12,
+                },
+              },
+              error: null,
+            },
+            {
+              data: {
+                applied: false,
+                reason: 'billing_snapshot_changed',
+                subscription: {
+                  user_id: userId,
+                  stripe_subscription_id: 'sub_sync_123',
+                  snapshot_version: 13,
+                },
+              },
+              error: null,
+            },
+          ],
+        },
+      }));
+      mockStripe.subscriptions.retrieve.mockResolvedValue({
+        id: 'sub_sync_123',
+        customer: 'cus_sync_123',
+        status: 'active',
+        livemode: false,
+        cancel_at_period_end: false,
+        items: {
+          data: [{
+            price: { id: 'price_premium_monthly' },
+            current_period_end: 1889827200,
+          }],
+        },
+      });
+
+      const result = await syncSubscriptionFromStripe(
+        'sub_sync_123',
+        {
+          mode: BILLING_SYNC_MODES.AUTHORITATIVE,
+          expectedUserId: userId,
+          expectedSubscriptionSnapshot: {
+            exists: true,
+            subscriptionId: 'sub_sync_123',
+            snapshotVersion: 11,
+          },
+          authoritativeSyncPurpose:
+            BILLING_AUTHORITATIVE_SYNC_PURPOSES.RECONCILE_CURRENT,
+        },
+        mockLog
+      );
+
+      expect(result.outcome).toBe(BILLING_WRITE_OUTCOMES.SNAPSHOT_CHANGED);
+      expect(mockStripe.subscriptions.retrieve).toHaveBeenCalledTimes(2);
+      expect(mockSupabaseAdmin.rpc).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not retry an old target over a different terminal subscription', async () => {
+      useAdminClient(createSupabaseClient({
+        billing_customers: {
+          maybeSingle: {
+            data: { user_id: userId, stripe_customer_id: 'cus_sync_123' },
+            error: null,
+          },
+        },
+        billing_subscriptions: {
+          maybeSingle: {
+            data: {
+              user_id: userId,
+              stripe_subscription_id: 'sub_newer_terminal_456',
+              status: 'canceled',
+              snapshot_version: 12,
+            },
+            error: null,
+          },
+        },
+        rpc: {
+          upsert_billing_subscription_authoritative: {
+            data: {
+              applied: false,
+              reason: 'billing_snapshot_changed',
+              subscription: {
+                user_id: userId,
+                stripe_subscription_id: 'sub_newer_terminal_456',
+                status: 'canceled',
+                snapshot_version: 12,
+              },
+            },
+            error: null,
+          },
+        },
+      }));
+      mockStripe.subscriptions.retrieve.mockResolvedValue({
+        id: 'sub_sync_123',
+        customer: 'cus_sync_123',
+        status: 'active',
+        livemode: false,
+        cancel_at_period_end: false,
+        items: {
+          data: [{ price: { id: 'price_premium_monthly' } }],
+        },
+      });
+
+      const result = await syncSubscriptionFromStripe(
+        'sub_sync_123',
+        {
+          mode: BILLING_SYNC_MODES.AUTHORITATIVE,
+          expectedUserId: userId,
+          expectedSubscriptionSnapshot: {
+            exists: true,
+            subscriptionId: 'sub_sync_123',
+            snapshotVersion: 11,
+          },
+          authoritativeSyncPurpose:
+            BILLING_AUTHORITATIVE_SYNC_PURPOSES.RECONCILE_CURRENT,
+        },
+        mockLog
+      );
+
+      expect(result.outcome).toBe(BILLING_WRITE_OUTCOMES.SNAPSHOT_CHANGED);
+      expect(result.localSubscription).toEqual(expect.objectContaining({
+        stripe_subscription_id: 'sub_newer_terminal_456',
+      }));
+      expect(mockStripe.subscriptions.retrieve).toHaveBeenCalledTimes(1);
+      expect(mockSupabaseAdmin.rpc).toHaveBeenCalledTimes(1);
     });
 
     it('rejects authoritative sync when the resolved local user does not match expectedUserId before the RPC write', async () => {
@@ -2264,6 +2649,9 @@ describe('billingService', () => {
           {
             mode: BILLING_SYNC_MODES.AUTHORITATIVE,
             expectedUserId: userId,
+            expectedSubscriptionSnapshot: { exists: false },
+            authoritativeSyncPurpose:
+              BILLING_AUTHORITATIVE_SYNC_PURPOSES.CHECKOUT_COMPLETION,
           },
           mockLog
         )
@@ -2507,7 +2895,12 @@ describe('billingService', () => {
 
       const result = await syncSubscriptionFromStripe(
         'sub_sync_123',
-        { mode: BILLING_SYNC_MODES.AUTHORITATIVE },
+        {
+          mode: BILLING_SYNC_MODES.AUTHORITATIVE,
+          expectedSubscriptionSnapshot: { exists: false },
+          authoritativeSyncPurpose:
+            BILLING_AUTHORITATIVE_SYNC_PURPOSES.CHECKOUT_COMPLETION,
+        },
         mockLog
       );
 
@@ -2542,7 +2935,12 @@ describe('billingService', () => {
       await expect(
         syncSubscriptionFromStripe(
           'sub_sync_123',
-          { mode: BILLING_SYNC_MODES.AUTHORITATIVE },
+          {
+            mode: BILLING_SYNC_MODES.AUTHORITATIVE,
+            expectedSubscriptionSnapshot: { exists: false },
+            authoritativeSyncPurpose:
+              BILLING_AUTHORITATIVE_SYNC_PURPOSES.CHECKOUT_COMPLETION,
+          },
           mockLog
         )
       ).rejects.toMatchObject({ code: 'BILLING_LIVEMODE_MISMATCH' });
@@ -2573,7 +2971,12 @@ describe('billingService', () => {
       await expect(
         syncSubscriptionFromStripe(
           'sub_sync_123',
-          { mode: BILLING_SYNC_MODES.AUTHORITATIVE },
+          {
+            mode: BILLING_SYNC_MODES.AUTHORITATIVE,
+            expectedSubscriptionSnapshot: { exists: false },
+            authoritativeSyncPurpose:
+              BILLING_AUTHORITATIVE_SYNC_PURPOSES.CHECKOUT_COMPLETION,
+          },
           mockLog
         )
       ).rejects.toMatchObject({ code: 'BILLING_CUSTOMER_ID_MISSING' });

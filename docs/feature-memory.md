@@ -14,6 +14,10 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-05
 
+- `2026-07-10` - `Snapshot-guarded authoritative Stripe sync`: Added a database-owned subscription version, mandatory exact-existing/exact-absent authoritative guards, purpose-enforced Checkout replacement rules, strict caller snapshots, and a single fresh same-subscription retry after conflicts.
+  - impact: Stale Stripe reads can no longer overwrite a newer local subscription snapshot, timestamp collisions no longer weaken the CAS token, and failed billing reads cannot be mistaken for confirmed row absence.
+- `2026-07-09` - `Verified security scan patch plan`: Validated ten billing, auth, rate-limit, admin-deletion, UUID, and request-body findings against the current tree and converted them into dependency-ordered implementation chunks for separate agents.
+  - impact: Security remediation now has explicit migration ownership, concurrency guardrails, corrected finding scope, and focused verification requirements before production rollout.
 - `2026-07-09` - `Status page factory`: Centralized custom status-page rendering and direct-response status setters for branded error pages.
 - `2026-07-09` - `Framework error logging`: Logged uncaught Next.js page errors on the server while preserving safe error-page props and client rendering.
 - `2026-07-09` - `Shared error status codes`: Centralized branded error page status codes for middleware public-route access and ErrorPage content lookup, with focused coverage.
