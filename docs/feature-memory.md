@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-05
 
+- `2026-07-10` - `Equal-time webhook recovery monitoring`: Locked the target-change warning contract and added an alertable structured signal whenever Stripe retries an existing failed webhook receipt.
 - `2026-07-10` - `Deterministic same-second Stripe event handling`: Added locked canonical equality decisions, sticky terminal snapshots, fail-closed equal-time cross-subscription handling, strict guarded conflict reconciliation, and retryable webhook receipts for unresolved ties.
   - impact: Delayed same-second Stripe events can no longer restore Premium or replace a terminal subscription from arrival order alone, while safe no-op deliveries avoid subscription version and timestamp churn.
 - `2026-07-10` - `Authoritative sync purpose validation`: Rejected empty and whitespace-only authoritative billing sync purposes and added integration coverage for both inputs.

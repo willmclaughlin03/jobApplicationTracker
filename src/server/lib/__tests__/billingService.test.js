@@ -3206,6 +3206,13 @@ describe('billingService', () => {
 
       expect(mockStripe.subscriptions.retrieve).not.toHaveBeenCalled();
       expect(mockSupabaseAdmin.rpc).not.toHaveBeenCalled();
+      expect(mockLog.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'billing_equal_timestamp_reconcile_target_changed',
+          operation: 'reconcileSubscriptionEventConflict',
+        }),
+        'Stopped equal-timestamp reconciliation because the local target changed'
+      );
     });
 
     it('fails closed on a strict billing reread error without inferring absence', async () => {

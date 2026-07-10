@@ -210,6 +210,40 @@ describe('billingWebhookDispatcher', () => {
     );
   });
 
+  it('monitors retries of existing failed webhook receipts before processing', async () => {
+    mockGetStripeEventReceiptForEvent.mockResolvedValue({
+      eventId: 'evt_webhook_123',
+      eventType: 'invoice.paid',
+      livemode: false,
+      processedAt: '2029-11-14T00:01:00.000Z',
+      stripeEventCreated: '2029-11-14T00:00:00.000Z',
+      result: 'failed',
+    });
+    const event = createEvent();
+
+    const result = await processBillingWebhookEvent(event, mockLog);
+
+    expect(mockLog.warn).toHaveBeenCalledWith(
+      {
+        event: 'billing_failed_webhook_receipt_retry',
+        stripeEvent: {
+          id: 'evt_webhook_123',
+          type: 'invoice.paid',
+          livemode: false,
+          created: '2029-11-14T00:00:00.000Z',
+        },
+        previousProcessedAt: '2029-11-14T00:01:00.000Z',
+      },
+      'Retrying Stripe webhook with a previously failed receipt'
+    );
+    expect(mockClaimStripeEventReceiptProcessing).toHaveBeenCalledWith(event, mockLog);
+    expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'processed', mockLog);
+    expect(result).toEqual(expect.objectContaining({
+      duplicate: false,
+      receiptResult: 'processed',
+    }));
+  });
+
   it('claims processing, syncs invoice subscription ids, and records processed', async () => {
     const event = createEvent();
 

@@ -649,6 +649,17 @@ export async function processBillingWebhookEvent(event, log) {
         duplicate: true,
       };
     }
+
+    if (existingReceipt.result === STRIPE_EVENT_RECEIPT_RESULTS.FAILED) {
+      log.warn(
+        {
+          event: 'billing_failed_webhook_receipt_retry',
+          stripeEvent: getStripeEventEnvelopeForReceiptLog(event),
+          previousProcessedAt: existingReceipt.processedAt ?? null,
+        },
+        'Retrying Stripe webhook with a previously failed receipt'
+      );
+    }
   }
 
   const claimResult = await claimStripeEventReceiptProcessing(event, log);
