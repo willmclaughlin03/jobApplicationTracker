@@ -1,5 +1,5 @@
 /**
- * Next.js Edge Middleware — session refresh + auth gate
+ * Next.js Edge Middleware - session refresh + auth gate
  *
  * Purpose: Runs on every page navigation request to:
  * 1. Silently refresh the Supabase access token when it has expired but a
@@ -7,9 +7,10 @@
  * 2. Redirect unauthenticated users to /login on protected routes, preventing
  *    the page shell (layout, sidebar, labels) from reaching the browser.
  *
- * Public routes (/login, /auth/callback) bypass the redirect check.
+ * Public routes (/login, /auth/callback, and custom error pages) bypass the
+ * redirect check.
  *
- * Uses the anon key (not service role) — middleware runs at the Edge and
+ * Uses the anon key (not service role) - middleware runs at the Edge and
  * only needs to validate/refresh the user's own session.
  *
  * Graceful degradation: if Supabase is unreachable, the redirect is skipped
@@ -26,6 +27,32 @@
  */
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse } from 'next/server';
+import { ERROR_STATUS_CODES } from './shared/constants/errorStatusCodes';
+
+const PUBLIC_PATHS = [
+  { path: '/login', allowSubpaths: false },
+  { path: '/auth/callback', allowSubpaths: false },
+  ...ERROR_STATUS_CODES.map((statusCode) => ({ path: `/${statusCode}`, allowSubpaths: false })),
+];
+
+/**
+ * Determines whether a page route should bypass the auth redirect.
+ *
+ * Purpose: Keep login, OAuth callback, and branded error pages reachable while
+ * preserving fail-closed auth gating for the rest of the app shell.
+ *
+ * @param {string} pathname - Incoming request pathname from NextRequest.
+ * @returns {boolean} True when the route is public.
+ */
+export function isPublicPath(pathname) {
+  if (typeof pathname !== 'string') {
+    return false;
+  }
+
+  return PUBLIC_PATHS.some(({ path, allowSubpaths }) => (
+    pathname === path || (allowSubpaths && pathname.startsWith(`${path}/`))
+  ));
+}
 
 export async function middleware(req) {
   // supabaseResponse is re-assigned inside setAll when tokens are refreshed,
@@ -73,12 +100,10 @@ export async function middleware(req) {
   // valid refresh token exists. The refreshed tokens are written to the
   // response via the setAll callback above.
   // If the session is invalid and the route is protected, redirect to /login.
-  const PUBLIC_PATHS = ['/login', '/auth/callback'];
-
   try {
     const { data: { user } } = await supabase.auth.getUser();
     const { pathname } = req.nextUrl;
-    const isPublicRoute = PUBLIC_PATHS.some(p => pathname.startsWith(p));
+    const isPublicRoute = isPublicPath(pathname);
 
     if (!isPublicRoute && !user) {
       const loginUrl = req.nextUrl.clone();
@@ -86,7 +111,7 @@ export async function middleware(req) {
       return NextResponse.redirect(loginUrl);
     }
   } catch {
-    // Supabase unreachable — degrade gracefully instead of 500-ing every
+    // Supabase unreachable - degrade gracefully instead of 500-ing every
     // page navigation. The user keeps their existing (possibly stale) cookies
     // and the next API call will surface the auth error where it can be handled.
   }
@@ -98,8 +123,8 @@ export const config = {
   matcher: [
     /*
      * Match all paths except:
-     * - _next/static  (Next.js build output — no auth needed)
-     * - _next/image   (Next.js image optimisation — no auth needed)
+     * - _next/static  (Next.js build output - no auth needed)
+     * - _next/image   (Next.js image optimisation - no auth needed)
      * - favicon.ico
      * - api/          (API routes verify auth themselves via getUserFromRequest)
      * - Common static asset extensions
