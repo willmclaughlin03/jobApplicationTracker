@@ -70,6 +70,7 @@ export const BILLING_WRITE_OUTCOMES = Object.freeze({
   CUSTOMER_NOT_FOUND: 'customer_not_found',
   UNSUPPORTED_STATUS_IGNORED: 'unsupported_status_ignored',
   SNAPSHOT_CHANGED: 'snapshot_changed',
+  RECONCILE_REQUIRED: 'reconcile_required',
 });
 
 export const BILLING_AUTHORITATIVE_SYNC_PURPOSES = Object.freeze({
@@ -106,6 +107,17 @@ const BILLING_SYNC_MODE_VALUES = Object.values(BILLING_SYNC_MODES);
 const BILLING_AUTHORITATIVE_SYNC_PURPOSE_VALUES = Object.values(
   BILLING_AUTHORITATIVE_SYNC_PURPOSES
 );
+const BILLING_EVENT_RPC_REASONS = Object.freeze({
+  APPLIED: 'applied',
+  STALE_IGNORED: 'stale_ignored',
+  NON_CURRENT_IGNORED: 'non_current_ignored',
+  IDEMPOTENT_EQUAL: 'idempotent_equal',
+  TERMINAL_PRESERVED: 'terminal_preserved',
+  EQUAL_TIMESTAMP_CONFLICT: 'equal_timestamp_conflict',
+  EQUAL_CROSS_SUBSCRIPTION_CONFLICT: 'equal_cross_subscription_conflict',
+  LEGACY_NOT_APPLIED: 'not_applied',
+});
+const BILLING_EVENT_RPC_REASON_VALUES = Object.values(BILLING_EVENT_RPC_REASONS);
 const PENDING_CHECKOUT_SESSION_STATUS_VALUES = Object.values(PENDING_CHECKOUT_SESSION_STATUSES);
 const PENDING_CHECKOUT_SESSION_OUTCOME_VALUES = Object.values(PENDING_CHECKOUT_SESSION_OUTCOMES);
 const CHECKOUT_START_ALLOWED_STATUSES = new Set([
@@ -1573,11 +1585,53 @@ async function callSubscriptionEventRpc(payload) {
     || typeof normalizedData !== 'object'
     || typeof normalizedData.applied !== 'boolean'
     || !normalizedData.subscription
+    || !BILLING_EVENT_RPC_REASON_VALUES.includes(normalizedData.reason)
   ) {
     throw createBillingRpcError('Billing event subscription RPC returned an unexpected payload');
   }
 
   return normalizedData;
+}
+
+/**
+ * Map one validated event-RPC result onto the service write-outcome contract.
+ *
+ * Purpose: safe idempotent/terminal no-ops, truly stale events, and unresolved
+ * equal-time conflicts have different receipt semantics. Exhaustive mapping
+ * prevents a new or legacy database reason from silently becoming processed.
+ *
+ * @param {{ applied: boolean, reason: string }} rpcResult
+ * @returns {string}
+ */
+function getSubscriptionEventWriteOutcome(rpcResult) {
+  if (rpcResult.applied) {
+    if (rpcResult.reason !== BILLING_EVENT_RPC_REASONS.APPLIED) {
+      throw createBillingRpcError(
+        'Billing event subscription RPC returned an inconsistent applied outcome'
+      );
+    }
+
+    return BILLING_WRITE_OUTCOMES.PROCESSED;
+  }
+
+  switch (rpcResult.reason) {
+    case BILLING_EVENT_RPC_REASONS.STALE_IGNORED:
+      return BILLING_WRITE_OUTCOMES.STALE_IGNORED;
+
+    case BILLING_EVENT_RPC_REASONS.NON_CURRENT_IGNORED:
+    case BILLING_EVENT_RPC_REASONS.IDEMPOTENT_EQUAL:
+    case BILLING_EVENT_RPC_REASONS.TERMINAL_PRESERVED:
+      return BILLING_WRITE_OUTCOMES.PROCESSED;
+
+    case BILLING_EVENT_RPC_REASONS.EQUAL_TIMESTAMP_CONFLICT:
+    case BILLING_EVENT_RPC_REASONS.EQUAL_CROSS_SUBSCRIPTION_CONFLICT:
+      return BILLING_WRITE_OUTCOMES.RECONCILE_REQUIRED;
+
+    default:
+      throw createBillingRpcError(
+        'Billing event subscription RPC returned an unsupported non-applied outcome'
+      );
+  }
 }
 
 /**
@@ -3013,10 +3067,24 @@ async function syncSubscriptionFromStripeAttempt(parsedSubscriptionId, parsedOpt
         });
       }
 
+      const eventOutcome = getSubscriptionEventWriteOutcome(rpcResult);
+
+      if (eventOutcome === BILLING_WRITE_OUTCOMES.RECONCILE_REQUIRED) {
+        log.warn(
+          {
+            event: 'billing_equal_timestamp_conflict',
+            operation: 'syncSubscriptionFromStripe',
+            reason: rpcResult.reason,
+            userIdHash: hashUserIdForLog(localCustomer.user_id),
+            stripeSubscriptionId: formatStripeIdForLog(stripeSubscription.id, 'warn'),
+          },
+          'Stripe subscription event requires guarded authoritative reconciliation'
+        );
+      }
+
       return {
-        outcome: rpcResult.applied || rpcResult.reason === 'non_current_ignored'
-          ? BILLING_WRITE_OUTCOMES.PROCESSED
-          : BILLING_WRITE_OUTCOMES.STALE_IGNORED,
+        outcome: eventOutcome,
+        reason: rpcResult.reason,
         userId: localCustomer.user_id,
         subscription: stripeSubscription,
         localSubscription: rpcResult.subscription,
@@ -3172,11 +3240,97 @@ export async function syncSubscriptionFromStripe(
 }
 
 /**
+ * Resolve an equal-timestamp event conflict from a fresh strict local snapshot.
+ *
+ * Purpose: the dispatcher calls this only after the locked event RPC reports a
+ * conflict. The helper rereads through supabaseAdmin without synthesizing Free
+ * state, requires the row to still name the event subscription, then reuses
+ * Chunk 1's guarded `reconcile_current` path and accepts only durable success.
+ *
+ * @param {string} subscriptionId Stripe subscription named by the event.
+ * @param {string} userId server-resolved local billing owner.
+ * @param {object} log request-scoped logger.
+ * @returns {Promise<object>} successfully reconciled billing write result.
+ */
+export async function reconcileSubscriptionEventConflict(
+  subscriptionId,
+  userId,
+  log = defaultLogger
+) {
+  const parsedSubscriptionId = nonEmptyStringSchema.safeParse(subscriptionId);
+  const parsedUserId = nonEmptyStringSchema.safeParse(userId);
+
+  if (!parsedSubscriptionId.success || !parsedUserId.success) {
+    throw createBillingError(
+      'Equal-timestamp reconciliation requires a subscription and user',
+      'BILLING_EVENT_RECONCILIATION_INVALID'
+    );
+  }
+
+  const billingStatus = await loadBillingStatusOrThrow(
+    parsedUserId.data,
+    supabaseAdmin,
+    log
+  );
+  const expectedSubscriptionSnapshot = buildAuthoritativeSubscriptionSnapshot(
+    billingStatus
+  );
+
+  if (
+    !expectedSubscriptionSnapshot.exists
+    || expectedSubscriptionSnapshot.subscriptionId !== parsedSubscriptionId.data
+  ) {
+    log.warn(
+      {
+        event: 'billing_equal_timestamp_reconcile_target_changed',
+        operation: 'reconcileSubscriptionEventConflict',
+        userIdHash: hashUserIdForLog(parsedUserId.data),
+        stripeSubscriptionId: formatStripeIdForLog(parsedSubscriptionId.data, 'warn'),
+        currentSubscriptionId: formatStripeIdForLog(
+          expectedSubscriptionSnapshot.exists
+            ? expectedSubscriptionSnapshot.subscriptionId
+            : null,
+          'warn'
+        ),
+      },
+      'Stopped equal-timestamp reconciliation because the local target changed'
+    );
+
+    throw createBillingError(
+      'Equal-timestamp reconciliation target changed',
+      'BILLING_EVENT_RECONCILIATION_TARGET_CHANGED'
+    );
+  }
+
+  const reconcileResult = await syncSubscriptionFromStripe(
+    parsedSubscriptionId.data,
+    {
+      mode: BILLING_SYNC_MODES.AUTHORITATIVE,
+      expectedUserId: parsedUserId.data,
+      expectedSubscriptionSnapshot,
+      authoritativeSyncPurpose:
+        BILLING_AUTHORITATIVE_SYNC_PURPOSES.RECONCILE_CURRENT,
+    },
+    log
+  );
+
+  if (reconcileResult.outcome !== BILLING_WRITE_OUTCOMES.PROCESSED) {
+    throw createBillingError(
+      'Equal-timestamp reconciliation did not complete',
+      'BILLING_EVENT_RECONCILIATION_INCOMPLETE'
+    );
+  }
+
+  return reconcileResult;
+}
+
+/**
  * Reconcile a subscription from a verified Stripe event.
  *
  * Purpose: webhook dispatchers should not choose billing sync modes directly;
- * this wrapper hardcodes EVENT mode and keeps authoritative reconciliation on
- * authenticated route paths only.
+ * this wrapper hardcodes EVENT mode. Equal-timestamp recovery uses the
+ * dedicated strict helper above rather than letting dispatchers choose an
+ * authoritative purpose or Checkout replacement authority directly.
  *
  * @param {string} subscriptionId
  * @param {string | number | Date} eventCreated
@@ -3575,10 +3729,24 @@ export async function markSubscriptionDeletedFromEvent(
       })
     );
 
+    const eventOutcome = getSubscriptionEventWriteOutcome(rpcResult);
+
+    if (eventOutcome === BILLING_WRITE_OUTCOMES.RECONCILE_REQUIRED) {
+      log.warn(
+        {
+          event: 'billing_equal_timestamp_conflict',
+          operation: 'markSubscriptionDeletedFromEvent',
+          reason: rpcResult.reason,
+          userIdHash: hashUserIdForLog(localCustomer.user_id),
+          stripeSubscriptionId: formatStripeIdForLog(subscriptionId.data, 'warn'),
+        },
+        'Stripe subscription delete event requires guarded authoritative reconciliation'
+      );
+    }
+
     return {
-      outcome: rpcResult.applied
-        ? BILLING_WRITE_OUTCOMES.PROCESSED
-        : BILLING_WRITE_OUTCOMES.STALE_IGNORED,
+      outcome: eventOutcome,
+      reason: rpcResult.reason,
       userId: localCustomer.user_id,
       localSubscription: rpcResult.subscription,
     };
