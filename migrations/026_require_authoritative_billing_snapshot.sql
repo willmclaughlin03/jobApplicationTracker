@@ -126,7 +126,8 @@ BEGIN
   authoritative_sync_purpose :=
     NULLIF(pg_catalog.btrim(payload->>'_authoritative_sync_purpose'), '');
 
-  IF authoritative_sync_purpose NOT IN ('reconcile_current', 'checkout_completion') THEN
+  IF authoritative_sync_purpose IS NULL
+     OR authoritative_sync_purpose NOT IN ('reconcile_current', 'checkout_completion') THEN
     RAISE EXCEPTION 'authoritative sync purpose is invalid'
       USING ERRCODE = '22023';
   END IF;

@@ -347,6 +347,7 @@ function isAuthoritativeSubscriptionSnapshotGuardApplied(shape) {
   return functionDefinition.includes('_expected_subscription_exists')
     && functionDefinition.includes('_expected_subscription_snapshot_version')
     && functionDefinition.includes('_authoritative_sync_purpose')
+    && functionDefinition.includes('authoritative_sync_purpose IS NULL')
     && functionDefinition.includes('subscription_replacement_blocked');
 }
 
@@ -2110,6 +2111,22 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
     );
     expect(missingGuard.error).toBeTruthy();
     expect(buildPermissionMessage(missingGuard.error)).toMatch(/existence marker|boolean|22023/i);
+
+    for (const invalidPurpose of ['', '   ']) {
+      const invalidPurposeResult = await callServiceBillingRpc(
+        BILLING_SUBSCRIPTION_AUTHORITATIVE_UPSERT_FUNCTION,
+        {
+          payload: {
+            user_id: rpcUserId,
+            stripe_subscription_id: stripeSubscriptionId,
+            _expected_subscription_exists: false,
+            _authoritative_sync_purpose: invalidPurpose,
+          },
+        }
+      );
+      expect(invalidPurposeResult.error).toBeTruthy();
+      expect(buildPermissionMessage(invalidPurposeResult.error)).toMatch(/sync purpose|invalid|22023/i);
+    }
 
     const contradictoryAbsence = await callServiceBillingRpc(
       BILLING_SUBSCRIPTION_AUTHORITATIVE_UPSERT_FUNCTION,

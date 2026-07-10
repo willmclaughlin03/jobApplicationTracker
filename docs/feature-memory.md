@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-05
 
+- `2026-07-10` - `Authoritative sync purpose validation`: Rejected empty and whitespace-only authoritative billing sync purposes and added integration coverage for both inputs.
 - `2026-07-10` - `Snapshot-guarded authoritative Stripe sync`: Added a database-owned subscription version, mandatory exact-existing/exact-absent authoritative guards, purpose-enforced Checkout replacement rules, strict caller snapshots, and a single fresh same-subscription retry after conflicts.
   - impact: Stale Stripe reads can no longer overwrite a newer local subscription snapshot, timestamp collisions no longer weaken the CAS token, and failed billing reads cannot be mistaken for confirmed row absence.
 - `2026-07-09` - `Verified security scan patch plan`: Validated ten billing, auth, rate-limit, admin-deletion, UUID, and request-body findings against the current tree and converted them into dependency-ordered implementation chunks for separate agents.
