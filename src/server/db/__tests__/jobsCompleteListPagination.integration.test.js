@@ -28,13 +28,14 @@ const isExpectedSupabaseTarget = Boolean(
     || TEST_URL.startsWith(EXPECTED_TEST_URL_PREFIX + '/')
   )
 );
-const hasInfra = Boolean(
-  RUN_DESTRUCTIVE_DB_INTEGRATION
-  && isExpectedSupabaseTarget
-  && TEST_URL
-  && TEST_SERVICE_KEY
-);
-const describeOrSkip = hasInfra ? describe : describe.skip;
+const describeOrSkip = RUN_DESTRUCTIVE_DB_INTEGRATION ? describe : describe.skip;
+
+if (RUN_DESTRUCTIVE_DB_INTEGRATION && (!TEST_URL || !TEST_SERVICE_KEY)) {
+  throw new Error(
+    'Cannot run Suite K: RUN_DESTRUCTIVE_DB_INTEGRATION=true requires '
+    + 'NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.'
+  );
+}
 
 if (RUN_DESTRUCTIVE_DB_INTEGRATION && !isExpectedSupabaseTarget) {
   throw new Error(
@@ -59,6 +60,10 @@ describeOrSkip('Suite K - Complete jobs list pagination', () => {
 
   /**
    * Creates one isolated confirmed auth user for owner-scoped list evidence.
+   *
+   * Uses `unique` to build a collision-resistant `email`, then requires the
+   * returned `userId`. Side effect: registers that id in `cleanupUserIds` so
+   * `afterAll` removes the user's job rows and auth account.
    *
    * @returns {Promise<{id: string, email: string}>} Created user identity.
    */
@@ -123,6 +128,12 @@ describeOrSkip('Suite K - Complete jobs list pagination', () => {
     }
   }
 
+  /**
+   * Loads the services under test and creates the non-persistent admin client.
+   *
+   * Depends on the validated test URL and service key. This initializes shared
+   * references only; it does not create auth users or database rows.
+   */
   beforeAll(async () => {
     ({ createClient } = await import('@supabase/supabase-js'));
     ({ getJobsByUserId } = await import('../../services/jobService.js'));
@@ -133,21 +144,48 @@ describeOrSkip('Suite K - Complete jobs list pagination', () => {
     });
   });
 
+  /**
+   * Deletes every registered fixture owner's jobs, then its auth account.
+   *
+   * Depends on `serviceClient` and `cleanupUserIds`; it is a no-op when client
+   * setup did not complete. Each cleanup attempt is isolated, and collected
+   * database or auth errors are reported after all registered users are tried.
+   */
   afterAll(async () => {
     if (!serviceClient) return;
 
-    for (const userId of cleanupUserIds) {
-      const { error: jobsError } = await serviceClient
-        .from('jobs')
-        .delete()
-        .eq('user_id', userId);
-      if (jobsError) throw jobsError;
+    const cleanupErrors = [];
 
-      const { error: userError } = await serviceClient.auth.admin.deleteUser(userId);
-      if (userError) throw userError;
+    for (const userId of cleanupUserIds) {
+      try {
+        const { error: jobsError } = await serviceClient
+          .from('jobs')
+          .delete()
+          .eq('user_id', userId);
+        if (jobsError) cleanupErrors.push(jobsError);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+
+      try {
+        const { error: userError } = await serviceClient.auth.admin.deleteUser(userId);
+        if (userError) cleanupErrors.push(userError);
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, 'Suite K fixture cleanup failed');
     }
   });
 
+  /**
+   * Proves dashboard limit handling and over-limit CSV data portability.
+   *
+   * Creates a confirmed auth fixture and writes retained-limit plus overflow
+   * job rows; `createTempUser` registers the owner for `afterAll` teardown.
+   */
   test('K1: dashboard returns exactly 1000 rows, then fails closed while export retains row 1001', async () => {
     const user = await createTempUser();
     await seedJobs(user.id, ABSOLUTE_RETAINED_JOB_LIMIT);
@@ -185,8 +223,21 @@ describeOrSkip('Suite K - Complete jobs list pagination', () => {
     });
 
     const exportResult = await getJobsCsvExportForUser(user.id, log);
+    const expectedExportCount = ABSOLUTE_RETAINED_JOB_LIMIT + 1;
+    const expectedCompanies = Array.from(
+      { length: expectedExportCount },
+      (_, index) => 'Complete List ' + (index + 1)
+    );
+    const exportedCompanies = exportResult.data.csv
+      .split(String.fromCharCode(10))
+      .slice(1, -1)
+      .map((row) => row.split(',')[0].slice(1, -1));
 
     expect(exportResult.error).toBeNull();
-    expect(exportResult.data.rowCount).toBe(ABSOLUTE_RETAINED_JOB_LIMIT + 1);
+    expect(exportResult.data.rowCount).toBe(expectedExportCount);
+    expect(exportedCompanies).toHaveLength(expectedExportCount);
+    expect(new Set(exportedCompanies).size).toBe(expectedExportCount);
+    expect(new Set(exportedCompanies)).toEqual(new Set(expectedCompanies));
+    expect(exportedCompanies).toContain('Complete List ' + expectedExportCount);
   });
 });

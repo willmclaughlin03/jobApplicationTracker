@@ -159,7 +159,7 @@ function fakeQuery(resolvedValue) {
 /**
  * Queues sequential Supabase query results for an internal jobs list loop.
  *
- * Purpose: unpaginated reads continue until an empty page, so tests need to
+ * Purpose: unpaginated reads may span multiple full pages, so tests need to
  * model each independently constructed service-role query.
  *
  * @param {...object} resolvedValues - Ordered Supabase-like page responses.
@@ -645,10 +645,7 @@ describe('getJobsByUserId', () => {
 
   it('returns jobs for a valid user', async () => {
     const jobs = [mockCreatedJob];
-    const [query, emptyQuery] = queueJobListPages(
-      { data: jobs, count: 99, error: null },
-      { data: [], error: null }
-    );
+    const [query] = queueJobListPages({ data: jobs, count: 99, error: null });
 
     const result = await getJobsByUserId(userId, {}, mockSupabaseClient);
 
@@ -656,7 +653,7 @@ describe('getJobsByUserId', () => {
     expect(result.data).toEqual(jobs);
     expect(result.count).toBe(jobs.length);
     expect(mockFrom).toHaveBeenCalledWith('jobs');
-    expect(mockFrom).toHaveBeenCalledTimes(2);
+    expect(mockFrom).toHaveBeenCalledTimes(1);
     expect(mockClientFrom).not.toHaveBeenCalled();
 
     // Verify query was built correctly
@@ -670,11 +667,6 @@ describe('getJobsByUserId', () => {
       ['id', { ascending: false }],
     ]);
     expect(query._calls.limit).toEqual([[500]]);
-    expect(emptyQuery._calls.or).toEqual([[
-      'created_at.lt.' + mockCreatedJob.created_at
-      + ',and(created_at.eq.' + mockCreatedJob.created_at
-      + ',id.lt.' + mockCreatedJob.id + ')',
-    ]]);
   });
 
   it('returns error on DB failure', async () => {
@@ -701,14 +693,12 @@ describe('getJobsByUserId', () => {
     expect(query._calls.select).toEqual([['*']]);
   });
 
-  it('assembles exactly the retained limit across server-capped short pages', async () => {
-    const firstPage = buildListRows(400);
-    const secondPage = buildListRows(400, 400);
-    const thirdPage = buildListRows(200, 800);
+  it('keeps the confirmation fetch when full pages reach the retained limit', async () => {
+    const firstPage = buildListRows(500);
+    const secondPage = buildListRows(500, 500);
     const queries = queueJobListPages(
       { data: firstPage, error: null },
       { data: secondPage, error: null },
-      { data: thirdPage, error: null },
       { data: [], error: null }
     );
 
@@ -717,7 +707,7 @@ describe('getJobsByUserId', () => {
     expect(result.error).toBeNull();
     expect(result.data).toHaveLength(ABSOLUTE_RETAINED_JOB_LIMIT);
     expect(result.count).toBe(ABSOLUTE_RETAINED_JOB_LIMIT);
-    expect(mockFrom).toHaveBeenCalledTimes(4);
+    expect(mockFrom).toHaveBeenCalledTimes(3);
     for (const query of queries) {
       expect(query._calls.eq).toEqual([
         ['user_id', userId],
@@ -751,7 +741,7 @@ describe('getJobsByUserId', () => {
   it('discards accumulated rows when a later keyset page fails', async () => {
     const dbError = new Error('later page failed');
     queueJobListPages(
-      { data: [mockCreatedJob], error: null },
+      { data: buildListRows(500), error: null },
       { data: null, error: dbError }
     );
 
@@ -763,9 +753,10 @@ describe('getJobsByUserId', () => {
   });
 
   it('fails closed when a keyset cursor repeats', async () => {
+    const firstPage = buildListRows(500);
     queueJobListPages(
-      { data: [mockCreatedJob], error: null },
-      { data: [mockCreatedJob], error: null }
+      { data: firstPage, error: null },
+      { data: [firstPage[firstPage.length - 1]], error: null }
     );
 
     const result = await getJobsByUserId(userId, {}, mockSupabaseClient);
@@ -898,10 +889,7 @@ describe('getJobsByUserId', () => {
       locked_reason: lockedAccessRecord.locked_reason,
       locked_policy_version: lockedAccessRecord.locked_policy_version,
     };
-    const [query] = queueJobListPages(
-      { data: [lockedTeaser], count: 99, error: null },
-      { data: [], error: null }
-    );
+    const [query] = queueJobListPages({ data: [lockedTeaser], count: 99, error: null });
 
     const result = await getJobsByUserId(
       userId,
@@ -1013,10 +1001,7 @@ describe('getJobsByUserId', () => {
   });
 
   it('does not active-filter Premium normal lists', async () => {
-    const [query] = queueJobListPages(
-      { data: [mockCreatedJob], count: 1, error: null },
-      { data: [], error: null }
-    );
+    const [query] = queueJobListPages({ data: [mockCreatedJob], count: 1, error: null });
 
     await getJobsByUserId(userId, {}, mockSupabaseClient, undefined, premiumAccessStatus);
 

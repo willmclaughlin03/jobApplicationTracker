@@ -734,9 +734,9 @@ function createJobListReadError(log, {
 /**
  * Fetches a complete unpaginated jobs list through deterministic keyset pages.
  *
- * Purpose: PostgREST may cap responses below the requested page size, so only
- * an empty page proves completion. The product retained limit remains separate
- * from the transport request size.
+ * Purpose: Fetch full request-sized pages until a partial page proves
+ * completion. Reaching the retained limit still requires one additional page
+ * so an over-limit row cannot be mistaken for a complete list.
  *
  * @param {string} userId - Authenticated owner id.
  * @param {object} validatedOptions - Service-validated list options.
@@ -813,6 +813,13 @@ async function fetchCompleteJobsList(userId, validatedOptions, listPolicy, log) 
           cursor,
         }),
       };
+    }
+
+    if (
+      data.length < JOB_LIST_FETCH_PAGE_SIZE
+      && jobs.length < ABSOLUTE_RETAINED_JOB_LIMIT
+    ) {
+      return { data: jobs, count: jobs.length, truncated: false, error: null };
     }
 
     cursor = nextCursor;

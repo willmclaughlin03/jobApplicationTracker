@@ -13,6 +13,11 @@ Use this file as a quick-running log of implemented changes.
 ## Entries
 
 ### Week of 2026-07-05
+- `2026-07-11` - `Complete-list export identity coverage`: Strengthened Suite K to verify all 1001 expected CSV company identities, explicit overflow-row presence, and uniqueness alongside the export row count.
+- `2026-07-11` - `Suite K resilient teardown`: Isolated fixture job and auth deletion attempts across all users and deferred aggregated cleanup errors until every teardown operation completes.
+- `2026-07-11` - `Suite K lifecycle documentation`: Documented destructive integration setup dependencies, fixture auth/database effects, registered cleanup state, and teardown behavior.
+- `2026-07-11` - `Complete-list integration preflight`: Made destructive Suite K runs fail immediately when required Supabase credentials are absent while retaining expected-project validation.
+- `2026-07-11` - `Partial job-list page termination`: Stopped complete job-list pagination after partial transport pages while preserving the retained-limit overflow confirmation fetch.
 - `2026-07-11` - `Transport-decoupled 1000-job storage limit`: Set Premium and retained storage to 1000 jobs, derived the 700-row locked bulk-delete bound, and added complete keyset dashboard/export reads with fail-closed payload and cursor validation.
   - impact: Dashboard and CSV completeness no longer depend on the PostgREST response maximum, and malformed or over-limit list reads cannot appear as successful partial data.
 - `2026-07-10` - `Authoritative sync purpose validation`: Rejected empty and whitespace-only authoritative billing sync purposes and added integration coverage for both inputs.
