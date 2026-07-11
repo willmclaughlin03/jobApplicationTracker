@@ -77,7 +77,7 @@ describe('index API handler (/api/jobs)', () => {
   const mockStorageSummary = {
     status: 'terminal_free',
     activeLimit: 300,
-    absoluteRetainedLimit: 3000,
+    absoluteRetainedLimit: 1000,
     activeCount: 2,
     lockedCount: 0,
     retainedTotalCount: 2,
@@ -799,7 +799,7 @@ describe('index API handler (/api/jobs)', () => {
         data: null,
         error: {
           code: 'STORAGE_LIMIT_EXCEEDED',
-          message: 'Internal storage limit detail: paid tier max 3000',
+          message: 'Internal storage limit detail: paid tier max 1000',
         },
       });
 
@@ -815,7 +815,7 @@ describe('index API handler (/api/jobs)', () => {
           message: ERROR_MESSAGES.STORAGE_LIMIT_EXCEEDED,
         })
       );
-      expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('paid tier max 3000');
+      expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('paid tier max 1000');
     });
 
     it('should return retryable 503 SERVICE_UNAVAILABLE when billing status is unavailable', async () => {

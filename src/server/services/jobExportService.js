@@ -11,6 +11,11 @@
  */
 import { supabaseAdmin } from '../lib/supabaseServer.js';
 import { logger as defaultLogger } from '../../shared/logger.js';
+import {
+  buildJobReadCursorFilter,
+  doesJobReadCursorAdvance,
+  getJobReadCursor,
+} from './jobReadCursor.js';
 
 export const JOB_EXPORT_COLUMNS = Object.freeze([
   'company',
@@ -21,7 +26,7 @@ export const JOB_EXPORT_COLUMNS = Object.freeze([
 ]);
 
 const JOB_EXPORT_SELECT = [...JOB_EXPORT_COLUMNS, 'id'].join(',');
-const JOB_EXPORT_PAGE_SIZE = 1000;
+const JOB_EXPORT_PAGE_SIZE = 500;
 const FORMULA_LIKE_CELL_PATTERN = /^\s*[=+\-@]/;
 const CONTROL_FORMULA_CELL_PATTERN = /^[\t\r]/;
 
@@ -41,49 +46,6 @@ export class InvalidUserIdError extends Error {
     this.code = 'JOB_EXPORT_INVALID_USER_ID';
     this.statusCode = 400;
   }
-}
-
-/**
- * Builds the PostgREST keyset cursor predicate for export pagination.
- *
- * Purpose: keep multi-page exports stable when rows share created_at values or
- * when newer rows are inserted while the export is being assembled.
- *
- * @param {{ createdAt: string, id: string }} cursor - Last row from the previous page.
- * @returns {string} Supabase .or() predicate for rows after the cursor.
- */
-function buildJobExportCursorFilter(cursor) {
-  return [
-    `created_at.lt.${cursor.createdAt}`,
-    `and(created_at.eq.${cursor.createdAt},id.lt.${cursor.id})`,
-  ].join(',');
-}
-
-/**
- * Extracts the next keyset cursor from a full export page.
- *
- * Purpose: fail closed if the service-role query ever omits the non-exported
- * cursor fields needed to avoid unstable offset pagination.
- *
- * @param {object[]} jobs - One fetched export page.
- * @returns {{ createdAt: string, id: string } | null} Cursor for the next page.
- */
-function getNextJobExportCursor(jobs) {
-  const lastJob = jobs[jobs.length - 1];
-
-  if (
-    typeof lastJob?.created_at !== 'string'
-    || lastJob.created_at.length === 0
-    || typeof lastJob?.id !== 'string'
-    || lastJob.id.length === 0
-  ) {
-    return null;
-  }
-
-  return {
-    createdAt: lastJob.created_at,
-    id: lastJob.id,
-  };
 }
 
 /**
@@ -183,7 +145,7 @@ async function fetchOwnedJobExportPage(userId, cursor, log = defaultLogger) {
     .eq('user_id', userId);
 
   if (cursor) {
-    query = query.or(buildJobExportCursorFilter(cursor));
+    query = query.or(buildJobReadCursorFilter(cursor));
   }
 
   const { data, error } = await query
@@ -241,15 +203,15 @@ export async function getJobsCsvExportForUser(userId, log = defaultLogger) {
         return { data: null, error: pageResult.error };
       }
 
-      jobs.push(...pageResult.data);
-
-      if (pageResult.data.length < JOB_EXPORT_PAGE_SIZE) {
+      if (pageResult.data.length === 0) {
         break;
       }
 
-      const nextCursor = getNextJobExportCursor(pageResult.data);
+      const nextCursor = getJobReadCursor(
+        pageResult.data[pageResult.data.length - 1]
+      );
 
-      if (!nextCursor) {
+      if (!doesJobReadCursorAdvance(cursor, nextCursor)) {
         const cursorError = new Error('Jobs export query returned an invalid cursor row');
         log.error(
           { err: cursorError, operation: 'getJobsCsvExportForUser', userId },
@@ -258,6 +220,7 @@ export async function getJobsCsvExportForUser(userId, log = defaultLogger) {
         return { data: null, error: cursorError };
       }
 
+      jobs.push(...pageResult.data);
       cursor = nextCursor;
     }
 

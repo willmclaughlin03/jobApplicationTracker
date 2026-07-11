@@ -12,7 +12,8 @@ const {
 describe('storage constants', () => {
   it('keeps the named paid-to-free storage limits explicit', () => {
     expect(FREE_ACTIVE_JOB_LIMIT).toBe(300);
-    expect(ABSOLUTE_RETAINED_JOB_LIMIT).toBe(3000);
+    expect(ABSOLUTE_RETAINED_JOB_LIMIT).toBe(1000);
+    expect(LOCKED_BULK_DELETE_ROW_LIMIT).toBe(700);
     expect(LOCKED_BULK_DELETE_ROW_LIMIT).toBe(
       ABSOLUTE_RETAINED_JOB_LIMIT - FREE_ACTIVE_JOB_LIMIT
     );

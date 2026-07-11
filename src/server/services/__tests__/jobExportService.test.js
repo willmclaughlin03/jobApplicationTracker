@@ -80,7 +80,7 @@ function buildExportRows(count, offset = 0) {
       position: `Position ${rowNumber}`,
       status: 'applied',
       notes: `Notes ${rowNumber}`,
-      created_at: `2026-06-18T00:00:${String(index % 60).padStart(2, '0')}.000Z`,
+      created_at: new Date(Date.UTC(2026, 5, 18) - rowNumber * 1000).toISOString(),
     };
   });
 }
@@ -145,7 +145,7 @@ describe('getJobsCsvExportForUser', () => {
   it('fetches all owned rows through the service boundary with an export allowlist', async () => {
     const exportRows = [
       {
-        id: 'should-not-export-id',
+        id: '00000000-0000-4000-8000-000000000002',
         company: 'Active Corp',
         position: 'Engineer',
         status: 'applied',
@@ -155,7 +155,7 @@ describe('getJobsCsvExportForUser', () => {
         storage_state: 'active',
       },
       {
-        id: 'locked-cursor-id',
+        id: '00000000-0000-4000-8000-000000000001',
         company: 'Locked Corp',
         position: 'Analyst',
         status: 'interviewing',
@@ -165,7 +165,10 @@ describe('getJobsCsvExportForUser', () => {
       },
     ];
     const query = fakeQuery({ data: exportRows, error: null });
-    mockFrom.mockReturnValueOnce(query);
+    const emptyQuery = fakeQuery({ data: [], error: null });
+    mockFrom
+      .mockReturnValueOnce(query)
+      .mockReturnValueOnce(emptyQuery);
 
     const result = await getJobsCsvExportForUser(userId, mockLog);
 
@@ -178,53 +181,56 @@ describe('getJobsCsvExportForUser', () => {
       ['created_at', { ascending: false }],
       ['id', { ascending: false }],
     ]);
-    expect(query._calls.limit).toEqual([[1000]]);
+    expect(query._calls.limit).toEqual([[500]]);
     expect(query._calls.range).toBeUndefined();
     expect(query._calls.or).toBeUndefined();
     expect(JSON.stringify(query._calls.eq)).not.toContain('storage_state');
     expect(result.data.csv).toContain('"Active Corp"');
     expect(result.data.csv).toContain('"Locked Corp"');
     expect(result.data.csv).not.toContain('should-not-export');
-    expect(result.data.csv).not.toContain('should-not-export-id');
-    expect(result.data.csv).not.toContain('locked-cursor-id');
+    expect(result.data.csv).not.toContain('00000000-0000-4000-8000-000000000002');
+    expect(result.data.csv).not.toContain('00000000-0000-4000-8000-000000000001');
     expect(result.data.csv).not.toContain('premium_to_free_over_plan_limit');
   });
 
-  it('paginates by keyset cursor until a short page is returned', async () => {
-    const firstPage = buildExportRows(1000);
-    const secondPage = buildExportRows(1, 1000);
+  it('continues after a short page until an empty page is returned', async () => {
+    const firstPage = buildExportRows(500);
+    const secondPage = buildExportRows(1, 500);
     const firstPageCursor = firstPage[firstPage.length - 1];
     const firstQuery = fakeQuery({ data: firstPage, error: null });
     const secondQuery = fakeQuery({ data: secondPage, error: null });
+    const emptyQuery = fakeQuery({ data: [], error: null });
     mockFrom
       .mockReturnValueOnce(firstQuery)
-      .mockReturnValueOnce(secondQuery);
+      .mockReturnValueOnce(secondQuery)
+      .mockReturnValueOnce(emptyQuery);
 
     const result = await getJobsCsvExportForUser(userId, mockLog);
 
     expect(result.error).toBeNull();
-    expect(result.data.rowCount).toBe(1001);
-    expect(mockFrom).toHaveBeenCalledTimes(2);
-    expect(firstQuery._calls.limit).toEqual([[1000]]);
+    expect(result.data.rowCount).toBe(501);
+    expect(mockFrom).toHaveBeenCalledTimes(3);
+    expect(firstQuery._calls.limit).toEqual([[500]]);
     expect(firstQuery._calls.or).toBeUndefined();
     expect(firstQuery._calls.range).toBeUndefined();
-    expect(secondQuery._calls.limit).toEqual([[1000]]);
+    expect(secondQuery._calls.limit).toEqual([[500]]);
     expect(secondQuery._calls.range).toBeUndefined();
+    expect(secondQuery._calls.eq).toEqual([['user_id', userId]]);
     expect(secondQuery._calls.or).toEqual([[
       `created_at.lt.${firstPageCursor.created_at},and(created_at.eq.${firstPageCursor.created_at},id.lt.${firstPageCursor.id})`,
     ]]);
   });
 
   it('uses the id cursor tie-breaker when created_at repeats at a page boundary', async () => {
-    const firstPage = buildExportRows(1000);
+    const firstPage = buildExportRows(500);
     const boundaryCreatedAt = '2026-06-18T12:00:00.000Z';
-    firstPage[998] = {
-      ...firstPage[998],
+    firstPage[498] = {
+      ...firstPage[498],
       created_at: boundaryCreatedAt,
       id: '00000000-0000-4000-8000-000000000002',
     };
-    firstPage[999] = {
-      ...firstPage[999],
+    firstPage[499] = {
+      ...firstPage[499],
       created_at: boundaryCreatedAt,
       id: '00000000-0000-4000-8000-000000000001',
     };
@@ -237,9 +243,9 @@ describe('getJobsCsvExportForUser', () => {
     const result = await getJobsCsvExportForUser(userId, mockLog);
 
     expect(result.error).toBeNull();
-    expect(result.data.rowCount).toBe(1000);
+    expect(result.data.rowCount).toBe(500);
     expect(secondQuery._calls.or).toEqual([[
-      `created_at.lt.${boundaryCreatedAt},and(created_at.eq.${boundaryCreatedAt},id.lt.${firstPage[999].id})`,
+      `created_at.lt.${boundaryCreatedAt},and(created_at.eq.${boundaryCreatedAt},id.lt.${firstPage[499].id})`,
     ]]);
   });
 
@@ -262,9 +268,59 @@ describe('getJobsCsvExportForUser', () => {
     );
   });
 
-  it('fails without exporting partial CSV when a full page omits cursor fields', async () => {
-    const fullPageWithoutCursor = buildExportRows(1000).map(({ id, ...row }) => row);
-    mockFrom.mockReturnValueOnce(fakeQuery({ data: fullPageWithoutCursor, error: null }));
+  it('discards accumulated export rows when a later page fails', async () => {
+    const dbError = new Error('later export page failed');
+    mockFrom
+      .mockReturnValueOnce(fakeQuery({ data: buildExportRows(1), error: null }))
+      .mockReturnValueOnce(fakeQuery({ data: null, error: dbError }));
+
+    const result = await getJobsCsvExportForUser(userId, mockLog);
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBe(dbError);
+  });
+
+  it('fails closed when an export page payload is not an array', async () => {
+    mockFrom.mockReturnValueOnce(fakeQuery({ data: null, error: null }));
+
+    const result = await getJobsCsvExportForUser(userId, mockLog);
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(Error);
+    expect(mockLog.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: result.error,
+        operation: 'fetchOwnedJobExportPage',
+        userId,
+      }),
+      'Jobs export page payload was invalid'
+    );
+  });
+
+  it('fails closed when an export cursor repeats', async () => {
+    const repeatedPage = buildExportRows(1);
+    mockFrom
+      .mockReturnValueOnce(fakeQuery({ data: repeatedPage, error: null }))
+      .mockReturnValueOnce(fakeQuery({ data: repeatedPage, error: null }));
+
+    const result = await getJobsCsvExportForUser(userId, mockLog);
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(Error);
+    expect(mockFrom).toHaveBeenCalledTimes(2);
+    expect(mockLog.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: result.error,
+        operation: 'getJobsCsvExportForUser',
+        userId,
+      }),
+      'Jobs export cursor payload was invalid'
+    );
+  });
+
+  it('fails without exporting partial CSV when a non-empty page omits cursor fields', async () => {
+    const pageWithoutCursor = buildExportRows(1).map(({ id, ...row }) => row);
+    mockFrom.mockReturnValueOnce(fakeQuery({ data: pageWithoutCursor, error: null }));
 
     const result = await getJobsCsvExportForUser(userId, mockLog);
 

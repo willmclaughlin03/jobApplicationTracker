@@ -125,7 +125,7 @@ export const TIER_LIMITS = {
             daily: 4
         },
         storage: {
-            maxJobs: 3000,
+            maxJobs: 1000,
             autoDeleteOldest: false,
         },
     },

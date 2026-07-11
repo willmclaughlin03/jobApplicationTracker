@@ -11,7 +11,7 @@ describe('billing tier invariants', () => {
       [OPERATIONS.HEALTH]: { hourly: 60, daily: null },
       [OPERATIONS.STORAGE_EXPORT]: { hourly: 5, daily: 25 },
       [OPERATIONS.BULK_DELETE_LOCKED_JOBS]: { hourly: 3, daily: 4 },
-      storage: { maxJobs: 3000, autoDeleteOldest: false },
+      storage: { maxJobs: 1000, autoDeleteOldest: false },
     });
   });
 

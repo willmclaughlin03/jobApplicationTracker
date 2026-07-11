@@ -13,7 +13,8 @@ Use this file as a quick-running log of implemented changes.
 ## Entries
 
 ### Week of 2026-07-05
-
+- `2026-07-11` - `Transport-decoupled 1000-job storage limit`: Set Premium and retained storage to 1000 jobs, derived the 700-row locked bulk-delete bound, and added complete keyset dashboard/export reads with fail-closed payload and cursor validation.
+  - impact: Dashboard and CSV completeness no longer depend on the PostgREST response maximum, and malformed or over-limit list reads cannot appear as successful partial data.
 - `2026-07-10` - `Authoritative sync purpose validation`: Rejected empty and whitespace-only authoritative billing sync purposes and added integration coverage for both inputs.
 - `2026-07-10` - `Snapshot-guarded authoritative Stripe sync`: Added a database-owned subscription version, mandatory exact-existing/exact-absent authoritative guards, purpose-enforced Checkout replacement rules, strict caller snapshots, and a single fresh same-subscription retry after conflicts.
   - impact: Stale Stripe reads can no longer overwrite a newer local subscription snapshot, timestamp collisions no longer weaken the CAS token, and failed billing reads cannot be mistaken for confirmed row absence.

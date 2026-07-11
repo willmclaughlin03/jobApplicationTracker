@@ -17,7 +17,10 @@ jest.mock('../../../services/storageLockedBulkDeleteService.js', () => ({
 const handler = require('../../../../pages/api/storage/locked-jobs.js').default;
 const { ERROR_MESSAGES } = require('../../../../shared/errors.js');
 const { STORAGE_CREATE_ERROR_CODES } = require('../../../../shared/constants/billing.js');
-const { JOB_STORAGE_ERRORS } = require('../../../../shared/constants/storage.js');
+const {
+  JOB_STORAGE_ERRORS,
+  LOCKED_BULK_DELETE_ROW_LIMIT,
+} = require('../../../../shared/constants/storage.js');
 const { OPERATIONS } = require('../../../../shared/constants/tiers.js');
 
 describe('/api/storage/locked-jobs handler', () => {
@@ -71,7 +74,7 @@ describe('/api/storage/locked-jobs handler', () => {
         deletedCount: 12,
         lockedCountBeforeDelete: 12,
         lockedCountAfterDelete: 0,
-        lockedDeleteLimit: 2700,
+        lockedDeleteLimit: LOCKED_BULK_DELETE_ROW_LIMIT,
       },
       error: null,
     });
