@@ -18,6 +18,11 @@ import { z } from 'zod';
 import { supabaseAdmin } from '../lib/supabaseServer.js';
 import { logger as defaultLogger } from '../../shared/logger.js';
 import {
+  buildJobReadCursorFilter,
+  doesJobReadCursorAdvance,
+  getJobReadCursor,
+} from './jobReadCursor.js';
+import {
   classifyStorageCreateFlow,
   isStorageStatusRetryable,
 } from '../lib/billingService.js';
@@ -38,6 +43,7 @@ import {
 const SERVER_CONTROLLED_JOB_FIELDS = new Set([
   'id',
   'user_id',
+  'created_at',
   'storage_state',
   'locked_at',
   'locked_reason',
@@ -45,6 +51,7 @@ const SERVER_CONTROLLED_JOB_FIELDS = new Set([
 ]);
 
 const FULL_JOB_SELECT = '*';
+const JOB_LIST_FETCH_PAGE_SIZE = 500;
 const JOB_STORAGE_ACCESS_SELECT = 'id, storage_state, locked_at, locked_reason, locked_policy_version';
 const LOCKED_JOB_TEASER_SELECT = 'id, created_at, locked_at, locked_reason, locked_policy_version';
 const STORAGE_ACCESS_RETRYABLE_STATUS_CODES = new Map([
@@ -157,6 +164,27 @@ export class InvalidJobReadOptionsError extends Error {
     this.name = 'InvalidJobReadOptionsError';
     this.code = 'JOB_READ_OPTIONS_INVALID';
     this.statusCode = 400;
+  }
+}
+
+/**
+ * Error type for malformed or policy-invalid jobs list responses.
+ *
+ * Purpose: service-role list reads must fail closed rather than returning an
+ * empty or partial dashboard when PostgREST payloads or cursors are invalid.
+ */
+export class JobListReadError extends Error {
+  /**
+   * Builds a stable list-read error for route-level unavailable handling.
+   *
+   * @param {string} code - Stable internal failure code.
+   * @param {string} message - Safe internal error message.
+   */
+  constructor(code, message) {
+    super(message);
+    this.name = 'JobListReadError';
+    this.code = code;
+    this.statusCode = 503;
   }
 }
 
@@ -635,6 +663,164 @@ function getStorageCreatePolicy(storageStatusResult) {
 }
 
 /**
+ * Builds one owner-scoped ordered jobs query.
+ *
+ * Purpose: caller pagination and internal keyset pages must apply identical
+ * ownership, storage visibility, status, projection, and ordering rules.
+ *
+ * @param {string} userId - Authenticated owner id.
+ * @param {object} validatedOptions - Service-validated list options.
+ * @param {object} listPolicy - Projection and storage-state policy.
+ * @param {{ exactCount?: boolean, cursor?: object|null }} queryOptions - Count and cursor options.
+ * @returns {object} Chainable Supabase jobs query.
+ */
+function buildJobsListQuery(
+  userId,
+  validatedOptions,
+  listPolicy,
+  { exactCount = false, cursor = null } = {}
+) {
+  let query = supabaseAdmin.from('jobs');
+  query = exactCount
+    ? query.select(listPolicy.select, { count: 'exact' })
+    : query.select(listPolicy.select);
+
+  query = query.eq('user_id', userId);
+
+  if (listPolicy.storageStateFilter) {
+    query = query.eq('storage_state', listPolicy.storageStateFilter);
+  }
+
+  if (
+    validatedOptions.status
+    && validatedOptions.storage_state !== JOB_STORAGE_QUERY_STATES.LOCKED
+  ) {
+    query = query.eq('status', validatedOptions.status);
+  }
+
+  if (cursor) {
+    query = query.or(buildJobReadCursorFilter(cursor));
+  }
+
+  return query
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false });
+}
+
+/**
+ * Builds and logs a fail-closed jobs list error.
+ *
+ * Purpose: malformed pages, invalid cursors, and retained-limit violations
+ * must never fall back to accumulated partial rows.
+ *
+ * @param {object} log - Request-scoped logger.
+ * @param {{ code: string, message: string, userId: string, cursor?: object|null }} context - Safe failure context.
+ * @returns {JobListReadError} Stable service error.
+ */
+function createJobListReadError(log, {
+  code,
+  message,
+  userId,
+  cursor = null,
+}) {
+  const error = new JobListReadError(code, message);
+  log.error(
+    { err: error, operation: 'getJobsByUserId', userId, cursor },
+    'Jobs list read failed closed'
+  );
+  return error;
+}
+
+/**
+ * Fetches a complete unpaginated jobs list through deterministic keyset pages.
+ *
+ * Purpose: Continue keyset paging until an empty page proves completion, even
+ * when PostgREST caps non-empty responses below the requested transport size.
+ * Reaching the retained limit still requires one additional page so an
+ * over-limit row cannot be mistaken for a complete list.
+ *
+ * @param {string} userId - Authenticated owner id.
+ * @param {object} validatedOptions - Service-validated list options.
+ * @param {object} listPolicy - Projection and storage-state policy.
+ * @param {object} log - Request-scoped logger.
+ * @returns {Promise<{data: Array|null, count: number, error: Error|object|null}>}
+ */
+async function fetchCompleteJobsList(userId, validatedOptions, listPolicy, log) {
+  const jobs = [];
+  let cursor = null;
+
+  for (;;) {
+    const query = buildJobsListQuery(
+      userId,
+      validatedOptions,
+      listPolicy,
+      { cursor }
+    ).limit(JOB_LIST_FETCH_PAGE_SIZE);
+    const { data, error } = await query;
+
+    if (error) {
+      log.error(
+        { err: error, operation: 'getJobsByUserId', userId, cursor },
+        'Database query failed'
+      );
+      return { data: null, count: 0, truncated: false, error };
+    }
+
+    if (!Array.isArray(data)) {
+      return {
+        data: null,
+        count: 0,
+        truncated: false,
+        error: createJobListReadError(log, {
+          code: 'JOB_LIST_PAYLOAD_INVALID',
+          message: 'Jobs list query returned an unexpected payload',
+          userId,
+          cursor,
+        }),
+      };
+    }
+
+    if (data.length === 0) {
+      return { data: jobs, count: jobs.length, truncated: false, error: null };
+    }
+
+    jobs.push(...data);
+
+    if (jobs.length > ABSOLUTE_RETAINED_JOB_LIMIT) {
+      return {
+        data: null,
+        count: 0,
+        truncated: false,
+        error: createJobListReadError(log, {
+          code: 'JOB_LIST_RETAINED_LIMIT_INVARIANT',
+          message: 'Jobs list exceeded the absolute retained limit',
+          userId,
+          cursor,
+        }),
+      };
+    }
+
+    const nextCursor = getJobReadCursor(data[data.length - 1]);
+
+    if (!doesJobReadCursorAdvance(cursor, nextCursor)) {
+      return {
+        data: null,
+        count: 0,
+        truncated: false,
+        error: createJobListReadError(log, {
+          code: 'JOB_LIST_CURSOR_INVALID',
+          message: 'Jobs list query returned an invalid cursor',
+          userId,
+          cursor,
+        }),
+      };
+    }
+
+    cursor = nextCursor;
+  }
+}
+
+/**
  * Retrieves jobs for a specific user with optional pagination and filtering
  *
  * @param {string} userId - The user's ID
@@ -659,7 +845,7 @@ export async function getJobsByUserId(
 ) {
   try {
     const validatedOptions = validateJobReadOptions(options);
-    const { from, to, status } = validatedOptions;
+    const { from, to } = validatedOptions;
     const isPaginatedRead = from !== undefined;
     const storageStatus = getStorageStatusValue(storageStatusResult);
     const listPolicy = getJobListPolicy(validatedOptions, storageStatus);
@@ -668,32 +854,21 @@ export async function getJobsByUserId(
       return { data: null, count: 0, truncated: false, error: listPolicy.error };
     }
 
-    let query = supabaseAdmin.from('jobs');
-
-    query = isPaginatedRead
-      ? query.select(listPolicy.select, { count: 'exact' })
-      : query.select(listPolicy.select);
-
-    query = query.eq('user_id', userId);
-
-    if (listPolicy.storageStateFilter) {
-      query = query.eq('storage_state', listPolicy.storageStateFilter);
+    if (!isPaginatedRead) {
+      return await fetchCompleteJobsList(
+        userId,
+        validatedOptions,
+        listPolicy,
+        log
+      );
     }
 
-    if (status && validatedOptions.storage_state !== JOB_STORAGE_QUERY_STATES.LOCKED) {
-      query = query.eq('status', status);
-    }
-
-    query = query
-      .order('created_at', { ascending: false })
-      .order('id', { ascending: false });
-
-    if (isPaginatedRead) {
-      query = query.range(from, to);
-    } else {
-      query = query.limit(ABSOLUTE_RETAINED_JOB_LIMIT + 1);
-    }
-
+    const query = buildJobsListQuery(
+      userId,
+      validatedOptions,
+      listPolicy,
+      { exactCount: true }
+    ).range(from, to);
     const { data, error, count } = await query;
 
     if (error) {
@@ -701,34 +876,20 @@ export async function getJobsByUserId(
       return { data: null, count: 0, truncated: false, error };
     }
 
-    // Non-paginated (retained list) reads overfetch by one row beyond
-    // ABSOLUTE_RETAINED_JOB_LIMIT so truncation can be detected from the
-    // returned row count alone, avoiding a costly exact `count` scan.
-    // If the extra row is present, drop it and report `truncated: true`.
-    const fetchedCount = Array.isArray(data) ? data.length : 0;
-    const truncated = !isPaginatedRead && fetchedCount > ABSOLUTE_RETAINED_JOB_LIMIT;
-    const responseData = truncated
-      ? data.slice(0, ABSOLUTE_RETAINED_JOB_LIMIT)
-      : data;
-    const returnedCount = Array.isArray(responseData) ? responseData.length : 0;
-    const matchingCount = isPaginatedRead && Array.isArray(data) && Number.isSafeInteger(count) && count >= 0
-      ? count
-      : returnedCount;
-
-    if (truncated) {
-      log.warn(
-        {
-          operation: 'getJobsByUserId',
+    if (!Array.isArray(data)) {
+      return {
+        data: null,
+        count: 0,
+        truncated: false,
+        error: createJobListReadError(log, {
+          code: 'JOB_LIST_PAYLOAD_INVALID',
+          message: 'Jobs list query returned an unexpected payload',
           userId,
-          returnedCount,
-          fetchedCount,
-          limit: ABSOLUTE_RETAINED_JOB_LIMIT,
-        },
-        'Job list truncated at absolute retained job limit'
-      );
+        }),
+      };
     }
 
-    return { data: responseData, count: matchingCount, truncated, error: null };
+    return { data, count: count || 0, truncated: false, error: null };
   } catch (error) {
     if (error instanceof InvalidJobReadOptionsError) {
       return { data: null, count: 0, truncated: false, error };

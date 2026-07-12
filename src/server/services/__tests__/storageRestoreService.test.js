@@ -33,6 +33,7 @@ const { restoreLockedJobsForPremiumUser } = require('../storageRestoreService.js
 const { STORAGE_STATUSES } = require('../../../shared/constants/billing.js');
 const {
   ABSOLUTE_RETAINED_JOB_LIMIT,
+  FREE_ACTIVE_JOB_LIMIT,
 } = require('../../../shared/constants/storage.js');
 
 const userId = 'user-restore-123';
@@ -119,8 +120,8 @@ describe('storageRestoreService', () => {
   it('accepts canceling Premium as restore-eligible until period end', async () => {
     mockRpc.mockResolvedValueOnce(rpcRestoreResponse({
       restoredCount: 0,
-      activeCountBeforeRestore: 3000,
-      activeCountAfterRestore: 3000,
+      activeCountBeforeRestore: ABSOLUTE_RETAINED_JOB_LIMIT,
+      activeCountAfterRestore: ABSOLUTE_RETAINED_JOB_LIMIT,
       lockedCountBeforeRestore: 0,
       lockedCountAfterRestore: 0,
     }));
@@ -222,10 +223,11 @@ describe('storageRestoreService', () => {
 
   it('logs over-cap retained totals after a bounded Premium restore', async () => {
     mockRpc.mockResolvedValueOnce(rpcRestoreResponse({
-      restoredCount: 2700,
+      restoredCount: ABSOLUTE_RETAINED_JOB_LIMIT - FREE_ACTIVE_JOB_LIMIT,
       activeCountBeforeRestore: 300,
       activeCountAfterRestore: ABSOLUTE_RETAINED_JOB_LIMIT,
-      lockedCountBeforeRestore: 2900,
+      lockedCountBeforeRestore:
+        ABSOLUTE_RETAINED_JOB_LIMIT - FREE_ACTIVE_JOB_LIMIT + 200,
       lockedCountAfterRestore: 200,
       retainedTotalCount: ABSOLUTE_RETAINED_JOB_LIMIT + 200,
       retainedOverLimit: true,
@@ -240,7 +242,7 @@ describe('storageRestoreService', () => {
     expect(result.error).toBeNull();
     expect(result.data).toEqual(expect.objectContaining({
       outcome: 'restored',
-      restoredCount: 2700,
+      restoredCount: ABSOLUTE_RETAINED_JOB_LIMIT - FREE_ACTIVE_JOB_LIMIT,
       retainedOverLimit: true,
       lockedCountAfterRestore: 200,
     }));
@@ -250,7 +252,7 @@ describe('storageRestoreService', () => {
         operation: 'restoreLockedJobsForPremiumUser',
         userId,
         retainedTotalCount: ABSOLUTE_RETAINED_JOB_LIMIT + 200,
-        restoredCount: 2700,
+        restoredCount: ABSOLUTE_RETAINED_JOB_LIMIT - FREE_ACTIVE_JOB_LIMIT,
       }),
       'Premium restore left retained rows over the absolute storage cap'
     );

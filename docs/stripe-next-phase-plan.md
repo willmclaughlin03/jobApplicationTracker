@@ -168,7 +168,7 @@ preserving the product requirement that upgraded users get more storage.
   rows by `user_id`
 - make job creation call that helper before deciding which storage tier to use
 - keep `FREE.storage.maxJobs = 300`
-- keep `PAID.storage.maxJobs = 3000`
+- keep `PAID.storage.maxJobs = 1000`
 - document that premium storage is intentional and tied to canonical local
   billing state
 - stop using auth metadata as the authority for storage tier resolution

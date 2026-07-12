@@ -83,6 +83,7 @@ const {
   deleteJob,
   JobLockedByPlanError,
   InvalidJobReadOptionsError,
+  JobListReadError,
   StorageAccessUnavailableError,
   StorageCreateBlockedError,
   StorageLimitExceededError,
@@ -155,10 +156,58 @@ function fakeQuery(resolvedValue) {
   return chain;
 }
 
+/**
+ * Queues sequential Supabase query results for an internal jobs list loop.
+ *
+ * Purpose: unpaginated reads may span multiple full pages, so tests need to
+ * model each independently constructed service-role query.
+ *
+ * @param {...object} resolvedValues - Ordered Supabase-like page responses.
+ * @returns {Proxy[]} Query fakes in request order.
+ */
+function queueJobListPages(...resolvedValues) {
+  const queries = resolvedValues.map((resolvedValue) => fakeQuery(resolvedValue));
+
+  for (const query of queries) {
+    mockFrom.mockReturnValueOnce(query);
+  }
+
+  return queries;
+}
+
+/**
+ * Builds strictly descending job rows for keyset pagination tests.
+ *
+ * Purpose: large-list tests need valid UUID/timestamp cursors without storing
+ * hand-written fixtures.
+ *
+ * @param {number} count - Number of rows to generate.
+ * @param {number} offset - Global descending-order offset.
+ * @returns {object[]} Ordered job rows.
+ */
+function buildListRows(count, offset = 0) {
+  return Array.from({ length: count }, (_, index) => {
+    const rowNumber = offset + index + 1;
+
+    return {
+      id: '00000000-0000-4000-8000-' + String(rowNumber).padStart(12, '0'),
+      company: 'Company ' + rowNumber,
+      position: 'Engineer',
+      status: 'applied',
+      created_at: new Date(Date.UTC(2026, 6, 11) - rowNumber * 1000).toISOString(),
+    };
+  });
+}
+
 const validJobData = { company: 'Acme', position: 'Engineer', status: 'applied' };
 const userId = 'user-123';
-const jobId = 'job-abc';
-const mockCreatedJob = { id: jobId, ...validJobData, user_id: userId };
+const jobId = '00000000-0000-4000-8000-000000000001';
+const mockCreatedJob = {
+  id: jobId,
+  ...validJobData,
+  user_id: userId,
+  created_at: '2026-07-11T12:00:00.000Z',
+};
 const activeAccessRecord = {
   id: jobId,
   storage_state: JOB_STORAGE_STATES.ACTIVE,
@@ -375,6 +424,7 @@ describe('createJob - atomic storage quota enforcement', () => {
         ...validJobData,
         id: 'attacker-job',
         user_id: 'attacker-user',
+        created_at: '2026-06-08T00:00:00.000Z',
         storage_state: 'locked_over_plan_limit',
         locked_at: '2026-06-08T00:00:00.000Z',
         locked_reason: 'premium_to_free_over_plan_limit',
@@ -595,8 +645,10 @@ describe('getJobsByUserId', () => {
 
   it('returns jobs for a valid user', async () => {
     const jobs = [mockCreatedJob];
-    const query = fakeQuery({ data: jobs, count: jobs.length, error: null });
-    mockFrom.mockReturnValueOnce(query);
+    const [query] = queueJobListPages(
+      { data: jobs, count: 99, error: null },
+      { data: [], error: null }
+    );
 
     const result = await getJobsByUserId(userId, {}, mockSupabaseClient);
 
@@ -604,6 +656,7 @@ describe('getJobsByUserId', () => {
     expect(result.data).toEqual(jobs);
     expect(result.count).toBe(jobs.length);
     expect(mockFrom).toHaveBeenCalledWith('jobs');
+    expect(mockFrom).toHaveBeenCalledTimes(2);
     expect(mockClientFrom).not.toHaveBeenCalled();
 
     // Verify query was built correctly
@@ -616,7 +669,7 @@ describe('getJobsByUserId', () => {
       ['created_at', { ascending: false }],
       ['id', { ascending: false }],
     ]);
-    expect(query._calls.limit).toEqual([[ABSOLUTE_RETAINED_JOB_LIMIT + 1]]);
+    expect(query._calls.limit).toEqual([[500]]);
   });
 
   it('returns error on DB failure', async () => {
@@ -629,80 +682,126 @@ describe('getJobsByUserId', () => {
     expect(result.error).toBe(dbError);
   });
 
-  it('returns zero count for unpaginated non-array data', async () => {
+  it('fails closed for unpaginated non-array data', async () => {
     const query = fakeQuery({ data: null, count: 99, error: null });
     mockFrom.mockReturnValueOnce(query);
 
     const result = await getJobsByUserId(userId, {}, mockSupabaseClient);
 
-    expect(result.error).toBeNull();
+    expect(result.error).toBeInstanceOf(JobListReadError);
+    expect(result.error.code).toBe('JOB_LIST_PAYLOAD_INVALID');
     expect(result.data).toBeNull();
     expect(result.count).toBe(0);
     expect(result.truncated).toBe(false);
     expect(query._calls.select).toEqual([['*']]);
   });
 
-  it('does not warn when an unpaginated Premium query returns the retained limit', async () => {
-    const jobs = Array.from({ length: ABSOLUTE_RETAINED_JOB_LIMIT }, (_, index) => ({
-      ...mockCreatedJob,
-      id: `job-${index}`,
-    }));
-    const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
-    const query = fakeQuery({ data: jobs, error: null });
-    mockFrom.mockReturnValueOnce(query);
-
-    const result = await getJobsByUserId(
-      userId,
-      {},
-      mockSupabaseClient,
-      log,
-      {
-        ...premiumAccessStatus,
-        retainedTotalCount: ABSOLUTE_RETAINED_JOB_LIMIT,
-      }
+  it('keeps the confirmation fetch when full pages reach the retained limit', async () => {
+    const firstPage = buildListRows(500);
+    const secondPage = buildListRows(500, 500);
+    const queries = queueJobListPages(
+      { data: firstPage, error: null },
+      { data: secondPage, error: null },
+      { data: [], error: null }
     );
 
-    expect(result.error).toBeNull();
-    expect(result.count).toBe(ABSOLUTE_RETAINED_JOB_LIMIT);
-    expect(result.truncated).toBe(false);
-    expect(log.warn).not.toHaveBeenCalled();
-  });
-
-  it('warns and marks unpaginated Premium lists as truncated when one extra row is fetched', async () => {
-    const jobs = Array.from({ length: ABSOLUTE_RETAINED_JOB_LIMIT + 1 }, (_, index) => ({
-      ...mockCreatedJob,
-      id: `job-${index}`,
-    }));
-    const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
-    const query = fakeQuery({ data: jobs, error: null });
-    mockFrom.mockReturnValueOnce(query);
-
-    const result = await getJobsByUserId(
-      userId,
-      {},
-      mockSupabaseClient,
-      log,
-      {
-        ...premiumAccessStatus,
-        retainedTotalCount: ABSOLUTE_RETAINED_JOB_LIMIT,
-      }
-    );
+    const result = await getJobsByUserId(userId, {}, mockSupabaseClient);
 
     expect(result.error).toBeNull();
     expect(result.data).toHaveLength(ABSOLUTE_RETAINED_JOB_LIMIT);
-    expect(result.data[result.data.length - 1].id).toBe(`job-${ABSOLUTE_RETAINED_JOB_LIMIT - 1}`);
     expect(result.count).toBe(ABSOLUTE_RETAINED_JOB_LIMIT);
-    expect(result.truncated).toBe(true);
-    expect(log.warn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        operation: 'getJobsByUserId',
-        userId,
-        returnedCount: ABSOLUTE_RETAINED_JOB_LIMIT,
-        fetchedCount: ABSOLUTE_RETAINED_JOB_LIMIT + 1,
-        limit: ABSOLUTE_RETAINED_JOB_LIMIT,
-      }),
-      'Job list truncated at absolute retained job limit'
+    expect(mockFrom).toHaveBeenCalledTimes(3);
+    for (const query of queries) {
+      expect(query._calls.eq).toEqual([
+        ['user_id', userId],
+        ['storage_state', JOB_STORAGE_STATES.ACTIVE],
+      ]);
+      expect(query._calls.limit).toEqual([[500]]);
+    }
+  });
+
+  it('continues after a non-empty page capped below the requested transport size', async () => {
+    const cappedPage = buildListRows(200);
+    const laterPage = buildListRows(25, 200);
+    const queries = queueJobListPages(
+      { data: cappedPage, error: null },
+      { data: laterPage, error: null },
+      { data: [], error: null }
     );
+
+    const result = await getJobsByUserId(userId, {}, mockSupabaseClient);
+
+    expect(result.error).toBeNull();
+    expect(result.data).toHaveLength(225);
+    expect(result.data).toEqual([...cappedPage, ...laterPage]);
+    expect(result.data).toContainEqual(laterPage[laterPage.length - 1]);
+    expect(result.count).toBe(225);
+    expect(mockFrom).toHaveBeenCalledTimes(3);
+    for (const query of queries) {
+      expect(query._calls.limit).toEqual([[500]]);
+    }
+  });
+
+  it('fails closed instead of returning a partial list for a 1001st row', async () => {
+    queueJobListPages(
+      { data: buildListRows(500), error: null },
+      { data: buildListRows(500, 500), error: null },
+      { data: buildListRows(1, 1000), error: null }
+    );
+
+    const result = await getJobsByUserId(
+      userId,
+      {},
+      mockSupabaseClient,
+      undefined,
+      premiumAccessStatus
+    );
+
+    expect(result.data).toBeNull();
+    expect(result.count).toBe(0);
+    expect(result.error).toBeInstanceOf(JobListReadError);
+    expect(result.error.code).toBe('JOB_LIST_RETAINED_LIMIT_INVARIANT');
+  });
+
+  it('discards accumulated rows when a later keyset page fails', async () => {
+    const dbError = new Error('later page failed');
+    queueJobListPages(
+      { data: buildListRows(500), error: null },
+      { data: null, error: dbError }
+    );
+
+    const result = await getJobsByUserId(userId, {}, mockSupabaseClient);
+
+    expect(result.data).toBeNull();
+    expect(result.count).toBe(0);
+    expect(result.error).toBe(dbError);
+  });
+
+  it('fails closed when a keyset cursor repeats', async () => {
+    const firstPage = buildListRows(500);
+    queueJobListPages(
+      { data: firstPage, error: null },
+      { data: [firstPage[firstPage.length - 1]], error: null }
+    );
+
+    const result = await getJobsByUserId(userId, {}, mockSupabaseClient);
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(JobListReadError);
+    expect(result.error.code).toBe('JOB_LIST_CURSOR_INVALID');
+  });
+
+  it('fails closed when a non-empty page omits cursor fields', async () => {
+    queueJobListPages({
+      data: [{ company: 'Cursorless Corp', status: 'applied' }],
+      error: null,
+    });
+
+    const result = await getJobsByUserId(userId, {}, mockSupabaseClient);
+
+    expect(result.data).toBeNull();
+    expect(result.error).toBeInstanceOf(JobListReadError);
+    expect(result.error.code).toBe('JOB_LIST_CURSOR_INVALID');
   });
 
   it('applies status filter when provided', async () => {
@@ -720,14 +819,14 @@ describe('getJobsByUserId', () => {
   });
 
   it('does not mark status-filtered unpaginated reads truncated from broader retained totals', async () => {
-    const jobs = Array.from({ length: ABSOLUTE_RETAINED_JOB_LIMIT }, (_, index) => ({
-      ...mockCreatedJob,
-      id: `applied-job-${index}`,
-      status: 'applied',
-    }));
+    const firstPage = buildListRows(500);
+    const secondPage = buildListRows(500, 500);
     const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
-    const query = fakeQuery({ data: jobs, error: null });
-    mockFrom.mockReturnValueOnce(query);
+    const [query] = queueJobListPages(
+      { data: firstPage, error: null },
+      { data: secondPage, error: null },
+      { data: [], error: null }
+    );
 
     const result = await getJobsByUserId(
       userId,
@@ -768,6 +867,22 @@ describe('getJobsByUserId', () => {
     ]);
   });
 
+  it('fails closed for paginated non-array data', async () => {
+    const query = fakeQuery({ data: null, count: 42, error: null });
+    mockFrom.mockReturnValueOnce(query);
+
+    const result = await getJobsByUserId(
+      userId,
+      { from: 0, to: 9 },
+      mockSupabaseClient
+    );
+
+    expect(result.data).toBeNull();
+    expect(result.count).toBe(0);
+    expect(result.error).toBeInstanceOf(JobListReadError);
+    expect(result.error.code).toBe('JOB_LIST_PAYLOAD_INVALID');
+  });
+
   it.each([
     ['missing to', { from: 0 }, /both be provided/i],
     ['missing from', { to: 9 }, /both be provided/i],
@@ -799,8 +914,10 @@ describe('getJobsByUserId', () => {
       locked_reason: lockedAccessRecord.locked_reason,
       locked_policy_version: lockedAccessRecord.locked_policy_version,
     };
-    const query = fakeQuery({ data: [lockedTeaser], count: 1, error: null });
-    mockFrom.mockReturnValueOnce(query);
+    const [query] = queueJobListPages(
+      { data: [lockedTeaser], count: 99, error: null },
+      { data: [], error: null }
+    );
 
     const result = await getJobsByUserId(
       userId,
@@ -813,6 +930,7 @@ describe('getJobsByUserId', () => {
     expect(result.error).toBeNull();
     expect(result.data).toEqual([lockedTeaser]);
     expect(result.count).toBe(1);
+    expect(mockFrom).toHaveBeenCalledTimes(2);
     expect(query._calls.select).toEqual([
       ['id, created_at, locked_at, locked_reason, locked_policy_version'],
     ]);
@@ -827,16 +945,19 @@ describe('getJobsByUserId', () => {
   });
 
   it('does not mark locked archive reads truncated from broader retained totals', async () => {
-    const lockedRows = Array.from({ length: ABSOLUTE_RETAINED_JOB_LIMIT }, (_, index) => ({
-      id: `locked-job-${index}`,
-      created_at: '2026-06-10T00:00:00.000Z',
+    const lockedRows = buildListRows(ABSOLUTE_RETAINED_JOB_LIMIT).map((row) => ({
+      id: row.id,
+      created_at: row.created_at,
       locked_at: lockedAccessRecord.locked_at,
       locked_reason: lockedAccessRecord.locked_reason,
       locked_policy_version: lockedAccessRecord.locked_policy_version,
     }));
     const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
-    const query = fakeQuery({ data: lockedRows, count: ABSOLUTE_RETAINED_JOB_LIMIT, error: null });
-    mockFrom.mockReturnValueOnce(query);
+    const [query] = queueJobListPages(
+      { data: lockedRows.slice(0, 500), error: null },
+      { data: lockedRows.slice(500), error: null },
+      { data: [], error: null }
+    );
 
     const result = await getJobsByUserId(
       userId,
@@ -909,8 +1030,7 @@ describe('getJobsByUserId', () => {
   });
 
   it('does not active-filter Premium normal lists', async () => {
-    const query = fakeQuery({ data: [mockCreatedJob], count: 1, error: null });
-    mockFrom.mockReturnValueOnce(query);
+    const [query] = queueJobListPages({ data: [mockCreatedJob], count: 1, error: null });
 
     await getJobsByUserId(userId, {}, mockSupabaseClient, undefined, premiumAccessStatus);
 
@@ -919,7 +1039,7 @@ describe('getJobsByUserId', () => {
       ['created_at', { ascending: false }],
       ['id', { ascending: false }],
     ]);
-    expect(query._calls.limit).toEqual([[ABSOLUTE_RETAINED_JOB_LIMIT + 1]]);
+    expect(query._calls.limit).toEqual([[500]]);
   });
 });
 
@@ -1081,6 +1201,7 @@ describe('updateJob', () => {
       {
         status: 'interviewing',
         user_id: 'attacker-user',
+        created_at: '2026-06-08T00:00:00.000Z',
         storage_state: 'active',
         locked_at: null,
         locked_reason: null,

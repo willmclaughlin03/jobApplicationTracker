@@ -330,7 +330,7 @@ describe('BillingPage', () => {
             data: {
               status: 'premium_canceling',
               activeLimit: 300,
-              absoluteRetainedLimit: 3000,
+              absoluteRetainedLimit: 1000,
               activeCount: 450,
               lockedCount: 0,
               retainedTotalCount: 450,
