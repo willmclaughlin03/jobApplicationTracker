@@ -38,7 +38,8 @@
 - Every new function written must have a short comment block above it in the repo's existing style. Include what the function is for, why it exists, key params/vars, and important side effects or connections. Apply this to internal helpers too, not just exported functions.
 - Explain complex business logic and side effects
 - Use `docs/feature-memory.md` as a quick-running log of changes; briefly note the feature or what was added whenever work is completed
-- After every `git push`, update `docs/fixes.md` with a brief note covering the issue, the approach taken, and how it was fixed
+- Before every `git push`, update `docs/fixes.md` with a brief note covering the issue, the approach taken, and how it was fixed; include that edit in the branch being pushed
+- Use terminal `git` commands for staging, committing, and pushing to GitHub; do not use `gh` or public API calls to push changes
 
 ## 6. Permission to Edit
 - **NEVER make edits without explicit permission**

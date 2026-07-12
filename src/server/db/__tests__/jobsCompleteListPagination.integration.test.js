@@ -228,12 +228,17 @@ describeOrSkip('Suite K - Complete jobs list pagination', () => {
       { length: expectedExportCount },
       (_, index) => 'Complete List ' + (index + 1)
     );
+
+    expect(exportResult.error).toBeNull();
+    expect(exportResult.data).toEqual(
+      expect.objectContaining({ csv: expect.any(String) })
+    );
+
     const exportedCompanies = exportResult.data.csv
       .split(String.fromCharCode(10))
       .slice(1, -1)
       .map((row) => row.split(',')[0].slice(1, -1));
 
-    expect(exportResult.error).toBeNull();
     expect(exportResult.data.rowCount).toBe(expectedExportCount);
     expect(exportedCompanies).toHaveLength(expectedExportCount);
     expect(new Set(exportedCompanies).size).toBe(expectedExportCount);

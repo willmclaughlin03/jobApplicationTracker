@@ -13,6 +13,8 @@ Use this file as a quick-running log of implemented changes.
 ## Entries
 
 ### Week of 2026-07-05
+- `2026-07-12` - `Complete-list export assertion diagnostics`: Made Suite K verify export success and a string CSV payload before parsing exported companies so failures retain their original assertion context.
+- `2026-07-12` - `Server-capped job-list pagination`: Continued complete-list keyset fetching after non-empty pages shorter than the requested transport size, stopping only on an empty page while preserving the absolute retained-job limit.
 - `2026-07-11` - `Complete-list export identity coverage`: Strengthened Suite K to verify all 1001 expected CSV company identities, explicit overflow-row presence, and uniqueness alongside the export row count.
 - `2026-07-11` - `Suite K resilient teardown`: Isolated fixture job and auth deletion attempts across all users and deferred aggregated cleanup errors until every teardown operation completes.
 - `2026-07-11` - `Suite K lifecycle documentation`: Documented destructive integration setup dependencies, fixture auth/database effects, registered cleanup state, and teardown behavior.

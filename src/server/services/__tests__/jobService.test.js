@@ -645,7 +645,10 @@ describe('getJobsByUserId', () => {
 
   it('returns jobs for a valid user', async () => {
     const jobs = [mockCreatedJob];
-    const [query] = queueJobListPages({ data: jobs, count: 99, error: null });
+    const [query] = queueJobListPages(
+      { data: jobs, count: 99, error: null },
+      { data: [], error: null }
+    );
 
     const result = await getJobsByUserId(userId, {}, mockSupabaseClient);
 
@@ -653,7 +656,7 @@ describe('getJobsByUserId', () => {
     expect(result.data).toEqual(jobs);
     expect(result.count).toBe(jobs.length);
     expect(mockFrom).toHaveBeenCalledWith('jobs');
-    expect(mockFrom).toHaveBeenCalledTimes(1);
+    expect(mockFrom).toHaveBeenCalledTimes(2);
     expect(mockClientFrom).not.toHaveBeenCalled();
 
     // Verify query was built correctly
@@ -713,6 +716,28 @@ describe('getJobsByUserId', () => {
         ['user_id', userId],
         ['storage_state', JOB_STORAGE_STATES.ACTIVE],
       ]);
+      expect(query._calls.limit).toEqual([[500]]);
+    }
+  });
+
+  it('continues after a non-empty page capped below the requested transport size', async () => {
+    const cappedPage = buildListRows(200);
+    const laterPage = buildListRows(25, 200);
+    const queries = queueJobListPages(
+      { data: cappedPage, error: null },
+      { data: laterPage, error: null },
+      { data: [], error: null }
+    );
+
+    const result = await getJobsByUserId(userId, {}, mockSupabaseClient);
+
+    expect(result.error).toBeNull();
+    expect(result.data).toHaveLength(225);
+    expect(result.data).toEqual([...cappedPage, ...laterPage]);
+    expect(result.data).toContainEqual(laterPage[laterPage.length - 1]);
+    expect(result.count).toBe(225);
+    expect(mockFrom).toHaveBeenCalledTimes(3);
+    for (const query of queries) {
       expect(query._calls.limit).toEqual([[500]]);
     }
   });
@@ -889,7 +914,10 @@ describe('getJobsByUserId', () => {
       locked_reason: lockedAccessRecord.locked_reason,
       locked_policy_version: lockedAccessRecord.locked_policy_version,
     };
-    const [query] = queueJobListPages({ data: [lockedTeaser], count: 99, error: null });
+    const [query] = queueJobListPages(
+      { data: [lockedTeaser], count: 99, error: null },
+      { data: [], error: null }
+    );
 
     const result = await getJobsByUserId(
       userId,
@@ -902,6 +930,7 @@ describe('getJobsByUserId', () => {
     expect(result.error).toBeNull();
     expect(result.data).toEqual([lockedTeaser]);
     expect(result.count).toBe(1);
+    expect(mockFrom).toHaveBeenCalledTimes(2);
     expect(query._calls.select).toEqual([
       ['id, created_at, locked_at, locked_reason, locked_policy_version'],
     ]);
