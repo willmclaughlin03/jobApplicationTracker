@@ -13,6 +13,7 @@ Use this file as a quick-running log of implemented changes.
 ## Entries
 
 ### Week of 2026-07-05
+- `2026-07-12` - `Staging CI/CD baseline`: Established a clean `origin/main` worktree, standardized local and Amplify builds on rolling Node 22 with visible runtime versions, inventoried branches/worktrees without deletion, and removed an obsolete DOMPurify 3.3.1 patch after 3.3.3 incorporated the security guard upstream.
 - `2026-07-12` - `Complete-list export assertion diagnostics`: Made Suite K verify export success and a string CSV payload before parsing exported companies so failures retain their original assertion context.
 - `2026-07-12` - `Server-capped job-list pagination`: Continued complete-list keyset fetching after non-empty pages shorter than the requested transport size, stopping only on an empty page while preserving the absolute retained-job limit.
 - `2026-07-11` - `Complete-list export identity coverage`: Strengthened Suite K to verify all 1001 expected CSV company identities, explicit overflow-row presence, and uniqueness alongside the export row count.
