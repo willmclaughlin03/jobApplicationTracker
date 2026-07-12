@@ -41,6 +41,13 @@ jest.mock('../../../shared/logger.js', () => ({
   logger: mockLogger,
 }));
 
+const originalSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const originalSupabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+// Unit coverage must never depend on or use real Supabase credentials.
+process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://unit-test.supabase.co';
+process.env.SUPABASE_SERVICE_ROLE_KEY = 'unit-test-service-role-key';
+
 const {
   AUTH_ERROR_CODES,
   classifyAuthError,
@@ -51,6 +58,21 @@ describe('supabaseServer', () => {
   const createMockRes = () => ({
     getHeader: jest.fn(),
     setHeader: jest.fn(),
+  });
+
+  // Restore the runner environment so this test file has no cross-suite effect.
+  afterAll(() => {
+    if (originalSupabaseUrl === undefined) {
+      delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+    } else {
+      process.env.NEXT_PUBLIC_SUPABASE_URL = originalSupabaseUrl;
+    }
+
+    if (originalSupabaseServiceRoleKey === undefined) {
+      delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    } else {
+      process.env.SUPABASE_SERVICE_ROLE_KEY = originalSupabaseServiceRoleKey;
+    }
   });
 
   beforeEach(() => {

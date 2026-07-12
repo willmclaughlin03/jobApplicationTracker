@@ -40,7 +40,7 @@ jest.mock('../../../server/lib/supabaseServer.js', () => ({
   supabaseAdmin: { from: mockFrom },
 }));
 
-const handler = require('../health.js').default;
+const handler = require('../../../pages/api/health.js').default;
 
 function createMockRes() {
   const res = {
@@ -58,6 +58,50 @@ beforeEach(() => {
 });
 
 describe('/api/health', () => {
+  /**
+   * Test: Successful early service settlements clear both timeout guards.
+   * Why it matters: Normal healthy probes must not retain referenced timers
+   * after the handler has already returned its response.
+   */
+  it('clears timeout guards after successful early settlement', async () => {
+    jest.useFakeTimers();
+    try {
+      const req = { method: 'GET', headers: {} };
+      const res = createMockRes();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  /**
+   * Test: Failed early service settlements clear both timeout guards.
+   * Why it matters: Rejected dependencies must degrade health without leaving
+   * their losing timeout promises scheduled in the Node event loop.
+   */
+  it('clears timeout guards after failed early settlement', async () => {
+    jest.useFakeTimers();
+    try {
+      mockGetRedisClient.mockReturnValue({
+        ping: jest.fn().mockRejectedValue(new Error('ECONNRESET')),
+      });
+      mockMaybeSingle.mockRejectedValue(new Error('connection refused'));
+      const req = { method: 'GET', headers: {} };
+      const res = createMockRes();
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('returns 200 with status ok when both services are healthy', async () => {
     const req = { method: 'GET', headers: {} };
     const res = createMockRes();
@@ -222,7 +266,10 @@ describe('/api/health', () => {
       const res = createMockRes();
 
       const handlerPromise = handler(req, res);
-      await jest.advanceTimersByTimeAsync(3100);
+      await jest.advanceTimersByTimeAsync(2999);
+      expect(res.status).not.toHaveBeenCalled();
+
+      await jest.advanceTimersByTimeAsync(1);
       await handlerPromise;
 
       expect(res.status).toHaveBeenCalledWith(503);
@@ -231,6 +278,7 @@ describe('/api/health', () => {
           checks: { redis: 'fail', supabase: 'ok' },
         })
       );
+      expect(jest.getTimerCount()).toBe(0);
     } finally {
       jest.useRealTimers();
     }

@@ -59,7 +59,7 @@ jest.mock('../../../shared/logger.js', () => ({
   },
 }));
 
-const indexRoute = require('../index.js');
+const indexRoute = require('../../../pages/api/index.js');
 const handler = indexRoute.default;
 const { ERROR_MESSAGES } = require('../../../shared/errors.js');
 const {

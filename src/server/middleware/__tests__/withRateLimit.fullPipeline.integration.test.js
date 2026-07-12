@@ -37,12 +37,18 @@
  * - GET skips CSRF but still rate limits
  */
 
-const { createClient } = require('@supabase/supabase-js');
-
 // Must set CSRF_SECRET before requiring csrf.js
 if (!process.env.CSRF_SECRET || process.env.CSRF_SECRET.length < 32) {
     process.env.CSRF_SECRET = 'integration-test-secret-that-is-at-least-32-chars-long!!';
 }
+
+const SKIP_INTEGRATION =
+    !process.env.UPSTASH_REDIS_REST_URL ||
+    !process.env.UPSTASH_REDIS_REST_TOKEN ||
+    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    !process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+const describeIntegration = SKIP_INTEGRATION ? describe.skip : describe;
 
 // ---------------------------------------------------------------------------
 // Mocks — HTTP boundary only (Supabase Auth)
@@ -73,27 +79,27 @@ jest.mock('../../../shared/logger.js', () => ({
 // Real modules under test
 // ---------------------------------------------------------------------------
 
-const { withRateLimit } = require('../withRateLimit.js');
-const { generateCsrfToken } = require('../../lib/csrf.js');
 const { CSRF_COOKIE_NAME } = require('../../../shared/constants/csrf.js');
-const redis = require('../../lib/redis.js');
-
-const SKIP_INTEGRATION =
-    !process.env.UPSTASH_REDIS_REST_URL ||
-    !process.env.UPSTASH_REDIS_REST_TOKEN ||
-    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    !process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-const describeIntegration = SKIP_INTEGRATION ? describe.skip : describe;
+let createClient;
+let withRateLimit;
+let generateCsrfToken;
+let redis;
 
 describeIntegration('withRateLimit — full pipeline integration (real Upstash)', () => {
     let testUserId;
     let testRunSuffix;
     let mockSupabaseClient;
 
-    beforeAll(async () => {
-        if (SKIP_INTEGRATION) return;
+    // Load fail-fast application modules only after Jest elects to run this
+    // infrastructure-backed suite, so missing service env produces a skip.
+    beforeAll(() => {
+        ({ createClient } = require('@supabase/supabase-js'));
+        ({ withRateLimit } = require('../withRateLimit.js'));
+        ({ generateCsrfToken } = require('../../lib/csrf.js'));
+        redis = require('../../lib/redis.js');
+    });
 
+    beforeAll(async () => {
         const supabase = createClient(
             process.env.NEXT_PUBLIC_SUPABASE_URL,
             process.env.SUPABASE_SERVICE_ROLE_KEY

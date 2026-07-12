@@ -5,9 +5,16 @@
  * Connects to: All test files matching *.test.js pattern
  */
 module.exports = {
+  roots: ['<rootDir>/src'],
   testEnvironment: 'node',
   testMatch: ['**/__tests__/**/*.test.js', '**/*.test.js'],
-  testPathIgnorePatterns: ['/node_modules/', '/.next/'],
+  testPathIgnorePatterns: [
+    '/node_modules/',
+    '/\.next/',
+    '<rootDir>/\.tmp/',
+    '<rootDir>/\.tmp/worktrees/',
+    '<rootDir>/\.codex-pr-[^/]+/',
+  ],
   moduleFileExtensions: ['js', 'jsx', 'json'],
   collectCoverageFrom: [
     'src/shared/**/*.js',

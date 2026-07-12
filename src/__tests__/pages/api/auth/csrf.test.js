@@ -36,7 +36,7 @@ jest.mock('../../../../shared/logger.js', () => ({
     },
 }));
 
-const handler = require('../csrf.js').default;
+const handler = require('../../../../pages/api/auth/csrf.js').default;
 
 describe('/api/auth/csrf handler', () => {
     const noopLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };

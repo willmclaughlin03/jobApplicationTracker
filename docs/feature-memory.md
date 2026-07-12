@@ -13,6 +13,11 @@ Use this file as a quick-running log of implemented changes.
 ## Entries
 
 ### Week of 2026-07-05
+- `2026-07-12` - `Deterministic CI test harness`: Restricted Jest discovery to the active `src` tree, split unit/CI/integration commands, listed guarded integration files before execution, added a names-only build environment preflight, and made missing infrastructure skip safely before fail-fast imports.
+  - impact: Secret-free PR install, unit CI, and build completed locally in about 82 seconds against an under-five-minute clean-runner target; live integration credentials remain isolated for the later trusted workflow.
+- `2026-07-12` - `Page test route isolation`: Moved all page and API-route Jest files into `src/__tests__/pages` and kept route-safety scanning pointed at production `src/pages/api`.
+  - impact: Jest retains page coverage while production builds no longer compile or expose test files as routes.
+- `2026-07-12` - `Health-check timeout cleanup`: Cleared losing Redis and Supabase health-check timers after early settlement and added focused coverage for successful, failed, and real timeout paths.
 - `2026-07-12` - `Staging CI/CD baseline`: Established a clean `origin/main` worktree, standardized local and Amplify builds on rolling Node 22 with visible runtime versions, inventoried branches/worktrees without deletion, and removed an obsolete DOMPurify 3.3.1 patch after 3.3.3 incorporated the security guard upstream.
 - `2026-07-12` - `Complete-list export assertion diagnostics`: Made Suite K verify export success and a string CSV payload before parsing exported companies so failures retain their original assertion context.
 - `2026-07-12` - `Server-capped job-list pagination`: Continued complete-list keyset fetching after non-empty pages shorter than the requested transport size, stopping only on an empty page while preserving the absolute retained-job limit.

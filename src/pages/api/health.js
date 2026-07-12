@@ -22,13 +22,30 @@ const HEALTH_CHECK_TIMEOUT_MS = 3000;
  * @param {import('next').NextApiResponse} res
  */
 async function handler(req, res) {
-  const withTimeout = (promise, label) =>
-    Promise.race([
+  const withTimeout = (promise, label) => {
+    let timeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutId = setTimeout(
+        () => reject(new Error(`${label} health check timeout`)),
+        HEALTH_CHECK_TIMEOUT_MS
+      );
+    });
+
+    return Promise.race([
       promise,
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`${label} health check timeout`)), HEALTH_CHECK_TIMEOUT_MS)
-      ),
-    ]);
+      timeoutPromise,
+    ]).finally(
+      /**
+       * Clears the losing timeout after either health operation settles.
+       *
+       * Purpose: Prevent successful or failed early checks from retaining a
+       * referenced Node timer for the rest of the three-second timeout window.
+       *
+       * @returns {void}
+       */
+      () => clearTimeout(timeoutId)
+    );
+  };
 
   const [redisResult, supabaseResult] = await Promise.allSettled([
     withTimeout(
