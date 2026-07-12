@@ -8,6 +8,7 @@ import {
   hasMatchingStripeEventReceiptEnvelope,
   markMintedCheckoutSessionTerminalByStripeSessionId,
   markSubscriptionDeletedFromEvent,
+  reconcileSubscriptionEventConflict,
   recordStripeEventReceipt,
   syncSubscriptionFromEvent,
 } from './billingService.js';
@@ -172,6 +173,60 @@ function getReceiptResultForDispatchResult(dispatchResult) {
 }
 
 /**
+ * Reconcile a database-declared equal-timestamp conflict before finalization.
+ *
+ * Purpose: event handlers retain the Stripe subscription id they validated,
+ * while the billing service owns the strict reread and guarded authoritative
+ * purpose. Different/absent local targets fail before a new Stripe retrieval.
+ *
+ * @param {string} subscriptionId subscription named by the verified event.
+ * @param {object} dispatchResult initial event-mode billing result.
+ * @param {object} log request-scoped logger.
+ * @returns {Promise<object>} original safe result or reconciled result.
+ */
+async function reconcileEqualTimestampDispatchResult(
+  subscriptionId,
+  dispatchResult,
+  log
+) {
+  if (dispatchResult?.outcome !== BILLING_WRITE_OUTCOMES.RECONCILE_REQUIRED) {
+    return dispatchResult;
+  }
+
+  if (typeof dispatchResult?.userId !== 'string' || !dispatchResult.userId.trim()) {
+    throw createBillingWebhookError(
+      'Equal-timestamp billing reconciliation is missing its local owner',
+      'BILLING_WEBHOOK_RECONCILIATION_INVALID'
+    );
+  }
+
+  return reconcileSubscriptionEventConflict(
+    subscriptionId,
+    dispatchResult.userId,
+    log
+  );
+}
+
+/**
+ * Fail closed if any dispatcher path forgets equal-timestamp reconciliation.
+ *
+ * Purpose: receipt mapping treats most non-stale outcomes as processed for
+ * existing safe ignores, so this central boundary prevents a future event
+ * handler from terminally acknowledging an unresolved conflict by omission.
+ *
+ * @param {object|null|undefined} dispatchResult
+ * @returns {void}
+ */
+function assertNoUnresolvedBillingConflict(dispatchResult) {
+  if (dispatchResult?.outcome === BILLING_WRITE_OUTCOMES.RECONCILE_REQUIRED) {
+    throw createBillingWebhookError(
+      'Stripe billing event still requires reconciliation',
+      'BILLING_WEBHOOK_RECONCILIATION_REQUIRED'
+    );
+  }
+}
+
+/**
  * Record a failed receipt without hiding the original dispatch failure.
  *
  * Purpose: Stripe should retry the original processing error, while secondary
@@ -303,7 +358,13 @@ async function dispatchSubscriptionSyncEvent(event, log) {
     );
   }
 
-  return syncSubscriptionFromEvent(subscriptionId, event.created, log);
+  const syncResult = await syncSubscriptionFromEvent(
+    subscriptionId,
+    event.created,
+    log
+  );
+
+  return reconcileEqualTimestampDispatchResult(subscriptionId, syncResult, log);
 }
 
 /**
@@ -335,7 +396,7 @@ async function dispatchSubscriptionDeletedEvent(event, log) {
     );
   }
 
-  return markSubscriptionDeletedFromEvent(
+  const deleteResult = await markSubscriptionDeletedFromEvent(
     subscription,
     {
       eventCreated: event?.created,
@@ -343,6 +404,8 @@ async function dispatchSubscriptionDeletedEvent(event, log) {
     },
     log
   );
+
+  return reconcileEqualTimestampDispatchResult(subscriptionId, deleteResult, log);
 }
 
 /**
@@ -365,7 +428,13 @@ async function dispatchInvoiceEvent(event, log) {
     };
   }
 
-  return syncSubscriptionFromEvent(subscriptionId, event.created, log);
+  const syncResult = await syncSubscriptionFromEvent(
+    subscriptionId,
+    event.created,
+    log
+  );
+
+  return reconcileEqualTimestampDispatchResult(subscriptionId, syncResult, log);
 }
 
 /**
@@ -415,7 +484,11 @@ async function dispatchCheckoutSessionCompletedEvent(event, log) {
 
   const subscriptionId = extractStripeId(checkoutSession?.subscription);
   const syncResult = subscriptionId
-    ? await syncSubscriptionFromEvent(subscriptionId, event.created, log)
+    ? await reconcileEqualTimestampDispatchResult(
+      subscriptionId,
+      await syncSubscriptionFromEvent(subscriptionId, event.created, log),
+      log
+    )
     : {
       outcome: BILLING_WRITE_OUTCOMES.PROCESSED,
       reason: 'checkout_subscription_missing',
@@ -576,6 +649,17 @@ export async function processBillingWebhookEvent(event, log) {
         duplicate: true,
       };
     }
+
+    if (existingReceipt.result === STRIPE_EVENT_RECEIPT_RESULTS.FAILED) {
+      log.warn(
+        {
+          event: 'billing_failed_webhook_receipt_retry',
+          stripeEvent: getStripeEventEnvelopeForReceiptLog(event),
+          previousProcessedAt: existingReceipt.processedAt ?? null,
+        },
+        'Retrying Stripe webhook with a previously failed receipt'
+      );
+    }
   }
 
   const claimResult = await claimStripeEventReceiptProcessing(event, log);
@@ -590,6 +674,7 @@ export async function processBillingWebhookEvent(event, log) {
 
   try {
     const dispatchResult = await dispatchStripeBillingEvent(event, log);
+    assertNoUnresolvedBillingConflict(dispatchResult);
     await repairStorageTransitionsAfterBillingDispatch(dispatchResult, log);
     const receiptResult = getReceiptResultForDispatchResult(dispatchResult);
 

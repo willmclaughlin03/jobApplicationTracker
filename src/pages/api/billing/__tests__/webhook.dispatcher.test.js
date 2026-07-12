@@ -5,6 +5,7 @@ const mockGetStripeEventReceiptForEvent = jest.fn();
 const mockHasMatchingStripeEventReceiptEnvelope = jest.fn();
 const mockMarkMintedCheckoutSessionTerminalByStripeSessionId = jest.fn();
 const mockMarkSubscriptionDeletedFromEvent = jest.fn();
+const mockReconcileSubscriptionEventConflict = jest.fn();
 const mockRecordStripeEventReceipt = jest.fn();
 const mockSyncSubscriptionFromEvent = jest.fn();
 
@@ -15,6 +16,8 @@ jest.mock('../../../../server/lib/billingService.js', () => ({
     STALE_IGNORED: 'stale_ignored',
     CUSTOMER_NOT_FOUND: 'customer_not_found',
     UNSUPPORTED_STATUS_IGNORED: 'unsupported_status_ignored',
+    SNAPSHOT_CHANGED: 'snapshot_changed',
+    RECONCILE_REQUIRED: 'reconcile_required',
   },
   STRIPE_EVENT_RECEIPT_RESULTS: {
     PROCESSING: 'processing',
@@ -29,6 +32,7 @@ jest.mock('../../../../server/lib/billingService.js', () => ({
   markMintedCheckoutSessionTerminalByStripeSessionId:
     mockMarkMintedCheckoutSessionTerminalByStripeSessionId,
   markSubscriptionDeletedFromEvent: mockMarkSubscriptionDeletedFromEvent,
+  reconcileSubscriptionEventConflict: mockReconcileSubscriptionEventConflict,
   recordStripeEventReceipt: mockRecordStripeEventReceipt,
   syncSubscriptionFromEvent: mockSyncSubscriptionFromEvent,
 }));
@@ -136,6 +140,7 @@ describe('/api/billing/webhook dispatcher route boundary', () => {
       status: 'expired',
     });
     mockMarkSubscriptionDeletedFromEvent.mockResolvedValue({ outcome: 'processed' });
+    mockReconcileSubscriptionEventConflict.mockResolvedValue({ outcome: 'processed' });
     mockRecordStripeEventReceipt.mockResolvedValue({ outcome: 'updated' });
     mockSyncSubscriptionFromEvent.mockResolvedValue({ outcome: 'processed' });
     mockReconcileStorageTransitionsForUser.mockResolvedValue({
@@ -207,6 +212,34 @@ describe('/api/billing/webhook dispatcher route boundary', () => {
       mockLog
     );
     expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'failed', mockLog);
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  it('returns an error and keeps the receipt failed when equal-time recovery fails', async () => {
+    const event = createVerifiedEvent('customer.subscription.updated', {
+      id: 'sub_test_conflict_route_123',
+      customer: 'cus_test_conflict_route_123',
+    });
+    const reconcileError = new Error('guarded reconcile unavailable');
+    reconcileError.code = 'BILLING_EVENT_RECONCILIATION_INCOMPLETE';
+    mockSyncSubscriptionFromEvent.mockResolvedValue({
+      outcome: 'reconcile_required',
+      userId: 'user-conflict-route-123',
+    });
+    mockReconcileSubscriptionEventConflict.mockRejectedValue(reconcileError);
+    mockVerifyWebhookSignature.mockResolvedValue(event);
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(mockReconcileSubscriptionEventConflict).toHaveBeenCalledWith(
+      'sub_test_conflict_route_123',
+      'user-conflict-route-123',
+      mockLog
+    );
+    expect(mockRecordStripeEventReceipt).toHaveBeenCalledWith(event, 'failed', mockLog);
+    expect(mockReconcileStorageTransitionsForUser).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(500);
   });
 

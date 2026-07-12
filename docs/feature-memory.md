@@ -22,6 +22,10 @@ Use this file as a quick-running log of implemented changes.
 - `2026-07-11` - `Partial job-list page termination`: Stopped complete job-list pagination after partial transport pages while preserving the retained-limit overflow confirmation fetch.
 - `2026-07-11` - `Transport-decoupled 1000-job storage limit`: Set Premium and retained storage to 1000 jobs, derived the 700-row locked bulk-delete bound, and added complete keyset dashboard/export reads with fail-closed payload and cursor validation.
   - impact: Dashboard and CSV completeness no longer depend on the PostgREST response maximum, and malformed or over-limit list reads cannot appear as successful partial data.
+
+- `2026-07-10` - `Equal-time webhook recovery monitoring`: Locked the target-change warning contract and added an alertable structured signal whenever Stripe retries an existing failed webhook receipt.
+- `2026-07-10` - `Deterministic same-second Stripe event handling`: Added locked canonical equality decisions, sticky terminal snapshots, fail-closed equal-time cross-subscription handling, strict guarded conflict reconciliation, and retryable webhook receipts for unresolved ties.
+  - impact: Delayed same-second Stripe events can no longer restore Premium or replace a terminal subscription from arrival order alone, while safe no-op deliveries avoid subscription version and timestamp churn.
 - `2026-07-10` - `Authoritative sync purpose validation`: Rejected empty and whitespace-only authoritative billing sync purposes and added integration coverage for both inputs.
 - `2026-07-10` - `Snapshot-guarded authoritative Stripe sync`: Added a database-owned subscription version, mandatory exact-existing/exact-absent authoritative guards, purpose-enforced Checkout replacement rules, strict caller snapshots, and a single fresh same-subscription retry after conflicts.
   - impact: Stale Stripe reads can no longer overwrite a newer local subscription snapshot, timestamp collisions no longer weaken the CAS token, and failed billing reads cannot be mistaken for confirmed row absence.
