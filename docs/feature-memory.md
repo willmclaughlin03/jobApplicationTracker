@@ -13,6 +13,7 @@ Use this file as a quick-running log of implemented changes.
 ## Entries
 
 ### Week of 2026-07-05
+- `2026-07-13` - `Jest ignore-pattern preservation`: Kept the configured generated-worktree exclusions active in unit and CI scripts while adding the integration-test exclusion, and corrected literal-dot regex escaping.
 - `2026-07-12` - `Deterministic CI test harness`: Restricted Jest discovery to the active `src` tree, split unit/CI/integration commands, listed guarded integration files before execution, added a names-only build environment preflight, and made missing infrastructure skip safely before fail-fast imports.
   - impact: Secret-free PR install, unit CI, and build completed locally in about 82 seconds against an under-five-minute clean-runner target; live integration credentials remain isolated for the later trusted workflow.
 - `2026-07-12` - `Page test route isolation`: Moved all page and API-route Jest files into `src/__tests__/pages` and kept route-safety scanning pointed at production `src/pages/api`.

@@ -10,10 +10,10 @@ module.exports = {
   testMatch: ['**/__tests__/**/*.test.js', '**/*.test.js'],
   testPathIgnorePatterns: [
     '/node_modules/',
-    '/\.next/',
-    '<rootDir>/\.tmp/',
-    '<rootDir>/\.tmp/worktrees/',
-    '<rootDir>/\.codex-pr-[^/]+/',
+    '/\\.next/',
+    '<rootDir>/\\.tmp/',
+    '<rootDir>/\\.tmp/worktrees/',
+    '<rootDir>/\\.codex-pr-[^/]+/',
   ],
   moduleFileExtensions: ['js', 'jsx', 'json'],
   collectCoverageFrom: [

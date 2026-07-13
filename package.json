@@ -14,10 +14,10 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
-    "test:unit": "jest --testPathIgnorePatterns=integration[.]test[.]js$",
+    "test:unit": "jest \"--testPathIgnorePatterns=/node_modules/\" \"--testPathIgnorePatterns=/\\.next/\" \"--testPathIgnorePatterns=<rootDir>/\\.tmp/\" \"--testPathIgnorePatterns=<rootDir>/\\.tmp/worktrees/\" \"--testPathIgnorePatterns=<rootDir>/\\.codex-pr-[^/]+/\" \"--testPathIgnorePatterns=integration[.]test[.]js$\"",
     "test:integration:list": "jest --listTests --testPathPattern=integration[.]test[.]js$",
     "test:integration": "npm run test:integration:list && jest --testPathPattern=integration[.]test[.]js$ --runInBand --verbose",
-    "test:ci": "jest --ci --runInBand --no-cache --testPathIgnorePatterns=integration[.]test[.]js$",
+    "test:ci": "jest --ci --runInBand --no-cache \"--testPathIgnorePatterns=/node_modules/\" \"--testPathIgnorePatterns=/\\.next/\" \"--testPathIgnorePatterns=<rootDir>/\\.tmp/\" \"--testPathIgnorePatterns=<rootDir>/\\.tmp/worktrees/\" \"--testPathIgnorePatterns=<rootDir>/\\.codex-pr-[^/]+/\" \"--testPathIgnorePatterns=integration[.]test[.]js$\"",
     "postinstall": "patch-package"
   },
   "dependencies": {
