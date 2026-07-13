@@ -10,7 +10,7 @@
  * - withRateLimit middleware with IP-based rate limiting
  *
  * Security:
- * - Returns only safe user fields (id, email) — never tokens
+ * - Returns only safe user fields (id, email, application role) — never tokens
  * - Sets Cache-Control: no-store to prevent caching of user data
  * - Rate-limited to prevent abuse
  */

@@ -117,7 +117,7 @@ function cleanup() {
 
 describe('BillingSuccessPage', () => {
   beforeAll(() => {
-    BillingSuccessPage = require('../success.js').default;
+    BillingSuccessPage = require('../../../pages/billing/success.js').default;
   });
 
   beforeEach(() => {

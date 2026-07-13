@@ -69,7 +69,7 @@ jest.mock('../../../shared/validations/jobSchema.js', () => ({
   },
 }));
 
-const jobByIdRoute = require('../[id].js');
+const jobByIdRoute = require('../../../pages/api/[id].js');
 const handler = jobByIdRoute.default;
 const { ERROR_MESSAGES } = require('../../../shared/errors.js');
 const { STORAGE_CREATE_ERROR_CODES, STORAGE_STATUSES } = require('../../../shared/constants/billing.js');

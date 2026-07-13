@@ -157,7 +157,7 @@ function cleanup() {
 
 describe('BillingPage', () => {
   beforeAll(() => {
-    BillingPage = require('../index.js').default;
+    BillingPage = require('../../../pages/billing/index.js').default;
   });
 
   beforeEach(() => {

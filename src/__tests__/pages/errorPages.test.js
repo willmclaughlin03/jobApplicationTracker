@@ -89,13 +89,13 @@ afterEach(cleanup);
 
 describe('custom error pages', () => {
   const pageCases = [
-    ['../403.js', '403', 'Access is restricted'],
-    ['../404.js', '404', 'Page not found'],
-    ['../429.js', '429', 'Too many requests'],
-    ['../500.js', '500', 'Something went wrong'],
-    ['../502.js', '502', 'Temporary connection issue'],
-    ['../503.js', '503', 'Service temporarily unavailable'],
-    ['../504.js', '504', 'Request timed out'],
+    ['../../pages/403.js', '403', 'Access is restricted'],
+    ['../../pages/404.js', '404', 'Page not found'],
+    ['../../pages/429.js', '429', 'Too many requests'],
+    ['../../pages/500.js', '500', 'Something went wrong'],
+    ['../../pages/502.js', '502', 'Temporary connection issue'],
+    ['../../pages/503.js', '503', 'Service temporarily unavailable'],
+    ['../../pages/504.js', '504', 'Request timed out'],
   ];
 
   it.each(pageCases)('renders %s with the expected safe copy', (modulePath, statusCode, title) => {
@@ -108,11 +108,11 @@ describe('custom error pages', () => {
   });
 
   it.each([
-    ['../403.js', 403],
-    ['../429.js', 429],
-    ['../502.js', 502],
-    ['../503.js', 503],
-    ['../504.js', 504],
+    ['../../pages/403.js', 403],
+    ['../../pages/429.js', 429],
+    ['../../pages/502.js', 502],
+    ['../../pages/503.js', 503],
+    ['../../pages/504.js', 504],
   ])('sets direct route status for %s', (modulePath, statusCode) => {
     const { getServerSideProps } = require(modulePath);
     const res = { statusCode: 200 };
@@ -122,7 +122,7 @@ describe('custom error pages', () => {
   });
 
   it('prefers response status code in the framework error page props', () => {
-    const NextErrorPage = require('../_error.js').default;
+    const NextErrorPage = require('../../pages/_error.js').default;
 
     expect(NextErrorPage.getInitialProps({
       res: { statusCode: 429 },
@@ -131,7 +131,7 @@ describe('custom error pages', () => {
   });
 
   it('falls back to thrown status code when response status is absent', () => {
-    const NextErrorPage = require('../_error.js').default;
+    const NextErrorPage = require('../../pages/_error.js').default;
 
     expect(NextErrorPage.getInitialProps({
       res: null,
@@ -140,7 +140,7 @@ describe('custom error pages', () => {
   });
 
   it('logs thrown framework errors on the server without changing safe props', () => {
-    const NextErrorPage = require('../_error.js').default;
+    const NextErrorPage = require('../../pages/_error.js').default;
     const err = new Error('server-only diagnostic');
     err.statusCode = 503;
     const originalWindowDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'window');
@@ -170,7 +170,7 @@ describe('custom error pages', () => {
   });
 
   it('does not log framework errors during client-side error rendering', () => {
-    const NextErrorPage = require('../_error.js').default;
+    const NextErrorPage = require('../../pages/_error.js').default;
     const err = new Error('client-side diagnostic');
     err.statusCode = 500;
 
@@ -182,7 +182,7 @@ describe('custom error pages', () => {
   });
 
   it('renders unknown framework errors as the generic 500 page without raw details', () => {
-    const NextErrorPage = require('../_error.js').default;
+    const NextErrorPage = require('../../pages/_error.js').default;
     const el = render(React.createElement(NextErrorPage, {
       statusCode: 418,
       err: new Error('database password leaked in stack'),

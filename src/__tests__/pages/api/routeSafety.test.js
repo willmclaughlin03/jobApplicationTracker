@@ -78,7 +78,7 @@ describe('API Route Safety', () => {
    *   export default withWebhookAuth(handler, { allowedMethods: ['POST'] })
    */
   it('all API routes should be wrapped with an approved middleware wrapper', () => {
-    const apiDir = path.resolve(__dirname, '..');
+    const apiDir = path.resolve(__dirname, '../../../pages/api');
     const routeFiles = getRouteFiles(apiDir);
 
     // Sanity check: we should find at least the known route files

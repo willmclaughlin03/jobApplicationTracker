@@ -6,6 +6,7 @@ node_modules/
 scripts/*
 !scripts/
 !scripts/billing-drain-checkout-sessions.mjs
+!scripts/validate-build-env.js
 
 # AI tailor feature — test fixtures contain canary strings (fake sk-/Bearer
 # tokens) used to verify the credential scanner. Keep them out of git so
@@ -24,3 +25,4 @@ src/server/db/__tests__/*
 src/shared/schemas/__tests__/
 
 .tmp/
+.codex-pr-*/

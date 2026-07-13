@@ -10,7 +10,7 @@
  * tested in withRateLimit.test.js. These tests focus on handler logic only.
  *
  * Test coverage:
- * - Returns 200 with user {id, email} when authenticated
+ * - Returns 200 with user {id, email, role} when authenticated
  * - Returns 200 with {user: null} when not authenticated
  * - Returns 200 with {user: null} when getUser returns an error
  * - Sets Cache-Control: no-store header
@@ -38,7 +38,7 @@ jest.mock('../../../../shared/logger.js', () => ({
   },
 }));
 
-const handler = require('../session.js').default;
+const handler = require('../../../../pages/api/auth/session.js').default;
 
 describe('/api/auth/session handler', () => {
   const noopLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
@@ -70,7 +70,7 @@ describe('/api/auth/session handler', () => {
   });
 
   /**
-   * Happy path: authenticated user gets their id and email
+   * Happy path: authenticated user gets their id, email, and application role
    */
   it('returns 200 with user id and email when authenticated', async () => {
     mockGetUser.mockResolvedValue({ data: { user: mockUser }, error: null });
@@ -82,10 +82,41 @@ describe('/api/auth/session handler', () => {
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: { user: { id: 'user-session-123', email: 'test@example.com' } },
+        data: {
+          user: {
+            id: 'user-session-123',
+            email: 'test@example.com',
+            role: 'user',
+          },
+        },
         error: null,
       })
     );
+  });
+
+  /**
+   * Safe role contract: application role comes from trusted app metadata.
+   */
+  it('returns the application role from app metadata', async () => {
+    mockGetUser.mockResolvedValue({
+      data: {
+        user: {
+          ...mockUser,
+          app_metadata: { ...mockUser.app_metadata, role: 'admin' },
+        },
+      },
+      error: null,
+    });
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res.json.mock.calls[0][0].data.user).toEqual({
+      id: 'user-session-123',
+      email: 'test@example.com',
+      role: 'admin',
+    });
   });
 
   /**
@@ -169,14 +200,14 @@ describe('/api/auth/session handler', () => {
     expect(serialized).not.toContain('app_metadata');
     expect(serialized).not.toContain('user_metadata');
     expect(serialized).not.toContain('aud');
-    expect(serialized).not.toContain('role');
     expect(serialized).not.toContain('access_token');
     expect(serialized).not.toContain('refresh_token');
 
-    // Must only contain id and email
+    // Must only contain the safe session fields.
     expect(responseBody.data.user).toEqual({
       id: 'user-session-123',
       email: 'test@example.com',
+      role: 'user',
     });
   });
 });

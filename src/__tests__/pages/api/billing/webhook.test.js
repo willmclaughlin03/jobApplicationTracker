@@ -22,7 +22,7 @@ jest.mock('../../../../shared/logger.js', () => ({
   }),
 }));
 
-const webhookRoute = require('../webhook.js');
+const webhookRoute = require('../../../../pages/api/billing/webhook.js');
 const handler = webhookRoute.default;
 
 describe('/api/billing/webhook route', () => {
