@@ -12,6 +12,10 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-07-12
+- `2026-07-13` - `Reconstructed Phase 0 migration history`: Added catalog-derived functional equivalents of root migrations 001-004 for user profiles, tailor cache, abuse counters, and daily spend; the timestamped Supabase baseline remains the active deployable chain.
+  - impact: The four Phase 0 historical references are explicit and reviewable, while independent root-chain replay still requires a separately approved reconstruction of the manually created jobs base.
+
 ### Week of 2026-07-05
 - `2026-07-13` - `Jest ignore-pattern preservation`: Kept the configured generated-worktree exclusions active in unit and CI scripts while adding the integration-test exclusion, and corrected literal-dot regex escaping.
 - `2026-07-12` - `Deterministic CI test harness`: Restricted Jest discovery to the active `src` tree, split unit/CI/integration commands, listed guarded integration files before execution, added a names-only build environment preflight, and made missing infrastructure skip safely before fail-fast imports.
