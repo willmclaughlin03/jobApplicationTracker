@@ -22,38 +22,23 @@ const JOBS_STORAGE_MIGRATION_FILE = '016_jobs_storage_state_boundary.sql';
 const JOBS_SALARY_RANGE_MIGRATION_FILE = '023_jobs_salary_range_check.sql';
 const JOBS_SALARY_RANGE_VALIDATE_MIGRATION_FILE = '024_jobs_salary_range_check_validate.sql';
 
-const TEST_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const TEST_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const TEST_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-const RUN_DESTRUCTIVE_DB_INTEGRATION = process.env.RUN_DESTRUCTIVE_DB_INTEGRATION === 'true';
-const SUPABASE_TEST_PROJECT_REF = process.env.SUPABASE_TEST_PROJECT_REF;
-const EXPECTED_TEST_URL_PREFIX = SUPABASE_TEST_PROJECT_REF
-  ? `https://${SUPABASE_TEST_PROJECT_REF}.supabase.co`
-  : '';
+const {
+  TEST_SUPABASE_ENV_NAMES,
+  resolveDestructiveIntegrationEnvironment,
+} = require('../../../testSupport/integrationEnvironment.js');
 
-const isExpectedSupabaseTarget = Boolean(
-  TEST_URL
-  && EXPECTED_TEST_URL_PREFIX
-  && (
-    TEST_URL === EXPECTED_TEST_URL_PREFIX
-    || TEST_URL.startsWith(`${EXPECTED_TEST_URL_PREFIX}/`)
-  )
-);
-
-const hasInfra = Boolean(
-  RUN_DESTRUCTIVE_DB_INTEGRATION
-  && isExpectedSupabaseTarget
-  && TEST_URL
-  && TEST_SERVICE_KEY
-  && TEST_ANON_KEY
-);
+const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
+const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
+const TEST_ANON_KEY = process.env[TEST_SUPABASE_ENV_NAMES.anonKey];
+const hasInfra = resolveDestructiveIntegrationEnvironment(process.env, {
+  suiteName: 'Suite C',
+  requiredNames: [
+    TEST_SUPABASE_ENV_NAMES.url,
+    TEST_SUPABASE_ENV_NAMES.serviceKey,
+    TEST_SUPABASE_ENV_NAMES.anonKey,
+  ],
+});
 const describeOrSkip = hasInfra ? describe : describe.skip;
-
-if (RUN_DESTRUCTIVE_DB_INTEGRATION && !isExpectedSupabaseTarget) {
-  throw new Error(
-    'Refusing to run Suite C: NEXT_PUBLIC_SUPABASE_URL must match SUPABASE_TEST_PROJECT_REF.'
-  );
-}
 
 /**
  * Normalize exec_sql RPC data into a row array.

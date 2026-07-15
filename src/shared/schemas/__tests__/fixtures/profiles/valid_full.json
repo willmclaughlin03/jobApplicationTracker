@@ -1,0 +1,37 @@
+{
+  "summary": "Experienced backend engineer with 6 years building distributed systems in Node.js and Go.",
+  "experience": [
+    {
+      "company": "Acme Corp",
+      "title": "Senior Software Engineer",
+      "startDate": "2021-01",
+      "endDate": null,
+      "bullets": [
+        "Designed Kafka pipeline processing 500K events/day",
+        "Reduced p99 latency by 35% via in-process caching",
+        "Led on-call rotation maintaining 99.95% monthly uptime"
+      ]
+    },
+    {
+      "company": "Startup Inc",
+      "title": "Software Engineer",
+      "startDate": "2018-06",
+      "endDate": "2021-01",
+      "bullets": [
+        "Built REST APIs in Node.js for 10K daily active users",
+        "Introduced structured logging with Pino across 8 services"
+      ]
+    }
+  ],
+  "skills_technical": ["Node.js", "Go", "Kubernetes", "PostgreSQL", "Redis", "Kafka", "Terraform"],
+  "skills_soft": ["Mentoring", "Technical writing", "Cross-functional collaboration"],
+  "education": [
+    {
+      "degree": "B.Sc. Computer Science",
+      "institution": "State University",
+      "year": "2018",
+      "gpa": "3.8"
+    }
+  ],
+  "certifications": ["AWS Solutions Architect Associate", "CKA - Certified Kubernetes Administrator"]
+}

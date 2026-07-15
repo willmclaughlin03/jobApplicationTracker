@@ -1,0 +1,20 @@
+{
+  "summary": "Engineer",
+  "experience": [],
+  "skills_technical": [],
+  "skills_soft": [],
+  "education": [
+    { "degree": "B.Sc.", "institution": "Uni1",  "year": "2010" },
+    { "degree": "B.Sc.", "institution": "Uni2",  "year": "2010" },
+    { "degree": "B.Sc.", "institution": "Uni3",  "year": "2010" },
+    { "degree": "B.Sc.", "institution": "Uni4",  "year": "2010" },
+    { "degree": "B.Sc.", "institution": "Uni5",  "year": "2010" },
+    { "degree": "B.Sc.", "institution": "Uni6",  "year": "2010" },
+    { "degree": "B.Sc.", "institution": "Uni7",  "year": "2010" },
+    { "degree": "B.Sc.", "institution": "Uni8",  "year": "2010" },
+    { "degree": "B.Sc.", "institution": "Uni9",  "year": "2010" },
+    { "degree": "B.Sc.", "institution": "Uni10", "year": "2010" },
+    { "degree": "B.Sc.", "institution": "Uni11", "year": "2010" }
+  ],
+  "certifications": []
+}

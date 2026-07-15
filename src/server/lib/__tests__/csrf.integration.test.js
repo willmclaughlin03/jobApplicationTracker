@@ -7,8 +7,8 @@
  *
  * Connects to: src/server/lib/csrf.js, src/shared/constants/csrf.js
  *
- * Requires: CSRF_SECRET env var or the deterministic fallback below,
- *           NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY env vars
+ * Requires: TEST_CSRF env var or the deterministic fallback below,
+ *           TEST_SUPABASE_URL, TEST_SUPABASE_SERVICE_KEY env vars
  * Run with: npm run test:integration
  *
  * Test coverage:
@@ -25,11 +25,23 @@
  */
 
 const { createClient } = require('@supabase/supabase-js');
+const {
+    TEST_SUPABASE_ENV_NAMES,
+    resolveTestCsrfSecret,
+    restoreEnvironmentVariable,
+} = require('../../../testSupport/integrationEnvironment.js');
 
-// Must set CSRF_SECRET before requiring csrf.js (module-level validation)
-if (!process.env.CSRF_SECRET || process.env.CSRF_SECRET.length < 32) {
-    process.env.CSRF_SECRET = 'integration-test-secret-that-is-at-least-32-chars-long!!';
-}
+const originalCsrfSecret = process.env.CSRF_SECRET;
+const TEST_CSRF_FALLBACK = 'integration-test-secret-that-is-at-least-32-chars-long!!';
+const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
+const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
+
+// Install test-only HMAC configuration before csrf.js validates at import time.
+process.env.CSRF_SECRET = resolveTestCsrfSecret(process.env, TEST_CSRF_FALLBACK);
+
+afterAll(() => {
+    restoreEnvironmentVariable(process.env, 'CSRF_SECRET', originalCsrfSecret);
+});
 
 jest.mock('../../../shared/logger.js', () => ({
     logger: {
@@ -53,8 +65,8 @@ const {
 } = require('../../../shared/constants/csrf.js');
 
 const SKIP_INTEGRATION =
-    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    !process.env.SUPABASE_SERVICE_ROLE_KEY;
+    !TEST_URL ||
+    !TEST_SERVICE_KEY;
 
 const describeIntegration = SKIP_INTEGRATION ? describe.skip : describe;
 
@@ -65,8 +77,8 @@ describeIntegration('csrf.js — integration (real crypto, real user)', () => {
         if (SKIP_INTEGRATION) return;
 
         const supabase = createClient(
-            process.env.NEXT_PUBLIC_SUPABASE_URL,
-            process.env.SUPABASE_SERVICE_ROLE_KEY
+            TEST_URL,
+            TEST_SERVICE_KEY
         );
         const testEmail = `csrf-test-${Date.now()}@integration-test.local`;
         const { data, error } = await supabase.auth.admin.createUser({
@@ -80,8 +92,8 @@ describeIntegration('csrf.js — integration (real crypto, real user)', () => {
     afterAll(async () => {
         if (!SKIP_INTEGRATION && testUserId) {
             const supabase = createClient(
-                process.env.NEXT_PUBLIC_SUPABASE_URL,
-                process.env.SUPABASE_SERVICE_ROLE_KEY
+                TEST_URL,
+                TEST_SERVICE_KEY
             );
             await supabase.auth.admin.deleteUser(testUserId);
         }

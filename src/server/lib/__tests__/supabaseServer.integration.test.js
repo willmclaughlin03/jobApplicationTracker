@@ -4,7 +4,7 @@
  * Integration tests for supabaseServer.js
  *
  * Purpose: Test authentication against real Supabase instance
- * Requires: NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY env vars
+ * Requires: TEST_SUPABASE_URL, TEST_SUPABASE_SERVICE_KEY env vars
  *
  * Run with: npm run test:integration
  *
@@ -14,17 +14,21 @@
  */
 
 const { createClient } = require('@supabase/supabase-js');
+const {
+  TEST_SUPABASE_ENV_NAMES,
+} = require('../../../testSupport/integrationEnvironment.js');
 
 // Skip if test environment variables aren't set
-const SKIP_INTEGRATION = !process.env.NEXT_PUBLIC_SUPABASE_URL
-  || !process.env.SUPABASE_SERVICE_ROLE_KEY;
+const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
+const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
+const SKIP_INTEGRATION = !TEST_URL || !TEST_SERVICE_KEY;
 
 // Create a test client (separate from the main app client)
 const testSupabase = SKIP_INTEGRATION
   ? null
   : createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE_KEY
+      TEST_URL,
+      TEST_SERVICE_KEY
     );
 
 describe('supabaseServer integration tests', () => {
@@ -34,7 +38,7 @@ describe('supabaseServer integration tests', () => {
 
   beforeAll(async () => {
     if (SKIP_INTEGRATION) {
-      console.warn('Skipping integration tests: NEXT_PUBLIC_SUPABASE_URL not set');
+      console.warn('Skipping integration tests: TEST_SUPABASE_URL or TEST_SUPABASE_SERVICE_KEY not set');
       return;
     }
 

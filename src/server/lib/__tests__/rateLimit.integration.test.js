@@ -8,7 +8,7 @@
  * Connects to: src/server/lib/rateLimit.js, src/server/lib/redis.js
  *
  * Requires: UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN,
- *           NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY env vars
+ *           TEST_SUPABASE_URL, TEST_SUPABASE_SERVICE_KEY env vars
  * Run with: npm run test:integration
  *
  * Key design decisions:
@@ -31,6 +31,9 @@
  */
 
 const { createClient } = require('@supabase/supabase-js');
+const {
+    TEST_SUPABASE_ENV_NAMES,
+} = require('../../../testSupport/integrationEnvironment.js');
 
 const mockLogger = {
     info: jest.fn(),
@@ -41,11 +44,13 @@ const mockLogger = {
 
 jest.mock('../../../shared/logger.js', () => ({ logger: mockLogger }));
 
+const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
+const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
 const SKIP_INTEGRATION =
     !process.env.UPSTASH_REDIS_REST_URL ||
     !process.env.UPSTASH_REDIS_REST_TOKEN ||
-    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    !process.env.SUPABASE_SERVICE_ROLE_KEY;
+    !TEST_URL ||
+    !TEST_SERVICE_KEY;
 
 const describeIntegration = SKIP_INTEGRATION ? describe.skip : describe;
 
@@ -60,8 +65,8 @@ describeIntegration('rateLimit.js — integration (real Upstash)', () => {
         if (SKIP_INTEGRATION) return;
 
         const supabase = createClient(
-            process.env.NEXT_PUBLIC_SUPABASE_URL,
-            process.env.SUPABASE_SERVICE_ROLE_KEY
+            TEST_URL,
+            TEST_SERVICE_KEY
         );
         const testEmail = `ratelimit-test-${Date.now()}@integration-test.local`;
         const { data, error } = await supabase.auth.admin.createUser({
@@ -87,8 +92,8 @@ describeIntegration('rateLimit.js — integration (real Upstash)', () => {
     afterAll(async () => {
         if (!SKIP_INTEGRATION && testUserId) {
             const supabase = createClient(
-                process.env.NEXT_PUBLIC_SUPABASE_URL,
-                process.env.SUPABASE_SERVICE_ROLE_KEY
+                TEST_URL,
+                TEST_SERVICE_KEY
             );
             await supabase.auth.admin.deleteUser(testUserId);
         }

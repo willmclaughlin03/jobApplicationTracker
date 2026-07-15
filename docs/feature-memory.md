@@ -12,7 +12,9 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
-### Week of 2026-07-05
+### Week of 2026-07-12
+- `2026-07-14` - `Canonical integration-test environment contract`: Moved live Supabase integration clients to test-only credential names, retained destructive project guards, isolated TEST_CSRF mapping, and made direct Redis keys unique, expiring, and exactly cleaned up.
+  - impact: Secret-free integration discovery skips safely, while trusted test jobs can no longer inherit deployed Supabase or CSRF credentials.
 - `2026-07-13` - `Jest ignore-pattern preservation`: Kept the configured generated-worktree exclusions active in unit and CI scripts while adding the integration-test exclusion, and corrected literal-dot regex escaping.
 - `2026-07-12` - `Deterministic CI test harness`: Restricted Jest discovery to the active `src` tree, split unit/CI/integration commands, listed guarded integration files before execution, added a names-only build environment preflight, and made missing infrastructure skip safely before fail-fast imports.
   - impact: Secret-free PR install, unit CI, and build completed locally in about 82 seconds against an under-five-minute clean-runner target; live integration credentials remain isolated for the later trusted workflow.
@@ -22,6 +24,9 @@ Use this file as a quick-running log of implemented changes.
 - `2026-07-12` - `Staging CI/CD baseline`: Established a clean `origin/main` worktree, standardized local and Amplify builds on rolling Node 22 with visible runtime versions, inventoried branches/worktrees without deletion, and removed an obsolete DOMPurify 3.3.1 patch after 3.3.3 incorporated the security guard upstream.
 - `2026-07-12` - `Complete-list export assertion diagnostics`: Made Suite K verify export success and a string CSV payload before parsing exported companies so failures retain their original assertion context.
 - `2026-07-12` - `Server-capped job-list pagination`: Continued complete-list keyset fetching after non-empty pages shorter than the requested transport size, stopping only on an empty page while preserving the absolute retained-job limit.
+
+### Week of 2026-07-05
+
 - `2026-07-11` - `Complete-list export identity coverage`: Strengthened Suite K to verify all 1001 expected CSV company identities, explicit overflow-row presence, and uniqueness alongside the export row count.
 - `2026-07-11` - `Suite K resilient teardown`: Isolated fixture job and auth deletion attempts across all users and deferred aggregated cleanup errors until every teardown operation completes.
 - `2026-07-11` - `Suite K lifecycle documentation`: Documented destructive integration setup dependencies, fixture auth/database effects, registered cleanup state, and teardown behavior.

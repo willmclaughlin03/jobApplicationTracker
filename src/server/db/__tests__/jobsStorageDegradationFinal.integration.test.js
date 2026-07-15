@@ -30,38 +30,23 @@ const FINAL_STORAGE_MIGRATION_FILES = Object.freeze([
 ]);
 const TEST_PREMIUM_PRICE_IDS = Object.freeze(['price_premium_monthly']);
 
-const TEST_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const TEST_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const TEST_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-const RUN_DESTRUCTIVE_DB_INTEGRATION = process.env.RUN_DESTRUCTIVE_DB_INTEGRATION === 'true';
-const SUPABASE_TEST_PROJECT_REF = process.env.SUPABASE_TEST_PROJECT_REF;
-const EXPECTED_TEST_URL_PREFIX = SUPABASE_TEST_PROJECT_REF
-  ? `https://${SUPABASE_TEST_PROJECT_REF}.supabase.co`
-  : '';
+const {
+  TEST_SUPABASE_ENV_NAMES,
+  resolveDestructiveIntegrationEnvironment,
+} = require('../../../testSupport/integrationEnvironment.js');
 
-const isExpectedSupabaseTarget = Boolean(
-  TEST_URL
-  && EXPECTED_TEST_URL_PREFIX
-  && (
-    TEST_URL === EXPECTED_TEST_URL_PREFIX
-    || TEST_URL.startsWith(`${EXPECTED_TEST_URL_PREFIX}/`)
-  )
-);
-
-const hasInfra = Boolean(
-  RUN_DESTRUCTIVE_DB_INTEGRATION
-  && isExpectedSupabaseTarget
-  && TEST_URL
-  && TEST_SERVICE_KEY
-  && TEST_ANON_KEY
-);
+const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
+const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
+const TEST_ANON_KEY = process.env[TEST_SUPABASE_ENV_NAMES.anonKey];
+const hasInfra = resolveDestructiveIntegrationEnvironment(process.env, {
+  suiteName: 'Suite H',
+  requiredNames: [
+    TEST_SUPABASE_ENV_NAMES.url,
+    TEST_SUPABASE_ENV_NAMES.serviceKey,
+    TEST_SUPABASE_ENV_NAMES.anonKey,
+  ],
+});
 const describeOrSkip = hasInfra ? describe : describe.skip;
-
-if (RUN_DESTRUCTIVE_DB_INTEGRATION && !isExpectedSupabaseTarget) {
-  throw new Error(
-    'Refusing to run Suite H: NEXT_PUBLIC_SUPABASE_URL must match SUPABASE_TEST_PROJECT_REF.'
-  );
-}
 
 /**
  * Normalize exec_sql RPC data into a row array.

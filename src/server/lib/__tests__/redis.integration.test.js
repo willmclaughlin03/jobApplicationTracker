@@ -19,6 +19,12 @@
  * - Malicious inputs: garbage URLs, missing tokens, SQL-injection-style keys
  */
 
+const { randomUUID } = require('node:crypto');
+const {
+    buildRedisTestKey,
+    exerciseExpiringRedisTestKey,
+} = require('../../../testSupport/redisTestKey.js');
+
 jest.mock('../../../shared/logger.js', () => ({
     logger: {
         info: jest.fn(),
@@ -34,6 +40,7 @@ const SKIP_INTEGRATION =
     !process.env.UPSTASH_REDIS_REST_TOKEN;
 
 const describeIntegration = SKIP_INTEGRATION ? describe.skip : describe;
+const redisTestRunId = randomUUID();
 
 describeIntegration('redis.js — integration (real Upstash)', () => {
     let redis;
@@ -333,19 +340,27 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
             const client = redis.getRedisClient();
             expect(client).not.toBeNull();
 
-            // These should not crash — Redis treats them as opaque strings
-            const maliciousKey = "test:'; DROP TABLE users; --";
-            await expect(client.set(maliciousKey, 'value')).resolves.not.toThrow();
-            await client.del(maliciousKey);
+            // Redis treats the payload as opaque while the prefix owns cleanup.
+            const maliciousKey = buildRedisTestKey(
+                redisTestRunId,
+                'sql-injection',
+                "test:'; DROP TABLE users; --"
+            );
+            await expect(
+                exerciseExpiringRedisTestKey(client, maliciousKey, 'value')
+            ).resolves.not.toThrow();
         });
 
         it('handles keys with null bytes', async () => {
             const client = redis.getRedisClient();
-            const nullKey = 'test:key\x00with\x00nulls';
+            const nullKey = buildRedisTestKey(
+                redisTestRunId,
+                'null-bytes',
+                'test:key\x00with\x00nulls'
+            );
             // Upstash REST API may reject or handle — should not crash
             try {
-                await client.set(nullKey, 'value');
-                await client.del(nullKey);
+                await exerciseExpiringRedisTestKey(client, nullKey, 'value');
             } catch (e) {
                 // Rejection is acceptable — crash is not
                 expect(e).toBeDefined();
@@ -354,9 +369,14 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
 
         it('handles unicode keys', async () => {
             const client = redis.getRedisClient();
-            const unicodeKey = 'test:キー:🔑:مفتاح';
-            await expect(client.set(unicodeKey, 'value')).resolves.not.toThrow();
-            await client.del(unicodeKey);
+            const unicodeKey = buildRedisTestKey(
+                redisTestRunId,
+                'unicode',
+                'test:キー:🔑:مفتاح'
+            );
+            await expect(
+                exerciseExpiringRedisTestKey(client, unicodeKey, 'value')
+            ).resolves.not.toThrow();
         });
     });
 });
