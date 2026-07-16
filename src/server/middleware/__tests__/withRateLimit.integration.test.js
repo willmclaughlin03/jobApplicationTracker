@@ -31,6 +31,9 @@
  */
 
 const {
+    TEST_CSRF_FALLBACK,
+    TEST_SUPABASE_BOOTSTRAP_SERVICE_ROLE_KEY,
+    TEST_SUPABASE_BOOTSTRAP_URL,
     resolveTestCsrfSecret,
     restoreEnvironmentVariable,
 } = require('../../../testSupport/integrationEnvironment.js');
@@ -38,15 +41,14 @@ const {
 const originalCsrfSecret = process.env.CSRF_SECRET;
 const originalSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const originalSupabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const TEST_CSRF_FALLBACK = 'integration-test-secret-that-is-at-least-32-chars-long!!';
 
 // Install test-only HMAC configuration before csrf.js validates at import time.
 process.env.CSRF_SECRET = resolveTestCsrfSecret(process.env, TEST_CSRF_FALLBACK);
 
 // Fixed fake application values support mocked module imports without reading
 // live application or test-database credentials.
-process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://test-module-bootstrap.supabase.co';
-process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-module-bootstrap-service-role-key';
+process.env.NEXT_PUBLIC_SUPABASE_URL = TEST_SUPABASE_BOOTSTRAP_URL;
+process.env.SUPABASE_SERVICE_ROLE_KEY = TEST_SUPABASE_BOOTSTRAP_SERVICE_ROLE_KEY;
 
 // ---------------------------------------------------------------------------
 // Mocks — HTTP boundary only

@@ -4,7 +4,8 @@
  * Integration tests for supabaseServer.js
  *
  * Purpose: Test authentication against real Supabase instance
- * Requires: TEST_SUPABASE_URL, TEST_SUPABASE_SERVICE_KEY env vars
+ * Requires: TEST_SUPABASE_URL, TEST_SUPABASE_SERVICE_KEY,
+ *           SUPABASE_TEST_PROJECT_REF env vars
  *
  * Run with: npm run test:integration
  *
@@ -15,13 +16,19 @@
 
 const { createClient } = require('@supabase/supabase-js');
 const {
+  SUPABASE_TEST_PROJECT_REF_ENV_NAME,
   TEST_SUPABASE_ENV_NAMES,
+  matchesSupabaseTestProject,
 } = require('../../../testSupport/integrationEnvironment.js');
 
-// Skip if test environment variables aren't set
+// Skip unless credentials exist and target the isolated Supabase test project.
 const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
 const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
-const SKIP_INTEGRATION = !TEST_URL || !TEST_SERVICE_KEY;
+const TEST_PROJECT_REF = process.env[SUPABASE_TEST_PROJECT_REF_ENV_NAME];
+const SKIP_INTEGRATION =
+  !TEST_URL ||
+  !TEST_SERVICE_KEY ||
+  !matchesSupabaseTestProject(TEST_URL, TEST_PROJECT_REF);
 
 // Create a test client (separate from the main app client)
 const testSupabase = SKIP_INTEGRATION
@@ -38,7 +45,7 @@ describe('supabaseServer integration tests', () => {
 
   beforeAll(async () => {
     if (SKIP_INTEGRATION) {
-      console.warn('Skipping integration tests: TEST_SUPABASE_URL or TEST_SUPABASE_SERVICE_KEY not set');
+      console.warn('Skipping integration tests: isolated Supabase test environment is not configured');
       return;
     }
 
@@ -72,7 +79,7 @@ describe('supabaseServer integration tests', () => {
     }
   });
 
-  // Conditionally skip all tests if env vars not set
+  // Conditionally skip all tests unless the isolated test project is configured.
   const testFn = SKIP_INTEGRATION ? it.skip : it;
 
   describe('token validation against real Supabase', () => {

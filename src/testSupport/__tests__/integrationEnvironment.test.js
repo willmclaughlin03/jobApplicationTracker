@@ -3,6 +3,7 @@ const {
   findMissingTestEnvironmentNames,
   matchesSupabaseTestProject,
   resolveDestructiveIntegrationEnvironment,
+  resolveDescribeOrSkip,
   resolveTestCsrfSecret,
   restoreEnvironmentVariable,
 } = require('../integrationEnvironment.js');
@@ -110,6 +111,27 @@ describe('integration test environment contract', () => {
     })).toBe(true);
   });
 
+  it('derives Jest suite registration from destructive integration readiness', () => {
+    const describeFn = jest.fn();
+    describeFn.skip = jest.fn();
+    const options = {
+      suiteName: 'Test suite',
+      requiredNames: [
+        TEST_SUPABASE_ENV_NAMES.url,
+        TEST_SUPABASE_ENV_NAMES.serviceKey,
+      ],
+    };
+
+    expect(resolveDescribeOrSkip({}, options, describeFn)).toEqual({
+      hasInfra: false,
+      describeOrSkip: describeFn.skip,
+    });
+    expect(resolveDescribeOrSkip(VALID_TEST_ENV, options, describeFn)).toEqual({
+      hasInfra: true,
+      describeOrSkip: describeFn,
+    });
+  });
+
   it('uses a deterministic CSRF fallback only when TEST_CSRF is absent', () => {
     const fallback = 'deterministic-test-secret-at-least-32-characters';
 
@@ -121,6 +143,8 @@ describe('integration test environment contract', () => {
       .toThrow('TEST_CSRF must contain at least 32 characters.');
     expect(() => resolveTestCsrfSecret({ TEST_CSRF: '' }, fallback))
       .toThrow('TEST_CSRF must contain at least 32 characters.');
+    expect(() => resolveTestCsrfSecret({}, 'too-short-fallback'))
+      .toThrow('The deterministic test CSRF fallback must contain at least 32 characters.');
   });
 
   it('restores or deletes isolated environment mutations', () => {

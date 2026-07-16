@@ -24,21 +24,20 @@ const JOBS_SALARY_RANGE_VALIDATE_MIGRATION_FILE = '024_jobs_salary_range_check_v
 
 const {
   TEST_SUPABASE_ENV_NAMES,
-  resolveDestructiveIntegrationEnvironment,
+  resolveDescribeOrSkip,
 } = require('../../../testSupport/integrationEnvironment.js');
 
 const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
 const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
 const TEST_ANON_KEY = process.env[TEST_SUPABASE_ENV_NAMES.anonKey];
-const hasInfra = resolveDestructiveIntegrationEnvironment(process.env, {
+const { describeOrSkip } = resolveDescribeOrSkip(process.env, {
   suiteName: 'Suite C',
   requiredNames: [
     TEST_SUPABASE_ENV_NAMES.url,
     TEST_SUPABASE_ENV_NAMES.serviceKey,
     TEST_SUPABASE_ENV_NAMES.anonKey,
   ],
-});
-const describeOrSkip = hasInfra ? describe : describe.skip;
+}, describe);
 
 /**
  * Normalize exec_sql RPC data into a row array.

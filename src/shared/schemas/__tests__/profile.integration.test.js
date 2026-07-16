@@ -27,6 +27,11 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { UserProfile } from '../profile.js';
 
+const {
+  TEST_SUPABASE_ENV_NAMES,
+  resolveDestructiveIntegrationEnvironment,
+} = require('../../../testSupport/integrationEnvironment.js');
+
 const FIXTURES = join(__dirname, 'fixtures', 'profiles');
 
 function loadFixture(name) {
@@ -140,13 +145,20 @@ describe('Suite B — Block 1: UserProfile Zod validation', () => {
 // Block 2 — DB round-trip (requires test Supabase infra)
 // ---------------------------------------------------------------------------
 
-const TEST_URL         = process.env.TEST_SUPABASE_URL;
-const TEST_SERVICE_KEY = process.env.TEST_SUPABASE_SERVICE_KEY;
+const TEST_URL         = process.env[TEST_SUPABASE_ENV_NAMES.url];
+const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
 const TEST_USER_ID     = process.env.SUPABASE_TEST_USER_ID;
 
-const describeOrSkip = TEST_URL && TEST_SERVICE_KEY && TEST_USER_ID
-  ? describe
-  : describe.skip;
+const hasInfra = resolveDestructiveIntegrationEnvironment(process.env, {
+  suiteName: 'Suite B',
+  requiredNames: [
+    TEST_SUPABASE_ENV_NAMES.url,
+    TEST_SUPABASE_ENV_NAMES.serviceKey,
+    'SUPABASE_TEST_USER_ID',
+  ],
+});
+
+const describeOrSkip = hasInfra ? describe : describe.skip;
 
 describeOrSkip('Suite B — Block 2: DB round-trip (requires TEST_SUPABASE_URL + TEST_SUPABASE_SERVICE_KEY + SUPABASE_TEST_USER_ID)', () => {
   let supabase;

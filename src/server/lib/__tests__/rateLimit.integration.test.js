@@ -8,7 +8,8 @@
  * Connects to: src/server/lib/rateLimit.js, src/server/lib/redis.js
  *
  * Requires: UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN,
- *           TEST_SUPABASE_URL, TEST_SUPABASE_SERVICE_KEY env vars
+ *           TEST_SUPABASE_URL, TEST_SUPABASE_SERVICE_KEY,
+ *           SUPABASE_TEST_PROJECT_REF env vars
  * Run with: npm run test:integration
  *
  * Key design decisions:
@@ -32,7 +33,9 @@
 
 const { createClient } = require('@supabase/supabase-js');
 const {
+    SUPABASE_TEST_PROJECT_REF_ENV_NAME,
     TEST_SUPABASE_ENV_NAMES,
+    matchesSupabaseTestProject,
 } = require('../../../testSupport/integrationEnvironment.js');
 
 const mockLogger = {
@@ -46,6 +49,7 @@ jest.mock('../../../shared/logger.js', () => ({ logger: mockLogger }));
 
 const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
 const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
+const TEST_PROJECT_REF = process.env[SUPABASE_TEST_PROJECT_REF_ENV_NAME];
 const SKIP_INTEGRATION =
     !process.env.UPSTASH_REDIS_REST_URL ||
     !process.env.UPSTASH_REDIS_REST_TOKEN ||
@@ -62,7 +66,7 @@ describeIntegration('rateLimit.js — integration (real Upstash)', () => {
 
     // Create a disposable test user via admin API to get a real UUID
     beforeAll(async () => {
-        if (SKIP_INTEGRATION) return;
+        if (SKIP_INTEGRATION || !matchesSupabaseTestProject(TEST_URL, TEST_PROJECT_REF)) return;
 
         const supabase = createClient(
             TEST_URL,
@@ -90,7 +94,11 @@ describeIntegration('rateLimit.js — integration (real Upstash)', () => {
     });
 
     afterAll(async () => {
-        if (!SKIP_INTEGRATION && testUserId) {
+        if (
+            !SKIP_INTEGRATION &&
+            testUserId &&
+            matchesSupabaseTestProject(TEST_URL, TEST_PROJECT_REF)
+        ) {
             const supabase = createClient(
                 TEST_URL,
                 TEST_SERVICE_KEY

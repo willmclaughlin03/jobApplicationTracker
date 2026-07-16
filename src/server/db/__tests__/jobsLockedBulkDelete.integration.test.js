@@ -25,19 +25,18 @@ const JOBS_LOCKED_BULK_DELETE_MIGRATION_FILE = '020_jobs_locked_bulk_delete.sql'
 
 const {
   TEST_SUPABASE_ENV_NAMES,
-  resolveDestructiveIntegrationEnvironment,
+  resolveDescribeOrSkip,
 } = require('../../../testSupport/integrationEnvironment.js');
 
 const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
 const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
-const hasInfra = resolveDestructiveIntegrationEnvironment(process.env, {
+const { describeOrSkip } = resolveDescribeOrSkip(process.env, {
   suiteName: 'Suite G',
   requiredNames: [
     TEST_SUPABASE_ENV_NAMES.url,
     TEST_SUPABASE_ENV_NAMES.serviceKey,
   ],
-});
-const describeOrSkip = hasInfra ? describe : describe.skip;
+}, describe);
 
 /**
  * Normalize exec_sql RPC data into a row array.

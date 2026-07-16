@@ -7,6 +7,9 @@ const TEST_SUPABASE_ENV_NAMES = Object.freeze({
 const SUPABASE_TEST_PROJECT_REF_ENV_NAME = 'SUPABASE_TEST_PROJECT_REF';
 const RUN_DESTRUCTIVE_DB_INTEGRATION_ENV_NAME = 'RUN_DESTRUCTIVE_DB_INTEGRATION';
 const TEST_CSRF_ENV_NAME = 'TEST_CSRF';
+const TEST_CSRF_FALLBACK = 'integration-test-secret-that-is-at-least-32-chars-long!!';
+const TEST_SUPABASE_BOOTSTRAP_URL = 'https://test-module-bootstrap.supabase.co';
+const TEST_SUPABASE_BOOTSTRAP_SERVICE_ROLE_KEY = 'test-module-bootstrap-service-role-key';
 const MINIMUM_CSRF_SECRET_LENGTH = 32;
 
 /**
@@ -103,6 +106,26 @@ function resolveDestructiveIntegrationEnvironment(env, options) {
 }
 
 /**
+ * Resolve destructive-suite readiness and select its Jest describe function.
+ *
+ * Purpose: destructive integration suites share one fail-closed environment
+ * preflight and should derive their run-or-skip registration consistently.
+ *
+ * @param {NodeJS.ProcessEnv|Record<string, unknown>} env environment snapshot
+ * @param {{ suiteName: string, requiredNames: readonly string[] }} options suite contract
+ * @param {Function & { skip: Function }} describeFn Jest describe function
+ * @returns {{ hasInfra: boolean, describeOrSkip: Function }} readiness and suite registrar
+ * @throws {Error} when an enabled suite has missing prerequisites or a wrong target
+ */
+function resolveDescribeOrSkip(env, options, describeFn) {
+  const hasInfra = resolveDestructiveIntegrationEnvironment(env, options);
+  return {
+    hasInfra,
+    describeOrSkip: hasInfra ? describeFn : describeFn.skip,
+  };
+}
+
+/**
  * Resolve the HMAC secret that an isolated test process will install.
  *
  * Purpose: externally supplied TEST_CSRF values must satisfy the production
@@ -154,10 +177,14 @@ module.exports = {
   RUN_DESTRUCTIVE_DB_INTEGRATION_ENV_NAME,
   SUPABASE_TEST_PROJECT_REF_ENV_NAME,
   TEST_CSRF_ENV_NAME,
+  TEST_CSRF_FALLBACK,
+  TEST_SUPABASE_BOOTSTRAP_SERVICE_ROLE_KEY,
+  TEST_SUPABASE_BOOTSTRAP_URL,
   TEST_SUPABASE_ENV_NAMES,
   findMissingTestEnvironmentNames,
   matchesSupabaseTestProject,
   resolveDestructiveIntegrationEnvironment,
+  resolveDescribeOrSkip,
   resolveTestCsrfSecret,
   restoreEnvironmentVariable,
 };

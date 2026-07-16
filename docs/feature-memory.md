@@ -13,6 +13,19 @@ Use this file as a quick-running log of implemented changes.
 ## Entries
 
 ### Week of 2026-07-12
+
+- `2026-07-16` - `Shared post-Checkout wait deadline`: Bounded sequential customer, subscription, checkout, Stripe event, and receipt polling to one configured webhook wait budget.
+- `2026-07-16` - `Shared destructive-suite registration`: Centralized destructive integration readiness and Jest run-or-skip selection for the reviewed database suites.
+- `2026-07-16` - `CSRF fallback validation coverage`: Covered rejection of an undersized deterministic integration-test CSRF fallback when no TEST_CSRF value is supplied.
+- `2026-07-16` - `Profile integration project guard`: Required the destructive opt-in and isolated Supabase project validation before profile round-trip upserts or cleanup deletes can run.
+- `2026-07-16` - `Shared Supabase module bootstrap values`: Centralized the fixed fake application URL and service-role key used to bootstrap rate-limit integration module imports.
+- `2026-07-16` - `Full-pipeline rate-limit project gate`: Skipped the live Redis/Supabase suite unless its URL matches the configured isolated Supabase test project.
+- `2026-07-16` - `Supabase server integration project gate`: Skipped the real-auth suite unless its URL matches the configured isolated Supabase test project, before creating an admin client.
+- `2026-07-16` - `Rate-limit integration project guard`: Required the configured Supabase test-project reference to match before creating or deleting the suite's disposable user.
+- `2026-07-16` - `Shared integration CSRF fallback`: Centralized the deterministic test-only CSRF fallback in the integration environment helper for reuse across CSRF and rate-limit suites.
+- `2026-07-16` - `Stripe event scan throttling`: Reduced full lookback pagination frequency while keeping each retry fresh enough to discover newly arrived events.
+- `2026-07-16` - `Stripe local request timeouts`: Bounded local app health and signed webhook fixture requests so stalled endpoints fail with timeout diagnostics.
+- `2026-07-16` - `CSRF integration project guard`: Required the configured Supabase test-project reference to match before creating or deleting the integration test user.
 - `2026-07-14` - `Canonical integration-test environment contract`: Moved live Supabase integration clients to test-only credential names, retained destructive project guards, isolated TEST_CSRF mapping, and made direct Redis keys unique, expiring, and exactly cleaned up.
   - impact: Secret-free integration discovery skips safely, while trusted test jobs can no longer inherit deployed Supabase or CSRF credentials.
 - `2026-07-13` - `Jest ignore-pattern preservation`: Kept the configured generated-worktree exclusions active in unit and CI scripts while adding the integration-test exclusion, and corrected literal-dot regex escaping.

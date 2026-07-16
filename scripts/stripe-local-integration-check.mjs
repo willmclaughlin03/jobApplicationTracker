@@ -11,6 +11,8 @@ const DEFAULT_WEBHOOK_WAIT_SECONDS = 60;
 const MAX_EVENT_LOOKBACK_MINUTES = 24 * 60;
 const MAX_WEBHOOK_WAIT_SECONDS = 300;
 const WEBHOOK_POLL_INTERVAL_MS = 2_000;
+const STRIPE_EVENT_POLL_INTERVAL_MS = 10_000;
+const LOCAL_REQUEST_TIMEOUT_MS = 10_000;
 const FIXTURE_DB_WRITE_OPT_IN_ENV = 'STRIPE_LOCAL_E2E_ALLOW_FIXTURE_DB_WRITES';
 const LOCAL_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 const REQUIRED_EVENT_TYPES = Object.freeze([
@@ -837,6 +839,7 @@ async function verifyBillingTables(supabase) {
 async function verifyAppHealth(appUrl) {
   const response = await fetch(`${appUrl}/api/health`, {
     method: 'GET',
+    signal: AbortSignal.timeout(LOCAL_REQUEST_TIMEOUT_MS),
     headers: {
       accept: 'application/json',
     },
@@ -948,6 +951,7 @@ async function postWebhookFixture(stripe, input) {
 
   const response = await fetch(input.webhookUrl, {
     method: 'POST',
+    signal: AbortSignal.timeout(LOCAL_REQUEST_TIMEOUT_MS),
     headers,
     body: input.payload,
   });
@@ -1549,10 +1553,11 @@ async function listRelatedStripeEvents(stripe, input) {
  *
  * @param {import('@supabase/supabase-js').SupabaseClient} supabase
  * @param {Array<object>} events
- * @param {{ timeoutMs: number, intervalMs?: number }} waitOptions
+ * @param {{ intervalMs?: number }} waitOptions
+ * @param {number} deadlineMs shared post-Checkout wait deadline
  * @returns {Promise<Array<object>>}
  */
-async function assertRealEventReceipts(supabase, events, waitOptions) {
+async function assertRealEventReceipts(supabase, events, waitOptions, deadlineMs) {
   const receipts = [];
 
   for (const event of events) {
@@ -1560,7 +1565,10 @@ async function assertRealEventReceipts(supabase, events, waitOptions) {
       supabase,
       event.id,
       RECEIPT_SUCCESS_RESULTS,
-      waitOptions
+      {
+        ...waitOptions,
+        timeoutMs: Math.max(0, deadlineMs - Date.now()),
+      }
     ));
   }
 
@@ -1672,14 +1680,15 @@ async function verifyCompletedCheckoutSession(stripe, supabase, config, args) {
     );
   }
 
+  const postCheckoutDeadlineMs = Date.now() + config.webhookWaitMs;
   const waitOptions = {
-    timeoutMs: config.webhookWaitMs,
     intervalMs: WEBHOOK_POLL_INTERVAL_MS,
   };
   let latestCustomerRow = null;
 
   const customerRow = await waitForCheck({
     ...waitOptions,
+    timeoutMs: Math.max(0, postCheckoutDeadlineMs - Date.now()),
     check: async () => {
       latestCustomerRow = await loadMaybeSingleRow(
         supabase,
@@ -1714,6 +1723,7 @@ async function verifyCompletedCheckoutSession(stripe, supabase, config, args) {
   ].join(',');
   const subscriptionRow = await waitForCheck({
     ...waitOptions,
+    timeoutMs: Math.max(0, postCheckoutDeadlineMs - Date.now()),
     check: async () => {
       latestSubscriptionRow = await loadMaybeSingleRow(
         supabase,
@@ -1778,6 +1788,7 @@ async function verifyCompletedCheckoutSession(stripe, supabase, config, args) {
   let latestCheckoutRow = null;
   const checkoutRow = await waitForCheck({
     ...waitOptions,
+    timeoutMs: Math.max(0, postCheckoutDeadlineMs - Date.now()),
     check: async () => {
       latestCheckoutRow = await loadMaybeSingleRow(
         supabase,
@@ -1805,6 +1816,8 @@ async function verifyCompletedCheckoutSession(stripe, supabase, config, args) {
   let latestRelatedEvents = [];
   const relatedEvents = await waitForCheck({
     ...waitOptions,
+    timeoutMs: Math.max(0, postCheckoutDeadlineMs - Date.now()),
+    intervalMs: STRIPE_EVENT_POLL_INTERVAL_MS,
     check: async () => {
       latestRelatedEvents = await listRelatedStripeEvents(stripe, {
         sessionId: args.sessionId,
@@ -1823,7 +1836,12 @@ async function verifyCompletedCheckoutSession(stripe, supabase, config, args) {
     ),
   });
 
-  const receipts = await assertRealEventReceipts(supabase, relatedEvents, waitOptions);
+  const receipts = await assertRealEventReceipts(
+    supabase,
+    relatedEvents,
+    waitOptions,
+    postCheckoutDeadlineMs
+  );
 
   return {
     userId: redactUserId(userId),

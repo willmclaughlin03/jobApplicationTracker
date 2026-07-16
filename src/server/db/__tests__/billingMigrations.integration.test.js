@@ -38,7 +38,7 @@ const MIGRATIONS_DIR = join(process.cwd(), 'migrations');
 
 const {
   TEST_SUPABASE_ENV_NAMES,
-  resolveDestructiveIntegrationEnvironment,
+  resolveDescribeOrSkip,
 } = require('../../../testSupport/integrationEnvironment.js');
 
 const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
@@ -169,7 +169,7 @@ const ADDITIVE_BILLING_MIGRATIONS = [
   },
 ];
 
-const hasInfra = resolveDestructiveIntegrationEnvironment(process.env, {
+const { describeOrSkip } = resolveDescribeOrSkip(process.env, {
   suiteName: 'Suite B',
   requiredNames: [
     TEST_SUPABASE_ENV_NAMES.url,
@@ -178,7 +178,7 @@ const hasInfra = resolveDestructiveIntegrationEnvironment(process.env, {
     'SUPABASE_TEST_USER_A_EMAIL',
     'SUPABASE_TEST_USER_B_EMAIL',
   ],
-});
+}, describe);
 
 /**
  * Normalize exec_sql RPC payloads into row arrays.
@@ -424,8 +424,6 @@ async function signInAsUser(createClient, adminClient, email) {
 
   return userClient;
 }
-
-const describeOrSkip = hasInfra ? describe : describe.skip;
 
 jest.setTimeout(30_000);
 

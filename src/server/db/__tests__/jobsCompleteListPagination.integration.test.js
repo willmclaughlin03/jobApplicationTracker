@@ -14,19 +14,18 @@ import {
 
 const {
   TEST_SUPABASE_ENV_NAMES,
-  resolveDestructiveIntegrationEnvironment,
+  resolveDescribeOrSkip,
 } = require('../../../testSupport/integrationEnvironment.js');
 
 const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
 const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
-const hasInfra = resolveDestructiveIntegrationEnvironment(process.env, {
+const { describeOrSkip } = resolveDescribeOrSkip(process.env, {
   suiteName: 'Suite K',
   requiredNames: [
     TEST_SUPABASE_ENV_NAMES.url,
     TEST_SUPABASE_ENV_NAMES.serviceKey,
   ],
-});
-const describeOrSkip = hasInfra ? describe : describe.skip;
+}, describe);
 
 jest.setTimeout(120_000);
 

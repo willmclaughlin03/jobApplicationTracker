@@ -26,15 +26,18 @@
 
 const { createClient } = require('@supabase/supabase-js');
 const {
+    SUPABASE_TEST_PROJECT_REF_ENV_NAME,
+    TEST_CSRF_FALLBACK,
     TEST_SUPABASE_ENV_NAMES,
+    matchesSupabaseTestProject,
     resolveTestCsrfSecret,
     restoreEnvironmentVariable,
 } = require('../../../testSupport/integrationEnvironment.js');
 
 const originalCsrfSecret = process.env.CSRF_SECRET;
-const TEST_CSRF_FALLBACK = 'integration-test-secret-that-is-at-least-32-chars-long!!';
 const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
 const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
+const TEST_PROJECT_REF = process.env[SUPABASE_TEST_PROJECT_REF_ENV_NAME];
 
 // Install test-only HMAC configuration before csrf.js validates at import time.
 process.env.CSRF_SECRET = resolveTestCsrfSecret(process.env, TEST_CSRF_FALLBACK);
@@ -74,7 +77,7 @@ describeIntegration('csrf.js — integration (real crypto, real user)', () => {
     let testUserId;
 
     beforeAll(async () => {
-        if (SKIP_INTEGRATION) return;
+        if (SKIP_INTEGRATION || !matchesSupabaseTestProject(TEST_URL, TEST_PROJECT_REF)) return;
 
         const supabase = createClient(
             TEST_URL,
@@ -90,7 +93,11 @@ describeIntegration('csrf.js — integration (real crypto, real user)', () => {
     });
 
     afterAll(async () => {
-        if (!SKIP_INTEGRATION && testUserId) {
+        if (
+            !SKIP_INTEGRATION &&
+            testUserId &&
+            matchesSupabaseTestProject(TEST_URL, TEST_PROJECT_REF)
+        ) {
             const supabase = createClient(
                 TEST_URL,
                 TEST_SERVICE_KEY

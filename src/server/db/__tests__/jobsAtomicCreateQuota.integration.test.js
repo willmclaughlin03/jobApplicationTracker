@@ -22,19 +22,18 @@ const JOBS_ATOMIC_CREATE_MIGRATION_FILE = '017_jobs_atomic_create_quota.sql';
 
 const {
   TEST_SUPABASE_ENV_NAMES,
-  resolveDestructiveIntegrationEnvironment,
+  resolveDescribeOrSkip,
 } = require('../../../testSupport/integrationEnvironment.js');
 
 const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
 const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
-const hasInfra = resolveDestructiveIntegrationEnvironment(process.env, {
+const { describeOrSkip } = resolveDescribeOrSkip(process.env, {
   suiteName: 'Suite D',
   requiredNames: [
     TEST_SUPABASE_ENV_NAMES.url,
     TEST_SUPABASE_ENV_NAMES.serviceKey,
   ],
-});
-const describeOrSkip = hasInfra ? describe : describe.skip;
+}, describe);
 
 const JOBS_SEED_BATCH_SIZE = 500;
 
