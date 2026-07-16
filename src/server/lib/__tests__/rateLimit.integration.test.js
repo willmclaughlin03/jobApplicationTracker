@@ -56,7 +56,10 @@ const SKIP_INTEGRATION =
     !TEST_URL ||
     !TEST_SERVICE_KEY;
 
-const describeIntegration = SKIP_INTEGRATION ? describe.skip : describe;
+const describeIntegration = SKIP_INTEGRATION ||
+    !matchesSupabaseTestProject(TEST_URL, TEST_PROJECT_REF)
+    ? describe.skip
+    : describe;
 
 describeIntegration('rateLimit.js — integration (real Upstash)', () => {
     let checkRateLimit;

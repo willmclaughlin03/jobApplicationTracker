@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-12
 
+- `2026-07-16` - `Supabase mismatch suite selection`: Skipped the CSRF and rate-limit integration suites when their configured URL does not match the isolated Supabase test project.
 - `2026-07-16` - `Shared post-Checkout wait deadline`: Bounded sequential customer, subscription, checkout, Stripe event, and receipt polling to one configured webhook wait budget.
 - `2026-07-16` - `Shared destructive-suite registration`: Centralized destructive integration readiness and Jest run-or-skip selection for the reviewed database suites.
 - `2026-07-16` - `CSRF fallback validation coverage`: Covered rejection of an undersized deterministic integration-test CSRF fallback when no TEST_CSRF value is supplied.
