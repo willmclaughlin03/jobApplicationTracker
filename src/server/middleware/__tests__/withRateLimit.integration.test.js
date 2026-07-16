@@ -30,20 +30,25 @@
  * - Missing cookie or header rejected
  */
 
-// Must set CSRF_SECRET before requiring csrf.js.
+const {
+    TEST_CSRF_FALLBACK,
+    TEST_SUPABASE_BOOTSTRAP_SERVICE_ROLE_KEY,
+    TEST_SUPABASE_BOOTSTRAP_URL,
+    resolveTestCsrfSecret,
+    restoreEnvironmentVariable,
+} = require('../../../testSupport/integrationEnvironment.js');
+
 const originalCsrfSecret = process.env.CSRF_SECRET;
-
-if (!process.env.CSRF_SECRET || process.env.CSRF_SECRET.length < 32) {
-    process.env.CSRF_SECRET = 'integration-test-secret-that-is-at-least-32-chars-long!!';
-}
-
 const originalSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const originalSupabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-process.env.NEXT_PUBLIC_SUPABASE_URL =
-    process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://test.supabase.co';
-process.env.SUPABASE_SERVICE_ROLE_KEY =
-    process.env.SUPABASE_SERVICE_ROLE_KEY || 'test-service-role-key';
+// Install test-only HMAC configuration before csrf.js validates at import time.
+process.env.CSRF_SECRET = resolveTestCsrfSecret(process.env, TEST_CSRF_FALLBACK);
+
+// Fixed fake application values support mocked module imports without reading
+// live application or test-database credentials.
+process.env.NEXT_PUBLIC_SUPABASE_URL = TEST_SUPABASE_BOOTSTRAP_URL;
+process.env.SUPABASE_SERVICE_ROLE_KEY = TEST_SUPABASE_BOOTSTRAP_SERVICE_ROLE_KEY;
 
 // ---------------------------------------------------------------------------
 // Mocks — HTTP boundary only
@@ -176,23 +181,13 @@ describe('withRateLimit — integration', () => {
     });
 
     afterAll(() => {
-        if (originalCsrfSecret === undefined) {
-            delete process.env.CSRF_SECRET;
-        } else {
-            process.env.CSRF_SECRET = originalCsrfSecret;
-        }
-
-        if (originalSupabaseUrl === undefined) {
-            delete process.env.NEXT_PUBLIC_SUPABASE_URL;
-        } else {
-            process.env.NEXT_PUBLIC_SUPABASE_URL = originalSupabaseUrl;
-        }
-
-        if (originalSupabaseServiceRoleKey === undefined) {
-            delete process.env.SUPABASE_SERVICE_ROLE_KEY;
-        } else {
-            process.env.SUPABASE_SERVICE_ROLE_KEY = originalSupabaseServiceRoleKey;
-        }
+        restoreEnvironmentVariable(process.env, 'CSRF_SECRET', originalCsrfSecret);
+        restoreEnvironmentVariable(process.env, 'NEXT_PUBLIC_SUPABASE_URL', originalSupabaseUrl);
+        restoreEnvironmentVariable(
+            process.env,
+            'SUPABASE_SERVICE_ROLE_KEY',
+            originalSupabaseServiceRoleKey
+        );
     });
 
     // =======================================================================

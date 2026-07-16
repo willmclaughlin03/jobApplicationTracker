@@ -6,6 +6,7 @@ node_modules/
 scripts/*
 !scripts/
 !scripts/billing-drain-checkout-sessions.mjs
+!scripts/stripe-local-integration-check.mjs
 !scripts/validate-build-env.js
 
 # AI tailor feature — test fixtures contain canary strings (fake sk-/Bearer
@@ -22,7 +23,13 @@ src/server/db/__tests__/*
 !src/server/db/__tests__/jobsLockedBulkDelete.integration.test.js
 !src/server/db/__tests__/jobsStorageDegradationFinal.integration.test.js
 !src/server/db/__tests__/jobsOrderedReadsIndexes.integration.test.js
-src/shared/schemas/__tests__/
+!src/server/db/__tests__/migrations.integration.test.js
+src/shared/schemas/__tests__/*
+!src/shared/schemas/__tests__/profile.integration.test.js
+!src/shared/schemas/__tests__/fixtures/
+src/shared/schemas/__tests__/fixtures/*
+!src/shared/schemas/__tests__/fixtures/profiles/
+!src/shared/schemas/__tests__/fixtures/profiles/*.json
 
 .tmp/
 .codex-pr-*/

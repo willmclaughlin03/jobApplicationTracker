@@ -13,6 +13,22 @@ Use this file as a quick-running log of implemented changes.
 ## Entries
 
 ### Week of 2026-07-12
+
+- `2026-07-16` - `Supabase mismatch suite selection`: Skipped the CSRF and rate-limit integration suites when their configured URL does not match the isolated Supabase test project.
+- `2026-07-16` - `Shared post-Checkout wait deadline`: Bounded sequential customer, subscription, checkout, Stripe event, and receipt polling to one configured webhook wait budget.
+- `2026-07-16` - `Shared destructive-suite registration`: Centralized destructive integration readiness and Jest run-or-skip selection for the reviewed database suites.
+- `2026-07-16` - `CSRF fallback validation coverage`: Covered rejection of an undersized deterministic integration-test CSRF fallback when no TEST_CSRF value is supplied.
+- `2026-07-16` - `Profile integration project guard`: Required the destructive opt-in and isolated Supabase project validation before profile round-trip upserts or cleanup deletes can run.
+- `2026-07-16` - `Shared Supabase module bootstrap values`: Centralized the fixed fake application URL and service-role key used to bootstrap rate-limit integration module imports.
+- `2026-07-16` - `Full-pipeline rate-limit project gate`: Skipped the live Redis/Supabase suite unless its URL matches the configured isolated Supabase test project.
+- `2026-07-16` - `Supabase server integration project gate`: Skipped the real-auth suite unless its URL matches the configured isolated Supabase test project, before creating an admin client.
+- `2026-07-16` - `Rate-limit integration project guard`: Required the configured Supabase test-project reference to match before creating or deleting the suite's disposable user.
+- `2026-07-16` - `Shared integration CSRF fallback`: Centralized the deterministic test-only CSRF fallback in the integration environment helper for reuse across CSRF and rate-limit suites.
+- `2026-07-16` - `Stripe event scan throttling`: Reduced full lookback pagination frequency while keeping each retry fresh enough to discover newly arrived events.
+- `2026-07-16` - `Stripe local request timeouts`: Bounded local app health and signed webhook fixture requests so stalled endpoints fail with timeout diagnostics.
+- `2026-07-16` - `CSRF integration project guard`: Required the configured Supabase test-project reference to match before creating or deleting the integration test user.
+- `2026-07-14` - `Canonical integration-test environment contract`: Moved live Supabase integration clients to test-only credential names, retained destructive project guards, isolated TEST_CSRF mapping, and made direct Redis keys unique, expiring, and exactly cleaned up.
+  - impact: Secret-free integration discovery skips safely, while trusted test jobs can no longer inherit deployed Supabase or CSRF credentials.
 - `2026-07-13` - `Reconstructed Phase 0 migration history`: Added catalog-derived functional equivalents of root migrations 001-004 for user profiles, tailor cache, abuse counters, and daily spend; the timestamped Supabase baseline remains the active deployable chain.
   - impact: The four Phase 0 historical references are explicit and reviewable, while independent root-chain replay still requires a separately approved reconstruction of the manually created jobs base.
 
@@ -26,6 +42,9 @@ Use this file as a quick-running log of implemented changes.
 - `2026-07-12` - `Staging CI/CD baseline`: Established a clean `origin/main` worktree, standardized local and Amplify builds on rolling Node 22 with visible runtime versions, inventoried branches/worktrees without deletion, and removed an obsolete DOMPurify 3.3.1 patch after 3.3.3 incorporated the security guard upstream.
 - `2026-07-12` - `Complete-list export assertion diagnostics`: Made Suite K verify export success and a string CSV payload before parsing exported companies so failures retain their original assertion context.
 - `2026-07-12` - `Server-capped job-list pagination`: Continued complete-list keyset fetching after non-empty pages shorter than the requested transport size, stopping only on an empty page while preserving the absolute retained-job limit.
+
+### Week of 2026-07-05
+
 - `2026-07-11` - `Complete-list export identity coverage`: Strengthened Suite K to verify all 1001 expected CSV company identities, explicit overflow-row presence, and uniqueness alongside the export row count.
 - `2026-07-11` - `Suite K resilient teardown`: Isolated fixture job and auth deletion attempts across all users and deferred aggregated cleanup errors until every teardown operation completes.
 - `2026-07-11` - `Suite K lifecycle documentation`: Documented destructive integration setup dependencies, fixture auth/database effects, registered cleanup state, and teardown behavior.

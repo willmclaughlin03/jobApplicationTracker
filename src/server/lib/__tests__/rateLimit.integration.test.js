@@ -8,7 +8,8 @@
  * Connects to: src/server/lib/rateLimit.js, src/server/lib/redis.js
  *
  * Requires: UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN,
- *           NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY env vars
+ *           TEST_SUPABASE_URL, TEST_SUPABASE_SERVICE_KEY,
+ *           SUPABASE_TEST_PROJECT_REF env vars
  * Run with: npm run test:integration
  *
  * Key design decisions:
@@ -31,6 +32,11 @@
  */
 
 const { createClient } = require('@supabase/supabase-js');
+const {
+    SUPABASE_TEST_PROJECT_REF_ENV_NAME,
+    TEST_SUPABASE_ENV_NAMES,
+    matchesSupabaseTestProject,
+} = require('../../../testSupport/integrationEnvironment.js');
 
 const mockLogger = {
     info: jest.fn(),
@@ -41,13 +47,19 @@ const mockLogger = {
 
 jest.mock('../../../shared/logger.js', () => ({ logger: mockLogger }));
 
+const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
+const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
+const TEST_PROJECT_REF = process.env[SUPABASE_TEST_PROJECT_REF_ENV_NAME];
 const SKIP_INTEGRATION =
     !process.env.UPSTASH_REDIS_REST_URL ||
     !process.env.UPSTASH_REDIS_REST_TOKEN ||
-    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    !process.env.SUPABASE_SERVICE_ROLE_KEY;
+    !TEST_URL ||
+    !TEST_SERVICE_KEY;
 
-const describeIntegration = SKIP_INTEGRATION ? describe.skip : describe;
+const describeIntegration = SKIP_INTEGRATION ||
+    !matchesSupabaseTestProject(TEST_URL, TEST_PROJECT_REF)
+    ? describe.skip
+    : describe;
 
 describeIntegration('rateLimit.js — integration (real Upstash)', () => {
     let checkRateLimit;
@@ -57,11 +69,11 @@ describeIntegration('rateLimit.js — integration (real Upstash)', () => {
 
     // Create a disposable test user via admin API to get a real UUID
     beforeAll(async () => {
-        if (SKIP_INTEGRATION) return;
+        if (SKIP_INTEGRATION || !matchesSupabaseTestProject(TEST_URL, TEST_PROJECT_REF)) return;
 
         const supabase = createClient(
-            process.env.NEXT_PUBLIC_SUPABASE_URL,
-            process.env.SUPABASE_SERVICE_ROLE_KEY
+            TEST_URL,
+            TEST_SERVICE_KEY
         );
         const testEmail = `ratelimit-test-${Date.now()}@integration-test.local`;
         const { data, error } = await supabase.auth.admin.createUser({
@@ -85,10 +97,14 @@ describeIntegration('rateLimit.js — integration (real Upstash)', () => {
     });
 
     afterAll(async () => {
-        if (!SKIP_INTEGRATION && testUserId) {
+        if (
+            !SKIP_INTEGRATION &&
+            testUserId &&
+            matchesSupabaseTestProject(TEST_URL, TEST_PROJECT_REF)
+        ) {
             const supabase = createClient(
-                process.env.NEXT_PUBLIC_SUPABASE_URL,
-                process.env.SUPABASE_SERVICE_ROLE_KEY
+                TEST_URL,
+                TEST_SERVICE_KEY
             );
             await supabase.auth.admin.deleteUser(testUserId);
         }

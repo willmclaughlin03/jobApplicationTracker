@@ -13,8 +13,8 @@
  * - src/server/lib/supabaseServer.js (mock at Supabase HTTP boundary only)
  *
  * Requires: UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN,
- *           NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
- *           CSRF_SECRET env vars
+ *           TEST_SUPABASE_URL, TEST_SUPABASE_SERVICE_KEY,
+ *           SUPABASE_TEST_PROJECT_REF, TEST_CSRF env vars
  * Run with: npm run test:integration
  *
  * Mock boundary (external HTTP only):
@@ -37,18 +37,50 @@
  * - GET skips CSRF but still rate limits
  */
 
-// Must set CSRF_SECRET before requiring csrf.js
-if (!process.env.CSRF_SECRET || process.env.CSRF_SECRET.length < 32) {
-    process.env.CSRF_SECRET = 'integration-test-secret-that-is-at-least-32-chars-long!!';
-}
+const {
+    SUPABASE_TEST_PROJECT_REF_ENV_NAME,
+    TEST_CSRF_FALLBACK,
+    TEST_SUPABASE_BOOTSTRAP_SERVICE_ROLE_KEY,
+    TEST_SUPABASE_BOOTSTRAP_URL,
+    TEST_SUPABASE_ENV_NAMES,
+    matchesSupabaseTestProject,
+    resolveTestCsrfSecret,
+    restoreEnvironmentVariable,
+} = require('../../../testSupport/integrationEnvironment.js');
+
+const originalCsrfSecret = process.env.CSRF_SECRET;
+const originalSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const originalSupabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
+const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
+const TEST_PROJECT_REF = process.env[SUPABASE_TEST_PROJECT_REF_ENV_NAME];
+
+// Install test-only HMAC configuration before csrf.js validates at import time.
+process.env.CSRF_SECRET = resolveTestCsrfSecret(process.env, TEST_CSRF_FALLBACK);
+
+// These fixed fake values satisfy product-module import validation only. Live
+// Supabase setup below uses TEST_SUPABASE_* and never these application names.
+process.env.NEXT_PUBLIC_SUPABASE_URL = TEST_SUPABASE_BOOTSTRAP_URL;
+process.env.SUPABASE_SERVICE_ROLE_KEY = TEST_SUPABASE_BOOTSTRAP_SERVICE_ROLE_KEY;
 
 const SKIP_INTEGRATION =
     !process.env.UPSTASH_REDIS_REST_URL ||
     !process.env.UPSTASH_REDIS_REST_TOKEN ||
-    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    !process.env.SUPABASE_SERVICE_ROLE_KEY;
+    !TEST_URL ||
+    !TEST_SERVICE_KEY ||
+    !matchesSupabaseTestProject(TEST_URL, TEST_PROJECT_REF);
 
 const describeIntegration = SKIP_INTEGRATION ? describe.skip : describe;
+
+afterAll(() => {
+    restoreEnvironmentVariable(process.env, 'CSRF_SECRET', originalCsrfSecret);
+    restoreEnvironmentVariable(process.env, 'NEXT_PUBLIC_SUPABASE_URL', originalSupabaseUrl);
+    restoreEnvironmentVariable(
+        process.env,
+        'SUPABASE_SERVICE_ROLE_KEY',
+        originalSupabaseServiceRoleKey
+    );
+});
 
 // ---------------------------------------------------------------------------
 // Mocks — HTTP boundary only (Supabase Auth)
@@ -101,8 +133,8 @@ describeIntegration('withRateLimit — full pipeline integration (real Upstash)'
 
     beforeAll(async () => {
         const supabase = createClient(
-            process.env.NEXT_PUBLIC_SUPABASE_URL,
-            process.env.SUPABASE_SERVICE_ROLE_KEY
+            TEST_URL,
+            TEST_SERVICE_KEY
         );
         const testEmail = `pipeline-test-${Date.now()}@integration-test.local`;
         const { data, error } = await supabase.auth.admin.createUser({
@@ -172,8 +204,8 @@ describeIntegration('withRateLimit — full pipeline integration (real Upstash)'
     afterAll(async () => {
         if (!SKIP_INTEGRATION && testUserId) {
             const supabase = createClient(
-                process.env.NEXT_PUBLIC_SUPABASE_URL,
-                process.env.SUPABASE_SERVICE_ROLE_KEY
+                TEST_URL,
+                TEST_SERVICE_KEY
             );
             await supabase.auth.admin.deleteUser(testUserId);
         }

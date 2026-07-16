@@ -22,37 +22,22 @@ const JOBS_ATOMIC_CREATE_MIGRATION_FILE = '017_jobs_atomic_create_quota.sql';
 const JOBS_OVERFLOW_LOCKING_MIGRATION_FILE = '018_jobs_overflow_locking.sql';
 const JOBS_PREMIUM_RESTORE_MIGRATION_FILE = '019_jobs_premium_restore.sql';
 
-const TEST_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const TEST_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const RUN_DESTRUCTIVE_DB_INTEGRATION = process.env.RUN_DESTRUCTIVE_DB_INTEGRATION === 'true';
-const SUPABASE_TEST_PROJECT_REF = process.env.SUPABASE_TEST_PROJECT_REF;
-const EXPECTED_TEST_URL_PREFIX = SUPABASE_TEST_PROJECT_REF
-  ? `https://${SUPABASE_TEST_PROJECT_REF}.supabase.co`
-  : '';
+const {
+  TEST_SUPABASE_ENV_NAMES,
+  resolveDestructiveIntegrationEnvironment,
+} = require('../../../testSupport/integrationEnvironment.js');
 
-const isExpectedSupabaseTarget = Boolean(
-  TEST_URL
-  && EXPECTED_TEST_URL_PREFIX
-  && (
-    TEST_URL === EXPECTED_TEST_URL_PREFIX
-    || TEST_URL.startsWith(`${EXPECTED_TEST_URL_PREFIX}/`)
-  )
-);
-
-const hasInfra = Boolean(
-  RUN_DESTRUCTIVE_DB_INTEGRATION
-  && isExpectedSupabaseTarget
-  && TEST_URL
-  && TEST_SERVICE_KEY
-);
+const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
+const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
+const hasInfra = resolveDestructiveIntegrationEnvironment(process.env, {
+  suiteName: 'Suite F',
+  requiredNames: [
+    TEST_SUPABASE_ENV_NAMES.url,
+    TEST_SUPABASE_ENV_NAMES.serviceKey,
+  ],
+});
 const describeOrSkip = hasInfra ? describe : describe.skip;
 const JOBS_SEED_BATCH_SIZE = 500;
-
-if (RUN_DESTRUCTIVE_DB_INTEGRATION && !isExpectedSupabaseTarget) {
-  throw new Error(
-    'Refusing to run Suite F: NEXT_PUBLIC_SUPABASE_URL must match SUPABASE_TEST_PROJECT_REF.'
-  );
-}
 
 /**
  * Normalize exec_sql RPC data into a row array.

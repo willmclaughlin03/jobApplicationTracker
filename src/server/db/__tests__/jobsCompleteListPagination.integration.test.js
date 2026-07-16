@@ -12,36 +12,20 @@ import {
   JOB_STORAGE_STATES,
 } from '../../../shared/constants/storage.js';
 
-const TEST_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const TEST_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const RUN_DESTRUCTIVE_DB_INTEGRATION = process.env.RUN_DESTRUCTIVE_DB_INTEGRATION === 'true';
-const SUPABASE_TEST_PROJECT_REF = process.env.SUPABASE_TEST_PROJECT_REF;
-const EXPECTED_TEST_URL_PREFIX = SUPABASE_TEST_PROJECT_REF
-  ? 'https://' + SUPABASE_TEST_PROJECT_REF + '.supabase.co'
-  : '';
+const {
+  TEST_SUPABASE_ENV_NAMES,
+  resolveDescribeOrSkip,
+} = require('../../../testSupport/integrationEnvironment.js');
 
-const isExpectedSupabaseTarget = Boolean(
-  TEST_URL
-  && EXPECTED_TEST_URL_PREFIX
-  && (
-    TEST_URL === EXPECTED_TEST_URL_PREFIX
-    || TEST_URL.startsWith(EXPECTED_TEST_URL_PREFIX + '/')
-  )
-);
-const describeOrSkip = RUN_DESTRUCTIVE_DB_INTEGRATION ? describe : describe.skip;
-
-if (RUN_DESTRUCTIVE_DB_INTEGRATION && (!TEST_URL || !TEST_SERVICE_KEY)) {
-  throw new Error(
-    'Cannot run Suite K: RUN_DESTRUCTIVE_DB_INTEGRATION=true requires '
-    + 'NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.'
-  );
-}
-
-if (RUN_DESTRUCTIVE_DB_INTEGRATION && !isExpectedSupabaseTarget) {
-  throw new Error(
-    'Refusing to run Suite K: NEXT_PUBLIC_SUPABASE_URL must match SUPABASE_TEST_PROJECT_REF.'
-  );
-}
+const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
+const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
+const { describeOrSkip } = resolveDescribeOrSkip(process.env, {
+  suiteName: 'Suite K',
+  requiredNames: [
+    TEST_SUPABASE_ENV_NAMES.url,
+    TEST_SUPABASE_ENV_NAMES.serviceKey,
+  ],
+}, describe);
 
 jest.setTimeout(120_000);
 
