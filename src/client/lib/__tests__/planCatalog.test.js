@@ -54,6 +54,10 @@ describe('planCatalog', () => {
   it.each([
     ['free', undefined],
     ['paid', { maxJobs: 0 }],
+    ['free', { maxJobs: -1 }],
+    ['paid', { maxJobs: 1.5 }],
+    ['free', { maxJobs: Number.NaN }],
+    ['paid', { maxJobs: Number.MAX_SAFE_INTEGER + 1 }],
   ])('fails loudly when the %s storage configuration is invalid', (invalidTier, invalidStorage) => {
     jest.resetModules();
     jest.doMock('../../../shared/constants/tiers.js', () => ({
