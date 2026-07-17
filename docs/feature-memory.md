@@ -14,6 +14,10 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-12
 
+- `2026-07-17` - `Billing action lifecycle hardening`: Prevented completed Checkout and portal requests from navigating after their hook unmounts, preserved secure nonce fallback when `randomUUID()` is unusable, and expanded portal plus legacy Billing-page error regression coverage.
+  - impact: Shared billing actions now ignore stale redirect handoffs without weakening server authorization, redirect allowlisting, duplicate-action latching, or secure entropy requirements.
+- `2026-07-17` - `Shared billing action infrastructure`: Added secure Checkout nonce generation, sanitized structured Checkout and portal outcomes, a cross-action synchronous latch, and a Retry-After countdown that survives UI resets.
+  - impact: The upgrade modal and Billing page can share one fail-closed client redirect flow without weakening the existing Stripe-host allowlist or trusting client state as billing authority.
 - `2026-07-17` - `Dashboard Premium entry contracts`: Added a frozen Premium plan catalog with tier-derived storage benefit copy and an exhaustive fail-closed dashboard billing-entry mapper.
   - impact: Later modal and dashboard chunks can consume stable presentation contracts without treating client state as billing or entitlement authority.
 - `2026-07-16` - `Protected staging promotion workflow`: Created `staging` from the current production commit, protected `staging` and `main` with active pull-request rulesets, and documented the normal promotion, hotfix, and break-glass paths.
