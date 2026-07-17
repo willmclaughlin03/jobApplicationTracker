@@ -49,6 +49,26 @@ describe('billingPageActions', () => {
       })).toBe('0102030405060708090a0b0c0d0e0f10');
     });
 
+    it.each([
+      ['throws', () => { throw new Error('randomUUID unavailable'); }],
+      ['returns a non-string value', () => null],
+    ])('uses secure random bytes when randomUUID %s', (_label, randomUUID) => {
+      expect(createCheckoutAttemptNonce({
+        randomUUID,
+        getRandomValues: (target) => {
+          target.fill(0xab);
+          return target;
+        },
+      })).toBe('abababababababababababababababab');
+    });
+
+    it('fails closed when both secure entropy paths throw', () => {
+      expect(() => createCheckoutAttemptNonce({
+        randomUUID: () => { throw new Error('randomUUID unavailable'); },
+        getRandomValues: () => { throw new Error('random bytes unavailable'); },
+      })).toThrow('Secure checkout nonce generation is unavailable');
+    });
+
     it('fails closed when secure randomness is unavailable', () => {
       expect(() => createCheckoutAttemptNonce({})).toThrow(
         'Secure checkout nonce generation is unavailable'
@@ -174,6 +194,24 @@ describe('billingPageActions', () => {
     expect(navigate).toHaveBeenCalledWith('https://checkout.stripe.com/session_123');
   });
 
+  it('skips navigation when the lifecycle guard rejects the handoff', async () => {
+    const navigate = jest.fn();
+
+    await expect(executeBillingRedirectAction({
+      action: BILLING_PAGE_ACTIONS.CHECKOUT,
+      request: async () => ({
+        data: { data: { url: 'https://checkout.stripe.com/session_123' } },
+        error: null,
+        meta: { status: 200, retryAfterSeconds: null },
+      }),
+      navigate,
+      shouldNavigate: () => false,
+      ...CHECKOUT_COPY,
+    })).resolves.toEqual({ redirected: false, error: null });
+
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it('returns sanitized errors for thrown requests and navigation failures', async () => {
     await expect(executeBillingRedirectAction({
       action: BILLING_PAGE_ACTIONS.CHECKOUT,
@@ -236,5 +274,83 @@ describe('billingPageActions', () => {
     expect(setActionLoading).toHaveBeenCalledWith(BILLING_PAGE_ACTIONS.PORTAL);
     expect(setActionLoading).not.toHaveBeenCalledWith('');
     expect(setErrorMessage).toHaveBeenCalledWith('');
+  });
+
+  it.each([
+    ['thrown request', null, true, false, CHECKOUT_COPY.requestFailureMessage],
+    [
+      'structured API failure',
+      buildApiError('CHECKOUT_SESSION_FAILED', 503),
+      false,
+      false,
+      ERROR_MESSAGES.CHECKOUT_SESSION_FAILED,
+    ],
+    [
+      'missing redirect URL',
+      {
+        data: { data: {} },
+        error: null,
+        meta: { status: 200, retryAfterSeconds: null },
+      },
+      false,
+      false,
+      CHECKOUT_COPY.missingUrlMessage,
+    ],
+    [
+      'unsafe redirect URL',
+      {
+        data: { data: { url: 'https://evil.example.test/session_123' } },
+        error: null,
+        meta: { status: 200, retryAfterSeconds: null },
+      },
+      false,
+      false,
+      CHECKOUT_COPY.missingUrlMessage,
+    ],
+    [
+      'navigation failure',
+      {
+        data: { data: { url: 'https://checkout.stripe.com/session_123' } },
+        error: null,
+        meta: { status: 200, retryAfterSeconds: null },
+      },
+      false,
+      true,
+      CHECKOUT_COPY.navigationFailedMessage,
+    ],
+  ])('clears legacy loading and renders safe copy for %s', async (
+    _label,
+    response,
+    requestThrows,
+    navigationThrows,
+    expectedMessage
+  ) => {
+    const setActionLoading = jest.fn();
+    const setErrorMessage = jest.fn();
+    const navigate = jest.fn(() => {
+      if (navigationThrows) {
+        throw new Error('raw navigation failure');
+      }
+    });
+
+    await runBillingPageRedirectAction({
+      action: BILLING_PAGE_ACTIONS.CHECKOUT,
+      request: async () => {
+        if (requestThrows) {
+          throw new Error('raw request failure');
+        }
+        return response;
+      },
+      setActionLoading,
+      setErrorMessage,
+      navigate,
+      ...CHECKOUT_COPY,
+    });
+
+    expect(setActionLoading).toHaveBeenNthCalledWith(1, BILLING_PAGE_ACTIONS.CHECKOUT);
+    expect(setActionLoading).toHaveBeenLastCalledWith('');
+    expect(setErrorMessage).toHaveBeenNthCalledWith(1, '');
+    expect(setErrorMessage).toHaveBeenLastCalledWith(expectedMessage);
+    expect(navigate).toHaveBeenCalledTimes(navigationThrows ? 1 : 0);
   });
 });

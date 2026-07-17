@@ -194,11 +194,18 @@ export function useBillingActions({ navigate } = {}) {
       request,
       ...ACTION_COPY[action],
       navigate,
+      shouldNavigate: () => isMountedRef.current,
     });
 
     if (outcome.error) {
       releaseFailedAction(outcome.error);
       return createActionResult(BILLING_ACTION_RESULT_STATUSES.ERROR, outcome.error);
+    }
+
+    // Lifecycle cancellation is neither a redirect handoff nor a user-facing failure.
+    if (!outcome.redirected) {
+      actionLatchRef.current = '';
+      return createActionResult(BILLING_ACTION_RESULT_STATUSES.IGNORED);
     }
 
     return createActionResult(BILLING_ACTION_RESULT_STATUSES.REDIRECTING);

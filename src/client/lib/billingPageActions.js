@@ -26,23 +26,34 @@ export function createCheckoutAttemptNonce(
   cryptoSource = typeof globalThis !== 'undefined' ? globalThis.crypto : null
 ) {
   if (typeof cryptoSource?.randomUUID === 'function') {
-    const uuidNonce = cryptoSource.randomUUID().replace(/-/g, '').toLowerCase();
+    try {
+      const rawUuid = cryptoSource.randomUUID();
+      const uuidNonce = typeof rawUuid === 'string'
+        ? rawUuid.replace(/-/g, '').toLowerCase()
+        : '';
 
-    if (/^[0-9a-f]{32}$/.test(uuidNonce)) {
-      return uuidNonce;
+      if (/^[0-9a-f]{32}$/.test(uuidNonce)) {
+        return uuidNonce;
+      }
+    } catch {
+      // Continue to the independent secure-random-bytes fallback below.
     }
   }
 
   if (typeof cryptoSource?.getRandomValues === 'function') {
-    const randomBytes = new Uint8Array(16);
-    cryptoSource.getRandomValues(randomBytes);
-    const bytesNonce = Array.from(
-      randomBytes,
-      (byte) => byte.toString(16).padStart(2, '0')
-    ).join('');
+    try {
+      const randomBytes = new Uint8Array(16);
+      cryptoSource.getRandomValues(randomBytes);
+      const bytesNonce = Array.from(
+        randomBytes,
+        (byte) => byte.toString(16).padStart(2, '0')
+      ).join('');
 
-    if (/^[0-9a-f]{32}$/.test(bytesNonce)) {
-      return bytesNonce;
+      if (/^[0-9a-f]{32}$/.test(bytesNonce)) {
+        return bytesNonce;
+      }
+    } catch {
+      // Both secure browser entropy paths are unavailable; fail closed below.
     }
   }
 
@@ -252,6 +263,8 @@ export function resolveBillingRedirectResult({
  * response normalization, redirect validation, and navigation path.
  *
  * @param {object} params - Action request, safe copy, and optional navigator.
+ * @param {() => boolean} [params.shouldNavigate] - Optional lifecycle guard
+ * checked immediately before navigation.
  * @returns {Promise<{ redirected: boolean, error: ReturnType<typeof createBillingActionError>|null }>}
  */
 export async function executeBillingRedirectAction({
@@ -262,6 +275,7 @@ export async function executeBillingRedirectAction({
   missingUrlMessage,
   navigationFailedMessage,
   navigate,
+  shouldNavigate,
 }) {
   let result;
 
@@ -299,6 +313,10 @@ export async function executeBillingRedirectAction({
   }
 
   try {
+    if (typeof shouldNavigate === 'function' && !shouldNavigate()) {
+      return { redirected: false, error: null };
+    }
+
     (navigate ?? ((url) => window.location.assign(url)))(safeRedirectUrl);
   } catch (error) {
     return {

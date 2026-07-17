@@ -286,6 +286,27 @@ describe('useBillingActions', () => {
     expect(mockApiPost).toHaveBeenCalledTimes(1);
   });
 
+  it('does not navigate when an in-flight request resolves after unmount', async () => {
+    const deferred = createDeferred();
+    mockApiPost.mockReturnValue(deferred.promise);
+    await renderHook();
+
+    let actionPromise;
+    act(() => {
+      actionPromise = latestHook.startCheckout('premium_monthly');
+    });
+
+    expect(mockApiPost).toHaveBeenCalledTimes(1);
+    cleanup();
+    deferred.resolve(buildRedirectSuccess());
+
+    await expect(actionPromise).resolves.toEqual({
+      status: BILLING_ACTION_RESULT_STATUSES.IGNORED,
+      error: null,
+    });
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['unauthorized', {
       data: null,
@@ -310,6 +331,81 @@ describe('useBillingActions', () => {
     });
     expect(latestHook.actionError).toEqual(result.error);
     expect(latestHook.actionLoading).toBe('');
+  });
+
+  it.each([
+    ['unauthorized', {
+      data: null,
+      error: ERROR_MESSAGES.UNAUTHORIZED,
+      meta: { status: 401, retryAfterSeconds: null },
+    }, 'UNAUTHORIZED', ERROR_MESSAGES.UNAUTHORIZED, 401, null],
+    [
+      'generic portal failure',
+      buildApiError('PORTAL_SESSION_FAILED', 503),
+      'PORTAL_SESSION_FAILED',
+      ERROR_MESSAGES.PORTAL_SESSION_FAILED,
+      503,
+      null,
+    ],
+    [
+      'rate limit',
+      buildApiError('RATE_LIMIT_EXCEEDED', 429, 5),
+      'RATE_LIMIT_EXCEEDED',
+      ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
+      429,
+      5,
+    ],
+    [
+      'unsafe URL',
+      buildRedirectSuccess('https://evil.example.test/session_123'),
+      null,
+      'Billing portal did not return a redirect URL.',
+      200,
+      null,
+    ],
+  ])('returns the expected portal outcome for %s', async (
+    _label,
+    response,
+    code,
+    message,
+    httpStatus,
+    retryAfterSeconds
+  ) => {
+    mockApiPost.mockResolvedValue(response);
+    await renderHook();
+
+    const result = await callHook('openPortal');
+
+    expect(result).toEqual({
+      status: BILLING_ACTION_RESULT_STATUSES.ERROR,
+      error: { code, message, httpStatus, retryAfterSeconds },
+    });
+    expect(latestHook.actionError).toEqual(result.error);
+    expect(latestHook.actionLoading).toBe('');
+    expect(latestHook.retryAfterSeconds).toBe(retryAfterSeconds);
+    expect(mockApiPost).toHaveBeenCalledWith('/api/billing/portal', {});
+  });
+
+  it('returns portal-specific copy when portal navigation fails', async () => {
+    mockApiPost.mockResolvedValue(buildRedirectSuccess(
+      'https://billing.stripe.com/session_123'
+    ));
+    await renderHook(() => {
+      throw new Error('raw navigation failure');
+    });
+
+    const result = await callHook('openPortal');
+
+    expect(result.error).toEqual({
+      code: null,
+      message: 'Billing portal redirect failed. Please try again.',
+      httpStatus: 200,
+      retryAfterSeconds: null,
+    });
+    expect(latestHook.actionLoading).toBe('');
+    expect((await callHook('openPortal')).status)
+      .toBe(BILLING_ACTION_RESULT_STATUSES.ERROR);
+    expect(mockApiPost).toHaveBeenCalledTimes(2);
   });
 
   it('returns a structured navigation failure and releases the latch', async () => {
