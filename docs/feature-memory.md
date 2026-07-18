@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-12
 
+- `2026-07-18` - `Dashboard Premium upgrade modal`: Added a reusable Premium Features card and an accessible upgrade modal that rechecks canonical billing status before delegating eligible Checkout requests to the shared billing-actions hook.
+  - impact: Confirmed Free users can receive a safe upgrade entry point with stale-response protection, auth recovery, Retry-After feedback, and focus-safe idle or busy behavior without trusting dashboard state as billing authority.
 - `2026-07-18` - `Billing response metadata sanitizer coverage`: Added malformed Retry-After and out-of-range HTTP status cases to preserve sanitized billing errors while rejecting invalid response metadata.
 - `2026-07-17` - `Billing action lifecycle hardening`: Prevented completed Checkout and portal requests from navigating after their hook unmounts, preserved secure nonce fallback when `randomUUID()` is unusable, and expanded portal plus legacy Billing-page error regression coverage.
   - impact: Shared billing actions now ignore stale redirect handoffs without weakening server authorization, redirect allowlisting, duplicate-action latching, or secure entropy requirements.
