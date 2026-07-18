@@ -126,6 +126,40 @@ describe('billingPageActions', () => {
       httpStatus: 429,
       retryAfterSeconds: 45,
     }],
+    ['negative retry metadata', buildApiError('RATE_LIMIT_EXCEEDED', 429, -1), {
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
+      httpStatus: 429,
+      retryAfterSeconds: null,
+    }],
+    ['fractional retry metadata', buildApiError('RATE_LIMIT_EXCEEDED', 429, 1.5), {
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
+      httpStatus: 429,
+      retryAfterSeconds: null,
+    }],
+    ['unsafe-integer retry metadata', buildApiError(
+      'RATE_LIMIT_EXCEEDED',
+      429,
+      Number.MAX_SAFE_INTEGER + 1
+    ), {
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: ERROR_MESSAGES.RATE_LIMIT_EXCEEDED,
+      httpStatus: 429,
+      retryAfterSeconds: null,
+    }],
+    ['status below valid HTTP range', buildApiError('CHECKOUT_SESSION_FAILED', 99), {
+      code: 'CHECKOUT_SESSION_FAILED',
+      message: ERROR_MESSAGES.CHECKOUT_SESSION_FAILED,
+      httpStatus: null,
+      retryAfterSeconds: null,
+    }],
+    ['status above valid HTTP range', buildApiError('CHECKOUT_SESSION_FAILED', 600), {
+      code: 'CHECKOUT_SESSION_FAILED',
+      message: ERROR_MESSAGES.CHECKOUT_SESSION_FAILED,
+      httpStatus: null,
+      retryAfterSeconds: null,
+    }],
     ['disabled checkout', buildApiError('BILLING_CHECKOUT_DISABLED', 503), {
       code: 'BILLING_CHECKOUT_DISABLED',
       message: ERROR_MESSAGES.BILLING_CHECKOUT_DISABLED,
