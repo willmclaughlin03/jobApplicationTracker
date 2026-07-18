@@ -8,6 +8,7 @@ import {
   canStartCheckoutFromLocalStatus,
 } from '../lib/billingPageState.js';
 import { ERROR_MESSAGES } from '../../shared/errors.js';
+import { billingStatusSchema } from '../../shared/validations/billingSchema.js';
 import PlanUpgradeCard, { UPGRADE_ELIGIBILITY_STATES } from './PlanUpgradeCard.jsx';
 
 /**
@@ -129,11 +130,9 @@ export default function UpgradePlanModal({
       return;
     }
 
-    const billingStatus = result?.data?.data;
+    const parsedBillingStatus = billingStatusSchema.safeParse(result?.data?.data);
     const statusReadFailed = Boolean(result?.error || result?.data?.error)
-      || !billingStatus
-      || typeof billingStatus !== 'object'
-      || Array.isArray(billingStatus);
+      || !parsedBillingStatus.success;
 
     if (statusReadFailed) {
       setEligibilityState(UPGRADE_ELIGIBILITY_STATES.ERROR);
@@ -141,7 +140,7 @@ export default function UpgradePlanModal({
     }
 
     const canStartCheckout = canStartCheckoutFromLocalStatus({
-      billingStatus,
+      billingStatus: parsedBillingStatus.data,
       loadState: BILLING_PAGE_LOAD_STATES.READY,
     });
 

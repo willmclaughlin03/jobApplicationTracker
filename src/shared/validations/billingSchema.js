@@ -1,9 +1,45 @@
 import { z } from 'zod';
-import { BILLING_PLANS } from '../constants/billing.js';
+import {
+  BILLING_ENTITLEMENTS,
+  BILLING_PLANS,
+  BILLING_SUBSCRIPTION_STATUSES,
+} from '../constants/billing.js';
 
+const BILLING_ENTITLEMENT_VALUES = Object.values(BILLING_ENTITLEMENTS);
 const BILLING_PLAN_VALUES = Object.values(BILLING_PLANS);
+const BILLING_SUBSCRIPTION_STATUS_VALUES = Object.values(BILLING_SUBSCRIPTION_STATUSES);
 const STRIPE_CHECKOUT_SESSION_ID_PATTERN = /^cs_(test|live)_[A-Za-z0-9_]+$/;
 const CHECKOUT_ATTEMPT_NONCE_PATTERN = /^[A-Fa-f0-9]{32}$/;
+
+/**
+ * Require subscription presence and canonical status presence to agree.
+ *
+ * @param {object} billingStatus - Parsed canonical billing fields.
+ * @param {import('zod').RefinementCtx} context - Zod issue collector.
+ * @returns {void}
+ */
+function validateBillingStatusSubscriptionConsistency(billingStatus, context) {
+  const hasCanonicalSubscriptionStatus = billingStatus.status !== null;
+
+  if (billingStatus.hasSubscription !== hasCanonicalSubscriptionStatus) {
+    context.addIssue({
+      code: 'custom',
+      path: ['status'],
+      message: 'Subscription presence and status must agree',
+    });
+  }
+}
+
+export const billingStatusSchema = z.object({
+  entitled: z.boolean(),
+  entitlement: z.enum(BILLING_ENTITLEMENT_VALUES).nullable(),
+  status: z.enum(BILLING_SUBSCRIPTION_STATUS_VALUES).nullable(),
+  currentPeriodEnd: z.iso.datetime({ offset: true }).nullable(),
+  cancelAtPeriodEnd: z.boolean(),
+  hasCustomerMapping: z.boolean(),
+  hasPortalCustomer: z.boolean(),
+  hasSubscription: z.boolean(),
+}).strict().superRefine(validateBillingStatusSubscriptionConsistency);
 
 export const billingCheckoutSchema = z.object({
   plan: z.enum(BILLING_PLAN_VALUES, { error: 'Invalid billing plan' }),

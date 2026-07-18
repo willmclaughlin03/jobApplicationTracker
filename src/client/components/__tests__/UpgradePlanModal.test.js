@@ -49,13 +49,34 @@ const TEST_PLAN = Object.freeze({
   ]),
 });
 
+const FREE_BILLING_STATUS = Object.freeze({
+  entitled: false,
+  entitlement: null,
+  status: null,
+  currentPeriodEnd: null,
+  cancelAtPeriodEnd: false,
+  hasCustomerMapping: false,
+  hasPortalCustomer: false,
+  hasSubscription: false,
+});
+
+/**
+ * Build a complete canonical billing snapshot with selected field overrides.
+ *
+ * @param {object} [overrides] - Canonical billing field overrides.
+ * @returns {object} Complete local billing snapshot.
+ */
+function buildBillingStatus(overrides = {}) {
+  return { ...FREE_BILLING_STATUS, ...overrides };
+}
+
 /**
  * Build a successful canonical billing-status response.
  *
  * @param {object} billingStatus - Local billing snapshot.
  * @returns {object} Shared-client response fixture.
  */
-function buildStatusSuccess(billingStatus = { hasSubscription: false }) {
+function buildStatusSuccess(billingStatus = buildBillingStatus()) {
   return {
     data: { data: billingStatus, error: null },
     error: null,
@@ -230,12 +251,28 @@ describe('UpgradePlanModal', () => {
     expect(mockStartCheckout).toHaveBeenCalledWith('premium_monthly');
   });
 
+  it.each([
+    'canceled',
+    'incomplete_expired',
+  ])('preserves Upgrade eligibility for canonical %s subscriptions', async (status) => {
+    mockApiGet.mockResolvedValue(buildStatusSuccess(buildBillingStatus({
+      status,
+      hasCustomerMapping: true,
+      hasPortalCustomer: true,
+      hasSubscription: true,
+    })));
+    const element = renderModal();
+    await flushEffects();
+
+    expect(findButtonByText(element, 'Upgrade').disabled).toBe(false);
+  });
+
   it('routes a canonical ineligible snapshot to Billing', async () => {
     const onGoToBilling = jest.fn();
-    mockApiGet.mockResolvedValue(buildStatusSuccess({
+    mockApiGet.mockResolvedValue(buildStatusSuccess(buildBillingStatus({
       hasSubscription: true,
       status: 'active',
-    }));
+    })));
     const element = renderModal({ onGoToBilling });
     await flushEffects();
 
@@ -267,12 +304,19 @@ describe('UpgradePlanModal', () => {
     expect(findButtonByText(element, 'Upgrade').disabled).toBe(false);
   });
 
-  it('treats a malformed successful status response as a retryable error', async () => {
-    mockApiGet.mockResolvedValue({
-      data: { data: null, error: null },
-      error: null,
-      meta: { status: 200, retryAfterSeconds: null },
-    });
+  it.each([
+    ['a null snapshot', null],
+    ['an empty object', {}],
+    ['an incomplete object', { hasSubscription: false }],
+    ['a non-boolean subscription flag', buildBillingStatus({
+      hasSubscription: 'false',
+    })],
+    ['an unknown subscription status', buildBillingStatus({
+      status: 'trialing',
+      hasSubscription: true,
+    })],
+  ])('treats %s as a retryable status error', async (_label, billingStatus) => {
+    mockApiGet.mockResolvedValue(buildStatusSuccess(billingStatus));
     const element = renderModal();
     await flushEffects();
 
@@ -335,10 +379,10 @@ describe('UpgradePlanModal', () => {
     rerenderModal({ ...props, isOpen: true });
 
     await act(async () => {
-      secondRequest.resolve(buildStatusSuccess({
+      secondRequest.resolve(buildStatusSuccess(buildBillingStatus({
         hasSubscription: true,
         status: 'active',
-      }));
+      })));
       await secondRequest.promise;
     });
     expect(findButtonByText(element, 'Go to billing')).toBeTruthy();

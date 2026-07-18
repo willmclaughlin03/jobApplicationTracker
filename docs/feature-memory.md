@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-12
 
+- `2026-07-18` - `Upgrade modal billing-status validation`: Added complete canonical response parsing before Dashboard upgrade eligibility checks so malformed, incomplete, incorrectly typed, or unknown subscription snapshots fail closed into the retryable error state.
+  - impact: Dashboard Checkout cannot be enabled from a structurally invalid local billing response while valid Free and subscribed snapshots retain their existing eligibility behavior.
 - `2026-07-18` - `Dashboard Premium upgrade modal`: Added a reusable Premium Features card and an accessible upgrade modal that rechecks canonical billing status before delegating eligible Checkout requests to the shared billing-actions hook.
   - impact: Confirmed Free users can receive a safe upgrade entry point with stale-response protection, auth recovery, Retry-After feedback, and focus-safe idle or busy behavior without trusting dashboard state as billing authority.
 - `2026-07-18` - `Billing response metadata sanitizer coverage`: Added malformed Retry-After and out-of-range HTTP status cases to preserve sanitized billing errors while rejecting invalid response metadata.
