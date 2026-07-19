@@ -26,7 +26,7 @@ export default function DashboardSkeleton() {
       <div role="status" aria-live="polite">
         <span className="sr-only">Loading dashboard</span>
 
-        {/* Header — matches src/pages/index.js:112-117 */}
+        {/* Header — matches src/pages/index.js:193-199 */}
         <header className="bg-white shadow-sm py-4 px-6">
           <div className="max-w-5xl mx-auto flex items-center justify-between">
             <h1 className="text-xl font-semibold text-gray-800">Track The App</h1>
@@ -36,10 +36,10 @@ export default function DashboardSkeleton() {
         </header>
 
         <main className="max-w-6xl mx-auto px-6 py-6">
-          {/* Button row — matches src/pages/index.js:147-193 */}
+          {/* Button row — matches src/pages/index.js:233-281 */}
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-2">
-              {/* Filters, Activity, Resume buttons */}
+              {/* Filters, Activity, and mapped billing-entry buttons */}
               <Skeleton className="h-10 w-24" />
               <Skeleton className="h-10 w-24" />
               <Skeleton className="h-10 w-24" />
@@ -127,7 +127,7 @@ export default function DashboardSkeleton() {
 
       {/* Footer — rendered outside role="status" so the attribution link
           isn't announced as part of the loading state. Copied verbatim
-          from src/pages/index.js:268-270 so it stays put across the
+          from src/pages/index.js:374-376 so it stays put across the
           skeleton → real-page transition. */}
       <footer className="text-center text-xs text-gray-400 py-4">
         <a target="_blank" rel="noopener noreferrer" href="https://icons8.com/icon/hH1yYj2eECWj/job" className="hover:text-gray-500">Icon</a> by <a target="_blank" rel="noopener noreferrer" href="https://icons8.com" className="hover:text-gray-500">Icons8</a>
