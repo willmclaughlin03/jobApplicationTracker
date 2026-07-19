@@ -8,6 +8,7 @@
  * Connects to:
  * - src/pages/billing/index.js
  * - src/client/contexts/AuthContext.js
+ * - src/client/hooks/useBillingActions.js
  * - src/client/lib/api.js
  *
  * @jest-environment jsdom
@@ -31,6 +32,8 @@ const mockApiPost = jest.fn();
 const mockRandomUUID = jest.fn();
 const checkoutAttemptUuid = '01234567-89ab-cdef-0123-456789abcdef';
 const checkoutAttemptNonce = '0123456789abcdef0123456789abcdef';
+const retryCheckoutAttemptUuid = 'fedcba98-7654-3210-fedc-ba9876543210';
+const retryCheckoutAttemptNonce = 'fedcba9876543210fedcba9876543210';
 
 jest.mock('next/router', () => ({
   useRouter: () => mockRouter,
@@ -117,6 +120,52 @@ function createDeferred() {
 }
 
 /**
+ * Build a shared-client response containing one successful API payload.
+ *
+ * @param {object} data - Endpoint-specific response data.
+ * @returns {object} Shared-client success result.
+ */
+function buildApiSuccess(data) {
+  return {
+    data: { data },
+    error: null,
+    meta: { status: 200, retryAfterSeconds: null },
+  };
+}
+
+/**
+ * Build a standardized action failure without exposing its raw message to UI.
+ *
+ * @param {string|null} code - Optional public server error code.
+ * @param {number} status - HTTP response status.
+ * @param {number|null} retryAfterSeconds - Optional shared cooldown metadata.
+ * @returns {object} Shared-client error result.
+ */
+function buildActionError(code, status, retryAfterSeconds = null) {
+  return {
+    data: { error: code, message: 'raw action details must not render' },
+    error: null,
+    meta: { status, retryAfterSeconds },
+  };
+}
+
+/**
+ * Configure a canonical canceled subscription that permits both page actions.
+ *
+ * Purpose: exercise page-level Checkout/portal mutual exclusion with both
+ * controls rendered from one verified local billing snapshot.
+ */
+function allowCheckoutAndPortal() {
+  mockApiGet.mockResolvedValue(buildApiSuccess({
+    status: 'canceled',
+    hasSubscription: true,
+    currentPeriodEnd: null,
+    cancelAtPeriodEnd: false,
+    hasPortalCustomer: true,
+  }));
+}
+
+/**
  * Dispatch a bubbling click event that React's event system will receive.
  *
  * @param {HTMLElement} target
@@ -124,6 +173,19 @@ function createDeferred() {
 function click(target) {
   act(() => {
     target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+}
+
+/**
+ * Dispatch two clicks in one React turn to reproduce a pre-render action race.
+ *
+ * @param {HTMLElement} firstTarget - First billing action.
+ * @param {HTMLElement} secondTarget - Competing billing action.
+ */
+function clickInSameTurn(firstTarget, secondTarget) {
+  act(() => {
+    firstTarget.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    secondTarget.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   });
 }
 
@@ -322,6 +384,121 @@ describe('BillingPage', () => {
     expect(mockApiPost).toHaveBeenCalledTimes(1);
     expect(mockApiPost).toHaveBeenCalledWith('/api/billing/portal', {});
   });
+
+  it.each([
+    ['Checkout then portal', 'Start checkout', 'Open billing portal', '/api/billing/checkout'],
+    ['portal then Checkout', 'Open billing portal', 'Start checkout', '/api/billing/portal'],
+  ])('prevents overlapping actions for %s in the same render turn', async (
+    _label,
+    firstButtonText,
+    secondButtonText,
+    expectedEndpoint
+  ) => {
+    const deferredPost = createDeferred();
+    allowCheckoutAndPortal();
+    mockApiPost.mockImplementation(() => deferredPost.promise);
+
+    const el = await renderBillingPage();
+    const firstButton = findButtonByText(el, firstButtonText);
+    const secondButton = findButtonByText(el, secondButtonText);
+
+    expect(firstButton).toBeTruthy();
+    expect(secondButton).toBeTruthy();
+
+    clickInSameTurn(firstButton, secondButton);
+
+    expect(mockApiPost).toHaveBeenCalledTimes(1);
+    expect(mockApiPost.mock.calls[0][0]).toBe(expectedEndpoint);
+  });
+
+  it('renders sanitized action errors and retries Checkout with a fresh nonce', async () => {
+    mockRandomUUID
+      .mockReturnValueOnce(checkoutAttemptUuid)
+      .mockReturnValueOnce(retryCheckoutAttemptUuid);
+    mockApiPost.mockResolvedValue(buildActionError('CHECKOUT_SESSION_FAILED', 503));
+
+    const el = await renderBillingPage();
+
+    click(findButtonByText(el, 'Start checkout'));
+    await flushEffects();
+
+    expect(el.textContent).toContain(ERROR_MESSAGES.CHECKOUT_SESSION_FAILED);
+    expect(el.textContent).not.toContain('raw action details must not render');
+    expect(findButtonByText(el, 'Start checkout').disabled).toBe(false);
+
+    click(findButtonByText(el, 'Start checkout'));
+    await flushEffects();
+
+    expect(mockApiPost).toHaveBeenCalledTimes(2);
+    expect(mockApiPost).toHaveBeenNthCalledWith(1, '/api/billing/checkout', {
+      plan: 'premium_monthly',
+      checkoutAttemptNonce,
+    });
+    expect(mockApiPost).toHaveBeenNthCalledWith(2, '/api/billing/checkout', {
+      plan: 'premium_monthly',
+      checkoutAttemptNonce: retryCheckoutAttemptNonce,
+    });
+  });
+
+  it('routes typed Checkout authorization failures through auth recovery', async () => {
+    const signOut = jest.fn().mockResolvedValue({ error: null });
+    mockUseAuth.mockReturnValue({
+      user: { id: 'user-123', email: 'billing@example.com' },
+      loading: false,
+      signOut,
+    });
+    mockApiPost.mockResolvedValue(buildActionError('UNAUTHORIZED', 401));
+
+    const el = await renderBillingPage();
+
+    click(findButtonByText(el, 'Start checkout'));
+    await flushEffects();
+
+    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(mockRouter.replace).toHaveBeenCalledWith('/login');
+    expect(el.textContent).not.toContain('raw action details must not render');
+  });
+
+  it('routes status-only Checkout authorization failures through auth recovery', async () => {
+    const signOut = jest.fn().mockResolvedValue({ error: null });
+    mockUseAuth.mockReturnValue({
+      user: { id: 'user-123', email: 'billing@example.com' },
+      loading: false,
+      signOut,
+    });
+    mockApiPost.mockResolvedValue(buildActionError(null, 401));
+
+    const el = await renderBillingPage();
+
+    click(findButtonByText(el, 'Start checkout'));
+    await flushEffects();
+
+    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(mockRouter.replace).toHaveBeenCalledWith('/login');
+    expect(el.textContent).not.toContain('raw action details must not render');
+  });
+
+  it('presents Retry-After and blocks both actions during the shared cooldown', async () => {
+    allowCheckoutAndPortal();
+    mockApiPost.mockResolvedValue(buildActionError('RATE_LIMIT_EXCEEDED', 429, 12));
+
+    const el = await renderBillingPage();
+
+    click(findButtonByText(el, 'Start checkout'));
+    await flushEffects();
+
+    const checkoutButton = findButtonByText(el, 'Start checkout');
+    const portalButton = findButtonByText(el, 'Open billing portal');
+
+    expect(el.textContent).toContain(ERROR_MESSAGES.RATE_LIMIT_EXCEEDED);
+    expect(el.textContent).toContain('Try again in 12s.');
+    expect(checkoutButton.disabled).toBe(true);
+    expect(portalButton.disabled).toBe(true);
+
+    clickInSameTurn(checkoutButton, portalButton);
+    expect(mockApiPost).toHaveBeenCalledTimes(1);
+  });
+
   it('shows exact storage downgrade counts for canceling Premium overflow', async () => {
     mockApiGet.mockImplementation((endpoint) => {
       if (endpoint === '/api/storage/status') {
