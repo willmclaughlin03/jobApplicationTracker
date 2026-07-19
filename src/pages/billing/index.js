@@ -232,7 +232,19 @@ export default function BillingPage() {
     router.replace('/login');
   };
 
-  /** Start canonical Premium Checkout through the shared billing action hook. */
+  /**
+   * Start canonical Premium Checkout through the shared billing action hook.
+   *
+   * Purpose: honor the billing-page `loading` guard before passing
+   * `BILLING_PLANS.PREMIUM_MONTHLY` to `startCheckout`, which owns the shared
+   * action state and redirect hand-off.
+   *
+   * Side effects: on success the hook navigates to the server-provided Checkout
+   * URL; unauthorized outcomes pass through `handleBillingActionOutcome`, which
+   * resets action state, signs out, and replaces the current route with `/login`.
+   *
+   * @returns {Promise<void>}
+   */
   const handleCheckout = async () => {
     if (loading) {
       return;
@@ -242,7 +254,18 @@ export default function BillingPage() {
     await handleBillingActionOutcome(outcome);
   };
 
-  /** Open the Billing Portal through the same mutually exclusive action hook. */
+  /**
+   * Open the Billing Portal through the same mutually exclusive action hook.
+   *
+   * Purpose: honor the billing-page `loading` guard before calling `openPortal`,
+   * which owns the shared action state and redirect hand-off.
+   *
+   * Side effects: on success the hook navigates to the server-provided Portal
+   * URL; unauthorized outcomes pass through `handleBillingActionOutcome`, which
+   * resets action state, signs out, and replaces the current route with `/login`.
+   *
+   * @returns {Promise<void>}
+   */
   const handlePortal = async () => {
     if (loading) {
       return;

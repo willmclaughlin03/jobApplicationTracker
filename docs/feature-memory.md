@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-12
 
+- `2026-07-19` - `Billing action handler documentation`: Documented Checkout and Portal loading guards, shared-hook hand-offs, successful redirects, and unauthorized sign-out recovery.
+- `2026-07-19` - `Billing action status-only auth coverage`: Covered Checkout 401 failures without an `UNAUTHORIZED` response code to preserve sign-out, login redirect, and sanitized rendering behavior.
 - `2026-07-19` - `Billing-status rejection coverage`: Added explicit schema coverage for unknown entitlement values and unexpected response fields.
 - `2026-07-19` - `Upgrade modal entitlement consistency`: Rejected billing snapshots where the entitlement flag and canonical entitlement disagree so malformed responses remain retryable instead of enabling Checkout.
 - `2026-07-18` - `Upgrade modal billing-status validation`: Added complete canonical response parsing before Dashboard upgrade eligibility checks so malformed, incomplete, incorrectly typed, or unknown subscription snapshots fail closed into the retryable error state.

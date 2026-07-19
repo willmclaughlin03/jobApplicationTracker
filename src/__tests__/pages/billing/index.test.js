@@ -136,7 +136,7 @@ function buildApiSuccess(data) {
 /**
  * Build a standardized action failure without exposing its raw message to UI.
  *
- * @param {string} code - Public server error code.
+ * @param {string|null} code - Optional public server error code.
  * @param {number} status - HTTP response status.
  * @param {number|null} retryAfterSeconds - Optional shared cooldown metadata.
  * @returns {object} Shared-client error result.
@@ -448,6 +448,25 @@ describe('BillingPage', () => {
       signOut,
     });
     mockApiPost.mockResolvedValue(buildActionError('UNAUTHORIZED', 401));
+
+    const el = await renderBillingPage();
+
+    click(findButtonByText(el, 'Start checkout'));
+    await flushEffects();
+
+    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(mockRouter.replace).toHaveBeenCalledWith('/login');
+    expect(el.textContent).not.toContain('raw action details must not render');
+  });
+
+  it('routes status-only Checkout authorization failures through auth recovery', async () => {
+    const signOut = jest.fn().mockResolvedValue({ error: null });
+    mockUseAuth.mockReturnValue({
+      user: { id: 'user-123', email: 'billing@example.com' },
+      loading: false,
+      signOut,
+    });
+    mockApiPost.mockResolvedValue(buildActionError(null, 401));
 
     const el = await renderBillingPage();
 
