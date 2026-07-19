@@ -21,6 +21,8 @@ const JOBS_STORAGE_MIGRATION_FILE = '016_jobs_storage_state_boundary.sql';
 const JOBS_ATOMIC_CREATE_MIGRATION_FILE = '017_jobs_atomic_create_quota.sql';
 const JOBS_OVERFLOW_LOCKING_MIGRATION_FILE = '018_jobs_overflow_locking.sql';
 const JOBS_PREMIUM_RESTORE_MIGRATION_FILE = '019_jobs_premium_restore.sql';
+const JOBS_PREMIUM_RESTORE_RECONCILIATION_MIGRATION_FILE =
+  '028_reconcile_premium_restore_rpc.sql';
 
 const {
   TEST_SUPABASE_ENV_NAMES,
@@ -239,6 +241,7 @@ describeOrSkip('Suite F - Jobs Premium restore integration', () => {
       JOBS_ATOMIC_CREATE_MIGRATION_FILE,
       JOBS_OVERFLOW_LOCKING_MIGRATION_FILE,
       JOBS_PREMIUM_RESTORE_MIGRATION_FILE,
+      JOBS_PREMIUM_RESTORE_RECONCILIATION_MIGRATION_FILE,
     ]) {
       const migrationSql = readFileSync(join(MIGRATIONS_DIR, migrationFile), 'utf8');
       const { error } = await serviceClient.rpc('exec_sql', { query: migrationSql });
@@ -504,16 +507,30 @@ describeOrSkip('Suite F - Jobs Premium restore integration', () => {
     }
   });
 
-  test('F1: Premium restore migration file exists and RPC remains service-role only', async () => {
+  test('F1: Premium restore migrations remove the stale overload and keep the RPC service-role only', async () => {
     expect(existsSync(join(MIGRATIONS_DIR, JOBS_PREMIUM_RESTORE_MIGRATION_FILE))).toBe(true);
+    expect(
+      existsSync(join(MIGRATIONS_DIR, JOBS_PREMIUM_RESTORE_RECONCILIATION_MIGRATION_FILE))
+    ).toBe(true);
 
     const privilegeRows = await execSql(`
       SELECT
+        pg_catalog.to_regprocedure(
+          'public.restore_locked_jobs_for_premium_user(uuid,text,integer,text[])'
+        )::text AS required_restore_signature,
+        pg_catalog.to_regprocedure(
+          'public.restore_locked_jobs_for_premium_user(uuid,text,integer)'
+        )::text AS stale_restore_signature,
         has_function_privilege(
           'authenticated',
           'public.restore_locked_jobs_for_premium_user(uuid,text,integer,text[])',
           'EXECUTE'
         ) AS authenticated_can_execute,
+        has_function_privilege(
+          'anon',
+          'public.restore_locked_jobs_for_premium_user(uuid,text,integer,text[])',
+          'EXECUTE'
+        ) AS anon_can_execute,
         has_function_privilege(
           'service_role',
           'public.restore_locked_jobs_for_premium_user(uuid,text,integer,text[])',
@@ -522,7 +539,12 @@ describeOrSkip('Suite F - Jobs Premium restore integration', () => {
     `);
 
     expect(privilegeRows[0]).toEqual(expect.objectContaining({
+      required_restore_signature: expect.stringMatching(
+        /^(public\.)?restore_locked_jobs_for_premium_user\(uuid,text,integer,text\[\]\)$/
+      ),
+      stale_restore_signature: null,
       authenticated_can_execute: false,
+      anon_can_execute: false,
       service_role_can_execute: true,
     }));
   });

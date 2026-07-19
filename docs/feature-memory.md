@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-12
 
+- `2026-07-19` - `Premium restore RPC signature reconciliation`: Added forward migration `028` to replace the stale three-argument restore overload with the hardened price-allowlisted signature, reassert service-role-only execution, and reload PostgREST schema metadata; added final-state, idempotency, legacy-upgrade, zero-archive Premium, and allowlist integration contracts.
+  - impact: Existing pre-production databases can converge on the same Premium restore boundary as fresh migration replays without falling back to the weaker historical RPC.
 - `2026-07-19` - `Billing action handler documentation`: Documented Checkout and Portal loading guards, shared-hook hand-offs, successful redirects, and unauthorized sign-out recovery.
 - `2026-07-19` - `Billing action status-only auth coverage`: Covered Checkout 401 failures without an `UNAUTHORIZED` response code to preserve sign-out, login redirect, and sanitized rendering behavior.
 - `2026-07-19` - `Billing-status rejection coverage`: Added explicit schema coverage for unknown entitlement values and unexpected response fields.
