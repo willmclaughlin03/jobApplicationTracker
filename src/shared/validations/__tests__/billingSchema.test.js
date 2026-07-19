@@ -1,11 +1,82 @@
-const { BILLING_PLANS } = require('../../constants/billing.js');
+const {
+  BILLING_ENTITLEMENTS,
+  BILLING_PLANS,
+  BILLING_SUBSCRIPTION_STATUSES,
+} = require('../../constants/billing.js');
 const {
   billingCheckoutSchema,
   billingCheckoutStatusSchema,
+  billingStatusSchema,
 } = require('../billingSchema.js');
 
 describe('billingSchema', () => {
   const validCheckoutAttemptNonce = '0123456789abcdef0123456789abcdef';
+  const validFreeBillingStatus = Object.freeze({
+    entitled: false,
+    entitlement: null,
+    status: null,
+    currentPeriodEnd: null,
+    cancelAtPeriodEnd: false,
+    hasCustomerMapping: false,
+    hasPortalCustomer: false,
+    hasSubscription: false,
+  });
+
+  describe('billingStatusSchema', () => {
+    it('accepts complete canonical free and subscribed snapshots', () => {
+      expect(billingStatusSchema.safeParse(validFreeBillingStatus).success).toBe(true);
+      expect(billingStatusSchema.safeParse({
+        ...validFreeBillingStatus,
+        entitled: true,
+        entitlement: BILLING_ENTITLEMENTS.PREMIUM,
+        status: BILLING_SUBSCRIPTION_STATUSES.ACTIVE,
+        currentPeriodEnd: '2026-08-18T12:00:00.000Z',
+        hasCustomerMapping: true,
+        hasPortalCustomer: true,
+        hasSubscription: true,
+      }).success).toBe(true);
+    });
+
+    it.each([
+      ['an empty object', {}],
+      ['an incomplete object', { hasSubscription: false }],
+      ['a non-boolean subscription flag', {
+        ...validFreeBillingStatus,
+        hasSubscription: 'false',
+      }],
+      ['an unknown subscription status', {
+        ...validFreeBillingStatus,
+        status: 'trialing',
+        hasSubscription: true,
+      }],
+      ['a missing status for an existing subscription', {
+        ...validFreeBillingStatus,
+        hasSubscription: true,
+      }],
+      ['a subscription status without an existing subscription', {
+        ...validFreeBillingStatus,
+        status: BILLING_SUBSCRIPTION_STATUSES.CANCELED,
+      }],
+      ['entitled access without an entitlement', {
+        ...validFreeBillingStatus,
+        entitled: true,
+      }],
+      ['an entitlement without entitled access', {
+        ...validFreeBillingStatus,
+        entitlement: BILLING_ENTITLEMENTS.PREMIUM,
+      }],
+      ['an unknown entitlement', {
+        ...validFreeBillingStatus,
+        entitlement: 'unknown',
+      }],
+      ['an unexpected billing-status field', {
+        ...validFreeBillingStatus,
+        extraField: true,
+      }],
+    ])('rejects %s', (_label, billingStatus) => {
+      expect(billingStatusSchema.safeParse(billingStatus).success).toBe(false);
+    });
+  });
 
   describe('billingCheckoutSchema', () => {
     it('accepts the supported billing plan and checkout attempt nonce', () => {

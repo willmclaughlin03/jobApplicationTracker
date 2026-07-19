@@ -14,6 +14,12 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-12
 
+- `2026-07-19` - `Billing-status rejection coverage`: Added explicit schema coverage for unknown entitlement values and unexpected response fields.
+- `2026-07-19` - `Upgrade modal entitlement consistency`: Rejected billing snapshots where the entitlement flag and canonical entitlement disagree so malformed responses remain retryable instead of enabling Checkout.
+- `2026-07-18` - `Upgrade modal billing-status validation`: Added complete canonical response parsing before Dashboard upgrade eligibility checks so malformed, incomplete, incorrectly typed, or unknown subscription snapshots fail closed into the retryable error state.
+  - impact: Dashboard Checkout cannot be enabled from a structurally invalid local billing response while valid Free and subscribed snapshots retain their existing eligibility behavior.
+- `2026-07-18` - `Dashboard Premium upgrade modal`: Added a reusable Premium Features card and an accessible upgrade modal that rechecks canonical billing status before delegating eligible Checkout requests to the shared billing-actions hook.
+  - impact: Confirmed Free users can receive a safe upgrade entry point with stale-response protection, auth recovery, Retry-After feedback, and focus-safe idle or busy behavior without trusting dashboard state as billing authority.
 - `2026-07-18` - `Billing response metadata sanitizer coverage`: Added malformed Retry-After and out-of-range HTTP status cases to preserve sanitized billing errors while rejecting invalid response metadata.
 - `2026-07-17` - `Billing action lifecycle hardening`: Prevented completed Checkout and portal requests from navigating after their hook unmounts, preserved secure nonce fallback when `randomUUID()` is unusable, and expanded portal plus legacy Billing-page error regression coverage.
   - impact: Shared billing actions now ignore stale redirect handoffs without weakening server authorization, redirect allowlisting, duplicate-action latching, or secure entropy requirements.
