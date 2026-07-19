@@ -315,6 +315,12 @@ describe('UpgradePlanModal', () => {
       status: 'trialing',
       hasSubscription: true,
     })],
+    ['entitled access without an entitlement', buildBillingStatus({
+      entitled: true,
+    })],
+    ['an entitlement without entitled access', buildBillingStatus({
+      entitlement: 'premium',
+    })],
   ])('treats %s as a retryable status error', async (_label, billingStatus) => {
     mockApiGet.mockResolvedValue(buildStatusSuccess(billingStatus));
     const element = renderModal();

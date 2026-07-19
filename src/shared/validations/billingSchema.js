@@ -12,14 +12,23 @@ const STRIPE_CHECKOUT_SESSION_ID_PATTERN = /^cs_(test|live)_[A-Za-z0-9_]+$/;
 const CHECKOUT_ATTEMPT_NONCE_PATTERN = /^[A-Fa-f0-9]{32}$/;
 
 /**
- * Require subscription presence and canonical status presence to agree.
+ * Require entitlement and subscription presence flags to match canonical data.
  *
  * @param {object} billingStatus - Parsed canonical billing fields.
  * @param {import('zod').RefinementCtx} context - Zod issue collector.
  * @returns {void}
  */
 function validateBillingStatusSubscriptionConsistency(billingStatus, context) {
+  const hasCanonicalEntitlement = billingStatus.entitlement !== null;
   const hasCanonicalSubscriptionStatus = billingStatus.status !== null;
+
+  if (billingStatus.entitled !== hasCanonicalEntitlement) {
+    context.addIssue({
+      code: 'custom',
+      path: ['entitlement'],
+      message: 'Entitled access and entitlement must agree',
+    });
+  }
 
   if (billingStatus.hasSubscription !== hasCanonicalSubscriptionStatus) {
     context.addIssue({

@@ -57,6 +57,14 @@ describe('billingSchema', () => {
         ...validFreeBillingStatus,
         status: BILLING_SUBSCRIPTION_STATUSES.CANCELED,
       }],
+      ['entitled access without an entitlement', {
+        ...validFreeBillingStatus,
+        entitled: true,
+      }],
+      ['an entitlement without entitled access', {
+        ...validFreeBillingStatus,
+        entitlement: BILLING_ENTITLEMENTS.PREMIUM,
+      }],
     ])('rejects %s', (_label, billingStatus) => {
       expect(billingStatusSchema.safeParse(billingStatus).success).toBe(false);
     });
