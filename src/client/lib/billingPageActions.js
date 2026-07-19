@@ -259,8 +259,8 @@ export function resolveBillingRedirectResult({
 /**
  * Execute one billing request and hand its allowlisted URL to navigation.
  *
- * Purpose: give the shared hook and legacy Billing page one canonical request,
- * response normalization, redirect validation, and navigation path.
+ * Purpose: give the shared hook one canonical request, response normalization,
+ * redirect validation, and navigation path for every billing action consumer.
  *
  * @param {object} params - Action request, safe copy, and optional navigator.
  * @param {() => boolean} [params.shouldNavigate] - Optional lifecycle guard
@@ -329,43 +329,4 @@ export async function executeBillingRedirectAction({
   }
 
   return { redirected: true, error: null };
-}
-
-/**
- * Preserve the Billing page's string setters until Chunk 5 adopts the hook.
- *
- * Purpose: keep current page behavior while delegating all request and redirect
- * work to the structured executor introduced in this chunk.
- *
- * @param {object} params - Legacy state setters plus canonical action inputs.
- * @returns {Promise<void>}
- */
-export async function runBillingPageRedirectAction({
-  action,
-  request,
-  setActionLoading,
-  setErrorMessage,
-  requestFailureMessage,
-  fallbackApiFailureMessage,
-  missingUrlMessage,
-  navigationFailedMessage,
-  navigate,
-}) {
-  setActionLoading(action);
-  setErrorMessage('');
-
-  const outcome = await executeBillingRedirectAction({
-    action,
-    request,
-    requestFailureMessage,
-    fallbackApiFailureMessage,
-    missingUrlMessage,
-    navigationFailedMessage,
-    navigate,
-  });
-
-  if (outcome.error) {
-    setActionLoading('');
-    setErrorMessage(outcome.error.message);
-  }
 }

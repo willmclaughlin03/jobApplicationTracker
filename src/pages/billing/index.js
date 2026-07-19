@@ -1,13 +1,14 @@
 import Link from 'next/link';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import ProfileDropdown from '../../client/components/ProfileDropdown';
 import { useAuth } from '../../client/contexts/AuthContext';
-import { api } from '../../client/lib/api.js';
 import {
-  BILLING_PAGE_ACTIONS,
-  runBillingPageRedirectAction,
-} from '../../client/lib/billingPageActions.js';
+  BILLING_ACTION_RESULT_STATUSES,
+  useBillingActions,
+} from '../../client/hooks/useBillingActions.js';
+import { api } from '../../client/lib/api.js';
+import { BILLING_PAGE_ACTIONS } from '../../client/lib/billingPageActions.js';
 import {
   BILLING_PAGE_LOAD_STATES,
   canOpenPortalFromLocalStatus,
@@ -59,31 +60,6 @@ function formatDate(value) {
 }
 
 /**
- * Create a per-attempt nonce that satisfies the checkout API's 32-hex contract.
- *
- * Purpose: checkout idempotency should dedupe one submitted browser attempt
- * without replaying a stale Stripe Checkout Session for later attempts.
- *
- * @returns {string}
- */
-function createCheckoutAttemptNonce() {
-  const browserCrypto = typeof globalThis !== 'undefined' ? globalThis.crypto : null;
-
-  if (typeof browserCrypto?.randomUUID === 'function') {
-    return browserCrypto.randomUUID().replace(/-/g, '').toLowerCase();
-  }
-
-  if (typeof browserCrypto?.getRandomValues === 'function') {
-    const randomBytes = new Uint8Array(16);
-    browserCrypto.getRandomValues(randomBytes);
-
-    return Array.from(randomBytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-  }
-
-  throw new Error('Secure checkout nonce generation is unavailable');
-}
-
-/**
  * Render the authenticated billing management page.
  *
  * Purpose: show the caller's canonical local billing status and route checkout
@@ -92,9 +68,9 @@ function createCheckoutAttemptNonce() {
  * Dependencies:
  * - useAuth for auth state and sign-out handling, useRouter for login
  *   navigation, and ProfileDropdown for the signed-in page header.
- * - api calls /api/billing/status, /api/billing/checkout, and
- *   /api/billing/portal; billingPageState and billingPageActions keep page
- *   copy, capability checks, and redirect safety centralized.
+ * - api loads /api/billing/status and /api/storage/status; billingPageState
+ *   keeps copy and capability checks centralized, while useBillingActions owns
+ *   Checkout and portal request, duplicate-action, and redirect behavior.
  * - BILLING_PLANS and ERROR_MESSAGES provide the checkout plan id and shared
  *   failure copy.
  *
@@ -115,14 +91,16 @@ export default function BillingPage() {
   const [storageSummary, setStorageSummary] = useState(null);
   const [loadState, setLoadState] = useState(BILLING_PAGE_LOAD_STATES.LOADING);
   const [loading, setLoading] = useState(true);
-  const [actionLoading, setActionLoading] = useState('');
-  const actionLoadingRef = useRef('');
-  const [errorMessage, setErrorMessage] = useState('');
+  const [statusErrorMessage, setStatusErrorMessage] = useState('');
   const [storageStatusErrorMessage, setStorageStatusErrorMessage] = useState('');
-
-  useEffect(() => {
-    actionLoadingRef.current = actionLoading;
-  }, [actionLoading]);
+  const {
+    actionLoading,
+    actionError,
+    retryAfterSeconds,
+    resetActionState,
+    startCheckout,
+    openPortal,
+  } = useBillingActions();
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -140,7 +118,7 @@ export default function BillingPage() {
     async function loadBillingStatus() {
       setLoading(true);
       setLoadState(BILLING_PAGE_LOAD_STATES.LOADING);
-      setErrorMessage('');
+      setStatusErrorMessage('');
       setStorageStatusErrorMessage('');
 
       try {
@@ -165,7 +143,7 @@ export default function BillingPage() {
           setStorageSummary(null);
           setStorageStatusErrorMessage('');
           setLoadState(BILLING_PAGE_LOAD_STATES.ERROR);
-          setErrorMessage(ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+          setStatusErrorMessage(ERROR_MESSAGES.SERVICE_UNAVAILABLE);
           setLoading(false);
           return;
         }
@@ -175,7 +153,7 @@ export default function BillingPage() {
           setStorageSummary(null);
           setStorageStatusErrorMessage('');
           setLoadState(BILLING_PAGE_LOAD_STATES.ERROR);
-          setErrorMessage(result.data.message || 'Failed to load billing status.');
+          setStatusErrorMessage(result.data.message || 'Failed to load billing status.');
           setLoading(false);
           return;
         }
@@ -218,7 +196,7 @@ export default function BillingPage() {
         setStorageSummary(null);
         setStorageStatusErrorMessage('');
         setLoadState(BILLING_PAGE_LOAD_STATES.ERROR);
-        setErrorMessage(ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+        setStatusErrorMessage(ERROR_MESSAGES.SERVICE_UNAVAILABLE);
         setLoading(false);
       }
     }
@@ -235,56 +213,43 @@ export default function BillingPage() {
     router.push('/login');
   };
 
-  const handleCheckout = async () => {
-    if (loading || actionLoading !== '' || actionLoadingRef.current !== '') {
+  /**
+   * Route typed unauthorized action failures through the existing auth recovery.
+   *
+   * @param {{ status: string, error: object|null }} outcome - Shared hook result.
+   * @returns {Promise<void>}
+   */
+  const handleBillingActionOutcome = async (outcome) => {
+    if (
+      outcome.status !== BILLING_ACTION_RESULT_STATUSES.ERROR
+      || (outcome.error?.code !== 'UNAUTHORIZED' && outcome.error?.httpStatus !== 401)
+    ) {
       return;
     }
 
-    let checkoutAttemptNonce;
-
-    try {
-      checkoutAttemptNonce = createCheckoutAttemptNonce();
-    } catch (error) {
-      setErrorMessage(ERROR_MESSAGES.CHECKOUT_SESSION_FAILED);
-      return;
-    }
-
-    actionLoadingRef.current = BILLING_PAGE_ACTIONS.CHECKOUT;
-    setActionLoading(BILLING_PAGE_ACTIONS.CHECKOUT);
-
-    await runBillingPageRedirectAction({
-      action: BILLING_PAGE_ACTIONS.CHECKOUT,
-      request: () => api.post('/api/billing/checkout', {
-        plan: BILLING_PLANS.PREMIUM_MONTHLY,
-        checkoutAttemptNonce,
-      }),
-      setActionLoading,
-      setErrorMessage,
-      requestFailureMessage: ERROR_MESSAGES.CHECKOUT_SESSION_FAILED,
-      fallbackApiFailureMessage: 'Failed to start checkout.',
-      missingUrlMessage: 'Checkout did not return a redirect URL.',
-      navigationFailedMessage: 'Checkout redirect failed. Please try again.',
-    });
+    resetActionState();
+    await signOut();
+    router.replace('/login');
   };
 
-  const handlePortal = async () => {
-    if (loading || actionLoading !== '' || actionLoadingRef.current !== '') {
+  /** Start canonical Premium Checkout through the shared billing action hook. */
+  const handleCheckout = async () => {
+    if (loading) {
       return;
     }
 
-    actionLoadingRef.current = BILLING_PAGE_ACTIONS.PORTAL;
-    setActionLoading(BILLING_PAGE_ACTIONS.PORTAL);
+    const outcome = await startCheckout(BILLING_PLANS.PREMIUM_MONTHLY);
+    await handleBillingActionOutcome(outcome);
+  };
 
-    await runBillingPageRedirectAction({
-      action: BILLING_PAGE_ACTIONS.PORTAL,
-      request: () => api.post('/api/billing/portal', {}),
-      setActionLoading,
-      setErrorMessage,
-      requestFailureMessage: ERROR_MESSAGES.PORTAL_SESSION_FAILED,
-      fallbackApiFailureMessage: 'Failed to open the billing portal.',
-      missingUrlMessage: 'Billing portal did not return a redirect URL.',
-      navigationFailedMessage: 'Billing portal redirect failed. Please try again.',
-    });
+  /** Open the Billing Portal through the same mutually exclusive action hook. */
+  const handlePortal = async () => {
+    if (loading) {
+      return;
+    }
+
+    const outcome = await openPortal();
+    await handleBillingActionOutcome(outcome);
   };
 
   if (authLoading) {
@@ -309,6 +274,8 @@ export default function BillingPage() {
   const storageLockedCount = getStorageCount(storageSummary?.lockedCount);
   const showCheckoutButton = canStartCheckoutFromLocalStatus({ billingStatus, loadState });
   const showPortalButton = canOpenPortalFromLocalStatus({ billingStatus, loadState });
+  const retryCooldownActive = Number.isSafeInteger(retryAfterSeconds) && retryAfterSeconds > 0;
+  const billingActionDisabled = loading || actionLoading !== '' || retryCooldownActive;
 
   return (
     <div className="min-h-screen bg-gray-100">
@@ -340,9 +307,19 @@ export default function BillingPage() {
             </Link>
           </div>
 
-          {errorMessage && (
+          {statusErrorMessage && (
             <div className="mt-5 rounded-md bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
-              {errorMessage}
+              <span role='alert'>{statusErrorMessage}</span>
+            </div>
+          )}
+
+          {actionError && (
+            <div
+              role='alert'
+              className='mt-5 rounded-md bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700'
+            >
+              {actionError.message}
+              {retryCooldownActive && ' Try again in ' + retryAfterSeconds + 's.'}
             </div>
           )}
 
@@ -415,7 +392,7 @@ export default function BillingPage() {
               <button
                 type="button"
                 onClick={handleCheckout}
-                disabled={loading || actionLoading !== ''}
+                disabled={billingActionDisabled}
                 className="inline-flex items-center justify-center rounded-md bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
               >
                 {actionLoading === 'checkout' ? 'Redirecting to checkout...' : 'Start checkout'}
@@ -426,7 +403,7 @@ export default function BillingPage() {
               <button
                 type="button"
                 onClick={handlePortal}
-                disabled={loading || actionLoading !== ''}
+                disabled={billingActionDisabled}
                 className="inline-flex items-center justify-center rounded-md border border-gray-300 bg-white px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed"
               >
                 {actionLoading === 'portal' ? 'Opening portal...' : 'Open billing portal'}
