@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-12
 
+- `2026-07-19` - `Dashboard skeleton source references`: Updated the loading skeleton's header, toolbar, and footer cross-file references to the current Dashboard line ranges without changing layout.
 - `2026-07-19` - `Dashboard Premium billing entry integration`: Replaced the dead-end Resume control with fail-closed Upgrade, Manage plan, or Billing actions and connected confirmed Free users to the canonical-status upgrade modal.
   - impact: Dashboard users now retain a safe Billing path for every storage state, while only confirmed Free presentation state can open the modal and Checkout remains owned by the shared billing flow.
 - `2026-07-19` - `Billing-status rejection coverage`: Added explicit schema coverage for unknown entitlement values and unexpected response fields.
