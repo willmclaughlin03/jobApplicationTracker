@@ -65,6 +65,14 @@ describe('billingSchema', () => {
         ...validFreeBillingStatus,
         entitlement: BILLING_ENTITLEMENTS.PREMIUM,
       }],
+      ['an unknown entitlement', {
+        ...validFreeBillingStatus,
+        entitlement: 'unknown',
+      }],
+      ['an unexpected billing-status field', {
+        ...validFreeBillingStatus,
+        extraField: true,
+      }],
     ])('rejects %s', (_label, billingStatus) => {
       expect(billingStatusSchema.safeParse(billingStatus).success).toBe(false);
     });
