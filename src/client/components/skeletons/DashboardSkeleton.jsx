@@ -39,7 +39,7 @@ export default function DashboardSkeleton() {
           {/* Button row — matches src/pages/index.js:147-193 */}
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-2">
-              {/* Filters, Activity, Resume buttons */}
+              {/* Filters, Activity, and mapped billing-entry buttons */}
               <Skeleton className="h-10 w-24" />
               <Skeleton className="h-10 w-24" />
               <Skeleton className="h-10 w-24" />

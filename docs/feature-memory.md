@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-12
 
+- `2026-07-19` - `Dashboard Premium billing entry integration`: Replaced the dead-end Resume control with fail-closed Upgrade, Manage plan, or Billing actions and connected confirmed Free users to the canonical-status upgrade modal.
+  - impact: Dashboard users now retain a safe Billing path for every storage state, while only confirmed Free presentation state can open the modal and Checkout remains owned by the shared billing flow.
 - `2026-07-19` - `Billing-status rejection coverage`: Added explicit schema coverage for unknown entitlement values and unexpected response fields.
 - `2026-07-19` - `Upgrade modal entitlement consistency`: Rejected billing snapshots where the entitlement flag and canonical entitlement disagree so malformed responses remain retryable instead of enabling Checkout.
 - `2026-07-18` - `Upgrade modal billing-status validation`: Added complete canonical response parsing before Dashboard upgrade eligibility checks so malformed, incomplete, incorrectly typed, or unknown subscription snapshots fail closed into the retryable error state.
