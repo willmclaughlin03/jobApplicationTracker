@@ -94,6 +94,11 @@ function getOutcomeCopy(outcome, checkoutState) {
       return {
         title: 'Please wait for payment status to update',
       };
+    case BILLING_SUCCESS_OUTCOMES.TERMINAL_ERROR:
+      return {
+        title: 'Checkout could not be confirmed',
+        description: 'The redirect completed, but premium access was not confirmed from local billing state.',
+      };
     case BILLING_SUCCESS_OUTCOMES.CONTINUE:
     default:
       return {
@@ -190,7 +195,7 @@ export default function BillingSuccessPage() {
     }
 
     if (!sessionId) {
-      setOutcome(BILLING_SUCCESS_OUTCOMES.ERROR);
+      setOutcome(BILLING_SUCCESS_OUTCOMES.TERMINAL_ERROR);
       setCheckoutState('error');
       if (shouldResetRefreshPending) {
         setRefreshPending(false);
@@ -250,7 +255,7 @@ export default function BillingSuccessPage() {
         timers.forEach((timer) => window.clearTimeout(timer));
         timers.length = 0;
         setRateLimitCooldownSeconds(null);
-        setOutcome(BILLING_SUCCESS_OUTCOMES.ERROR);
+        setOutcome(BILLING_SUCCESS_OUTCOMES.TERMINAL_ERROR);
         setCheckoutState('error');
         if (shouldResetRefreshPending) {
           setRefreshPending(false);
