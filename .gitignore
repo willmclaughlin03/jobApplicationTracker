@@ -20,6 +20,8 @@ src/server/db/__tests__/*
 !src/server/db/__tests__/jobsStorageStateMigrations.integration.test.js
 !src/server/db/__tests__/jobsOverflowLocking.integration.test.js
 !src/server/db/__tests__/jobsPremiumRestore.integration.test.js
+!src/server/db/__tests__/jobsPremiumRestoreReconciliation.integration.test.js
+!src/server/db/__tests__/premiumRestoreReconciliationMigration.test.js
 !src/server/db/__tests__/jobsLockedBulkDelete.integration.test.js
 !src/server/db/__tests__/jobsStorageDegradationFinal.integration.test.js
 !src/server/db/__tests__/jobsOrderedReadsIndexes.integration.test.js

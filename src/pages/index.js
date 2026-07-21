@@ -16,7 +16,16 @@ import InfoTooltip from '../client/components/InfoTooltip';
 import ActivityDrawer from '../client/components/ActivityDrawer';
 import StorageDowngradeBanner from '../client/components/StorageDowngradeBanner';
 import LockedArchivePanel from '../client/components/LockedArchivePanel';
+import UpgradePlanModal from '../client/components/UpgradePlanModal';
+import {
+  DASHBOARD_BILLING_ENTRY_ACTIONS,
+  getDashboardBillingEntryPoint,
+} from '../client/lib/dashboardBillingEntryPoint.js';
+import { PLAN_CATALOG } from '../client/lib/planCatalog.js';
 import { getStorageCount } from '../client/lib/storageSummaryUi.js';
+import { BILLING_PLANS } from '../shared/constants/billing.js';
+
+const PREMIUM_MONTHLY_PLAN = PLAN_CATALOG[BILLING_PLANS.PREMIUM_MONTHLY];
 
 export default function Dashboard() {
   const { user, loading: authLoading, signOut } = useAuth();
@@ -63,9 +72,12 @@ export default function Dashboard() {
   } = useJobs(user?.id, statusFilter, searchQuery, salaryFilterMin, salaryFilterMax, selectedDates);
 
   const archivedCount = getStorageCount(storageSummary?.lockedCount);
+  const dashboardBillingEntryLoading = loading && !storageSummary;
+  const dashboardBillingEntryPoint = getDashboardBillingEntryPoint(storageSummary?.status);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
   const [jobToDelete, setJobToDelete] = useState(null);
 
   const {
@@ -109,6 +121,73 @@ export default function Dashboard() {
   const handleSignOut = async () => {
     await signOut();
     router.push('/login');
+  };
+
+  /**
+   * Close the idle Dashboard upgrade modal without changing routes.
+   *
+   * Purpose: provide the controlled modal with an explicit dismissal callback
+   * while leaving Checkout-in-flight dismissal enforcement inside the modal.
+   *
+   * @returns {void}
+   */
+  const handleUpgradeModalClose = () => {
+    setUpgradeModalOpen(false);
+  };
+
+  /**
+   * Close the upgrade modal and open the canonical Billing page.
+   *
+   * Purpose: every non-Free, unavailable, or changed billing state retains a
+   * safe recovery path without making the Dashboard interpret Checkout rules.
+   *
+   * @returns {void}
+   */
+  const handleBillingNavigation = () => {
+    setUpgradeModalOpen(false);
+    router.push('/billing');
+  };
+
+  /**
+   * Recover an unauthorized modal session through the existing auth context.
+   *
+   * Purpose: expired billing requests must clear the modal, sign out local
+   * state, and replace the protected Dashboard history entry with login.
+   *
+   * @returns {Promise<void>}
+   */
+  const handleBillingUnauthorized = async () => {
+    setUpgradeModalOpen(false);
+    await signOut();
+    router.replace('/login');
+  };
+
+  /**
+   * Execute the pure billing entry-point decision for the current summary.
+   *
+   * Purpose: only confirmed terminal Free opens the upgrade modal. All other
+   * states route to Billing, and an existing focus-owning overlay prevents a
+   * second modal from opening over the user's active work.
+   *
+   * @returns {void}
+   */
+  const handleDashboardBillingEntry = () => {
+    if (
+      dashboardBillingEntryPoint.action
+      === DASHBOARD_BILLING_ENTRY_ACTIONS.OPEN_UPGRADE_MODAL
+    ) {
+      const hasActiveOverlay = sidebarOpen
+        || activityOpen
+        || Boolean(editingJob)
+        || Boolean(jobToDelete);
+
+      if (!hasActiveOverlay) {
+        setUpgradeModalOpen(true);
+      }
+      return;
+    }
+
+    handleBillingNavigation();
   };
 
   return (
@@ -178,15 +257,37 @@ export default function Dashboard() {
                   <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-blue-500" />
                 )}
               </button>
-              <button
-                onClick={() => router.push('/profile')}
-                className="relative flex items-center gap-2 bg-white border border-gray-300 text-gray-700 px-4 py-2.5 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                Resume
-              </button>
+              {dashboardBillingEntryLoading ? (
+                <div
+                  data-testid="billing-entry-skeleton"
+                  role="status"
+                  aria-label="Loading plan options"
+                  className="h-[42px] w-28 animate-pulse rounded-md border border-gray-200 bg-gray-200"
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleDashboardBillingEntry}
+                  aria-haspopup={
+                    dashboardBillingEntryPoint.action
+                      === DASHBOARD_BILLING_ENTRY_ACTIONS.OPEN_UPGRADE_MODAL
+                      ? 'dialog'
+                      : undefined
+                  }
+                  aria-expanded={
+                    dashboardBillingEntryPoint.action
+                      === DASHBOARD_BILLING_ENTRY_ACTIONS.OPEN_UPGRADE_MODAL
+                      ? upgradeModalOpen
+                      : undefined
+                  }
+                  className="relative flex items-center gap-2 bg-white border border-gray-300 text-gray-700 px-4 py-2.5 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.25 8.25h19.5M3.75 18h16.5a1.5 1.5 0 001.5-1.5v-9A1.5 1.5 0 0020.25 6H3.75a1.5 1.5 0 00-1.5 1.5v9A1.5 1.5 0 003.75 18z" />
+                  </svg>
+                  {dashboardBillingEntryPoint.label}
+                </button>
+              )}
             </div>
             <div className="flex items-center gap-3">
               <InfoTooltip />
@@ -256,6 +357,13 @@ export default function Dashboard() {
           selectedDates={selectedDates}
           onDateToggle={handleDateToggle}
           onClearDates={clearSelectedDates}
+        />
+        <UpgradePlanModal
+          isOpen={upgradeModalOpen}
+          plan={PREMIUM_MONTHLY_PLAN}
+          onClose={handleUpgradeModalClose}
+          onUnauthorized={handleBillingUnauthorized}
+          onGoToBilling={handleBillingNavigation}
         />
         {editingJob && (
           <EditModal

@@ -27,6 +27,7 @@ const FINAL_STORAGE_MIGRATION_FILES = Object.freeze([
   '018_jobs_overflow_locking.sql',
   '019_jobs_premium_restore.sql',
   '020_jobs_locked_bulk_delete.sql',
+  '028_reconcile_premium_restore_rpc.sql',
 ]);
 const TEST_PREMIUM_PRICE_IDS = Object.freeze(['price_premium_monthly']);
 
