@@ -72,6 +72,7 @@ export default function Dashboard() {
   } = useJobs(user?.id, statusFilter, searchQuery, salaryFilterMin, salaryFilterMax, selectedDates);
 
   const archivedCount = getStorageCount(storageSummary?.lockedCount);
+  const dashboardBillingEntryLoading = loading && !storageSummary;
   const dashboardBillingEntryPoint = getDashboardBillingEntryPoint(storageSummary?.status);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -256,28 +257,37 @@ export default function Dashboard() {
                   <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-blue-500" />
                 )}
               </button>
-              <button
-                type="button"
-                onClick={handleDashboardBillingEntry}
-                aria-haspopup={
-                  dashboardBillingEntryPoint.action
-                    === DASHBOARD_BILLING_ENTRY_ACTIONS.OPEN_UPGRADE_MODAL
-                    ? 'dialog'
-                    : undefined
-                }
-                aria-expanded={
-                  dashboardBillingEntryPoint.action
-                    === DASHBOARD_BILLING_ENTRY_ACTIONS.OPEN_UPGRADE_MODAL
-                    ? upgradeModalOpen
-                    : undefined
-                }
-                className="relative flex items-center gap-2 bg-white border border-gray-300 text-gray-700 px-4 py-2.5 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.25 8.25h19.5M3.75 18h16.5a1.5 1.5 0 001.5-1.5v-9A1.5 1.5 0 0020.25 6H3.75a1.5 1.5 0 00-1.5 1.5v9A1.5 1.5 0 003.75 18z" />
-                </svg>
-                {dashboardBillingEntryPoint.label}
-              </button>
+              {dashboardBillingEntryLoading ? (
+                <div
+                  data-testid="billing-entry-skeleton"
+                  role="status"
+                  aria-label="Loading plan options"
+                  className="h-[42px] w-28 animate-pulse rounded-md border border-gray-200 bg-gray-200"
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleDashboardBillingEntry}
+                  aria-haspopup={
+                    dashboardBillingEntryPoint.action
+                      === DASHBOARD_BILLING_ENTRY_ACTIONS.OPEN_UPGRADE_MODAL
+                      ? 'dialog'
+                      : undefined
+                  }
+                  aria-expanded={
+                    dashboardBillingEntryPoint.action
+                      === DASHBOARD_BILLING_ENTRY_ACTIONS.OPEN_UPGRADE_MODAL
+                      ? upgradeModalOpen
+                      : undefined
+                  }
+                  className="relative flex items-center gap-2 bg-white border border-gray-300 text-gray-700 px-4 py-2.5 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.25 8.25h19.5M3.75 18h16.5a1.5 1.5 0 001.5-1.5v-9A1.5 1.5 0 0020.25 6H3.75a1.5 1.5 0 00-1.5 1.5v9A1.5 1.5 0 003.75 18z" />
+                  </svg>
+                  {dashboardBillingEntryPoint.label}
+                </button>
+              )}
             </div>
             <div className="flex items-center gap-3">
               <InfoTooltip />

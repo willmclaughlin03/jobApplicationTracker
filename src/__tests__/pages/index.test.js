@@ -346,6 +346,66 @@ describe('Dashboard billing entry integration', () => {
     expect(element.querySelector('[data-testid="upgrade-modal"]')).toBeNull();
   });
 
+  it('shows a non-interactive skeleton until the initial Free summary resolves without flashing Billing', () => {
+    let jobsState = buildJobsState(null);
+    jobsState.loading = true;
+    mockUseJobs.mockImplementation(() => jobsState);
+    const element = renderDashboard();
+
+    const skeleton = element.querySelector('[data-testid="billing-entry-skeleton"]');
+    expect(skeleton).toBeTruthy();
+    expect(skeleton.getAttribute('role')).toBe('status');
+    expect(skeleton.getAttribute('aria-label')).toBe('Loading plan options');
+    expect(findButtonByText(element, 'Billing')).toBeUndefined();
+    expect(findButtonByText(element, 'Upgrade')).toBeUndefined();
+
+    jobsState = buildJobsState({
+      status: STORAGE_STATUSES.TERMINAL_FREE,
+      lockedCount: 0,
+    });
+    act(() => root.render(React.createElement(Dashboard)));
+
+    expect(element.querySelector('[data-testid="billing-entry-skeleton"]')).toBeNull();
+    expect(findButtonByText(element, 'Upgrade')).toBeTruthy();
+    expect(findButtonByText(element, 'Billing')).toBeUndefined();
+  });
+
+  it('does not optimistically show Upgrade while the initial Premium summary resolves', () => {
+    let jobsState = buildJobsState(null);
+    jobsState.loading = true;
+    mockUseJobs.mockImplementation(() => jobsState);
+    const element = renderDashboard();
+
+    expect(element.querySelector('[data-testid="billing-entry-skeleton"]')).toBeTruthy();
+    expect(findButtonByText(element, 'Upgrade')).toBeUndefined();
+    expect(findButtonByText(element, 'Billing')).toBeUndefined();
+
+    jobsState = buildJobsState({
+      status: STORAGE_STATUSES.PREMIUM_ACTIVE,
+      lockedCount: 0,
+    });
+    act(() => root.render(React.createElement(Dashboard)));
+
+    expect(element.querySelector('[data-testid="billing-entry-skeleton"]')).toBeNull();
+    expect(findButtonByText(element, 'Manage plan')).toBeTruthy();
+    expect(findButtonByText(element, 'Upgrade')).toBeUndefined();
+    expect(findButtonByText(element, 'Billing')).toBeUndefined();
+  });
+
+  it('keeps a resolved entry point visible during later job refetches', () => {
+    const jobsState = buildJobsState({
+      status: STORAGE_STATUSES.TERMINAL_FREE,
+      lockedCount: 0,
+    });
+    jobsState.loading = true;
+    mockUseJobs.mockReturnValue(jobsState);
+    const element = renderDashboard();
+
+    expect(element.querySelector('[data-testid="billing-entry-skeleton"]')).toBeNull();
+    expect(findButtonByText(element, 'Upgrade')).toBeTruthy();
+    expect(findButtonByText(element, 'Billing')).toBeUndefined();
+  });
+
   it.each([
     [STORAGE_STATUSES.PREMIUM_ACTIVE, 'Manage plan'],
     [STORAGE_STATUSES.PREMIUM_CANCELING, 'Manage plan'],
