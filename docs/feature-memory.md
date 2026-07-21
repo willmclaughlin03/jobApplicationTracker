@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-12
 
+- `2026-07-20` - `Billing payment-status wait copy`: Replaced the unresolved billing-success error with a patient payment-status message and removed the internal polling schedule from the customer-facing page.
+  - impact: Customers waiting for local payment status to settle no longer see implementation-level polling timings.
 - `2026-07-19` - `Dashboard billing-entry initial-load skeleton`: Replaced the unresolved storage-summary Billing fallback with a non-interactive, fixed-size skeleton while preserving settled fail-closed Billing behavior and resolved labels during later refetches.
   - impact: New and Free users no longer see Billing flash before Upgrade, while Premium users avoid an incorrect optimistic Upgrade label.
 - `2026-07-19` - `Premium restore RPC signature reconciliation`: Added forward migration `028` to replace the stale three-argument restore overload with the hardened price-allowlisted signature, reassert service-role-only execution, and reload PostgREST schema metadata; added final-state, idempotency, legacy-upgrade, zero-archive Premium, and allowlist integration contracts.

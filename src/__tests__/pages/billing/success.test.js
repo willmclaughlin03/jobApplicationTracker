@@ -156,13 +156,29 @@ describe('BillingSuccessPage', () => {
     await advanceTimersAndFlush(3000);
 
     expect(mockApiPost).toHaveBeenCalledTimes(2);
-    expect(el.textContent).toContain('Checkout could not be confirmed');
+    expect(el.textContent).toContain('Please wait for payment status to update');
     expect(el.textContent).not.toContain('Finalizing billing');
+    expect(el.textContent).not.toContain('Polling schedule');
+    expect(el.textContent).not.toContain('0s, 3s, 10s, 30s, and 60s');
     expect(el.textContent).not.toContain('Refresh status');
 
     await advanceTimersAndFlush(60000);
 
     expect(mockApiPost).toHaveBeenCalledTimes(2);
+  });
+
+  it('hides polling details when payment status cannot be confirmed', async () => {
+    mockApiPost.mockResolvedValueOnce({
+      data: { data: { state: 'error' } },
+      error: null,
+      meta: { status: 200, retryAfterSeconds: null },
+    });
+
+    const el = await renderBillingSuccessPage();
+
+    expect(el.textContent).toContain('Please wait for payment status to update');
+    expect(el.textContent).not.toContain('Polling schedule');
+    expect(el.textContent).not.toContain('0s, 3s, 10s, 30s, and 60s');
   });
 
   it('latches manual refresh clicks until the refresh-triggered poll settles', async () => {

@@ -5,7 +5,6 @@ import { useAuth } from '../../client/contexts/AuthContext';
 import { api } from '../../client/lib/api.js';
 import {
   BILLING_SUCCESS_OUTCOMES,
-  getBillingSuccessPollScheduleText,
   getBillingSuccessRefreshButtonLabel,
   getExhaustedPollingOutcome,
   getNextPollDelayMs,
@@ -93,8 +92,7 @@ function getOutcomeCopy(outcome, checkoutState) {
       };
     case BILLING_SUCCESS_OUTCOMES.ERROR:
       return {
-        title: 'Checkout could not be confirmed',
-        description: 'The redirect completed, but premium access was not confirmed from local billing state.',
+        title: 'Please wait for payment status to update',
       };
     case BILLING_SUCCESS_OUTCOMES.CONTINUE:
     default:
@@ -362,13 +360,6 @@ export default function BillingSuccessPage() {
             {line}
           </p>
         ))}
-
-        <div className="mt-6 rounded-lg border border-gray-200 bg-gray-50 p-4">
-          <p className="text-sm text-gray-500">Polling schedule</p>
-          <p className="mt-1 text-sm text-gray-700">
-            {getBillingSuccessPollScheduleText()}
-          </p>
-        </div>
 
         <div className="mt-6 flex flex-col gap-3 sm:flex-row">
           {(outcome === BILLING_SUCCESS_OUTCOMES.MANUAL_REFRESH
