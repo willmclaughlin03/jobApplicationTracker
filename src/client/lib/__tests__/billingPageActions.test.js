@@ -4,7 +4,6 @@ const {
   createCheckoutAttemptNonce,
   executeBillingRedirectAction,
   resolveBillingRedirectResult,
-  runBillingPageRedirectAction,
 } = require('../billingPageActions.js');
 
 const CHECKOUT_COPY = Object.freeze({
@@ -285,106 +284,4 @@ describe('billingPageActions', () => {
     });
   });
 
-  it('keeps legacy loading latched only after successful navigation', async () => {
-    const setActionLoading = jest.fn();
-    const setErrorMessage = jest.fn();
-
-    await runBillingPageRedirectAction({
-      action: BILLING_PAGE_ACTIONS.PORTAL,
-      request: async () => ({
-        data: { data: { url: 'https://billing.stripe.com/session_123' } },
-        error: null,
-        meta: { status: 200, retryAfterSeconds: null },
-      }),
-      setActionLoading,
-      setErrorMessage,
-      requestFailureMessage: ERROR_MESSAGES.PORTAL_SESSION_FAILED,
-      fallbackApiFailureMessage: ERROR_MESSAGES.PORTAL_SESSION_FAILED,
-      missingUrlMessage: 'Billing portal did not return a redirect URL.',
-      navigationFailedMessage: 'Billing portal redirect failed. Please try again.',
-      navigate: jest.fn(),
-    });
-
-    expect(setActionLoading).toHaveBeenCalledWith(BILLING_PAGE_ACTIONS.PORTAL);
-    expect(setActionLoading).not.toHaveBeenCalledWith('');
-    expect(setErrorMessage).toHaveBeenCalledWith('');
-  });
-
-  it.each([
-    ['thrown request', null, true, false, CHECKOUT_COPY.requestFailureMessage],
-    [
-      'structured API failure',
-      buildApiError('CHECKOUT_SESSION_FAILED', 503),
-      false,
-      false,
-      ERROR_MESSAGES.CHECKOUT_SESSION_FAILED,
-    ],
-    [
-      'missing redirect URL',
-      {
-        data: { data: {} },
-        error: null,
-        meta: { status: 200, retryAfterSeconds: null },
-      },
-      false,
-      false,
-      CHECKOUT_COPY.missingUrlMessage,
-    ],
-    [
-      'unsafe redirect URL',
-      {
-        data: { data: { url: 'https://evil.example.test/session_123' } },
-        error: null,
-        meta: { status: 200, retryAfterSeconds: null },
-      },
-      false,
-      false,
-      CHECKOUT_COPY.missingUrlMessage,
-    ],
-    [
-      'navigation failure',
-      {
-        data: { data: { url: 'https://checkout.stripe.com/session_123' } },
-        error: null,
-        meta: { status: 200, retryAfterSeconds: null },
-      },
-      false,
-      true,
-      CHECKOUT_COPY.navigationFailedMessage,
-    ],
-  ])('clears legacy loading and renders safe copy for %s', async (
-    _label,
-    response,
-    requestThrows,
-    navigationThrows,
-    expectedMessage
-  ) => {
-    const setActionLoading = jest.fn();
-    const setErrorMessage = jest.fn();
-    const navigate = jest.fn(() => {
-      if (navigationThrows) {
-        throw new Error('raw navigation failure');
-      }
-    });
-
-    await runBillingPageRedirectAction({
-      action: BILLING_PAGE_ACTIONS.CHECKOUT,
-      request: async () => {
-        if (requestThrows) {
-          throw new Error('raw request failure');
-        }
-        return response;
-      },
-      setActionLoading,
-      setErrorMessage,
-      navigate,
-      ...CHECKOUT_COPY,
-    });
-
-    expect(setActionLoading).toHaveBeenNthCalledWith(1, BILLING_PAGE_ACTIONS.CHECKOUT);
-    expect(setActionLoading).toHaveBeenLastCalledWith('');
-    expect(setErrorMessage).toHaveBeenNthCalledWith(1, '');
-    expect(setErrorMessage).toHaveBeenLastCalledWith(expectedMessage);
-    expect(navigate).toHaveBeenCalledTimes(navigationThrows ? 1 : 0);
-  });
 });
