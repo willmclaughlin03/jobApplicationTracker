@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-12
 
+- `2026-07-21` - `Billing success unresolved-status retry`: Added the existing manual refresh action to the explicit unresolved checkout ERROR state while preserving its payment-status wait copy, with page-level regression coverage for retrying into an active state.
+  - impact: Customers can recheck an unresolved payment status without performing a full browser reload.
 - `2026-07-20` - `Billing payment-status outcome copy`: Reserved the patient payment-status message for explicit unresolved status while keeping missing session ids, rejected requests, and invalid responses on a distinct terminal-error path; removed the internal polling schedule from the customer-facing page and covered that explicit error status stops further polling.
   - impact: Customers waiting for payment status see appropriate wait copy, while failures that cannot recover through polling retain clear terminal guidance.
 - `2026-07-19` - `Dashboard billing-entry initial-load skeleton`: Replaced the unresolved storage-summary Billing fallback with a non-interactive, fixed-size skeleton while preserving settled fail-closed Billing behavior and resolved labels during later refetches.
