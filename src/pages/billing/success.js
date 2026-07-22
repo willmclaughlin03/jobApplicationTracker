@@ -368,6 +368,7 @@ export default function BillingSuccessPage() {
 
         <div className="mt-6 flex flex-col gap-3 sm:flex-row">
           {(outcome === BILLING_SUCCESS_OUTCOMES.MANUAL_REFRESH
+            || outcome === BILLING_SUCCESS_OUTCOMES.ERROR
             || outcome === BILLING_SUCCESS_OUTCOMES.UNAVAILABLE
             || outcome === BILLING_SUCCESS_OUTCOMES.RATE_LIMITED) && (
             <button

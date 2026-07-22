@@ -183,22 +183,48 @@ describe('BillingSuccessPage', () => {
   });
 
   it('reserves payment-status wait copy for an explicit unresolved status', async () => {
-    mockApiPost.mockResolvedValueOnce({
-      data: { data: { state: 'error' } },
-      error: null,
-      meta: { status: 200, retryAfterSeconds: null },
-    });
+    mockApiPost
+      .mockResolvedValueOnce({
+        data: { data: { state: 'error' } },
+        error: null,
+        meta: { status: 200, retryAfterSeconds: null },
+      })
+      .mockResolvedValueOnce({
+        data: { data: { state: 'active' } },
+        error: null,
+        meta: { status: 200, retryAfterSeconds: null },
+      });
 
     const el = await renderBillingSuccessPage();
+    const refreshButton = el.querySelector('button');
+
+    if (!refreshButton) {
+      throw new Error('Expected the unresolved payment-status refresh button to render.');
+    }
 
     expect(el.textContent).toContain('Please wait for payment status to update');
     expect(el.textContent).not.toContain('Checkout could not be confirmed');
     expect(el.textContent).not.toContain('Polling schedule');
     expect(el.textContent).not.toContain('0s, 3s, 10s, 30s, and 60s');
+    expect(refreshButton.textContent).toBe('Refresh status');
+    expect(refreshButton.disabled).toBe(false);
+
+    await act(async () => {
+      refreshButton.click();
+      await Promise.resolve();
+    });
+    await flushAsyncWork();
+
+    expect(mockApiPost).toHaveBeenCalledTimes(2);
+    expect(mockApiPost).toHaveBeenNthCalledWith(2, '/api/billing/checkout-status', {
+      sessionId: 'cs_test_123',
+    });
+    expect(el.textContent).toContain('Premium access is active');
+    expect(el.textContent).not.toContain('Please wait for payment status to update');
 
     await advanceTimersAndFlush(60_001);
 
-    expect(mockApiPost).toHaveBeenCalledTimes(1);
+    expect(mockApiPost).toHaveBeenCalledTimes(2);
   });
 
   it('latches manual refresh clicks until the refresh-triggered poll settles', async () => {
