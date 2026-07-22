@@ -100,17 +100,17 @@ describe('billingSuccessFlow', () => {
   it('falls back to terminal error on unknown result shapes', () => {
     expect(
       interpretCheckoutStatusPollResult({ data: { data: { state: 'mystery' } }, error: null })
-    ).toEqual({ outcome: BILLING_SUCCESS_OUTCOMES.ERROR });
+    ).toEqual({ outcome: BILLING_SUCCESS_OUTCOMES.TERMINAL_ERROR });
 
     expect(
       interpretCheckoutStatusPollResult({ data: { error: 'CHECKOUT_SESSION_INVALID' }, error: null })
-    ).toEqual({ outcome: BILLING_SUCCESS_OUTCOMES.ERROR });
+    ).toEqual({ outcome: BILLING_SUCCESS_OUTCOMES.TERMINAL_ERROR });
   });
 
   it('switches pending and free states to manual refresh when the poll budget is exhausted', () => {
     expect(getExhaustedPollingOutcome('pending')).toBe(BILLING_SUCCESS_OUTCOMES.MANUAL_REFRESH);
     expect(getExhaustedPollingOutcome('free')).toBe(BILLING_SUCCESS_OUTCOMES.MANUAL_REFRESH);
-    expect(getExhaustedPollingOutcome('active')).toBe(BILLING_SUCCESS_OUTCOMES.ERROR);
+    expect(getExhaustedPollingOutcome('active')).toBe(BILLING_SUCCESS_OUTCOMES.TERMINAL_ERROR);
   });
 
   it('builds the cooldown-aware refresh label and disable state', () => {

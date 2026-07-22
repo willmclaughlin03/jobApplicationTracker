@@ -15,6 +15,7 @@ export const BILLING_SUCCESS_OUTCOMES = Object.freeze({
   MANUAL_REFRESH: 'manual_refresh',
   RATE_LIMITED: 'rate_limited',
   REAUTH: 'reauth',
+  TERMINAL_ERROR: 'terminal_error',
   UNAVAILABLE: 'unavailable',
 });
 
@@ -116,7 +117,7 @@ export function interpretCheckoutStatusPollResult(result) {
   }
 
   if (responseError) {
-    return { outcome: BILLING_SUCCESS_OUTCOMES.ERROR };
+    return { outcome: BILLING_SUCCESS_OUTCOMES.TERMINAL_ERROR };
   }
 
   const checkoutState = result?.data?.data?.state;
@@ -136,7 +137,7 @@ export function interpretCheckoutStatusPollResult(result) {
     };
   }
 
-  return { outcome: BILLING_SUCCESS_OUTCOMES.ERROR };
+  return { outcome: BILLING_SUCCESS_OUTCOMES.TERMINAL_ERROR };
 }
 
 /**
@@ -153,7 +154,7 @@ export function getExhaustedPollingOutcome(checkoutState) {
     return BILLING_SUCCESS_OUTCOMES.MANUAL_REFRESH;
   }
 
-  return BILLING_SUCCESS_OUTCOMES.ERROR;
+  return BILLING_SUCCESS_OUTCOMES.TERMINAL_ERROR;
 }
 
 /**
