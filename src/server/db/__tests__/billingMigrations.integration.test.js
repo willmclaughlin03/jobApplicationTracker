@@ -432,7 +432,6 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
   let eventServiceClient;
   let anonClient;
   let clientA;
-  let clientB;
   let userAId;
   let userBId;
   let billingRpcSchemaPrimed = false;
@@ -997,7 +996,7 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
     await ensureBillingMigrationsApplied();
 
     clientA = await signInAsUser(createClient, serviceClient, USER_A_EMAIL);
-    clientB = await signInAsUser(createClient, serviceClient, USER_B_EMAIL);
+    await signInAsUser(createClient, serviceClient, USER_B_EMAIL);
 
     await clearBaselineRows();
   });

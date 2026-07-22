@@ -243,7 +243,6 @@ describeOrSkip('Suite C - Jobs storage-state migration + boundary integration', 
   let serviceClient;
   let anonClient;
   let clientA;
-  let clientB;
   let userAId;
   let userBId;
 
@@ -498,7 +497,7 @@ describeOrSkip('Suite C - Jobs storage-state migration + boundary integration', 
     userAId = userA.id;
     userBId = userB.id;
     clientA = await signInAsUser(createClient, serviceClient, userA.email);
-    clientB = await signInAsUser(createClient, serviceClient, userB.email);
+    await signInAsUser(createClient, serviceClient, userB.email);
   });
 
   afterAll(async () => {

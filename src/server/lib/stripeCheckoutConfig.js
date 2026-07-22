@@ -54,6 +54,8 @@ function sanitizePlanForError(plan) {
 
   const sanitizedPlan = rawPlan
     .trim()
+    // Control characters are deliberately stripped from log-adjacent error text.
+    // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ')
     .replace(/\s+/g, ' ')
     .slice(0, MAX_PLAN_ERROR_LENGTH);

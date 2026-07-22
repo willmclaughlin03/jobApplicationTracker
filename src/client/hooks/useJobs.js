@@ -31,11 +31,12 @@ const EMPTY_COUNTS = { applied: 0, interviewing: 0, offered: 0, rejected: 0, acc
 export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin = null, salaryMax = null, selectedDates = null) {
   const { currentPage, setCurrentPage, setTotalCount, goToPage } = usePagination(PAGE_SIZE);
 
-  const query = useJobsQuery();
   const {
     jobs: allJobs,
     storageSummary,
     loading,
+    error: queryError,
+    clearError: clearQueryError,
     fetchJobs,
     refreshStorageSummary,
     invalidateJobsFetches,
@@ -43,7 +44,7 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
     prependJob,
     updateJobInList,
     removeJobFromList,
-  } = query;
+  } = useJobsQuery();
   const mutationSequenceRef = useRef(0);
   const addMutationInFlightRef = useRef(false);
   const deleteMutationInFlightRef = useRef(false);
@@ -160,21 +161,36 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
     updateJobInList(id, updates);
   }, [invalidateJobsFetches, updateJobInList]);
 
-  const add = useAddJob();
-  const update = useUpdateJob(handleUpdateJobSuccess);
-  const del = useDeleteJob();
+  const {
+    addJob: executeAddJob,
+    saving: addSaving,
+    error: addError,
+    clearError: clearAddError,
+  } = useAddJob();
+  const {
+    updateJob,
+    saving: updateSaving,
+    error: updateError,
+    clearError: clearUpdateError,
+  } = useUpdateJob(handleUpdateJobSuccess);
+  const {
+    deleteJob: executeDeleteJob,
+    deleting,
+    error: deleteError,
+    clearError: clearDeleteError,
+  } = useDeleteJob();
 
   const error = useMemo(
-    () => query.error || add.error || update.error || del.error,
-    [query.error, add.error, update.error, del.error]
+    () => queryError || addError || updateError || deleteError,
+    [queryError, addError, updateError, deleteError]
   );
 
   const clearError = useCallback(() => {
-    query.clearError();
-    add.clearError();
-    update.clearError();
-    del.clearError();
-  }, [query.clearError, add.clearError, update.clearError, del.clearError]);
+    clearQueryError();
+    clearAddError();
+    clearUpdateError();
+    clearDeleteError();
+  }, [clearQueryError, clearAddError, clearUpdateError, clearDeleteError]);
 
   // Derive status counts from the in-memory job list (no extra API call)
   const statusCounts = useMemo(() => {
@@ -205,7 +221,7 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
     const mutationSequence = beginStorageMutation();
 
     try {
-      const result = await add.addJob(jobData);
+      const result = await executeAddJob(jobData);
 
       if (result.success && result.data) {
         handleAddJobSuccess(result.data, result.storageSummary, mutationSequence);
@@ -215,9 +231,7 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
     } finally {
       addMutationInFlightRef.current = false;
     }
-  }, [add.addJob, beginStorageMutation, handleAddJobSuccess]);
-
-  const updateJob = update.updateJob;
+  }, [executeAddJob, beginStorageMutation, handleAddJobSuccess]);
 
   /**
    * Deletes a job and applies local list/storage updates on success.
@@ -237,7 +251,7 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
     const mutationSequence = beginStorageMutation();
 
     try {
-      const result = await del.deleteJob(id);
+      const result = await executeDeleteJob(id);
 
       if (result.success) {
         handleDeleteJobSuccess(id, result.storageSummary, mutationSequence);
@@ -247,7 +261,7 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
     } finally {
       deleteMutationInFlightRef.current = false;
     }
-  }, [beginStorageMutation, del.deleteJob, handleDeleteJobSuccess]);
+  }, [beginStorageMutation, executeDeleteJob, handleDeleteJobSuccess]);
 
   return {
     jobs,
@@ -255,8 +269,8 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
     filteredJobs,
     storageSummary,
     loading,
-    saving: add.saving || update.saving,
-    deleting: del.deleting,
+    saving: addSaving || updateSaving,
+    deleting,
     error,
     clearError,
     addJob,

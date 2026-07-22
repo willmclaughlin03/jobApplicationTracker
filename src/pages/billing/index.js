@@ -8,7 +8,6 @@ import {
   useBillingActions,
 } from '../../client/hooks/useBillingActions.js';
 import { api } from '../../client/lib/api.js';
-import { BILLING_PAGE_ACTIONS } from '../../client/lib/billingPageActions.js';
 import {
   BILLING_PAGE_LOAD_STATES,
   canOpenPortalFromLocalStatus,
@@ -206,6 +205,8 @@ export default function BillingPage() {
     return () => {
       isCancelled = true;
     };
+    // AuthContext recreates signOut; depending on it would repeat this load after provider renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router, user]);
 
   const handleSignOut = async () => {
@@ -398,12 +399,16 @@ export default function BillingPage() {
                     {' '}{storageActiveLimit} active applications.
                   </p>
                   {storageLockedCount > 0 && (
-                    <a
-                      href="/api/storage/export"
-                      className="mt-3 inline-flex items-center justify-center rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-                    >
-                      Export CSV
-                    </a>
+                    <>
+                      {/* This API navigation intentionally triggers a browser-managed CSV download. */}
+                      {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+                      <a
+                        href="/api/storage/export"
+                        className="mt-3 inline-flex items-center justify-center rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                      >
+                        Export CSV
+                      </a>
+                    </>
                   )}
                 </div>
               )}

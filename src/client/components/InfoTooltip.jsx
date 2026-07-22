@@ -51,7 +51,7 @@ export default function InfoTooltip() {
           <div className="pb-3 mb-3 border-b border-gray-100">
             <p className="font-medium text-gray-800 mb-1">Managing Jobs</p>
             <ul className="list-disc list-inside space-y-1">
-              <li>Click <span className="font-medium text-gray-700">"Add New Job"</span> to create an entry</li>
+              <li>Click <span className="font-medium text-gray-700">&quot;Add New Job&quot;</span> to create an entry</li>
               <li>Click the edit icon to edit a listing</li>
               <li>Use the delete icon on a row to delete a listing</li>
             </ul>
@@ -67,7 +67,7 @@ export default function InfoTooltip() {
 
           <div className="pb-3 mb-3 border-b border-gray-100">
             <p className="font-medium text-gray-800 mb-1">Change Password</p>
-            <p>Click your profile icon in the top-right corner and select "Reset Password".</p>
+            <p>Click your profile icon in the top-right corner and select &quot;Reset Password&quot;.</p>
           </div>
 
           <div>

@@ -1051,7 +1051,7 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
   test('H6: real service projections protect locked rows while CSV export includes owned locked data', async () => {
     const owner = await createTempUser('final-service-owner');
     const otherOwner = await createTempUser('final-service-other');
-    const [activeJob, lockedDetailJob, lockedDeleteJob, lockedExportJob] = await seedJobs(owner.id, {
+    const [activeJob, lockedDetailJob, lockedDeleteJob] = await seedJobs(owner.id, {
       activeRows: [
         {
           company: 'Visible Active Corp',

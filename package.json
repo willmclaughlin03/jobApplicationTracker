@@ -7,6 +7,7 @@
   },
   "scripts": {
     "dev": "next dev",
+    "lint": "eslint . --ext .js,.jsx,.mjs --max-warnings=0",
     "build": "npm run build:preflight && next build",
     "build:preflight": "node scripts/validate-build-env.js",
     "billing:drain-checkout": "node scripts/billing-drain-checkout-sessions.mjs",
@@ -41,6 +42,8 @@
     "@babel/runtime": "^7.28.6",
     "autoprefixer": "^10.4.23",
     "babel-plugin-transform-import-meta": "^2.3.3",
+    "eslint": "8.57.1",
+    "eslint-config-next": "14.2.35",
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^29.7.0",
     "patch-package": "^8.0.1",

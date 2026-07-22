@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import {
   formatStorageDate,
   getStorageCount,
@@ -38,12 +39,12 @@ export default function StorageDowngradeBanner({ storageSummary = null }) {
             {' '}applications will move to a locked archive. Nothing will be deleted.
           </p>
         </div>
-        <a
+        <Link
           href="/billing"
           className="inline-flex shrink-0 items-center justify-center rounded-md border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-900 hover:bg-amber-100"
         >
           Review billing
-        </a>
+        </Link>
       </div>
     </section>
   );
