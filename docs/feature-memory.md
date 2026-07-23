@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-19
 
+- `2026-07-22` - `Trusted staging integration workflow`: Added a manual, staging-ref-only GitHub Actions workflow with an Environment-secret preflight, exact Supabase target verification, deployment-credential fallback refusal, serialized infrastructure access, and child-process-only destructive test opt-in.
+  - impact: Missing canonical names, a mismatched Supabase target, or configured deployment fallbacks now fail safely before Jest imports destructive suites or contacts remote test infrastructure.
 - `2026-07-22` - `Empty Stripe plan-label normalization`: Moved final trimming after control-character replacement and whitespace collapsing so control-only unsupported plans render as `[empty]`, with focused regression coverage.
 - `2026-07-22` - `Storage downgrade billing-link coverage`: Added focused regression coverage that keeps the scheduled-downgrade banner's Review billing CTA linked to `/billing`.
 - `2026-07-22` - `Superseded CI run cancellation`: Grouped CI runs by workflow and pull-request or ref identity so newer runs cancel obsolete in-progress work without affecting other pull requests or refs.
