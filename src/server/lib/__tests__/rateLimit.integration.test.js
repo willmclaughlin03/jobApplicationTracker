@@ -37,6 +37,9 @@ const {
     TEST_SUPABASE_ENV_NAMES,
     matchesSupabaseTestProject,
 } = require('../../../testSupport/integrationEnvironment.js');
+const {
+    runIntegrationCleanup,
+} = require('../../../testSupport/integrationCleanup.js');
 
 const mockLogger = {
     info: jest.fn(),
@@ -106,7 +109,12 @@ describeIntegration('rateLimit.js — integration (real Upstash)', () => {
                 TEST_URL,
                 TEST_SERVICE_KEY
             );
-            await supabase.auth.admin.deleteUser(testUserId);
+            await runIntegrationCleanup([
+                {
+                    label: 'rate-limit auth user',
+                    cleanup: () => supabase.auth.admin.deleteUser(testUserId),
+                },
+            ]);
         }
     });
 

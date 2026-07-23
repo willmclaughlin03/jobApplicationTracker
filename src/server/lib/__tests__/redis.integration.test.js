@@ -40,7 +40,9 @@ const SKIP_INTEGRATION =
     !process.env.UPSTASH_REDIS_REST_TOKEN;
 
 const describeIntegration = SKIP_INTEGRATION ? describe.skip : describe;
-const redisTestRunId = randomUUID();
+const redisTestRunId = process.env.INTEGRATION_TEST_RUN_ID
+    ? `${process.env.INTEGRATION_TEST_RUN_ID}:${randomUUID()}`
+    : randomUUID();
 
 describeIntegration('redis.js — integration (real Upstash)', () => {
     let redis;

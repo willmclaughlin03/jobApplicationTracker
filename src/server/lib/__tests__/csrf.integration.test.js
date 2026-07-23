@@ -33,6 +33,9 @@ const {
     resolveTestCsrfSecret,
     restoreEnvironmentVariable,
 } = require('../../../testSupport/integrationEnvironment.js');
+const {
+    runIntegrationCleanup,
+} = require('../../../testSupport/integrationCleanup.js');
 
 const originalCsrfSecret = process.env.CSRF_SECRET;
 const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
@@ -105,7 +108,12 @@ describeIntegration('csrf.js — integration (real crypto, real user)', () => {
                 TEST_URL,
                 TEST_SERVICE_KEY
             );
-            await supabase.auth.admin.deleteUser(testUserId);
+            await runIntegrationCleanup([
+                {
+                    label: 'CSRF auth user',
+                    cleanup: () => supabase.auth.admin.deleteUser(testUserId),
+                },
+            ]);
         }
     });
 
