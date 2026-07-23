@@ -1,4 +1,5 @@
 import Head from 'next/head';
+import Image from 'next/image';
 import { useRouter } from 'next/router';
 import { ERROR_STATUS_CODES } from '../../shared/constants/errorStatusCodes';
 
@@ -139,10 +140,12 @@ export default function ErrorPage({
           aria-labelledby="error-page-title"
           className="w-full max-w-lg bg-white border border-gray-200 rounded-lg shadow-sm px-7 py-8 text-center"
         >
-          <img
+          <Image
             src="/favicon.png"
             alt=""
             aria-hidden="true"
+            width={48}
+            height={48}
             className="mx-auto mb-5 h-12 w-12"
           />
 

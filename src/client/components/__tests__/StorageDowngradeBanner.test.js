@@ -78,6 +78,10 @@ describe('StorageDowngradeBanner', () => {
     expect(el.textContent).toContain('450');
     expect(el.textContent).toContain('150');
     expect(el.textContent).toContain('Nothing will be deleted');
+    const billingLink = Array.from(el.querySelectorAll('a')).find(
+      (link) => link.textContent === 'Review billing',
+    );
+    expect(billingLink?.getAttribute('href')).toBe('/billing');
   });
 
   it('does not render downgrade copy for ambiguous storage states', () => {

@@ -8,6 +8,7 @@ scripts/*
 !scripts/billing-drain-checkout-sessions.mjs
 !scripts/stripe-local-integration-check.mjs
 !scripts/validate-build-env.js
+!scripts/run-trusted-integration.js
 
 # AI tailor feature — test fixtures contain canary strings (fake sk-/Bearer
 # tokens) used to verify the credential scanner. Keep them out of git so

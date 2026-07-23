@@ -368,6 +368,8 @@ export default function LockedArchivePanel({ storageSummary = null, onArchiveDel
           >
             {isOpen ? 'Hide archive' : 'View archive'}
           </button>
+          {/* This API navigation intentionally triggers a browser-managed CSV download. */}
+          {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
           <a
             href="/api/storage/export"
             className="inline-flex items-center justify-center rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"

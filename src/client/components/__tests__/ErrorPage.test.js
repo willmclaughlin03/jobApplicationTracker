@@ -108,11 +108,11 @@ describe('ErrorPage', () => {
   let getErrorPageContent;
 
   beforeAll(() => {
-    const module = require('../ErrorPage.jsx');
-    ErrorPage = module.default;
-    ERROR_PAGE_CONTENT = module.ERROR_PAGE_CONTENT;
-    ERROR_STATUS_CODES = module.ERROR_STATUS_CODES;
-    getErrorPageContent = module.getErrorPageContent;
+    const errorPageModule = require('../ErrorPage.jsx');
+    ErrorPage = errorPageModule.default;
+    ERROR_PAGE_CONTENT = errorPageModule.ERROR_PAGE_CONTENT;
+    ERROR_STATUS_CODES = errorPageModule.ERROR_STATUS_CODES;
+    getErrorPageContent = errorPageModule.getErrorPageContent;
   });
 
   it('keeps page content aligned with the shared public error statuses', () => {

@@ -1,5 +1,4 @@
 import { Ratelimit } from '@upstash/ratelimit'
-import { Redis } from '@upstash/redis'
 import { OPERATIONS, TIER_LIMITS, TIERS } from '../../shared/constants/tiers';
 import { getRedisClient, logRedisDownOnce, setLastCallStatus } from './redis';
 import { logger } from '../../shared/logger';
@@ -11,7 +10,7 @@ let lastWarnTime = 0;
 const WARN_THROTTLE_MS = 60_000;
 
 
-/** @type {Map<string, {limiter: Ratelimit, redis: Redis}>} Cached limiter instances keyed by tier:operation:window */
+/** @type {Map<string, {limiter: Ratelimit, redis: import('@upstash/redis').Redis}>} Cached limiter instances keyed by tier:operation:window */
 const limiterCache = new Map()
 
 /**
