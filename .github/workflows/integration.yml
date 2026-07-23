@@ -3,6 +3,8 @@ name: Trusted Integration
 on:
   workflow_dispatch:
 
+permissions: {}
+
 jobs:
   guard-staging-ref:
     name: guard-staging-ref

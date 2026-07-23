@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-19
 
+- `2026-07-22` - `Trusted integration default permissions`: Denied GitHub token permissions at the workflow level while preserving each job's explicit least-privilege override.
 - `2026-07-22` - `Trusted staging integration workflow`: Added a manual, staging-ref-only GitHub Actions workflow with an Environment-secret preflight, exact Supabase target verification, deployment-credential fallback refusal, serialized infrastructure access, and child-process-only destructive test opt-in.
   - impact: Missing canonical names, a mismatched Supabase target, or configured deployment fallbacks now fail safely before Jest imports destructive suites or contacts remote test infrastructure.
 - `2026-07-22` - `Empty Stripe plan-label normalization`: Moved final trimming after control-character replacement and whitespace collapsing so control-only unsupported plans render as `[empty]`, with focused regression coverage.
