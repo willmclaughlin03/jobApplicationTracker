@@ -12,7 +12,8 @@
   "ignorePatterns": [
     ".next/**",
     ".tmp/**",
-    ".codex-pr-*/**"
+    ".codex-pr-*/**",
+    "package.json"
   ],
   "rules": {
     "no-constant-condition": [
