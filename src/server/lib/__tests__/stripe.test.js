@@ -145,6 +145,15 @@ describe('stripe runtime foundation', () => {
     }
   });
 
+  it('labels control-character-only unsupported billing plans as empty', () => {
+    setValidTestEnv();
+
+    const { getPriceIdForPlan } = loadStripeModule();
+
+    expect(() => getPriceIdForPlan('\u0000\u007F\u009F'))
+      .toThrow('Unsupported billing plan: [empty]');
+  });
+
   it('does not validate runtime secrets when the Stripe barrel is only imported', () => {
     process.env.NEXT_PUBLIC_APP_URL = 'https://app.example.test';
     process.env.STRIPE_PRICE_PREMIUM_MONTHLY = 'price_premium_monthly';

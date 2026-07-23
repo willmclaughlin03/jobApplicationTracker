@@ -12,6 +12,14 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-07-19
+
+- `2026-07-22` - `Empty Stripe plan-label normalization`: Moved final trimming after control-character replacement and whitespace collapsing so control-only unsupported plans render as `[empty]`, with focused regression coverage.
+- `2026-07-22` - `Storage downgrade billing-link coverage`: Added focused regression coverage that keeps the scheduled-downgrade banner's Review billing CTA linked to `/billing`.
+- `2026-07-22` - `Superseded CI run cancellation`: Grouped CI runs by workflow and pull-request or ref identity so newer runs cancel obsolete in-progress work without affecting other pull requests or refs.
+- `2026-07-22` - `Secret-free pull-request CI`: Added the SHA-pinned `CI / unit-lint-build` GitHub Actions gate for pull requests and protected-branch pushes, with exact Node 22 dependency installs, a strict Next.js lint baseline, deterministic unit tests, and build-only non-secret placeholders.
+  - impact: Changes targeting `staging` or `main` can be checked without repository secrets, GitHub Environments, integration infrastructure, deployment steps, or artifact uploads.
+
 ### Week of 2026-07-12
 
 - `2026-07-21` - `Billing success unresolved-status retry`: Added the existing manual refresh action to the explicit unresolved checkout ERROR state while preserving its payment-status wait copy, with page-level regression coverage for retrying into an active state.

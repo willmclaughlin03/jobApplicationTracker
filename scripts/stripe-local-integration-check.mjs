@@ -1686,7 +1686,7 @@ async function verifyCompletedCheckoutSession(stripe, supabase, config, args) {
   };
   let latestCustomerRow = null;
 
-  const customerRow = await waitForCheck({
+  await waitForCheck({
     ...waitOptions,
     timeoutMs: Math.max(0, postCheckoutDeadlineMs - Date.now()),
     check: async () => {
