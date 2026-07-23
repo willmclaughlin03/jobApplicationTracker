@@ -3,7 +3,7 @@ BEGIN;
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 SET LOCAL search_path = public, extensions, pg_catalog;
 
-SELECT plan(71);
+SELECT plan(72);
 
 -- Catalog assertions pin the baseline fingerprint without relying on row data.
 SELECT is(
@@ -397,6 +397,48 @@ SELECT throws_ok(
   '23503'::character(5),
   NULL,
   '71: billing foreign keys restrict auth user deletion'
+);
+
+CREATE TABLE public._default_privilege_guard_table (id bigint);
+CREATE SEQUENCE public._default_privilege_guard_sequence;
+
+-- Creates a disposable post-migration function to exercise public function defaults.
+-- It has no inputs or external side effects, and the surrounding transaction removes it.
+CREATE FUNCTION public._default_privilege_guard_function()
+RETURNS boolean
+LANGUAGE sql
+SET search_path = pg_catalog
+AS 'SELECT true';
+
+WITH disallowed_acl AS (
+  SELECT acl.grantee
+  FROM pg_class AS c
+  CROSS JOIN LATERAL aclexplode(c.relacl) AS acl
+  WHERE c.oid IN (
+    'public._default_privilege_guard_table'::regclass,
+    'public._default_privilege_guard_sequence'::regclass
+  )
+    AND (
+      acl.grantee = 0
+      OR acl.grantee IN (SELECT oid FROM pg_roles WHERE rolname IN ('anon', 'authenticated'))
+    )
+
+  UNION ALL
+
+  SELECT acl.grantee
+  FROM pg_proc AS p
+  CROSS JOIN LATERAL aclexplode(p.proacl) AS acl
+  WHERE p.oid = 'public._default_privilege_guard_function()'::regprocedure
+    AND (
+      acl.grantee = 0
+      OR acl.grantee IN (SELECT oid FROM pg_roles WHERE rolname IN ('anon', 'authenticated'))
+    )
+)
+SELECT ok(
+  NOT EXISTS (SELECT 1 FROM disallowed_acl)
+    AND NOT has_function_privilege('anon', 'public._default_privilege_guard_function()', 'EXECUTE')
+    AND NOT has_function_privilege('authenticated', 'public._default_privilege_guard_function()', 'EXECUTE'),
+  '72: future public objects do not inherit client-role privileges'
 );
 
 SELECT * FROM finish();

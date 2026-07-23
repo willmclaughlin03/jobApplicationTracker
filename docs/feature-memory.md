@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-19
 
+- `2026-07-23` - `Fail-closed public default privileges`: Limited future public tables, sequences, and functions to administrative service roles and added a disposable-object pgTAP regression guard against client-role inheritance.
 - `2026-07-23` - `Authoritative Supabase baseline publication`: Added the reviewed local Supabase configuration, authoritative pre-production baseline and reconciliation migrations, and the 71-assertion pgTAP final-state contract.
   - impact: The dedicated integration-test project can be provisioned from a version-controlled canonical migration chain before any test-only database helper is installed.
 - `2026-07-23` - `CodeRabbit package lint compatibility`: Excluded the root `package.json` from ESLint so CodeRabbit does not parse valid JSON through the Next.js JavaScript parser while source linting remains unchanged.
