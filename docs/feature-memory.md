@@ -16,6 +16,7 @@ Use this file as a quick-running log of implemented changes.
 
 - `2026-07-23` - `Authoritative Supabase baseline publication`: Added the reviewed local Supabase configuration, authoritative pre-production baseline and reconciliation migrations, and the 71-assertion pgTAP final-state contract.
   - impact: The dedicated integration-test project can be provisioned from a version-controlled canonical migration chain before any test-only database helper is installed.
+- `2026-07-23` - `CodeRabbit package lint compatibility`: Excluded the root `package.json` from ESLint so CodeRabbit does not parse valid JSON through the Next.js JavaScript parser while source linting remains unchanged.
 - `2026-07-22` - `Trusted integration default permissions`: Denied GitHub token permissions at the workflow level while preserving each job's explicit least-privilege override.
 - `2026-07-22` - `Trusted staging integration workflow`: Added a manual, staging-ref-only GitHub Actions workflow with an Environment-secret preflight, exact Supabase target verification, deployment-credential fallback refusal, serialized infrastructure access, and child-process-only destructive test opt-in.
   - impact: Missing canonical names, a mismatched Supabase target, or configured deployment fallbacks now fail safely before Jest imports destructive suites or contacts remote test infrastructure.
