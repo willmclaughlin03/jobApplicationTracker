@@ -172,7 +172,7 @@ describeOrSkip('Suite A — Migration + RLS integration', () => {
           ]
         : []),
       ...userIds.map((userId) => ({
-        label: 'migration-suite auth users',
+        label: `migration-suite auth user ${userId === userAId ? 'A' : 'B'}`,
         cleanup: () => serviceClient.auth.admin.deleteUser(userId),
       })),
     ]);
@@ -191,7 +191,6 @@ describeOrSkip('Suite A — Migration + RLS integration', () => {
       query: `
         SELECT version::text AS version
         FROM supabase_migrations.schema_migrations
-        WHERE version IN ('20260713000000', '20260713000100')
         ORDER BY version
       `,
     });

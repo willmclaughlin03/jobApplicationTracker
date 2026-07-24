@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-19
 
+- `2026-07-24` - `Migration-suite readiness diagnostics`: Gave each staging migration-suite auth-user cleanup a distinct A/B label while preserving names-only failure reporting and unchanged deletion behavior, made the canonical migration assertion compare the complete ordered remote catalog without a hardcoded version filter, and covered duplicate cleanup-label deduplication across returned and rejected failures.
 - `2026-07-23` - `Trusted integration readiness hardening`: Added an offline wrong-project refusal proof, names-only all-attempted teardown, canonical schema/catalog assertions, workflow-correlated Redis evidence keys, and a restricted test-only SQL helper with its own pgTAP contract.
   - impact: Manual staging integration runs now fail closed before remote imports, expose cleanup failures without leaking identifiers, and keep the arbitrary-SQL helper outside the deployable migration chain.
 - `2026-07-23` - `Fail-closed public default privileges`: Limited future public tables, sequences, and functions to administrative service roles and added a disposable-object pgTAP regression guard against client-role inheritance.
