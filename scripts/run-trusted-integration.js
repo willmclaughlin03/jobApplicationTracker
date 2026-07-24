@@ -36,6 +36,8 @@ const FORBIDDEN_APPLICATION_ENV_NAMES = Object.freeze([
 ]);
 
 const INTEGRATION_TEST_RUN_ID_ENV_NAME = 'INTEGRATION_TEST_RUN_ID';
+const SUPABASE_PROJECT_REF_MISMATCH_MESSAGE =
+  'TEST_SUPABASE_URL must match SUPABASE_TEST_PROJECT_REF before trusted integration tests run.';
 const NPM_INTEGRATION_ARGUMENTS = Object.freeze([
   'run',
   'test:integration',
@@ -102,6 +104,92 @@ function deriveIntegrationTestRunId(env) {
 }
 
 /**
+ * Enforce the exact independently configured Supabase project reference.
+ *
+ * Purpose: both the offline refusal proof and the normal trusted preflight
+ * exercise this single target validator before any service client is imported.
+ *
+ * @param {unknown} testUrl candidate TEST_SUPABASE_URL value
+ * @param {unknown} projectRef independently configured expected project ref
+ * @returns {void}
+ * @throws {Error} with one static message when the target does not match
+ */
+function assertSupabaseTestProject(testUrl, projectRef) {
+  if (!matchesSupabaseTestProject(testUrl, projectRef)) {
+    throw new Error(SUPABASE_PROJECT_REF_MISMATCH_MESSAGE);
+  }
+}
+
+/**
+ * Build a guaranteed-different in-memory project reference for refusal proof.
+ *
+ * Purpose: the workflow must demonstrate wrong-target refusal without changing
+ * the configured GitHub Environment value or contacting Supabase.
+ *
+ * @param {unknown} configuredProjectRef expected project ref from the environment
+ * @returns {string} bounded lowercase proof ref that differs from the configured ref
+ */
+function buildWrongProjectRef(configuredProjectRef) {
+  const primaryProofRef = '00000000000000000000';
+  return typeof configuredProjectRef === 'string'
+    && configuredProjectRef.trim() === primaryProofRef
+    ? '11111111111111111111'
+    : primaryProofRef;
+}
+
+/**
+ * Prove the real target validator rejects an intentionally wrong project ref.
+ *
+ * Purpose: this dependency-free proof runs before normal preflight and npm
+ * install, succeeds only on the exact mismatch diagnostic, and never creates a
+ * Supabase or Redis client.
+ *
+ * @param {NodeJS.ProcessEnv|Record<string, unknown>} env environment snapshot
+ * @param {(testUrl: unknown, projectRef: unknown) => void} validateProject target validator
+ * @returns {void}
+ * @throws {Error} for missing names, unrelated refusal, or unexpected acceptance
+ */
+function proveProjectRefRefusal(
+  env,
+  validateProject = assertSupabaseTestProject
+) {
+  const missingNames = findMissingTestEnvironmentNames(env, [
+    ...REQUIRED_TRUSTED_INTEGRATION_ENV_NAMES,
+    ...REQUIRED_GITHUB_RUN_ENV_NAMES,
+  ]);
+
+  if (missingNames.length > 0) {
+    throw new Error(formatEnvironmentNameDiagnostic(
+      'Missing required trusted integration environment variables:',
+      missingNames
+    ));
+  }
+
+  const wrongProjectRef = buildWrongProjectRef(
+    env[SUPABASE_TEST_PROJECT_REF_ENV_NAME]
+  );
+
+  try {
+    validateProject(env[TEST_SUPABASE_ENV_NAMES.url], wrongProjectRef);
+  } catch (error) {
+    if (
+      error instanceof Error
+      && error.message === SUPABASE_PROJECT_REF_MISMATCH_MESSAGE
+    ) {
+      return;
+    }
+
+    throw new Error(
+      'Supabase project-ref refusal proof failed for an unrelated reason.'
+    );
+  }
+
+  throw new Error(
+    'Supabase project-ref refusal proof unexpectedly accepted the wrong project.'
+  );
+}
+
+/**
  * Validate the complete trusted-integration boundary before remote test imports.
  *
  * Purpose: GitHub Environment names alone do not prove target safety, so this
@@ -148,14 +236,10 @@ function validateTrustedIntegrationEnvironment(env) {
 
   resolveTestCsrfSecret(env, '');
 
-  if (!matchesSupabaseTestProject(
+  assertSupabaseTestProject(
     env[TEST_SUPABASE_ENV_NAMES.url],
     env[SUPABASE_TEST_PROJECT_REF_ENV_NAME]
-  )) {
-    throw new Error(
-      'TEST_SUPABASE_URL must match SUPABASE_TEST_PROJECT_REF before trusted integration tests run.'
-    );
-  }
+  );
 
   return {
     runId: deriveIntegrationTestRunId(env),
@@ -223,7 +307,7 @@ function writeTrustedIntegrationError(message) {
 }
 
 /**
- * Run the trusted integration CLI in preflight-only or child-execution mode.
+ * Run the trusted integration CLI in proof, preflight, or child-execution mode.
  *
  * Purpose: the workflow can validate configuration before dependency install,
  * then repeat the same preflight immediately before the destructive test child.
@@ -239,13 +323,20 @@ function runTrustedIntegrationCli(
   writeError = writeTrustedIntegrationError
 ) {
   try {
+    if (argv.length === 1 && argv[0] === '--prove-project-ref-refusal') {
+      proveProjectRefRefusal(env);
+      return 0;
+    }
+
     if (argv.length === 1 && argv[0] === '--preflight-only') {
       validateTrustedIntegrationEnvironment(env);
       return 0;
     }
 
     if (argv.length !== 0) {
-      throw new Error('Trusted integration runner accepts only --preflight-only.');
+      throw new Error(
+        'Trusted integration runner accepts only --prove-project-ref-refusal or --preflight-only.'
+      );
     }
 
     return runTrustedIntegrationTests(env);
@@ -267,10 +358,14 @@ module.exports = {
   NPM_INTEGRATION_ARGUMENTS,
   REQUIRED_GITHUB_RUN_ENV_NAMES,
   REQUIRED_TRUSTED_INTEGRATION_ENV_NAMES,
+  SUPABASE_PROJECT_REF_MISMATCH_MESSAGE,
+  assertSupabaseTestProject,
   buildTrustedIntegrationChildEnvironment,
+  buildWrongProjectRef,
   deriveIntegrationTestRunId,
   findConfiguredEnvironmentNames,
   formatEnvironmentNameDiagnostic,
+  proveProjectRefRefusal,
   runTrustedIntegrationCli,
   runTrustedIntegrationTests,
   validateTrustedIntegrationEnvironment,

@@ -50,6 +50,20 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
+      - name: Prove wrong Supabase project refusal
+        env:
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_ANON_KEY: ${{ secrets.TEST_SUPABASE_ANON_KEY }}
+          TEST_SUPABASE_SERVICE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_KEY }}
+          SUPABASE_TEST_USER_A_EMAIL: ${{ secrets.SUPABASE_TEST_USER_A_EMAIL }}
+          SUPABASE_TEST_USER_B_EMAIL: ${{ secrets.SUPABASE_TEST_USER_B_EMAIL }}
+          SUPABASE_TEST_USER_ID: ${{ secrets.SUPABASE_TEST_USER_ID }}
+          TEST_CSRF: ${{ secrets.TEST_CSRF }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          SUPABASE_TEST_PROJECT_REF: ${{ secrets.SUPABASE_TEST_PROJECT_REF }}
+        run: node scripts/run-trusted-integration.js --prove-project-ref-refusal
+
       - name: Validate trusted integration configuration
         env:
           TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}

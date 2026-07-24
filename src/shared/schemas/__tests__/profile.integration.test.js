@@ -31,6 +31,9 @@ const {
   TEST_SUPABASE_ENV_NAMES,
   resolveDestructiveIntegrationEnvironment,
 } = require('../../../testSupport/integrationEnvironment.js');
+const {
+  runIntegrationCleanup,
+} = require('../../../testSupport/integrationCleanup.js');
 
 const FIXTURES = join(__dirname, 'fixtures', 'profiles');
 
@@ -173,9 +176,16 @@ describeOrSkip('Suite B — Block 2: DB round-trip (requires TEST_SUPABASE_URL +
   });
 
   afterAll(async () => {
-    // Clean up test data
     if (supabase) {
-      await supabase.from('user_profiles').delete().eq('id', TEST_USER_ID);
+      await runIntegrationCleanup([
+        {
+          label: 'profile rows',
+          cleanup: () => supabase
+            .from('user_profiles')
+            .delete()
+            .eq('user_id', TEST_USER_ID),
+        },
+      ]);
     }
   });
 
@@ -185,14 +195,14 @@ describeOrSkip('Suite B — Block 2: DB round-trip (requires TEST_SUPABASE_URL +
 
     const { error: upsertError } = await supabase
       .from('user_profiles')
-      .upsert({ id: TEST_USER_ID, ...parsed });
+      .upsert({ user_id: TEST_USER_ID, ...parsed });
 
     expect(upsertError).toBeNull();
 
     const { data, error: selectError } = await supabase
       .from('user_profiles')
       .select('*')
-      .eq('id', TEST_USER_ID)
+      .eq('user_id', TEST_USER_ID)
       .single();
 
     expect(selectError).toBeNull();
@@ -207,11 +217,11 @@ describeOrSkip('Suite B — Block 2: DB round-trip (requires TEST_SUPABASE_URL +
     const parsed = UserProfile.parse(raw);
 
     // First upsert
-    await supabase.from('user_profiles').upsert({ id: TEST_USER_ID, ...parsed });
+    await supabase.from('user_profiles').upsert({ user_id: TEST_USER_ID, ...parsed });
     const { data: d1 } = await supabase
       .from('user_profiles')
       .select('updated_at')
-      .eq('id', TEST_USER_ID)
+      .eq('user_id', TEST_USER_ID)
       .single();
     const t1 = new Date(d1.updated_at).getTime();
 
@@ -220,14 +230,14 @@ describeOrSkip('Suite B — Block 2: DB round-trip (requires TEST_SUPABASE_URL +
 
     // Second upsert with a change
     await supabase.from('user_profiles').upsert({
-      id: TEST_USER_ID,
+      user_id: TEST_USER_ID,
       ...parsed,
       summary: 'Updated summary for trigger test.',
     });
     const { data: d2 } = await supabase
       .from('user_profiles')
       .select('updated_at')
-      .eq('id', TEST_USER_ID)
+      .eq('user_id', TEST_USER_ID)
       .single();
     const t2 = new Date(d2.updated_at).getTime();
 

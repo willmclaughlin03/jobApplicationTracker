@@ -25,6 +25,9 @@ const {
   resolveDescribeOrSkip,
 } = require('../../../testSupport/integrationEnvironment.js');
 
+const {
+  runIntegrationCleanup,
+} = require('../../../testSupport/integrationCleanup.js');
 const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
 const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
 const { describeOrSkip } = resolveDescribeOrSkip(process.env, {
@@ -358,14 +361,18 @@ describeOrSkip('Suite D - Jobs atomic create quota integration', () => {
     if (!serviceClient) return;
 
     const userIds = [...cleanupUserIds];
-
-    if (userIds.length > 0) {
-      await serviceClient.from('jobs').delete().in('user_id', userIds);
-    }
-
-    for (const userId of userIds) {
-      await serviceClient.auth.admin.deleteUser(userId);
-    }
+    await runIntegrationCleanup([
+      ...(userIds.length > 0
+        ? [{
+            label: 'jobs rows',
+            cleanup: () => serviceClient.from('jobs').delete().in('user_id', userIds),
+          }]
+        : []),
+      ...userIds.map((userId) => ({
+        label: 'temporary auth users',
+        cleanup: () => serviceClient.auth.admin.deleteUser(userId),
+      })),
+    ]);
   });
 
   test('D1: atomic create quota migration file exists', () => {

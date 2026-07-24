@@ -6,6 +6,9 @@ const {
   FORBIDDEN_APPLICATION_ENV_NAMES,
   INTEGRATION_TEST_RUN_ID_ENV_NAME,
   NPM_INTEGRATION_ARGUMENTS,
+  SUPABASE_PROJECT_REF_MISMATCH_MESSAGE,
+  buildWrongProjectRef,
+  proveProjectRefRefusal,
   runTrustedIntegrationCli,
   runTrustedIntegrationTests,
 } = require('../../../scripts/run-trusted-integration.js');
@@ -49,7 +52,96 @@ function runPreflightSubprocess(env) {
   });
 }
 
+/**
+ * Execute only the real project-ref refusal proof in an isolated subprocess.
+ *
+ * Purpose: the workflow proof must remain dependency-free and finish before
+ * npm or Jest starts while emitting only audited static diagnostics.
+ *
+ * @param {Record<string, string>} env complete fake subprocess environment
+ * @returns {import('node:child_process').SpawnSyncReturns<string>} process result
+ */
+function runRefusalProofSubprocess(env) {
+  return spawnSync(
+    process.execPath,
+    [RUNNER_PATH, '--prove-project-ref-refusal'],
+    {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      env,
+      shell: false,
+      windowsHide: true,
+    }
+  );
+}
+
 describe('trusted integration runner', () => {
+  it('proves an in-memory wrong project ref is refused without starting Jest', () => {
+    const result = runRefusalProofSubprocess({ ...VALID_TRUSTED_ENV });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('');
+  });
+
+  it('requires every configured name before attempting the refusal proof', () => {
+    const env = { ...VALID_TRUSTED_ENV };
+    delete env.TEST_SUPABASE_SERVICE_KEY;
+    delete env.SUPABASE_TEST_PROJECT_REF;
+
+    const result = runRefusalProofSubprocess(env);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toBe(
+      'Missing required trusted integration environment variables:\n'
+      + '- TEST_SUPABASE_SERVICE_KEY\n'
+      + '- SUPABASE_TEST_PROJECT_REF\n'
+    );
+    expect(result.stderr).not.toContain(SECRET_SENTINEL);
+  });
+
+  it('constructs a bounded project ref that always differs from configuration', () => {
+    expect(buildWrongProjectRef('expectedref')).toBe('00000000000000000000');
+    expect(buildWrongProjectRef('00000000000000000000')).toBe(
+      '11111111111111111111'
+    );
+  });
+
+  it('fails the refusal proof when the validator accepts the wrong ref', () => {
+    expect(() => proveProjectRefRefusal(
+      { ...VALID_TRUSTED_ENV },
+      jest.fn()
+    )).toThrow(
+      'Supabase project-ref refusal proof unexpectedly accepted the wrong project.'
+    );
+  });
+
+  it('fails the refusal proof when validation rejects for an unrelated reason', () => {
+    expect(() => proveProjectRefRefusal(
+      { ...VALID_TRUSTED_ENV },
+      jest.fn(() => {
+        throw new Error('unrelated failure');
+      })
+    )).toThrow(
+      'Supabase project-ref refusal proof failed for an unrelated reason.'
+    );
+  });
+
+  it('accepts only the exact project-ref mismatch during the refusal proof', () => {
+    const validateProject = jest.fn(() => {
+      throw new Error(SUPABASE_PROJECT_REF_MISMATCH_MESSAGE);
+    });
+
+    expect(proveProjectRefRefusal(
+      { ...VALID_TRUSTED_ENV },
+      validateProject
+    )).toBeUndefined();
+    expect(validateProject).toHaveBeenCalledWith(
+      VALID_TRUSTED_ENV.TEST_SUPABASE_URL,
+      '00000000000000000000'
+    );
+  });
+
   it('accepts the canonical fake test contract without starting Jest', () => {
     const result = runPreflightSubprocess({ ...VALID_TRUSTED_ENV });
 
@@ -189,7 +281,7 @@ describe('trusted integration runner', () => {
       writeError
     )).toBe(1);
     expect(writeError).toHaveBeenCalledWith(
-      'Trusted integration runner accepts only --preflight-only.'
+      'Trusted integration runner accepts only --prove-project-ref-refusal or --preflight-only.'
     );
   });
 });
@@ -237,7 +329,29 @@ describe('trusted integration workflow contract', () => {
     expect(workflow).not.toContain('SUPABASE_SERVICE_ROLE_KEY');
     expect(workflow).not.toContain('CSRF_SECRET');
     expect(workflow).not.toMatch(/(?:printenv|\benv\b\s*$)/m);
+    expect(workflow).toContain(
+      'run: node scripts/run-trusted-integration.js --prove-project-ref-refusal'
+    );
     expect(workflow).toContain('run: node scripts/run-trusted-integration.js --preflight-only');
     expect(workflow).toContain('run: node scripts/run-trusted-integration.js');
+  });
+
+  it('runs refusal proof and normal preflight before dependency installation', () => {
+    const workflow = readFileSync(WORKFLOW_PATH, 'utf8');
+    const refusalProofIndex = workflow.indexOf(
+      'run: node scripts/run-trusted-integration.js --prove-project-ref-refusal'
+    );
+    const preflightIndex = workflow.indexOf(
+      'run: node scripts/run-trusted-integration.js --preflight-only'
+    );
+    const installIndex = workflow.indexOf('run: npm ci');
+    const testIndex = workflow.lastIndexOf(
+      'run: node scripts/run-trusted-integration.js'
+    );
+
+    expect(refusalProofIndex).toBeGreaterThan(-1);
+    expect(preflightIndex).toBeGreaterThan(refusalProofIndex);
+    expect(installIndex).toBeGreaterThan(preflightIndex);
+    expect(testIndex).toBeGreaterThan(installIndex);
   });
 });

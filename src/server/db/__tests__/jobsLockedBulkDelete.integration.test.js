@@ -30,6 +30,9 @@ const {
   resolveDescribeOrSkip,
 } = require('../../../testSupport/integrationEnvironment.js');
 
+const {
+  runIntegrationCleanup,
+} = require('../../../testSupport/integrationCleanup.js');
 const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
 const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
 const { describeOrSkip } = resolveDescribeOrSkip(process.env, {
@@ -390,15 +393,40 @@ describeOrSkip('Suite G - Jobs locked bulk delete integration', () => {
     if (!serviceClient) return;
 
     const userIds = [...cleanupUserIds];
-    if (userIds.length > 0) {
-      await serviceClient.from('jobs').delete().in('user_id', userIds);
-      await serviceClient.from('billing_subscriptions').delete().in('user_id', userIds);
-      await serviceClient.from('billing_customers').delete().in('user_id', userIds);
-
-      await Promise.allSettled(
-        userIds.map((userId) => serviceClient.auth.admin.deleteUser(userId))
-      );
-    }
+    await runIntegrationCleanup(userIds.length > 0
+      ? [
+          {
+            label: 'jobs rows',
+            cleanup: () => serviceClient.from('jobs').delete().in('user_id', userIds),
+          },
+          {
+            label: 'billing subscription rows',
+            cleanup: () => serviceClient
+              .from('billing_subscriptions')
+              .delete()
+              .in('user_id', userIds),
+          },
+          {
+            label: 'billing customer rows',
+            cleanup: () => serviceClient
+              .from('billing_customers')
+              .delete()
+              .in('user_id', userIds),
+          },
+          {
+            label: 'temporary auth users',
+            cleanup: async () => {
+              const results = await Promise.allSettled(
+                userIds.map((userId) => serviceClient.auth.admin.deleteUser(userId))
+              );
+              const failedResults = results.filter((result) =>
+                result.status === 'rejected' || result.value?.error != null
+              );
+              return { error: failedResults.length > 0 ? true : null };
+            },
+          },
+        ]
+      : []);
   });
 
   it('deletes locked rows only and preserves active rows for terminal-Free users', async () => {
