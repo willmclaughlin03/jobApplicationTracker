@@ -143,6 +143,9 @@ describe('integration cleanup runner', () => {
         'auth users',
         'profile rows',
       ]);
+      expect(returnedFailure).toHaveBeenCalledTimes(1);
+      expect(rejectedFailure).toHaveBeenCalledTimes(1);
+      expect(distinctFailure).toHaveBeenCalledTimes(1);
     }
   );
 
