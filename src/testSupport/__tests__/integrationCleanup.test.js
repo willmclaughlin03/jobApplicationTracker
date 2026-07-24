@@ -104,37 +104,47 @@ describe('integration cleanup runner', () => {
     ]);
   });
 
-  it('deduplicates repeated failed labels without dropping distinct failures', async () => {
-    let capturedError;
-    const returnedFailure = jest.fn().mockResolvedValue({
-      error: new Error(PROVIDER_SENTINEL),
-    });
-    const rejectedFailure = jest.fn().mockRejectedValue(new Error(PROVIDER_SENTINEL));
-    const distinctFailure = jest.fn().mockResolvedValue({
-      error: new Error(PROVIDER_SENTINEL),
-    });
+  it(
+    'deduplicates repeated failed labels without dropping distinct failures',
+    /**
+     * Verifies the cleanup runner reports repeated failure labels once while
+     * preserving distinct failures. The returnedFailure, rejectedFailure, and
+     * distinctFailure mocks exercise both supported failure channels, and the
+     * captured AggregateError guards names-only diagnostics. Its only side
+     * effect is invoking those local mocks through runIntegrationCleanup.
+     */
+    async () => {
+      let capturedError;
+      const returnedFailure = jest.fn().mockResolvedValue({
+        error: new Error(PROVIDER_SENTINEL),
+      });
+      const rejectedFailure = jest.fn().mockRejectedValue(new Error(PROVIDER_SENTINEL));
+      const distinctFailure = jest.fn().mockResolvedValue({
+        error: new Error(PROVIDER_SENTINEL),
+      });
 
-    try {
-      await runIntegrationCleanup([
-        { label: 'auth users', cleanup: returnedFailure },
-        { label: 'auth users', cleanup: rejectedFailure },
-        { label: 'profile rows', cleanup: distinctFailure },
+      try {
+        await runIntegrationCleanup([
+          { label: 'auth users', cleanup: returnedFailure },
+          { label: 'auth users', cleanup: rejectedFailure },
+          { label: 'profile rows', cleanup: distinctFailure },
+        ]);
+      } catch (error) {
+        capturedError = error;
+      }
+
+      expect(capturedError).toBeInstanceOf(AggregateError);
+      expect(capturedError.message).toBe(
+        'Integration cleanup failed for steps:\n'
+        + '- auth users\n'
+        + '- profile rows'
+      );
+      expect(capturedError.errors.map((error) => error.message)).toEqual([
+        'auth users',
+        'profile rows',
       ]);
-    } catch (error) {
-      capturedError = error;
     }
-
-    expect(capturedError).toBeInstanceOf(AggregateError);
-    expect(capturedError.message).toBe(
-      'Integration cleanup failed for steps:\n'
-      + '- auth users\n'
-      + '- profile rows'
-    );
-    expect(capturedError.errors.map((error) => error.message)).toEqual([
-      'auth users',
-      'profile rows',
-    ]);
-  });
+  );
 
   it('keeps provider messages, emails, ids, and raw errors out of diagnostics', async () => {
     let capturedError;
