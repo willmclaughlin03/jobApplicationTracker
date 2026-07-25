@@ -1,56 +1,52 @@
 /**
- * Suite A — Migration + RLS integration tests
+ * Suite A - Canonical migration catalog + RLS integration tests
  *
- * Historical harness for the four pre-billing schema migrations against a real
- * test Supabase instance. Also verifies RLS policies on the four installed
- * tables when the schema already exists in the integration environment.
+ * Verifies the canonical Supabase baseline is recorded in the dedicated test
+ * project, then exercises the Phase 0 tables and RLS policies without replaying
+ * deployable migrations through the test-only exec_sql helper.
  *
  * Prerequisites (ALL required before this suite can run):
- *   1. Supabase project (the app's pre-prod instance is reused — see env vars)
+ *   1. Dedicated Supabase integration-test project
  *   2. Env vars: TEST_SUPABASE_URL, TEST_SUPABASE_SERVICE_KEY,
  *                TEST_SUPABASE_ANON_KEY
- *   3. Historical migration SQL files present under src/server/db/migrations/:
- *        001_user_profiles.sql
- *        002_tailor_cache.sql
- *        003_abuse_counters.sql
- *        004_daily_spend.sql
- *      Under the current repo policy these files are not stored in source
- *      control. The schema was applied directly via the Supabase console
- *      during Phase 0 development, so repo-only replay is unavailable.
- *   4. Two test user emails (SUPABASE_TEST_USER_A_EMAIL,
+ *   3. Canonical migrations under supabase/migrations already applied in order
+ *   4. Restricted service-role-only public.exec_sql(query text) installed only
+ *      after the canonical chain and authoritative baseline checks pass
+ *   5. Two test user emails (SUPABASE_TEST_USER_A_EMAIL,
  *      SUPABASE_TEST_USER_B_EMAIL). The suite creates the auth users via the
- *      admin API and signs them in via admin-generated magic links — no
+ *      admin API and signs them in via admin-generated magic links - no
  *      passwords required (the project uses OAuth in normal use).
  *
- * ⚠️  BLOCKER: Repo-only migration replay is unavailable because the original
- *     SQL files are not present under the current local-only policy. Migration
- *     run tests (A1, A2) stay blocked; RLS tests (A3–A11) may still run
- *     against an already-migrated test instance.
- *
  * Test structure:
- *   A1  – Run four migrations in order on a fresh schema, no errors
- *   A2  – user_profiles schema: insert row, verify columns + types
- *   A3  – user_profiles updated_at trigger: t2 > t1 after update
- *   A4  – user_profiles RLS: user can read own row
- *   A5  – user_profiles RLS: user can update own row
- *   A6  – user_profiles RLS: user cannot read another user's row
- *   A7  – user_profiles RLS: user cannot update another user's row
- *   A8  – tailor_cache RLS: user can insert + select own hash
- *   A9  – tailor_cache RLS: user cannot read another user's cache row
- *   A10 – abuse_counters RLS: authenticated user sees zero rows (service-role only)
- *   A11 – daily_spend RLS: authenticated user sees zero rows (service-role only)
- *   A12 – daily_spend UTC date: stored date matches UTC date regardless of client TZ
+ *   A1  - Canonical local files and remote migration catalog agree
+ *   A2-A7  - user_profiles shape, trigger, and owner isolation
+ *   A8-A9  - tailor_cache canonical shape and owner isolation
+ *   A10-A11 - service-role-only table boundaries
+ *   A12 - daily_spend canonical global-date shape and exact-date cleanup
  */
 
-import { readFileSync, existsSync } from 'fs';
+import { existsSync } from 'fs';
 import { join } from 'path';
 
-const MIGRATIONS_DIR = join(__dirname, '..', 'migrations');
+const SUPABASE_MIGRATIONS_DIR = join(process.cwd(), 'supabase', 'migrations');
+const CANONICAL_MIGRATIONS = Object.freeze([
+  {
+    filename: '20260713000000_authoritative_preproduction_baseline.sql',
+    version: '20260713000000',
+  },
+  {
+    filename: '20260713000100_reconcile_preproduction_schema_drift.sql',
+    version: '20260713000100',
+  },
+]);
 
 const {
   TEST_SUPABASE_ENV_NAMES,
   resolveDestructiveIntegrationEnvironment,
 } = require('../../../testSupport/integrationEnvironment.js');
+const {
+  runIntegrationCleanup,
+} = require('../../../testSupport/integrationCleanup.js');
 
 const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
 const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
@@ -106,16 +102,7 @@ describeOrSkip('Suite A — Migration + RLS integration', () => {
   let userAId;
   let userBId;
 
-  const MIGRATION_FILES = [
-    '001_user_profiles.sql',
-    '002_tailor_cache.sql',
-    '003_abuse_counters.sql',
-    '004_daily_spend.sql',
-  ];
-
-  const hasMigrationFiles = MIGRATION_FILES.every((f) =>
-    existsSync(join(MIGRATIONS_DIR, f))
-  );
+  const dailySpendTestDate = new Date().toISOString().split('T')[0];
 
   beforeAll(async () => {
     const { createClient } = await import('@supabase/supabase-js');
@@ -155,32 +142,62 @@ describeOrSkip('Suite A — Migration + RLS integration', () => {
   });
 
   afterAll(async () => {
-    // Clean up test users and their data
-    if (userAId) {
-      await serviceClient.from('user_profiles').delete().eq('id', userAId);
-      await serviceClient.auth.admin.deleteUser(userAId);
-    }
-    if (userBId) {
-      await serviceClient.from('user_profiles').delete().eq('id', userBId);
-      await serviceClient.auth.admin.deleteUser(userBId);
-    }
+    if (!serviceClient) return;
+
+    const userIds = [userAId, userBId].filter(Boolean);
+    await runIntegrationCleanup([
+      {
+        label: 'daily spend test date',
+        cleanup: () => serviceClient
+          .from('daily_spend')
+          .delete()
+          .eq('date', dailySpendTestDate),
+      },
+      ...(userIds.length > 0
+        ? [
+            {
+              label: 'tailor cache rows',
+              cleanup: () => serviceClient
+                .from('tailor_cache')
+                .delete()
+                .in('user_id', userIds),
+            },
+            {
+              label: 'profile rows',
+              cleanup: () => serviceClient
+                .from('user_profiles')
+                .delete()
+                .in('user_id', userIds),
+            },
+          ]
+        : []),
+      ...userIds.map((userId) => ({
+        label: `migration-suite auth user ${userId === userAId ? 'A' : 'B'}`,
+        cleanup: () => serviceClient.auth.admin.deleteUser(userId),
+      })),
+    ]);
   });
 
   // -------------------------------------------------------------------------
-  // A1 – Run migrations in order
-  // ⚠️  BLOCKED while the historical 001-004 SQL files remain absent from repo state
+  // A1 - Verify the canonical local chain against the applied remote catalog.
   // -------------------------------------------------------------------------
 
-  (hasMigrationFiles ? test : test.skip)(
-    'A1: all four migrations run in order without errors',
-    async () => {
-      for (const filename of MIGRATION_FILES) {
-        const sql = readFileSync(join(MIGRATIONS_DIR, filename), 'utf8');
-        const { error } = await serviceClient.rpc('exec_sql', { query: sql });
-        expect(error).toBeNull();
-      }
+  test('A1: canonical Supabase migration files match the remote catalog', async () => {
+    for (const migration of CANONICAL_MIGRATIONS) {
+      expect(existsSync(join(SUPABASE_MIGRATIONS_DIR, migration.filename))).toBe(true);
     }
-  );
+
+    const { data, error } = await serviceClient.rpc('exec_sql', {
+      query: `
+        SELECT version::text AS version
+        FROM supabase_migrations.schema_migrations
+        ORDER BY version
+      `,
+    });
+
+    expect(error).toBeNull();
+    expect(data).toEqual(CANONICAL_MIGRATIONS.map(({ version }) => ({ version })));
+  });
 
   // -------------------------------------------------------------------------
   // A2 – user_profiles schema
@@ -188,7 +205,7 @@ describeOrSkip('Suite A — Migration + RLS integration', () => {
 
   test('A2: user_profiles upsert succeeds and returns expected column types', async () => {
     const { error } = await serviceClient.from('user_profiles').upsert({
-      id: userAId,
+      user_id: userAId,
       summary: 'Test summary',
       experience: [],
       skills_technical: [],
@@ -201,12 +218,12 @@ describeOrSkip('Suite A — Migration + RLS integration', () => {
 
     const { data, error: selectError } = await serviceClient
       .from('user_profiles')
-      .select('id, summary, experience, updated_at')
-      .eq('id', userAId)
+      .select('user_id, summary, experience, updated_at')
+      .eq('user_id', userAId)
       .single();
 
     expect(selectError).toBeNull();
-    expect(data.id).toBe(userAId);
+    expect(data.user_id).toBe(userAId);
     expect(typeof data.summary).toBe('string');
     expect(Array.isArray(data.experience)).toBe(true);
     expect(data.updated_at).toBeTruthy();
@@ -218,16 +235,16 @@ describeOrSkip('Suite A — Migration + RLS integration', () => {
 
   test('A3: updated_at is monotonically increasing after an update', async () => {
     // Ensure row exists
-    await serviceClient.from('user_profiles').upsert({ id: userAId, summary: 'Initial' });
+    await serviceClient.from('user_profiles').upsert({ user_id: userAId, summary: 'Initial' });
     const { data: d1 } = await serviceClient.from('user_profiles')
-      .select('updated_at').eq('id', userAId).single();
+      .select('updated_at').eq('user_id', userAId).single();
     const t1 = new Date(d1.updated_at).getTime();
 
     await new Promise((r) => setTimeout(r, 20));
 
-    await serviceClient.from('user_profiles').update({ summary: 'Updated' }).eq('id', userAId);
+    await serviceClient.from('user_profiles').update({ summary: 'Updated' }).eq('user_id', userAId);
     const { data: d2 } = await serviceClient.from('user_profiles')
-      .select('updated_at').eq('id', userAId).single();
+      .select('updated_at').eq('user_id', userAId).single();
     const t2 = new Date(d2.updated_at).getTime();
 
     expect(t2).toBeGreaterThan(t1);
@@ -239,23 +256,23 @@ describeOrSkip('Suite A — Migration + RLS integration', () => {
 
   test('A4: userA can select their own profile row', async () => {
     const { data, error } = await clientA.from('user_profiles')
-      .select('id').eq('id', userAId).single();
+      .select('user_id').eq('user_id', userAId).single();
     expect(error).toBeNull();
-    expect(data.id).toBe(userAId);
+    expect(data.user_id).toBe(userAId);
   });
 
   test('A5: userA can update their own profile row', async () => {
     const { error } = await clientA.from('user_profiles')
-      .update({ summary: 'UserA updated summary' }).eq('id', userAId);
+      .update({ summary: 'UserA updated summary' }).eq('user_id', userAId);
     expect(error).toBeNull();
   });
 
   test('A6: userA cannot read userB profile row (empty result, not error)', async () => {
     // Ensure userB row exists
-    await serviceClient.from('user_profiles').upsert({ id: userBId, summary: 'UserB row' });
+    await serviceClient.from('user_profiles').upsert({ user_id: userBId, summary: 'UserB row' });
 
     const { data, error } = await clientA.from('user_profiles')
-      .select('id').eq('id', userBId);
+      .select('user_id').eq('user_id', userBId);
     expect(error).toBeNull();
     // RLS returns empty array, not a 403
     expect(data).toHaveLength(0);
@@ -263,14 +280,14 @@ describeOrSkip('Suite A — Migration + RLS integration', () => {
 
   test('A7: userA cannot update userB profile row', async () => {
     const { error } = await clientA.from('user_profiles')
-      .update({ summary: 'Hijacked by userA' }).eq('id', userBId);
+      .update({ summary: 'Hijacked by userA' }).eq('user_id', userBId);
     // RLS silently no-ops the update (0 rows affected) rather than throwing,
     // so we verify no data was changed
     expect(error).toBeNull();
 
     // Confirm userB's summary is unchanged
     const { data } = await serviceClient.from('user_profiles')
-      .select('summary').eq('id', userBId).single();
+      .select('summary').eq('user_id', userBId).single();
     expect(data.summary).not.toBe('Hijacked by userA');
   });
 
@@ -280,25 +297,35 @@ describeOrSkip('Suite A — Migration + RLS integration', () => {
 
   test('A8: userA can insert and select their own tailor_cache row', async () => {
     const testHash = 'test-hash-' + userAId;
+    const createdAt = new Date().toISOString();
 
     const { error: insertError } = await clientA.from('tailor_cache').insert({
+      hash: testHash,
       user_id: userAId,
-      cache_key: testHash,
       response: { summary: 'cached response' },
+      created_at: createdAt,
     });
     expect(insertError).toBeNull();
 
     const { data, error: selectError } = await clientA.from('tailor_cache')
-      .select('cache_key').eq('user_id', userAId).eq('cache_key', testHash);
+      .select('hash, user_id, response, created_at')
+      .eq('user_id', userAId)
+      .eq('hash', testHash);
     expect(selectError).toBeNull();
     expect(data).toHaveLength(1);
+    expect(data[0]).toEqual(expect.objectContaining({
+      hash: testHash,
+      user_id: userAId,
+      response: { summary: 'cached response' },
+    }));
+    expect(new Date(data[0].created_at).toISOString()).toBe(createdAt);
   });
 
   test('A9: userB cannot read userA tailor_cache row', async () => {
     const testHash = 'test-hash-' + userAId;
 
     const { data, error } = await clientB.from('tailor_cache')
-      .select('cache_key').eq('user_id', userAId).eq('cache_key', testHash);
+      .select('hash').eq('user_id', userAId).eq('hash', testHash);
     expect(error).toBeNull();
     expect(data).toHaveLength(0);
   });
@@ -328,18 +355,32 @@ describeOrSkip('Suite A — Migration + RLS integration', () => {
   // -------------------------------------------------------------------------
 
   test('A12: daily_spend date column stores UTC date regardless of client timezone', async () => {
+    await runIntegrationCleanup([
+      {
+        label: 'daily spend test date',
+        cleanup: () => serviceClient
+          .from('daily_spend')
+          .delete()
+          .eq('date', dailySpendTestDate),
+      },
+    ]);
+
     const { error } = await serviceClient.from('daily_spend').insert({
-      user_id: userAId,
-      spend_date: new Date().toISOString().split('T')[0], // UTC date YYYY-MM-DD
-      total_cost_usd: 0.01,
+      date: dailySpendTestDate,
+      total_cost_cents: 1,
     });
     expect(error).toBeNull();
 
-    const { data } = await serviceClient.from('daily_spend')
-      .select('spend_date').eq('user_id', userAId).order('spend_date', { ascending: false }).limit(1);
+    const { data, error: selectError } = await serviceClient
+      .from('daily_spend')
+      .select('date, total_cost_cents')
+      .eq('date', dailySpendTestDate)
+      .single();
 
-    const storedDate = data[0].spend_date;
-    const expectedUtcDate = new Date().toISOString().split('T')[0];
-    expect(storedDate).toBe(expectedUtcDate);
+    expect(selectError).toBeNull();
+    expect(data).toEqual({
+      date: dailySpendTestDate,
+      total_cost_cents: 1,
+    });
   });
 });

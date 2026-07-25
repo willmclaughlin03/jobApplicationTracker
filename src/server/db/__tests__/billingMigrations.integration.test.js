@@ -40,6 +40,9 @@ const {
   TEST_SUPABASE_ENV_NAMES,
   resolveDescribeOrSkip,
 } = require('../../../testSupport/integrationEnvironment.js');
+const {
+  runIntegrationCleanup,
+} = require('../../../testSupport/integrationCleanup.js');
 
 const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
 const TEST_SERVICE_KEY = process.env[TEST_SUPABASE_ENV_NAMES.serviceKey];
@@ -425,7 +428,97 @@ async function signInAsUser(createClient, adminClient, email) {
   return userClient;
 }
 
+/**
+ * Clear both baseline users' billing rows only when both ids are available.
+ *
+ * Purpose: partial auth-user setup must not register billing cleanup callbacks
+ * with an unset id, while complete setup retains all-attempted cleanup.
+ *
+ * @param {object} options cleanup dependencies and baseline user ids.
+ * @param {string|undefined} options.userAId baseline user A auth id.
+ * @param {string|undefined} options.userBId baseline user B auth id.
+ * @param {Function} options.runCleanup shared all-attempted cleanup runner.
+ * @param {Function} options.cleanupBillingRowsForUser per-user billing cleanup.
+ * @returns {Promise<void>}
+ * Side effects/connections: invokes runCleanup and both per-user callbacks only
+ * when both ids are truthy.
+ */
+async function runBaselineBillingCleanup({
+  userAId,
+  userBId,
+  runCleanup,
+  cleanupBillingRowsForUser,
+}) {
+  if (!userAId || !userBId) {
+    return;
+  }
+
+  await runCleanup([
+    {
+      label: 'baseline user A billing rows',
+      cleanup: () => cleanupBillingRowsForUser(userAId),
+    },
+    {
+      label: 'baseline user B billing rows',
+      cleanup: () => cleanupBillingRowsForUser(userBId),
+    },
+  ]);
+}
+
 jest.setTimeout(30_000);
+
+describe('billing baseline cleanup guard', () => {
+  test.each([
+    ['user A', undefined, 'baseline-user-b'],
+    ['user B', 'baseline-user-a', undefined],
+  ])(
+    'skips the cleanup runner and callbacks when %s id is missing',
+    /**
+     * Verifies each partial-id state independently. The runner spy wraps the
+     * real shared runner so a mistaken invocation would also execute the local
+     * billing callback spy; no external cleanup side effects are performed.
+     */
+    async (_missingUser, userAId, userBId) => {
+      const runCleanup = jest.fn(runIntegrationCleanup);
+      const cleanupBillingRowsForUser = jest.fn().mockResolvedValue(undefined);
+
+      await runBaselineBillingCleanup({
+        userAId,
+        userBId,
+        runCleanup,
+        cleanupBillingRowsForUser,
+      });
+
+      expect(runCleanup).not.toHaveBeenCalled();
+      expect(cleanupBillingRowsForUser).not.toHaveBeenCalled();
+    }
+  );
+
+  test(
+    'runs the cleanup runner and both callbacks when both ids are available',
+    /**
+     * Verifies complete setup preserves both baseline cleanup callbacks. The
+     * runner spy delegates to the real shared runner and invokes only local
+     * callback mocks, without database or auth side effects.
+     */
+    async () => {
+      const runCleanup = jest.fn(runIntegrationCleanup);
+      const cleanupBillingRowsForUser = jest.fn().mockResolvedValue(undefined);
+
+      await runBaselineBillingCleanup({
+        userAId: 'baseline-user-a',
+        userBId: 'baseline-user-b',
+        runCleanup,
+        cleanupBillingRowsForUser,
+      });
+
+      expect(runCleanup).toHaveBeenCalledTimes(1);
+      expect(cleanupBillingRowsForUser).toHaveBeenCalledTimes(2);
+      expect(cleanupBillingRowsForUser).toHaveBeenNthCalledWith(1, 'baseline-user-a');
+      expect(cleanupBillingRowsForUser).toHaveBeenNthCalledWith(2, 'baseline-user-b');
+    }
+  );
+});
 
 describeOrSkip('Suite B - Billing migration + RLS integration', () => {
   let serviceClient;
@@ -912,52 +1005,78 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
   /**
    * Remove billing rows owned by a test user.
    *
-   * Purpose: baseline and temporary users need deterministic cleanup across all
-   * billing tables without deleting the auth user itself.
+   * Purpose: baseline and temporary users need names-only, all-attempted
+   * cleanup across billing tables without deleting the auth user itself.
    *
    * @param {string} userId Supabase auth user id whose billing rows are removed.
    * @returns {Promise<void>}
    * Side effects/connections: deletes rows through serviceClient from
-   * billing_checkout_sessions, billing_subscriptions, and billing_customers;
-   * throws on cleanup errors or unexpected delete statuses so leaked state does
-   * not carry into later tests. Callers manage cleanupUserIds and admin auth
-   * deletion separately.
+   * billing_checkout_sessions, billing_subscriptions, and billing_customers.
+   * The shared cleanup runner suppresses provider details and reports only
+   * static table labels. Callers manage auth deletion separately.
    */
   async function cleanupBillingRowsForUser(userId) {
     const expectedDeleteStatuses = new Set([200, 204]);
-    const deleteResults = [
-      [
-        'billing_checkout_sessions',
-        await serviceClient.from('billing_checkout_sessions').delete().eq('user_id', userId),
-      ],
-      [
-        'billing_subscriptions',
-        await serviceClient.from('billing_subscriptions').delete().eq('user_id', userId),
-      ],
-      [
-        'billing_customers',
-        await serviceClient.from('billing_customers').delete().eq('user_id', userId),
-      ],
-    ];
-
-    for (const [tableName, result] of deleteResults) {
-      if (result.error) {
-        throw new Error(
-          `Failed to clean up ${tableName} rows for ${userId}: ${result.error.message}`
-        );
-      }
-
-      if (!expectedDeleteStatuses.has(result.status)) {
-        throw new Error(
-          `Unexpected cleanup status ${result.status} for ${tableName} rows owned by ${userId}`
-        );
-      }
-    }
+    await runIntegrationCleanup([
+      {
+        label: 'billing checkout session rows',
+        cleanup: async () => {
+          const result = await serviceClient
+            .from('billing_checkout_sessions')
+            .delete()
+            .eq('user_id', userId);
+          return {
+            error: result.error
+              ?? (expectedDeleteStatuses.has(result.status) ? null : true),
+          };
+        },
+      },
+      {
+        label: 'billing subscription rows',
+        cleanup: async () => {
+          const result = await serviceClient
+            .from('billing_subscriptions')
+            .delete()
+            .eq('user_id', userId);
+          return {
+            error: result.error
+              ?? (expectedDeleteStatuses.has(result.status) ? null : true),
+          };
+        },
+      },
+      {
+        label: 'billing customer rows',
+        cleanup: async () => {
+          const result = await serviceClient
+            .from('billing_customers')
+            .delete()
+            .eq('user_id', userId);
+          return {
+            error: result.error
+              ?? (expectedDeleteStatuses.has(result.status) ? null : true),
+          };
+        },
+      },
+    ]);
   }
 
+  /**
+   * Clear both persistent baseline users' billing rows before or after tests.
+   *
+   * Purpose: reruns must start clean while still attempting user B cleanup when
+   * user A cleanup fails. The nested cleanup error remains names-only.
+   *
+   * @returns {Promise<void>}
+   * Side effects/connections: delegates each user's table cleanup to
+   * cleanupBillingRowsForUser through the shared all-attempted runner.
+   */
   async function clearBaselineRows() {
-    await cleanupBillingRowsForUser(userAId);
-    await cleanupBillingRowsForUser(userBId);
+    await runBaselineBillingCleanup({
+      userAId,
+      userBId,
+      runCleanup: runIntegrationCleanup,
+      cleanupBillingRowsForUser,
+    });
   }
 
   beforeAll(async () => {
@@ -1002,24 +1121,41 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
   });
 
   afterAll(async () => {
-    for (const eventId of cleanupEventIds) {
-      await serviceClient.from('stripe_event_receipts').delete().eq('event_id', eventId);
-    }
+    if (!serviceClient) return;
 
-    await clearBaselineRows();
-
-    for (const tempUserId of cleanupUserIds) {
-      await cleanupBillingRowsForUser(tempUserId);
-      await serviceClient.auth.admin.deleteUser(tempUserId);
-    }
-
-    if (userAId) {
-      await serviceClient.auth.admin.deleteUser(userAId);
-    }
-
-    if (userBId) {
-      await serviceClient.auth.admin.deleteUser(userBId);
-    }
+    await runIntegrationCleanup([
+      ...[...cleanupEventIds].map((eventId) => ({
+        label: 'stripe event receipt rows',
+        cleanup: () => serviceClient
+          .from('stripe_event_receipts')
+          .delete()
+          .eq('event_id', eventId),
+      })),
+      {
+        label: 'baseline billing rows',
+        cleanup: () => clearBaselineRows(),
+      },
+      ...[...cleanupUserIds].map((tempUserId) => ({
+        label: 'temporary user billing rows',
+        cleanup: () => cleanupBillingRowsForUser(tempUserId),
+      })),
+      ...[...cleanupUserIds].map((tempUserId) => ({
+        label: 'temporary billing auth users',
+        cleanup: () => serviceClient.auth.admin.deleteUser(tempUserId),
+      })),
+      ...(userAId
+        ? [{
+            label: 'baseline auth user A',
+            cleanup: () => serviceClient.auth.admin.deleteUser(userAId),
+          }]
+        : []),
+      ...(userBId
+        ? [{
+            label: 'baseline auth user B',
+            cleanup: () => serviceClient.auth.admin.deleteUser(userBId),
+          }]
+        : []),
+    ]);
   });
 
   test('B1: local/session billing migrations through additive 027 exist in the repo-root migrations folder', () => {

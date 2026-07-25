@@ -20,6 +20,9 @@ const {
   TEST_SUPABASE_ENV_NAMES,
   matchesSupabaseTestProject,
 } = require('../../../testSupport/integrationEnvironment.js');
+const {
+  runIntegrationCleanup,
+} = require('../../../testSupport/integrationCleanup.js');
 
 // Skip unless credentials exist and target the isolated Supabase test project.
 const TEST_URL = process.env[TEST_SUPABASE_ENV_NAMES.url];
@@ -75,7 +78,12 @@ describe('supabaseServer integration tests', () => {
 
   afterAll(async () => {
     if (!SKIP_INTEGRATION && testUserId) {
-      await testSupabase.auth.admin.deleteUser(testUserId);
+      await runIntegrationCleanup([
+        {
+          label: 'Supabase server auth user',
+          cleanup: () => testSupabase.auth.admin.deleteUser(testUserId),
+        },
+      ]);
     }
   });
 

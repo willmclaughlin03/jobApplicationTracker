@@ -47,6 +47,9 @@ const {
     resolveTestCsrfSecret,
     restoreEnvironmentVariable,
 } = require('../../../testSupport/integrationEnvironment.js');
+const {
+    runIntegrationCleanup,
+} = require('../../../testSupport/integrationCleanup.js');
 
 const originalCsrfSecret = process.env.CSRF_SECRET;
 const originalSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -202,14 +205,25 @@ describeIntegration('withRateLimit — full pipeline integration (real Upstash)'
     });
 
     afterAll(async () => {
+        const cleanupSteps = [];
         if (!SKIP_INTEGRATION && testUserId) {
             const supabase = createClient(
                 TEST_URL,
                 TEST_SERVICE_KEY
             );
-            await supabase.auth.admin.deleteUser(testUserId);
+            cleanupSteps.push({
+                label: 'full-pipeline auth user',
+                cleanup: () => supabase.auth.admin.deleteUser(testUserId),
+            });
         }
-        redis.resetRedisClient();
+        if (redis) {
+            cleanupSteps.push({
+                label: 'full-pipeline Redis client',
+                cleanup: () => redis.resetRedisClient(),
+            });
+        }
+
+        await runIntegrationCleanup(cleanupSteps);
     });
 
     // ===================================================================
