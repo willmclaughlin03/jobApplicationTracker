@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-19
 
+- `2026-07-25` - `Billing baseline cleanup guard coverage`: Added infrastructure-free cases for each missing baseline user id and the complete-id success path, including runner and per-user callback assertions.
+- `2026-07-25` - `Billing baseline cleanup guard`: Required both baseline auth-user ids before registering billing cleanup callbacks, preventing partial setup from issuing cleanup queries with unset ids.
 - `2026-07-24` - `Cleanup deduplication test documentation`: Documented the repeated-label cleanup test's mocks, deduplication rationale, AggregateError connection, and local side effects, and asserted every duplicate-labeled and distinct callback runs exactly once without changing cleanup behavior.
 - `2026-07-24` - `Migration-suite readiness diagnostics`: Gave each staging migration-suite auth-user cleanup a distinct A/B label while preserving names-only failure reporting and unchanged deletion behavior, made the canonical migration assertion compare the complete ordered remote catalog without a hardcoded version filter, and covered duplicate cleanup-label deduplication across returned and rejected failures.
 - `2026-07-23` - `Trusted integration readiness hardening`: Added an offline wrong-project refusal proof, names-only all-attempted teardown, canonical schema/catalog assertions, workflow-correlated Redis evidence keys, and a restricted test-only SQL helper with its own pgTAP contract.
