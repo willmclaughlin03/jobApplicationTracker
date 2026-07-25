@@ -981,6 +981,10 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
    * cleanupBillingRowsForUser through the shared all-attempted runner.
    */
   async function clearBaselineRows() {
+    if (!userAId || !userBId) {
+      return;
+    }
+
     await runIntegrationCleanup([
       {
         label: 'baseline user A billing rows',
