@@ -428,7 +428,97 @@ async function signInAsUser(createClient, adminClient, email) {
   return userClient;
 }
 
+/**
+ * Clear both baseline users' billing rows only when both ids are available.
+ *
+ * Purpose: partial auth-user setup must not register billing cleanup callbacks
+ * with an unset id, while complete setup retains all-attempted cleanup.
+ *
+ * @param {object} options cleanup dependencies and baseline user ids.
+ * @param {string|undefined} options.userAId baseline user A auth id.
+ * @param {string|undefined} options.userBId baseline user B auth id.
+ * @param {Function} options.runCleanup shared all-attempted cleanup runner.
+ * @param {Function} options.cleanupBillingRowsForUser per-user billing cleanup.
+ * @returns {Promise<void>}
+ * Side effects/connections: invokes runCleanup and both per-user callbacks only
+ * when both ids are truthy.
+ */
+async function runBaselineBillingCleanup({
+  userAId,
+  userBId,
+  runCleanup,
+  cleanupBillingRowsForUser,
+}) {
+  if (!userAId || !userBId) {
+    return;
+  }
+
+  await runCleanup([
+    {
+      label: 'baseline user A billing rows',
+      cleanup: () => cleanupBillingRowsForUser(userAId),
+    },
+    {
+      label: 'baseline user B billing rows',
+      cleanup: () => cleanupBillingRowsForUser(userBId),
+    },
+  ]);
+}
+
 jest.setTimeout(30_000);
+
+describe('billing baseline cleanup guard', () => {
+  test.each([
+    ['user A', undefined, 'baseline-user-b'],
+    ['user B', 'baseline-user-a', undefined],
+  ])(
+    'skips the cleanup runner and callbacks when %s id is missing',
+    /**
+     * Verifies each partial-id state independently. The runner spy wraps the
+     * real shared runner so a mistaken invocation would also execute the local
+     * billing callback spy; no external cleanup side effects are performed.
+     */
+    async (_missingUser, userAId, userBId) => {
+      const runCleanup = jest.fn(runIntegrationCleanup);
+      const cleanupBillingRowsForUser = jest.fn().mockResolvedValue(undefined);
+
+      await runBaselineBillingCleanup({
+        userAId,
+        userBId,
+        runCleanup,
+        cleanupBillingRowsForUser,
+      });
+
+      expect(runCleanup).not.toHaveBeenCalled();
+      expect(cleanupBillingRowsForUser).not.toHaveBeenCalled();
+    }
+  );
+
+  test(
+    'runs the cleanup runner and both callbacks when both ids are available',
+    /**
+     * Verifies complete setup preserves both baseline cleanup callbacks. The
+     * runner spy delegates to the real shared runner and invokes only local
+     * callback mocks, without database or auth side effects.
+     */
+    async () => {
+      const runCleanup = jest.fn(runIntegrationCleanup);
+      const cleanupBillingRowsForUser = jest.fn().mockResolvedValue(undefined);
+
+      await runBaselineBillingCleanup({
+        userAId: 'baseline-user-a',
+        userBId: 'baseline-user-b',
+        runCleanup,
+        cleanupBillingRowsForUser,
+      });
+
+      expect(runCleanup).toHaveBeenCalledTimes(1);
+      expect(cleanupBillingRowsForUser).toHaveBeenCalledTimes(2);
+      expect(cleanupBillingRowsForUser).toHaveBeenNthCalledWith(1, 'baseline-user-a');
+      expect(cleanupBillingRowsForUser).toHaveBeenNthCalledWith(2, 'baseline-user-b');
+    }
+  );
+});
 
 describeOrSkip('Suite B - Billing migration + RLS integration', () => {
   let serviceClient;
@@ -981,20 +1071,12 @@ describeOrSkip('Suite B - Billing migration + RLS integration', () => {
    * cleanupBillingRowsForUser through the shared all-attempted runner.
    */
   async function clearBaselineRows() {
-    if (!userAId || !userBId) {
-      return;
-    }
-
-    await runIntegrationCleanup([
-      {
-        label: 'baseline user A billing rows',
-        cleanup: () => cleanupBillingRowsForUser(userAId),
-      },
-      {
-        label: 'baseline user B billing rows',
-        cleanup: () => cleanupBillingRowsForUser(userBId),
-      },
-    ]);
+    await runBaselineBillingCleanup({
+      userAId,
+      userBId,
+      runCleanup: runIntegrationCleanup,
+      cleanupBillingRowsForUser,
+    });
   }
 
   beforeAll(async () => {
