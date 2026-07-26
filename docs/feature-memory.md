@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-19
 
+- `2026-07-26` - `Protected-branch required CI enforcement`: Required the secret-free `CI / unit-lint-build` check on the active staging and main rulesets, kept staging non-strict and made main strict, and proved with temporary pull requests that a deterministic failure blocks both branches while its removal restores clean mergeability.
+  - impact: Pull requests cannot merge into either protected branch without the stable unit, lint, and build gate; Trusted Integration remains manual-only and deployment behavior is unchanged.
 - `2026-07-25` - `Staging-main conflict resolution`: Merged current main into staging while preserving the unique readiness, billing-cleanup, and CodeRabbit package-lint history from both branches.
 - `2026-07-25` - `Billing baseline cleanup guard coverage`: Added infrastructure-free cases for each missing baseline user id and the complete-id success path, including runner and per-user callback assertions.
 - `2026-07-25` - `Billing baseline cleanup guard`: Required both baseline auth-user ids before registering billing cleanup callbacks, preventing partial setup from issuing cleanup queries with unset ids.
