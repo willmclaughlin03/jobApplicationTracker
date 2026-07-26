@@ -24,4 +24,4 @@ Confirm the one route that applies:
 - [ ] No secrets or environment values are included.
 - [ ] Relevant documentation is updated.
 - [ ] All review conversations are resolved before merge.
-- [ ] Required CI passes when those checks are available.
+- [ ] The required `CI / unit-lint-build` check passes.
