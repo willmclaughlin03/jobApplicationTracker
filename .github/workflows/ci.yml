@@ -138,24 +138,24 @@ jobs:
             echo 'Second image optimizer response body is empty.' >&2
             exit 1
           fi
-          if ! grep -Eiq '^content-type:[[:space:]]*image/png([[:space:]]*;.*)?\r?$' \
+          if ! grep -Eiq $'^content-type:[[:space:]]*image/png([[:space:]]*;.*)?\r?$' \
             "$first_headers"; then
             echo 'First image optimizer response is not image/png.' >&2
             exit 1
           fi
-          if ! grep -Eiq '^content-type:[[:space:]]*image/png([[:space:]]*;.*)?\r?$' \
+          if ! grep -Eiq $'^content-type:[[:space:]]*image/png([[:space:]]*;.*)?\r?$' \
             "$second_headers"; then
             echo 'Second image optimizer response is not image/png.' >&2
             exit 1
           fi
 
           # These exact values intentionally enforce Next's runtime cache contract.
-          if ! grep -Eiq '^x-nextjs-cache:[[:space:]]*MISS[[:space:]]*\r?$' \
+          if ! grep -Eiq $'^x-nextjs-cache:[[:space:]]*MISS[[:space:]]*\r?$' \
             "$first_headers"; then
             echo 'First image optimizer response did not report a cache MISS.' >&2
             exit 1
           fi
-          if ! grep -Eiq '^x-nextjs-cache:[[:space:]]*HIT[[:space:]]*\r?$' \
+          if ! grep -Eiq $'^x-nextjs-cache:[[:space:]]*HIT[[:space:]]*\r?$' \
             "$second_headers"; then
             echo 'Second image optimizer response did not report a cache HIT.' >&2
             exit 1
