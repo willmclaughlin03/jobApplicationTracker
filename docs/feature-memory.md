@@ -12,6 +12,13 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-07-26
+
+- `2026-07-27` - `Next 16 dependency security remediation`: Upgraded the supported framework and ESLint toolchain, applied the approved Next-scoped PostCSS and Sharp security overrides, updated vulnerable production transitives, and migrated linting to behavior-compatible flat config while retaining React 18.
+  - impact: The live production audit now has zero findings; lint, all 1,203 CI unit tests, 86 focused framework/security tests, the Turbopack production build, and placeholder-only middleware/error-page/API/Sharp runtime checks pass without application-source or test changes.
+  - residuals: Four high and two low complete-tree findings remain development-only and are documented in `docs/fixes.md`; no advisory was suppressed and no forced dependency resolution was used.
+  - **Future maintainability risk:** moderate unless the disabled rules are revisited before adopting React Compiler or making a major React upgrade.
+
 ### Week of 2026-07-19
 
 - `2026-07-26` - `Protected-branch required CI enforcement`: Required the secret-free `CI / unit-lint-build` check on the active staging and main rulesets, kept staging non-strict and made main strict, and proved with temporary pull requests that a deterministic failure blocks both branches while its removal restores clean mergeability.
