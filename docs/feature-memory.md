@@ -14,6 +14,10 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-26
 
+- `2026-07-28` - `Sharp smoke PNG signature validation`: Required both optimized image responses to begin with the standard eight-byte PNG signature and added a spoofed non-empty `image/png` fixture that the shared smoke assertion must reject.
+- `2026-07-27` - `Development dependency refresh and Sharp CI smoke`: Refreshed six vulnerable development-only transitive dependency lines within their existing supported ranges and added an Ubuntu post-build runtime check for local Next image optimization and cache reuse.
+  - impact: Five package lines are fully patched, `brace-expansion` fixes two earlier advisories, production remains at zero audit findings, and CI now requires non-empty PNG optimizer responses with cache `MISS` followed by `HIT`; the equivalent clean-cache local runtime check passes.
+  - residuals: The complete public-registry audit reports 27 high-severity entries that all derive from the single development-only `brace-expansion` advisory `GHSA-mh99-v99m-4gvg`; npm's propagation behavior and the supported-range decision are documented explicitly in `docs/fixes.md`, and Ubuntu execution remains the post-push confirmation.
 - `2026-07-27` - `Next 16 dependency security remediation`: Upgraded the supported framework and ESLint toolchain, applied the approved Next-scoped PostCSS and Sharp security overrides, updated vulnerable production transitives, and migrated linting to behavior-compatible flat config while retaining React 18.
   - impact: The live production audit now has zero findings; lint, all 1,203 CI unit tests, 86 focused framework/security tests, the Turbopack production build, and placeholder-only middleware/error-page/API/Sharp runtime checks pass without application-source or test changes.
   - residuals: Four high and two low complete-tree findings remain development-only and are documented in `docs/fixes.md`; no advisory was suppressed and no forced dependency resolution was used.

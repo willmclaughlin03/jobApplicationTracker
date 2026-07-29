@@ -60,3 +60,125 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ci-build-only-service-role-key
           CSRF_SECRET: ci-build-only-secret-at-least-32-characters
         run: npm run build
+
+      - name: Smoke test Sharp image optimization
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://ci-build.invalid
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ci-build-only-anon-key
+          SUPABASE_SERVICE_ROLE_KEY: ci-build-only-service-role-key
+          CSRF_SECRET: ci-build-only-secret-at-least-32-characters
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          server_log="$RUNNER_TEMP/next-server.log"
+          first_headers="$RUNNER_TEMP/next-image-first.headers"
+          first_body="$RUNNER_TEMP/next-image-first.png"
+          first_status_file="$RUNNER_TEMP/next-image-first.status"
+          second_headers="$RUNNER_TEMP/next-image-second.headers"
+          second_body="$RUNNER_TEMP/next-image-second.png"
+          second_status_file="$RUNNER_TEMP/next-image-second.status"
+          invalid_headers="$RUNNER_TEMP/next-image-invalid.headers"
+          invalid_body="$RUNNER_TEMP/next-image-invalid.png"
+          image_url='http://127.0.0.1:3000/_next/image?url=%2Ffavicon.png&w=64&q=75'
+
+          # Assert that a response labeled image/png is non-empty and starts with
+          # real PNG bytes. Params are a diagnostic label, headers path, and body path;
+          # returns success only for a valid PNG and writes failure details to stderr.
+          assert_png_response() {
+            local label="$1"
+            local headers_file="$2"
+            local body_file="$3"
+            local signature
+
+            if [[ ! -s "$body_file" ]]; then
+              echo "$label image optimizer response body is empty." >&2
+              return 1
+            fi
+            if ! grep -Eiq $'^content-type:[[:space:]]*image/png([[:space:]]*;.*)?\r?$' \
+              "$headers_file"; then
+              echo "$label image optimizer response is not image/png." >&2
+              return 1
+            fi
+
+            signature="$(od -An -N8 -tx1 "$body_file" | tr -d '[:space:]')"
+            if [[ "$signature" != '89504e470d0a1a0a' ]]; then
+              echo "$label image optimizer response does not have a PNG signature." >&2
+              return 1
+            fi
+
+            return 0
+          }
+
+          printf 'Content-Type: image/png\r\n' >"$invalid_headers"
+          printf 'not a png' >"$invalid_body"
+          if assert_png_response 'Invalid fixture' "$invalid_headers" "$invalid_body" \
+            >/dev/null 2>&1; then
+            echo 'PNG smoke assertion accepted a non-PNG image/png fixture.' >&2
+            exit 1
+          fi
+
+          npm start -- --hostname 127.0.0.1 --port 3000 >"$server_log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
+
+          ready=false
+          for _ in {1..30}; do
+            if curl --fail --silent --show-error --output /dev/null \
+              http://127.0.0.1:3000/favicon.png; then
+              ready=true
+              break
+            fi
+
+            if ! kill -0 "$server_pid" 2>/dev/null; then
+              echo 'Next server exited before becoming ready.' >&2
+              tail -n 100 "$server_log" >&2
+              exit 1
+            fi
+
+            sleep 1
+          done
+
+          if [[ "$ready" != true ]]; then
+            echo 'Next server did not become ready within 30 seconds.' >&2
+            tail -n 100 "$server_log" >&2
+            exit 1
+          fi
+
+          curl --silent --show-error \
+            --dump-header "$first_headers" \
+            --output "$first_body" \
+            --write-out '%{http_code}\n' \
+            "$image_url" >"$first_status_file"
+          curl --silent --show-error \
+            --dump-header "$second_headers" \
+            --output "$second_body" \
+            --write-out '%{http_code}\n' \
+            "$image_url" >"$second_status_file"
+          read -r first_status <"$first_status_file"
+          read -r second_status <"$second_status_file"
+          first_status="${first_status%$'\r'}"
+          second_status="${second_status%$'\r'}"
+
+          if [[ "$first_status" != 200 ]]; then
+            echo 'First image optimizer request did not return HTTP 200.' >&2
+            exit 1
+          fi
+          if [[ "$second_status" != 200 ]]; then
+            echo 'Second image optimizer request did not return HTTP 200.' >&2
+            exit 1
+          fi
+          assert_png_response 'First' "$first_headers" "$first_body"
+          assert_png_response 'Second' "$second_headers" "$second_body"
+
+          # These exact values intentionally enforce Next's runtime cache contract.
+          if ! grep -Eiq $'^x-nextjs-cache:[[:space:]]*MISS[[:space:]]*\r?$' \
+            "$first_headers"; then
+            echo 'First image optimizer response did not report a cache MISS.' >&2
+            exit 1
+          fi
+          if ! grep -Eiq $'^x-nextjs-cache:[[:space:]]*HIT[[:space:]]*\r?$' \
+            "$second_headers"; then
+            echo 'Second image optimizer response did not report a cache HIT.' >&2
+            exit 1
+          fi
