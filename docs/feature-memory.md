@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-26
 
+- `2026-07-28` - `Sharp smoke PNG signature validation`: Required both optimized image responses to begin with the standard eight-byte PNG signature and added a spoofed non-empty `image/png` fixture that the shared smoke assertion must reject.
 - `2026-07-27` - `Development dependency refresh and Sharp CI smoke`: Refreshed six vulnerable development-only transitive dependency lines within their existing supported ranges and added an Ubuntu post-build runtime check for local Next image optimization and cache reuse.
   - impact: Five package lines are fully patched, `brace-expansion` fixes two earlier advisories, production remains at zero audit findings, and CI now requires non-empty PNG optimizer responses with cache `MISS` followed by `HIT`; the equivalent clean-cache local runtime check passes.
   - residuals: The complete public-registry audit reports 27 high-severity entries that all derive from the single development-only `brace-expansion` advisory `GHSA-mh99-v99m-4gvg`; npm's propagation behavior and the supported-range decision are documented explicitly in `docs/fixes.md`, and Ubuntu execution remains the post-push confirmation.
