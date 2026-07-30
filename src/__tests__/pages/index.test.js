@@ -259,6 +259,19 @@ function renderDashboard() {
 }
 
 /**
+ * Verify DashboardShell keeps its scoped visual root and font variable hook.
+ *
+ * @param {HTMLElement} element - Rendered Dashboard container.
+ * @returns {void}
+ */
+function expectDashboardShell(element) {
+  const shell = element.querySelector('.dashboard-root');
+
+  expect(shell).toBeTruthy();
+  expect(shell.classList.contains('mock-dashboard-font-variable')).toBe(true);
+}
+
+/**
  * Find a rendered button by exact visible text.
  *
  * @param {HTMLElement} element - Root element to search.
@@ -332,10 +345,23 @@ describe('Dashboard billing entry integration', () => {
 
   afterEach(cleanup);
 
+  it('keeps the dashboard shell and font variable while authentication loads', () => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: true,
+      signOut: mockSignOut,
+    });
+
+    const element = renderDashboard();
+
+    expectDashboardShell(element);
+  });
+
   it('opens the configured Premium modal only for terminal Free without navigating', () => {
     const element = renderDashboard();
     const upgradeButton = findButtonByText(element, 'Upgrade');
 
+    expectDashboardShell(element);
     expect(upgradeButton).toBeTruthy();
     expect(upgradeButton.getAttribute('aria-haspopup')).toBe('dialog');
     expect(upgradeButton.getAttribute('aria-expanded')).toBe('false');
