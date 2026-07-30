@@ -16,35 +16,36 @@ const dashboardFont = Inter({
  *
  * @param {object} props - Presentational dashboard regions.
  * @param {React.ReactNode} [props.navigation] - Product navigation region.
- * @param {React.ReactNode} [props.filters] - Wide docked Filters region.
+ * @param {React.ReactNode} [props.filters] - Responsive Filters region.
+ * @param {boolean} [props.filtersExpanded] - Whether the wide Filters track is released.
  * @param {React.ReactNode} props.children - Flexible dashboard workspace.
  * @returns {React.ReactElement} Scoped responsive dashboard shell.
  */
 export default function DashboardShell({
   navigation = null,
   filters = null,
+  filtersExpanded = true,
   children,
 }) {
   const hasNavigation = navigation != null;
   const hasFilters = filters != null;
-  const columnClasses = hasNavigation
+  const outerColumnClasses = hasNavigation
+    ? 'lg:grid-cols-[var(--dash-rail-compact)_minmax(0,1fr)] wide:grid-cols-[var(--dash-rail-wide)_minmax(0,1fr)]'
+    : 'grid-cols-[minmax(0,1fr)]';
+  const contentColumnClasses = hasFilters
     ? (
-      hasFilters
-        ? 'lg:grid-cols-[var(--dash-rail-compact)_minmax(0,1fr)] wide:grid-cols-[var(--dash-rail-wide)_var(--dash-filters-wide)_minmax(0,1fr)]'
-        : 'lg:grid-cols-[var(--dash-rail-compact)_minmax(0,1fr)] wide:grid-cols-[var(--dash-rail-wide)_minmax(0,1fr)]'
+      filtersExpanded
+        ? 'wide:grid-cols-[var(--dash-filters-wide)_minmax(0,1fr)] wide:gap-x-3'
+        : 'wide:grid-cols-[0_minmax(0,1fr)] wide:gap-x-0'
     )
-    : (
-      hasFilters
-        ? 'wide:grid-cols-[var(--dash-filters-wide)_minmax(0,1fr)]'
-        : 'grid-cols-[minmax(0,1fr)]'
-    );
+    : 'grid-cols-[minmax(0,1fr)]';
 
   return (
     <div className={[dashboardFont.variable, 'dashboard-root', 'font-dashboard'].join(' ')}>
       <div
         className={[
-          'relative z-10 grid min-h-screen min-w-0 grid-cols-[minmax(0,1fr)] wide:gap-3',
-          columnClasses,
+          'relative z-10 grid min-h-screen min-w-0 grid-cols-[minmax(0,1fr)] lg:gap-x-3',
+          outerColumnClasses,
         ].join(' ')}
       >
         {hasNavigation && (
@@ -53,14 +54,22 @@ export default function DashboardShell({
           </div>
         )}
 
-        {hasFilters && (
-          <div className="hidden min-w-0 wide:block wide:min-h-screen">
-            {filters}
-          </div>
-        )}
+        <div
+          data-filters-expanded={hasFilters ? String(filtersExpanded) : undefined}
+          className={[
+            'dashboard-motion grid min-w-0 grid-cols-[minmax(0,1fr)] transition-[grid-template-columns,column-gap]',
+            contentColumnClasses,
+          ].join(' ')}
+        >
+          {hasFilters && (
+            <div className="contents wide:block wide:min-w-0 wide:overflow-hidden">
+              {filters}
+            </div>
+          )}
 
-        <div className="min-w-0">
-          {children}
+          <div className="min-w-0">
+            {children}
+          </div>
         </div>
       </div>
     </div>

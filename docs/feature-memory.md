@@ -14,6 +14,17 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-26
 
+- `2026-07-30` - `Maximum salary debounce reset coverage`: Extended the Clear All Filters regression test to prove pending minimum and maximum salary updates are both canceled before their timers expire.
+- `2026-07-30` - `Pending salary filter reset`: Kept Clear All Filters available during debounced salary edits and covered cancellation of the queued salary update.
+- `2026-07-30` - `Filters date and debounce regression coverage`: Pinned the Latest Status Change calendar to UTC and added focused coverage for its formatting contract, clearing minimum salary after 300ms, and canceling pending search work on unmount.
+- `2026-07-30` - `Docked Filters focus-restoration coverage`: Strengthened the wide Filters close test by moving focus to Activity first, ensuring the post-close assertion exercises Dashboard's explicit trigger-focus restoration.
+- `2026-07-30` - `Closed Activity container accessibility coverage`: Added a focused Dashboard regression test confirming the mounted Activity wrapper starts hidden and inert, then removes both attributes when opened.
+- `2026-07-30` - `Filters debounce boundary coverage`: Extended the mounted docked Filters test to verify HTML search sanitization plus lower- and upper-bound salary clamping while retaining the existing in-range and disclosure assertions.
+- `2026-07-30` - `Dashboard wide-breakpoint contract coverage`: Tied Dashboard's responsive `matchMedia` query to Tailwind's configured `wide` screen in a focused regression test so future breakpoint drift fails the page suite.
+- `2026-07-30` - `Responsive Filters real-component transition coverage`: Added a focused regression test for open drawer-to-docked cleanup and compact return, including focus restoration, scroll unlock, inert visibility, preserved pending inputs, and debounce completion.
+- `2026-07-30` - `Dashboard navigation and responsive Filters`: Added the real text-only TrackTheApp navigation, canonical billing entry presentation, and one responsive Filters panel that docks at the wide breakpoint and remains the accessible compact drawer below it.
+  - impact: Wide Filters now starts expanded, releases its grid track when collapsed, preserves status/search/salary/date state and pending debounced input, restores trigger focus, locks compact drawer scroll, and keeps hidden controls inert; 58 focused tests, changed-file lint, Tailwind compilation, and diff checks pass without changing billing, filtering, API, auth, or storage decisions.
+
 - `2026-07-30` - `Dashboard shell page regression coverage`: Added focused auth-loading skeleton, settled billing-render, visual-root, and font-variable assertions.
 - `2026-07-30` - `Dashboard skeleton reduced motion`: Extended the dashboard reduced-motion override to neutralize the delayed skeleton fade and added focused regression coverage for the component-to-stylesheet contract.
 - `2026-07-29` - `Dashboard redesign design foundation`: Added the dashboard-scoped Inter and emerald-noir token system, static root-owned light field and vignette, responsive shell geometry, reduced-motion primitives, and the approved Lucide and Radix dropdown dependency records.
