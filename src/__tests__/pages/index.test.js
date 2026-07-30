@@ -15,6 +15,7 @@ const {
   STORAGE_STATUSES,
 } = require('../../shared/constants/billing.js');
 const { PLAN_CATALOG } = require('../../client/lib/planCatalog.js');
+const tailwindConfig = require('../../../tailwind.config.js');
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -594,6 +595,27 @@ describe('Dashboard billing entry integration', () => {
     expect(mockToggleAddForm).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the closed Activity container hidden and inert', () => {
+    const element = renderDashboard();
+    const wrapper = element.querySelector('#dashboard-activity-drawer');
+
+    expect(wrapper.getAttribute('aria-hidden')).toBe('true');
+    expect(wrapper.hasAttribute('inert')).toBe(true);
+
+    click(findButtonByText(element, 'Activity'));
+
+    expect(wrapper.hasAttribute('aria-hidden')).toBe(false);
+    expect(wrapper.hasAttribute('inert')).toBe(false);
+  });
+
+  it('uses the Tailwind wide breakpoint for responsive disclosure behavior', () => {
+    renderDashboard();
+
+    expect(window.matchMedia).toHaveBeenCalledWith(
+      `(min-width: ${tailwindConfig.theme.extend.screens.wide})`
+    );
+  });
+
   it('starts wide Filters expanded, releases the track, and preserves every criterion', () => {
     setWideLayout(true);
     const element = renderDashboard();
@@ -620,7 +642,9 @@ describe('Dashboard billing entry integration', () => {
     });
     expect(mockLatestActivityProps.selectedDates.has('2026-07-30')).toBe(true);
 
-    filtersButton.focus();
+    const activityButton = findButtonByText(element, 'Activity');
+    activityButton.focus();
+    expect(document.activeElement).toBe(activityButton);
     act(() => mockLatestSidebarProps.onClose());
 
     expect(document.activeElement).toBe(filtersButton);

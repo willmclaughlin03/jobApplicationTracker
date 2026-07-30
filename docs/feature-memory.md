@@ -14,6 +14,11 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-26
 
+- `2026-07-30` - `Docked Filters focus-restoration coverage`: Strengthened the wide Filters close test by moving focus to Activity first, ensuring the post-close assertion exercises Dashboard's explicit trigger-focus restoration.
+- `2026-07-30` - `Closed Activity container accessibility coverage`: Added a focused Dashboard regression test confirming the mounted Activity wrapper starts hidden and inert, then removes both attributes when opened.
+- `2026-07-30` - `Filters debounce boundary coverage`: Extended the mounted docked Filters test to verify HTML search sanitization plus lower- and upper-bound salary clamping while retaining the existing in-range and disclosure assertions.
+- `2026-07-30` - `Dashboard wide-breakpoint contract coverage`: Tied Dashboard's responsive `matchMedia` query to Tailwind's configured `wide` screen in a focused regression test so future breakpoint drift fails the page suite.
+- `2026-07-30` - `Responsive Filters real-component transition coverage`: Added a focused regression test for open drawer-to-docked cleanup and compact return, including focus restoration, scroll unlock, inert visibility, preserved pending inputs, and debounce completion.
 - `2026-07-30` - `Dashboard navigation and responsive Filters`: Added the real text-only TrackTheApp navigation, canonical billing entry presentation, and one responsive Filters panel that docks at the wide breakpoint and remains the accessible compact drawer below it.
   - impact: Wide Filters now starts expanded, releases its grid track when collapsed, preserves status/search/salary/date state and pending debounced input, restores trigger focus, locks compact drawer scroll, and keeps hidden controls inert; 58 focused tests, changed-file lint, Tailwind compilation, and diff checks pass without changing billing, filtering, API, auth, or storage decisions.
 

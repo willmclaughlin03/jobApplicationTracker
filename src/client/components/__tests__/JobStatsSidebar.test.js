@@ -10,6 +10,7 @@
 const React = require('react');
 const { createRoot } = require('react-dom/client');
 const { act } = require('react');
+const { SALARY_MAX_VALUE } = require('../../../shared/validations/jobSchema.js');
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -184,6 +185,69 @@ describe('JobStatsSidebar storage counts', () => {
     expect(searchInput.value).toBe('Acme');
     expect(salaryMinInput.value).toBe('60000');
     expect(salaryMaxInput.value).toBe('120000');
+
+    changeInput(searchInput, '<strong>Beta</strong>');
+    changeInput(salaryMinInput, '-1000');
+    changeInput(salaryMaxInput, String(SALARY_MAX_VALUE + 1));
+
+    act(() => jest.advanceTimersByTime(300));
+
+    expect(props.onSearchChange).toHaveBeenLastCalledWith('Beta');
+    expect(props.onSalaryFilterMinChange).toHaveBeenLastCalledWith(0);
+    expect(props.onSalaryFilterMaxChange).toHaveBeenLastCalledWith(SALARY_MAX_VALUE);
+  });
+
+  it('preserves pending edits and cleans up an open drawer across mode changes', () => {
+    jest.useFakeTimers();
+    const trigger = document.createElement('button');
+    trigger.textContent = 'Filters trigger';
+    document.body.appendChild(trigger);
+    trigger.focus();
+    const props = buildProps({ mode: 'drawer' });
+    const el = render(React.createElement(JobStatsSidebar, props));
+    const panel = el.querySelector('#dashboard-filters-panel');
+    const searchInput = el.querySelector('#job-search');
+    const salaryMinInput = el.querySelector('#salary-filter-min');
+    const salaryMaxInput = el.querySelector('#salary-filter-max');
+
+    expect(panel.getAttribute('role')).toBe('dialog');
+    expect(document.body.style.overflow).toBe('hidden');
+
+    changeInput(searchInput, 'Acme');
+    changeInput(salaryMinInput, '60000');
+    changeInput(salaryMaxInput, '120000');
+    rerender(React.createElement(JobStatsSidebar, { ...props, mode: 'docked' }));
+
+    expect(document.activeElement).toBe(trigger);
+    expect(document.body.style.overflow).toBe('');
+    expect(panel.getAttribute('role')).toBe('region');
+    expect(panel.hasAttribute('aria-modal')).toBe(false);
+    expect(panel.hasAttribute('aria-hidden')).toBe(false);
+    expect(panel.hasAttribute('inert')).toBe(false);
+    expect(el.querySelector('[data-testid=filters-backdrop]')).toBeNull();
+    expect(el.querySelector('#job-search')).toBe(searchInput);
+    expect(el.querySelector('#salary-filter-min')).toBe(salaryMinInput);
+    expect(el.querySelector('#salary-filter-max')).toBe(salaryMaxInput);
+    expect(searchInput.value).toBe('Acme');
+    expect(salaryMinInput.value).toBe('60000');
+    expect(salaryMaxInput.value).toBe('120000');
+    expect(props.onSearchChange).not.toHaveBeenCalled();
+    expect(props.onSalaryFilterMinChange).not.toHaveBeenCalled();
+    expect(props.onSalaryFilterMaxChange).not.toHaveBeenCalled();
+
+    rerender(React.createElement(JobStatsSidebar, { ...props, isOpen: false }));
+
+    expect(panel.getAttribute('aria-hidden')).toBe('true');
+    expect(panel.hasAttribute('inert')).toBe(true);
+    expect(searchInput.value).toBe('Acme');
+    expect(salaryMinInput.value).toBe('60000');
+    expect(salaryMaxInput.value).toBe('120000');
+
+    act(() => jest.advanceTimersByTime(300));
+
+    expect(props.onSearchChange).toHaveBeenCalledWith('Acme');
+    expect(props.onSalaryFilterMinChange).toHaveBeenCalledWith(60000);
+    expect(props.onSalaryFilterMaxChange).toHaveBeenCalledWith(120000);
   });
 
   it('resets criteria only through Clear All Filters', () => {
