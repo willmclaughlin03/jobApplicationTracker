@@ -36,6 +36,16 @@ jest.mock('next/router', () => ({
   useRouter: () => mockRouter,
 }));
 
+/**
+ * Replace Next's build-time font loader with deterministic dashboard CSS hooks.
+ */
+jest.mock('next/font/google', () => ({
+  Inter: jest.fn().mockReturnValue({
+    className: 'mock-dashboard-font',
+    variable: 'mock-dashboard-font-variable',
+  }),
+}));
+
 jest.mock('../../client/contexts/AuthContext', () => ({
   useAuth: (...args) => mockUseAuth(...args),
 }));
@@ -176,9 +186,11 @@ jest.mock('../../client/components/Spinner', () => {
 });
 
 jest.mock('../../client/components/skeletons/DashboardSkeleton', () => {
-  /** Omit the auth-loading shell from authenticated Dashboard tests. */
+  /** Mark the auth-loading skeleton without rendering its implementation details. */
   return function MockDashboardSkeleton() {
-    return null;
+    return require('react').createElement('div', {
+      'data-testid': 'dashboard-skeleton-marker',
+    });
   };
 });
 
@@ -246,6 +258,19 @@ function renderDashboard() {
   });
 
   return container;
+}
+
+/**
+ * Verify DashboardShell keeps its scoped visual root and font variable hook.
+ *
+ * @param {HTMLElement} element - Rendered Dashboard container.
+ * @returns {void}
+ */
+function expectDashboardShell(element) {
+  const shell = element.querySelector('.dashboard-root');
+
+  expect(shell).toBeTruthy();
+  expect(shell.classList.contains('mock-dashboard-font-variable')).toBe(true);
 }
 
 /**
@@ -322,10 +347,26 @@ describe('Dashboard billing entry integration', () => {
 
   afterEach(cleanup);
 
+  it('keeps the dashboard shell and font variable while authentication loads', () => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: true,
+      signOut: mockSignOut,
+    });
+
+    const element = renderDashboard();
+
+    expectDashboardShell(element);
+    expect(
+      element.querySelector('.dashboard-root [data-testid=dashboard-skeleton-marker]')
+    ).toBeTruthy();
+  });
+
   it('opens the configured Premium modal only for terminal Free without navigating', () => {
     const element = renderDashboard();
     const upgradeButton = findButtonByText(element, 'Upgrade');
 
+    expectDashboardShell(element);
     expect(upgradeButton).toBeTruthy();
     expect(upgradeButton.getAttribute('aria-haspopup')).toBe('dialog');
     expect(upgradeButton.getAttribute('aria-expanded')).toBe('false');
