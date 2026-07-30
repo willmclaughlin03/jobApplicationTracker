@@ -147,6 +147,29 @@ describe('JobStatsSidebar storage counts', () => {
     expect(el.textContent).not.toContain('Total Applications');
   });
 
+  it('formats the latest status date in UTC for consistent server and client output', () => {
+    const formatDateSpy = jest.spyOn(Date.prototype, 'toLocaleDateString');
+
+    try {
+      render(React.createElement(JobStatsSidebar, buildProps({
+        jobs: [{
+          company: 'Acme',
+          status: 'applied',
+          status_date: '2026-07-31T00:30:00.000Z',
+        }],
+      })));
+
+      expect(formatDateSpy).toHaveBeenCalledWith('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        timeZone: 'UTC',
+      });
+    } finally {
+      formatDateSpy.mockRestore();
+    }
+  });
+
   it('keeps one docked control set mounted and preserves immediate debounced edits', () => {
     jest.useFakeTimers();
     const props = buildProps();
@@ -195,6 +218,36 @@ describe('JobStatsSidebar storage counts', () => {
     expect(props.onSearchChange).toHaveBeenLastCalledWith('Beta');
     expect(props.onSalaryFilterMinChange).toHaveBeenLastCalledWith(0);
     expect(props.onSalaryFilterMaxChange).toHaveBeenLastCalledWith(SALARY_MAX_VALUE);
+  });
+
+  it('debounces clearing the minimum salary as a null filter', () => {
+    jest.useFakeTimers();
+    const props = buildProps({ salaryFilterMin: 60000 });
+    const el = render(React.createElement(JobStatsSidebar, props));
+    const salaryMinInput = el.querySelector('#salary-filter-min');
+
+    expect(salaryMinInput.value).toBe('60000');
+    changeInput(salaryMinInput, '');
+
+    act(() => jest.advanceTimersByTime(299));
+    expect(props.onSalaryFilterMinChange).not.toHaveBeenCalled();
+
+    act(() => jest.advanceTimersByTime(1));
+    expect(props.onSalaryFilterMinChange).toHaveBeenCalledTimes(1);
+    expect(props.onSalaryFilterMinChange).toHaveBeenCalledWith(null);
+  });
+
+  it('cancels a pending search update when unmounted', () => {
+    jest.useFakeTimers();
+    const props = buildProps();
+    const el = render(React.createElement(JobStatsSidebar, props));
+
+    changeInput(el.querySelector('#job-search'), 'Acme');
+    act(() => root.unmount());
+    root = null;
+    act(() => jest.advanceTimersByTime(300));
+
+    expect(props.onSearchChange).not.toHaveBeenCalled();
   });
 
   it('preserves pending edits and cleans up an open drawer across mode changes', () => {

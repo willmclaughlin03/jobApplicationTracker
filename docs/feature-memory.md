@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-26
 
+- `2026-07-30` - `Filters date and debounce regression coverage`: Pinned the Latest Status Change calendar to UTC and added focused coverage for its formatting contract, clearing minimum salary after 300ms, and canceling pending search work on unmount.
 - `2026-07-30` - `Docked Filters focus-restoration coverage`: Strengthened the wide Filters close test by moving focus to Activity first, ensuring the post-close assertion exercises Dashboard's explicit trigger-focus restoration.
 - `2026-07-30` - `Closed Activity container accessibility coverage`: Added a focused Dashboard regression test confirming the mounted Activity wrapper starts hidden and inert, then removes both attributes when opened.
 - `2026-07-30` - `Filters debounce boundary coverage`: Extended the mounted docked Filters test to verify HTML search sanitization plus lower- and upper-bound salary clamping while retaining the existing in-range and disclosure assertions.
