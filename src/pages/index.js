@@ -12,6 +12,7 @@ import JobStatsSidebar from '../client/components/JobStatsSidebar';
 import ProfileDropdown from '../client/components/ProfileDropdown';
 import Spinner from '../client/components/Spinner';
 import DashboardSkeleton from '../client/components/skeletons/DashboardSkeleton';
+import DashboardShell from '../client/components/dashboard/DashboardShell';
 import InfoTooltip from '../client/components/InfoTooltip';
 import ActivityDrawer from '../client/components/ActivityDrawer';
 import StorageDowngradeBanner from '../client/components/StorageDowngradeBanner';
@@ -95,7 +96,11 @@ export default function Dashboard() {
   }
 
   if (authLoading) {
-    return <DashboardSkeleton />;
+    return (
+      <DashboardShell>
+        <DashboardSkeleton />
+      </DashboardShell>
+    );
   }
 
   const handleAddJob = async (jobData) => {
@@ -191,7 +196,7 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-100">
+    <DashboardShell>
       <header className="bg-white shadow-sm py-4 px-6">
         <div className="max-w-5xl mx-auto flex items-center justify-between">
           <h1 className="text-xl font-semibold text-gray-800">Track The App</h1>
@@ -384,6 +389,6 @@ export default function Dashboard() {
       <footer className="text-center text-xs text-gray-400 py-4">
         <a target="_blank" rel="noopener noreferrer" href="https://icons8.com/icon/hH1yYj2eECWj/job" className="hover:text-gray-500">Icon</a> by <a target="_blank" rel="noopener noreferrer" href="https://icons8.com" className="hover:text-gray-500">Icons8</a>
       </footer>
-    </div>
+    </DashboardShell>
   );
 }
