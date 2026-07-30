@@ -236,6 +236,8 @@ export default function JobStatsSidebar({
   const hasFilters = Boolean(
     activeFilter
     || localSearch
+    || localSalaryMin
+    || localSalaryMax
     || salaryFilterMin != null
     || salaryFilterMax != null
   );

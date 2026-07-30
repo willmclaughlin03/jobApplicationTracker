@@ -237,6 +237,27 @@ describe('JobStatsSidebar storage counts', () => {
     expect(props.onSalaryFilterMinChange).toHaveBeenCalledWith(null);
   });
 
+  it('clears a pending salary update before its debounce expires', () => {
+    jest.useFakeTimers();
+    const props = buildProps();
+    const el = render(React.createElement(JobStatsSidebar, props));
+    const salaryMinInput = el.querySelector('#salary-filter-min');
+
+    changeInput(salaryMinInput, '60000');
+    click(Array.from(el.querySelectorAll('button')).find(
+      button => button.textContent.trim() === 'Clear All Filters'
+    ));
+
+    expect(salaryMinInput.value).toBe('');
+    expect(props.onSalaryFilterMinChange).toHaveBeenCalledTimes(1);
+    expect(props.onSalaryFilterMinChange).toHaveBeenCalledWith(null);
+
+    act(() => jest.advanceTimersByTime(300));
+
+    expect(props.onSalaryFilterMinChange).toHaveBeenCalledTimes(1);
+    expect(props.onSalaryFilterMinChange).not.toHaveBeenCalledWith(60000);
+  });
+
   it('cancels a pending search update when unmounted', () => {
     jest.useFakeTimers();
     const props = buildProps();
