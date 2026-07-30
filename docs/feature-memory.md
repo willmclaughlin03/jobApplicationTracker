@@ -14,6 +14,9 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-26
 
+- `2026-07-30` - `Dashboard navigation and responsive Filters`: Added the real text-only TrackTheApp navigation, canonical billing entry presentation, and one responsive Filters panel that docks at the wide breakpoint and remains the accessible compact drawer below it.
+  - impact: Wide Filters now starts expanded, releases its grid track when collapsed, preserves status/search/salary/date state and pending debounced input, restores trigger focus, locks compact drawer scroll, and keeps hidden controls inert; 58 focused tests, changed-file lint, Tailwind compilation, and diff checks pass without changing billing, filtering, API, auth, or storage decisions.
+
 - `2026-07-30` - `Dashboard shell page regression coverage`: Added focused auth-loading skeleton, settled billing-render, visual-root, and font-variable assertions.
 - `2026-07-30` - `Dashboard skeleton reduced motion`: Extended the dashboard reduced-motion override to neutralize the delayed skeleton fade and added focused regression coverage for the component-to-stylesheet contract.
 - `2026-07-29` - `Dashboard redesign design foundation`: Added the dashboard-scoped Inter and emerald-noir token system, static root-owned light field and vignette, responsive shell geometry, reduced-motion primitives, and the approved Lucide and Radix dropdown dependency records.

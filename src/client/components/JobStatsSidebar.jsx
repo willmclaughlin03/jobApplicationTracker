@@ -1,31 +1,41 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
-import { STATUS_OPTIONS, STATUS_COLORS, STATUS_DOT_COLORS } from './forms/constants';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { PanelLeftClose, Search, X } from 'lucide-react';
+import DOMPurify from 'isomorphic-dompurify';
+import { STATUS_OPTIONS, STATUS_DOT_COLORS } from './forms/constants';
 import StatusPieChart from './StatusPieChart';
 import { formatSalary, formatSalarySingle } from '../lib/formatSalary.js';
-import DOMPurify from 'isomorphic-dompurify';
 import { SALARY_MAX_VALUE } from '../../shared/validations/jobSchema.js';
 import { useOverlayAccessibility } from '../hooks/useOverlayAccessibility';
 
 /**
- * Sidebar drawer showing job statistics, status filter buttons, and a company search input.
+ * Render one responsive Filters panel as either a wide dock or compact drawer.
  *
- * Purpose: Allows users to filter the job list by status and/or search by company name.
- * Renders as a fixed overlay drawer that slides in from the left.
- * Connects to:
- * - Dashboard (index.js) — receives isOpen/onClose and filter state + setters
- * - useJobs — filters are applied client-side via filterJobs, zero extra API calls
+ * Purpose: Keeps one mounted set of filter inputs and IDs so disclosure changes
+ * never duplicate controls or discard local debounced values. Dashboard owns
+ * the actual criteria, responsive mode, and open state; this component owns
+ * only input presentation, debounce timers, and drawer accessibility.
  *
- * @param {boolean} isOpen - Whether the drawer is visible
- * @param {Function} onClose - Callback to close the drawer
- * @param {Object} statusCounts - Count of jobs per status key
- * @param {number} total - Total unfiltered job count
- * @param {boolean} loading - Whether jobs are being fetched
- * @param {string|null} activeFilter - Currently active status filter
- * @param {Function} onFilterChange - Callback to update status filter
- * @param {string} searchQuery - Current company name search query (controlled by parent)
- * @param {Function} onSearchChange - Callback to update search query in parent
+ * @param {object} props - Filter presentation and controlled criteria.
+ * @param {'docked'|'drawer'} props.mode - Active responsive presentation.
+ * @param {boolean} props.isOpen - Whether the active presentation is exposed.
+ * @param {Function} props.onClose - Closes the active presentation.
+ * @param {Object} props.statusCounts - Count of jobs per status key.
+ * @param {number} props.total - Total unfiltered job count.
+ * @param {boolean} props.loading - Whether jobs are being fetched.
+ * @param {string|null} props.activeFilter - Active status filter.
+ * @param {Function} props.onFilterChange - Updates the status filter.
+ * @param {string} props.searchQuery - Controlled company search query.
+ * @param {Function} props.onSearchChange - Updates company search.
+ * @param {Array} props.jobs - Unfiltered jobs used by summary statistics.
+ * @param {number|null} props.salaryFilterMin - Controlled minimum salary.
+ * @param {number|null} props.salaryFilterMax - Controlled maximum salary.
+ * @param {Function} props.onSalaryFilterMinChange - Updates minimum salary.
+ * @param {Function} props.onSalaryFilterMaxChange - Updates maximum salary.
+ * @param {number} props.archivedCount - Locked archive count.
+ * @returns {React.ReactElement} One docked or drawer Filters panel.
  */
 export default function JobStatsSidebar({
+  mode = 'drawer',
   isOpen,
   onClose,
   statusCounts,
@@ -42,7 +52,8 @@ export default function JobStatsSidebar({
   onSalaryFilterMaxChange,
   archivedCount = 0,
 }) {
-  const { containerRef } = useOverlayAccessibility(isOpen, onClose);
+  const isDrawerOpen = mode === 'drawer' && isOpen;
+  const { containerRef } = useOverlayAccessibility(isDrawerOpen, onClose);
   const [localSearch, setLocalSearch] = useState(searchQuery || '');
   const [localSalaryMin, setLocalSalaryMin] = useState('');
   const [localSalaryMax, setLocalSalaryMax] = useState('');
@@ -51,152 +62,249 @@ export default function JobStatsSidebar({
   const salaryMaxTimerRef = useRef(null);
 
   const salaryStats = useMemo(() => {
-    const withSalary = jobs.filter(j => j.salary_min != null || j.salary_max != null);
+    const withSalary = jobs.filter(job => job.salary_min != null || job.salary_max != null);
     if (withSalary.length === 0) return null;
-    const mins = withSalary.map(j => j.salary_min).filter(v => v != null);
-    const maxes = withSalary.map(j => j.salary_max).filter(v => v != null);
-    const overallMin = mins.length ? Math.min(...mins) : null;
-    const overallMax = maxes.length ? Math.max(...maxes) : null;
+    const mins = withSalary.map(job => job.salary_min).filter(value => value != null);
+    const maxes = withSalary.map(job => job.salary_max).filter(value => value != null);
     const midpoints = withSalary
-      .filter(j => j.salary_min != null && j.salary_max != null)
-      .map(j => (j.salary_min + j.salary_max) / 2);
-    const avgMidpoint = midpoints.length
-      ? Math.round(midpoints.reduce((a, b) => a + b, 0) / midpoints.length)
-      : null;
-    return { overallMin, overallMax, avgMidpoint, count: withSalary.length, total: jobs.length };
+      .filter(job => job.salary_min != null && job.salary_max != null)
+      .map(job => (job.salary_min + job.salary_max) / 2);
+
+    return {
+      overallMin: mins.length ? Math.min(...mins) : null,
+      overallMax: maxes.length ? Math.max(...maxes) : null,
+      avgMidpoint: midpoints.length
+        ? Math.round(midpoints.reduce((sum, value) => sum + value, 0) / midpoints.length)
+        : null,
+      count: withSalary.length,
+      total: jobs.length,
+    };
   }, [jobs]);
 
   const latestStatusDate = useMemo(() => {
-    const withDate = jobs.filter(j => j.status_date != null);
+    const withDate = jobs.filter(job => job.status_date != null);
     if (withDate.length === 0) return null;
-    return withDate.reduce((latest, j) =>
-      new Date(j.status_date) > new Date(latest.status_date) ? j : latest
-    );
+    return withDate.reduce((latest, job) => (
+      new Date(job.status_date) > new Date(latest.status_date) ? job : latest
+    ));
   }, [jobs]);
 
-  // Sync local inputs if parent resets values (e.g. "clear all" action)
+  /** Mirror controlled company-search resets into the mounted input. */
   useEffect(() => {
     setLocalSearch(searchQuery || '');
   }, [searchQuery]);
+
+  /** Mirror controlled minimum-salary resets into the mounted input. */
   useEffect(() => {
     setLocalSalaryMin(salaryFilterMin != null ? String(salaryFilterMin) : '');
   }, [salaryFilterMin]);
+
+  /** Mirror controlled maximum-salary resets into the mounted input. */
   useEffect(() => {
     setLocalSalaryMax(salaryFilterMax != null ? String(salaryFilterMax) : '');
   }, [salaryFilterMax]);
 
-  // Cleanup debounce timers on unmount to prevent state updates on unmounted component
+  /** Cancel pending debounce work if Dashboard removes the Filters panel. */
   useEffect(() => () => {
     clearTimeout(debounceTimerRef.current);
     clearTimeout(salaryMinTimerRef.current);
     clearTimeout(salaryMaxTimerRef.current);
   }, []);
 
-  const handleSearchChange = (e) => {
-    const value = e.target.value;
+  /**
+   * Lock page scrolling only while the compact drawer owns focus.
+   * Restores the prior inline overflow value on close, resize, or unmount.
+   */
+  useEffect(() => {
+    if (!isDrawerOpen) {
+      return undefined;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [isDrawerOpen]);
+
+  /**
+   * Debounce and sanitize one company-search edit before updating Dashboard.
+   *
+   * @param {React.ChangeEvent<HTMLInputElement>} event - Search input event.
+   * @returns {void}
+   */
+  const handleSearchChange = (event) => {
+    const value = event.target.value;
     setLocalSearch(value);
     clearTimeout(debounceTimerRef.current);
-    debounceTimerRef.current = setTimeout(() => onSearchChange(DOMPurify.sanitize(value, { ALLOWED_TAGS: [] })), 300);
+    debounceTimerRef.current = setTimeout(() => {
+      onSearchChange(DOMPurify.sanitize(value, { ALLOWED_TAGS: [] }));
+    }, 300);
   };
 
+  /**
+   * Clear the local and controlled company search immediately.
+   *
+   * @returns {void}
+   */
   const handleClearSearch = () => {
     setLocalSearch('');
     clearTimeout(debounceTimerRef.current);
     onSearchChange('');
   };
 
-  const handleSalaryMinChange = (e) => {
-    const value = e.target.value;
+  /**
+   * Debounce and clamp the minimum salary boundary.
+   *
+   * @param {React.ChangeEvent<HTMLInputElement>} event - Minimum salary input event.
+   * @returns {void}
+   */
+  const handleSalaryMinChange = (event) => {
+    const value = event.target.value;
     setLocalSalaryMin(value);
     clearTimeout(salaryMinTimerRef.current);
     salaryMinTimerRef.current = setTimeout(() => {
-      if (value === '') return onSalaryFilterMinChange(null);
-      const clamped = Math.max(0, Math.min(Math.round(Number(value)), SALARY_MAX_VALUE));
-      onSalaryFilterMinChange(clamped);
+      if (value === '') {
+        onSalaryFilterMinChange(null);
+        return;
+      }
+      onSalaryFilterMinChange(
+        Math.max(0, Math.min(Math.round(Number(value)), SALARY_MAX_VALUE))
+      );
     }, 300);
   };
 
-  const handleSalaryMaxChange = (e) => {
-    const value = e.target.value;
+  /**
+   * Debounce and clamp the maximum salary boundary.
+   *
+   * @param {React.ChangeEvent<HTMLInputElement>} event - Maximum salary input event.
+   * @returns {void}
+   */
+  const handleSalaryMaxChange = (event) => {
+    const value = event.target.value;
     setLocalSalaryMax(value);
     clearTimeout(salaryMaxTimerRef.current);
     salaryMaxTimerRef.current = setTimeout(() => {
-      if (value === '') return onSalaryFilterMaxChange(null);
-      const clamped = Math.max(0, Math.min(Math.round(Number(value)), SALARY_MAX_VALUE));
-      onSalaryFilterMaxChange(clamped);
+      if (value === '') {
+        onSalaryFilterMaxChange(null);
+        return;
+      }
+      onSalaryFilterMaxChange(
+        Math.max(0, Math.min(Math.round(Number(value)), SALARY_MAX_VALUE))
+      );
     }, 300);
   };
 
+  /**
+   * Toggle one status while preserving every other criterion.
+   *
+   * @param {string} status - Canonical status value.
+   * @returns {void}
+   */
   const handleStatusClick = (status) => {
-    if (activeFilter === status) {
-      onFilterChange(null);
-    } else {
-      onFilterChange(status);
-    }
+    onFilterChange(activeFilter === status ? null : status);
   };
+
+  /**
+   * Reset every Filters-owned criterion through the existing explicit action.
+   *
+   * @returns {void}
+   */
+  const handleClearAllFilters = () => {
+    onFilterChange(null);
+    onSalaryFilterMinChange(null);
+    onSalaryFilterMaxChange(null);
+    onSearchChange('');
+    setLocalSalaryMin('');
+    setLocalSalaryMax('');
+    setLocalSearch('');
+    clearTimeout(salaryMinTimerRef.current);
+    clearTimeout(salaryMaxTimerRef.current);
+    clearTimeout(debounceTimerRef.current);
+  };
+
+  const panelClasses = mode === 'docked'
+    ? [
+      'relative flex h-full min-h-screen w-[var(--dash-filters-wide)] flex-col overflow-y-auto',
+      isOpen ? 'translate-x-0 opacity-100' : '-translate-x-2 opacity-0 pointer-events-none',
+    ].join(' ')
+    : [
+      'fixed inset-y-0 left-0 z-40 flex w-[min(var(--dash-filters-wide),calc(100vw-2rem))] flex-col overflow-y-auto',
+      isOpen ? 'translate-x-0' : '-translate-x-full pointer-events-none',
+    ].join(' ');
+  const hasFilters = Boolean(
+    activeFilter
+    || localSearch
+    || salaryFilterMin != null
+    || salaryFilterMax != null
+  );
 
   return (
     <>
-      {/* Backdrop */}
-      {isOpen && (
+      {isDrawerOpen && (
         <div
-          className="fixed inset-0 bg-black/40 z-30"
-          onClick={onClose}
+          data-testid="filters-backdrop"
           aria-hidden="true"
+          className="fixed inset-0 z-30 cursor-default bg-black/60"
+          onClick={onClose}
         />
       )}
 
-      {/* Drawer panel */}
-      <div
+      <aside
         ref={containerRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Filters sidebar"
-        className={`fixed inset-y-0 left-0 z-40 w-72 bg-white shadow-xl flex flex-col overflow-y-auto
-          transition-transform duration-200
-          ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}
+        id="dashboard-filters-panel"
+        role={isDrawerOpen ? 'dialog' : 'region'}
+        aria-modal={isDrawerOpen ? 'true' : undefined}
+        aria-labelledby="dashboard-filters-title"
+        aria-hidden={isOpen ? undefined : 'true'}
+        inert={isOpen ? undefined : ''}
+        className={[
+          'dashboard-major-panel dashboard-motion bg-dashboard-surface/95 text-dashboard-text transition-[transform,opacity]',
+          panelClasses,
+        ].join(' ')}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
-          <h2 className="text-sm font-semibold text-gray-800">Job Statistics</h2>
+        <div className="flex items-center justify-between border-b border-dashboard-line px-4 py-3">
+          <div>
+            <h2 id="dashboard-filters-title" className="text-sm font-semibold text-dashboard-text">
+              Filters
+            </h2>
+            <p className="text-dashboard-caption text-dashboard-muted">Application statistics</p>
+          </div>
           <button
+            type="button"
             onClick={onClose}
-            aria-label="Close sidebar"
-            className="text-gray-400 hover:text-gray-600 transition-colors"
+            aria-label={mode === 'docked' ? 'Collapse Filters' : 'Close Filters'}
+            className="dashboard-control dashboard-focus-ring inline-flex min-h-9 min-w-9 items-center justify-center text-dashboard-muted transition-colors hover:text-dashboard-text"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
+            {mode === 'docked' ? (
+              <PanelLeftClose aria-hidden="true" size={18} />
+            ) : (
+              <X aria-hidden="true" size={18} />
+            )}
           </button>
         </div>
 
-        {/* Total count */}
-        <div className="px-4 py-3 border-b border-gray-100">
+        <div className="border-b border-dashboard-line px-4 py-3">
           <div className="flex items-center justify-between">
-            <span className="text-sm text-gray-600">Active Applications</span>
-            <span className="text-lg font-bold text-gray-900">
+            <span className="text-sm text-dashboard-muted">Active Applications</span>
+            <span className="text-lg font-bold text-dashboard-text">
               {loading ? '-' : total}
             </span>
           </div>
           {archivedCount > 0 && (
             <div className="mt-2 flex items-center justify-between text-sm">
-              <span className="text-gray-500">Archived</span>
-              <span className="font-medium text-gray-700">{archivedCount}</span>
+              <span className="text-dashboard-muted">Archived</span>
+              <span className="font-medium text-dashboard-text">{archivedCount}</span>
             </div>
           )}
         </div>
 
-        {/* Pie chart */}
-        <div className="px-4 py-3 border-b border-gray-100">
-          <StatusPieChart
-            statusCounts={statusCounts}
-            total={total}
-            loading={loading}
-          />
+        <div className="border-b border-dashboard-line px-4 py-3 [&_text]:fill-dashboard-text">
+          <StatusPieChart statusCounts={statusCounts} total={total} loading={loading} />
         </div>
 
-        {/* Status filters */}
-        <div className="p-2">
+        <div className="space-y-1 p-2">
           {STATUS_OPTIONS.map(({ value, label }) => {
             const isActive = activeFilter === value;
             const count = statusCounts[value] || 0;
@@ -204,65 +312,76 @@ export default function JobStatsSidebar({
             return (
               <button
                 key={value}
+                type="button"
                 onClick={() => handleStatusClick(value)}
                 disabled={loading}
-                className={`w-full flex items-center justify-between px-3 py-2 rounded-md text-sm transition-colors ${
+                aria-pressed={isActive}
+                className={[
+                  'dashboard-focus-ring flex min-h-9 w-full items-center justify-between rounded-dashboard-control border px-3 py-2 text-sm transition-colors',
                   isActive
-                    ? `${STATUS_COLORS[value]} font-medium`
-                    : 'hover:bg-gray-50 text-gray-700'
-                } ${loading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                    ? 'border-dashboard-accent/60 bg-dashboard-active font-medium text-dashboard-text'
+                    : 'border-transparent text-dashboard-muted hover:border-dashboard-control-border hover:bg-dashboard-surface-hover hover:text-dashboard-text',
+                  loading ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
+                ].join(' ')}
               >
-                <div className="flex items-center gap-2">
-                  <span className={`w-2 h-2 rounded-full ${STATUS_DOT_COLORS[value]}`} />
+                <span className="flex items-center gap-2">
+                  <span className={`h-2 w-2 rounded-full ${STATUS_DOT_COLORS[value]}`} />
                   <span>{label}</span>
-                </div>
-                <span className={`font-medium ${isActive ? '' : 'text-gray-500'}`}>
-                  {loading ? '-' : count}
                 </span>
+                <span className="font-medium">{loading ? '-' : count}</span>
               </button>
             );
           })}
         </div>
 
-        {/* Salary summary */}
         {!loading && salaryStats && (
-          <div className="px-4 py-3 border-t border-gray-100 space-y-1.5">
-            <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">Salary Range</h3>
-            <p className="text-sm text-gray-800 font-medium">
+          <div className="space-y-1.5 border-t border-dashboard-line px-4 py-3">
+            <h3 className="text-xs font-medium uppercase tracking-wide text-dashboard-muted">
+              Salary Range
+            </h3>
+            <p className="text-sm font-medium text-dashboard-text">
               {formatSalary(salaryStats.overallMin, salaryStats.overallMax)}
             </p>
             {salaryStats.avgMidpoint != null && (
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-dashboard-muted">
                 Avg midpoint: {formatSalarySingle(salaryStats.avgMidpoint)}
               </p>
             )}
-            <p className="text-xs text-gray-400">
+            <p className="text-xs text-dashboard-muted/80">
               {salaryStats.count} of {salaryStats.total} jobs with salary data
             </p>
           </div>
         )}
 
-        {/* Latest status change */}
         {!loading && latestStatusDate && (
-          <div className="px-4 py-3 border-t border-gray-100 space-y-1.5">
-            <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">Latest Status Change</h3>
-            <p className="text-sm text-gray-800">
+          <div className="space-y-1.5 border-t border-dashboard-line px-4 py-3">
+            <h3 className="text-xs font-medium uppercase tracking-wide text-dashboard-muted">
+              Latest Status Change
+            </h3>
+            <p className="text-sm text-dashboard-text">
               <span className="font-medium">{latestStatusDate.company}</span>
-              {' \u2192 '}
+              {' → '}
               <span className="capitalize">{latestStatusDate.status}</span>
             </p>
-            <p className="text-xs text-gray-500">
-              {new Date(latestStatusDate.status_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+            <p className="text-xs text-dashboard-muted">
+              {new Date(latestStatusDate.status_date).toLocaleDateString('en-US', {
+                month: 'short',
+                day: 'numeric',
+                year: 'numeric',
+              })}
             </p>
           </div>
         )}
 
-        {/* Salary filter */}
-        <div className="px-4 py-3 border-t border-gray-100">
-          <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">Filter by Salary</h3>
+        <div className="border-t border-dashboard-line px-4 py-3">
+          <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-dashboard-muted">
+            Filter by Salary
+          </h3>
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label htmlFor="salary-filter-min" className="block text-xs text-gray-500 mb-1">Min</label>
+              <label htmlFor="salary-filter-min" className="mb-1 block text-xs text-dashboard-muted">
+                Min
+              </label>
               <input
                 id="salary-filter-min"
                 type="number"
@@ -273,14 +392,13 @@ export default function JobStatsSidebar({
                 max={SALARY_MAX_VALUE}
                 step="1000"
                 disabled={loading}
-                className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded-md
-                           placeholder-gray-400 focus:outline-none focus:ring-2
-                           focus:ring-blue-500 focus:border-transparent
-                           disabled:opacity-50 disabled:cursor-not-allowed"
+                className="dashboard-control dashboard-focus-ring min-h-9 w-full px-2 py-1.5 text-sm text-dashboard-text placeholder:text-dashboard-muted/70 disabled:cursor-not-allowed disabled:opacity-50"
               />
             </div>
             <div>
-              <label htmlFor="salary-filter-max" className="block text-xs text-gray-500 mb-1">Max</label>
+              <label htmlFor="salary-filter-max" className="mb-1 block text-xs text-dashboard-muted">
+                Max
+              </label>
               <input
                 id="salary-filter-max"
                 type="number"
@@ -291,72 +409,60 @@ export default function JobStatsSidebar({
                 max={SALARY_MAX_VALUE}
                 step="1000"
                 disabled={loading}
-                className="w-full px-2 py-1.5 text-sm border border-gray-200 rounded-md
-                           placeholder-gray-400 focus:outline-none focus:ring-2
-                           focus:ring-blue-500 focus:border-transparent
-                           disabled:opacity-50 disabled:cursor-not-allowed"
+                className="dashboard-control dashboard-focus-ring min-h-9 w-full px-2 py-1.5 text-sm text-dashboard-text placeholder:text-dashboard-muted/70 disabled:cursor-not-allowed disabled:opacity-50"
               />
             </div>
           </div>
         </div>
 
-        {/* Company search */}
-        <div className="px-4 pb-3 border-t border-gray-100 pt-3">
+        <div className="border-t border-dashboard-line px-4 py-3">
           <label
             htmlFor="job-search"
-            className="block text-xs font-medium text-gray-500 mb-1 uppercase tracking-wide"
+            className="mb-1 block text-xs font-medium uppercase tracking-wide text-dashboard-muted"
           >
             Search by company
           </label>
           <div className="relative">
+            <Search
+              aria-hidden="true"
+              size={16}
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-dashboard-muted"
+            />
             <input
               id="job-search"
               type="text"
               value={localSearch}
               onChange={handleSearchChange}
-              placeholder="e.g. Apple..."
+              placeholder="Search companies..."
               disabled={loading}
               maxLength={100}
-              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-md
-                         placeholder-gray-400 focus:outline-none focus:ring-2
-                         focus:ring-blue-500 focus:border-transparent
-                         disabled:opacity-50 disabled:cursor-not-allowed"
+              className="dashboard-control dashboard-focus-ring min-h-9 w-full py-2 pl-9 pr-9 text-sm text-dashboard-text placeholder:text-dashboard-muted/70 disabled:cursor-not-allowed disabled:opacity-50"
             />
             {localSearch && (
               <button
+                type="button"
                 onClick={handleClearSearch}
                 aria-label="Clear search"
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400
-                           hover:text-gray-600 transition-colors"
+                className="dashboard-focus-ring absolute right-1 top-1/2 inline-flex min-h-7 min-w-7 -translate-y-1/2 items-center justify-center rounded text-dashboard-muted hover:text-dashboard-text"
               >
-                ✕
+                <X aria-hidden="true" size={15} />
               </button>
             )}
           </div>
         </div>
 
-        {(activeFilter || salaryFilterMin != null || salaryFilterMax != null || searchQuery) && (
-          <div className="px-4 pb-3">
+        {hasFilters && (
+          <div className="mt-auto border-t border-dashboard-line px-4 py-3">
             <button
-              onClick={() => {
-                onFilterChange(null);
-                onSalaryFilterMinChange(null);
-                onSalaryFilterMaxChange(null);
-                setLocalSalaryMin('');
-                setLocalSalaryMax('');
-                clearTimeout(salaryMinTimerRef.current);
-                clearTimeout(salaryMaxTimerRef.current);
-                onSearchChange('');
-                setLocalSearch('');
-                clearTimeout(debounceTimerRef.current);
-              }}
-              className="w-full py-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-200 rounded-md hover:bg-gray-50 transition-colors"
+              type="button"
+              onClick={handleClearAllFilters}
+              className="dashboard-control dashboard-focus-ring min-h-9 w-full px-3 py-2 text-sm font-medium text-dashboard-muted transition-colors hover:border-dashboard-accent/60 hover:bg-dashboard-surface-hover hover:text-dashboard-text"
             >
               Clear All Filters
             </button>
           </div>
         )}
-      </div>
+      </aside>
     </>
   );
 }

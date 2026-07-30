@@ -31,6 +31,47 @@ const mockToggleAddForm = jest.fn();
 let mockLatestUpgradeModalProps = null;
 let mockLatestSidebarProps = null;
 let mockLatestActivityProps = null;
+const mockWideMediaQuery = {
+  matches: false,
+  addEventListener: jest.fn(),
+  removeEventListener: jest.fn(),
+};
+const mockWideMediaListeners = new Set();
+
+/** Return the shared mutable media-query fixture for Dashboard renders. */
+function getMockWideMediaQuery() {
+  return mockWideMediaQuery;
+}
+
+/**
+ * Register one media-query listener in the test-owned listener set.
+ *
+ * @param {string} _event - Ignored event name from the browser API.
+ * @param {Function} listener - Dashboard change listener.
+ * @returns {void}
+ */
+function addMockWideMediaListener(_event, listener) {
+  mockWideMediaListeners.add(listener);
+}
+
+/**
+ * Remove one media-query listener during Dashboard cleanup.
+ *
+ * @param {string} _event - Ignored event name from the browser API.
+ * @param {Function} listener - Dashboard change listener.
+ * @returns {void}
+ */
+function removeMockWideMediaListener(_event, listener) {
+  mockWideMediaListeners.delete(listener);
+}
+
+Object.defineProperty(window, 'matchMedia', {
+  configurable: true,
+  value: jest.fn(getMockWideMediaQuery),
+});
+
+mockWideMediaQuery.addEventListener.mockImplementation(addMockWideMediaListener);
+mockWideMediaQuery.removeEventListener.mockImplementation(removeMockWideMediaListener);
 
 jest.mock('next/router', () => ({
   useRouter: () => mockRouter,
@@ -244,6 +285,21 @@ function buildJobFormState() {
 }
 
 /**
+ * Move the mocked viewport across the locked wide breakpoint.
+ *
+ * @param {boolean} isWide - Whether the media query should match.
+ * @returns {void}
+ */
+function setWideLayout(isWide) {
+  act(() => {
+    mockWideMediaQuery.matches = isWide;
+    for (const listener of mockWideMediaListeners) {
+      listener({ matches: isWide });
+    }
+  });
+}
+
+/**
  * Render the authenticated Dashboard with the current hook fixtures.
  *
  * @returns {HTMLElement} Rendered Dashboard container.
@@ -329,6 +385,10 @@ describe('Dashboard billing entry integration', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockWideMediaQuery.matches = false;
+    mockWideMediaListeners.clear();
+    mockWideMediaQuery.addEventListener.mockImplementation(addMockWideMediaListener);
+    mockWideMediaQuery.removeEventListener.mockImplementation(removeMockWideMediaListener);
     mockLatestUpgradeModalProps = null;
     mockLatestSidebarProps = null;
     mockLatestActivityProps = null;
@@ -508,20 +568,104 @@ describe('Dashboard billing entry integration', () => {
 
   it('keeps Filters, Activity, tooltip, and Add Job controls wired', () => {
     const element = renderDashboard();
+    const filtersButton = findButtonByText(element, 'Filters');
+    const activityButton = findButtonByText(element, 'Activity');
 
     expect(element.querySelector('[data-testid="info-tooltip"]')).toBeTruthy();
+    expect(filtersButton.getAttribute('aria-expanded')).toBe('false');
+    expect(filtersButton.getAttribute('aria-controls')).toBe('dashboard-filters-panel');
+    expect(activityButton.getAttribute('aria-expanded')).toBe('false');
+    expect(activityButton.getAttribute('aria-controls')).toBe('dashboard-activity-drawer');
 
-    click(findButtonByText(element, 'Filters'));
+    click(filtersButton);
     expect(mockLatestSidebarProps.isOpen).toBe(true);
+    expect(mockLatestSidebarProps.mode).toBe('drawer');
+    expect(filtersButton.getAttribute('aria-expanded')).toBe('true');
     expect(element.querySelector('[data-testid="filters-overlay"]')).toBeTruthy();
 
     act(() => mockLatestSidebarProps.onClose());
-    click(findButtonByText(element, 'Activity'));
+    expect(filtersButton.getAttribute('aria-expanded')).toBe('false');
+    click(activityButton);
     expect(mockLatestActivityProps.isOpen).toBe(true);
+    expect(activityButton.getAttribute('aria-expanded')).toBe('true');
     expect(element.querySelector('[data-testid="activity-overlay"]')).toBeTruthy();
 
     click(findButtonByText(element, 'Add New Job'));
     expect(mockToggleAddForm).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts wide Filters expanded, releases the track, and preserves every criterion', () => {
+    setWideLayout(true);
+    const element = renderDashboard();
+    const filtersButton = findButtonByText(element, 'Filters');
+    const shellContent = element.querySelector('[data-filters-expanded]');
+
+    expect(mockLatestSidebarProps).toMatchObject({ mode: 'docked', isOpen: true });
+    expect(filtersButton.getAttribute('aria-expanded')).toBe('true');
+    expect(shellContent.getAttribute('data-filters-expanded')).toBe('true');
+
+    act(() => {
+      mockLatestSidebarProps.onFilterChange('interviewing');
+      mockLatestSidebarProps.onSearchChange('Acme');
+      mockLatestSidebarProps.onSalaryFilterMinChange(60000);
+      mockLatestSidebarProps.onSalaryFilterMaxChange(120000);
+      mockLatestActivityProps.onDateToggle('2026-07-30');
+    });
+
+    expect(mockLatestSidebarProps).toMatchObject({
+      activeFilter: 'interviewing',
+      searchQuery: 'Acme',
+      salaryFilterMin: 60000,
+      salaryFilterMax: 120000,
+    });
+    expect(mockLatestActivityProps.selectedDates.has('2026-07-30')).toBe(true);
+
+    filtersButton.focus();
+    act(() => mockLatestSidebarProps.onClose());
+
+    expect(document.activeElement).toBe(filtersButton);
+    expect(mockLatestSidebarProps.isOpen).toBe(false);
+    expect(filtersButton.getAttribute('aria-expanded')).toBe('false');
+    expect(shellContent.getAttribute('data-filters-expanded')).toBe('false');
+
+    click(filtersButton);
+
+    expect(mockLatestSidebarProps).toMatchObject({
+      mode: 'docked',
+      isOpen: true,
+      activeFilter: 'interviewing',
+      searchQuery: 'Acme',
+      salaryFilterMin: 60000,
+      salaryFilterMax: 120000,
+    });
+    expect(mockLatestActivityProps.selectedDates.has('2026-07-30')).toBe(true);
+  });
+
+  it('cleans up an open compact drawer when resizing across the wide breakpoint', () => {
+    const element = renderDashboard();
+    const filtersButton = findButtonByText(element, 'Filters');
+
+    click(filtersButton);
+    expect(mockLatestSidebarProps).toMatchObject({ mode: 'drawer', isOpen: true });
+
+    setWideLayout(true);
+    expect(mockLatestSidebarProps).toMatchObject({ mode: 'docked', isOpen: true });
+
+    setWideLayout(false);
+    expect(mockLatestSidebarProps).toMatchObject({ mode: 'drawer', isOpen: false });
+    expect(filtersButton.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('renders only the approved TrackTheApp navigation copy', () => {
+    const element = renderDashboard();
+
+    expect(element.textContent).toContain('TrackTheApp');
+    expect(element.textContent).toContain('Applications');
+    expect(element.textContent).not.toContain('Track The App');
+    expect(element.textContent).not.toContain('TrackerPro');
+    expect(element.textContent).not.toContain('Overview');
+    expect(element.textContent).not.toContain('Insights');
+    expect(element.textContent).not.toContain('Settings');
   });
 
   it('does not open Upgrade over an active focus-owning Dashboard overlay', () => {

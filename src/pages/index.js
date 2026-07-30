@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import { useAuth } from '../client/contexts/AuthContext';
 import { useJobs } from '../client/hooks/useJobs';
@@ -13,6 +13,7 @@ import ProfileDropdown from '../client/components/ProfileDropdown';
 import Spinner from '../client/components/Spinner';
 import DashboardSkeleton from '../client/components/skeletons/DashboardSkeleton';
 import DashboardShell from '../client/components/dashboard/DashboardShell';
+import DashboardNavigation from '../client/components/dashboard/DashboardNavigation';
 import InfoTooltip from '../client/components/InfoTooltip';
 import ActivityDrawer from '../client/components/ActivityDrawer';
 import StorageDowngradeBanner from '../client/components/StorageDowngradeBanner';
@@ -27,15 +28,53 @@ import { getStorageCount } from '../client/lib/storageSummaryUi.js';
 import { BILLING_PLANS } from '../shared/constants/billing.js';
 
 const PREMIUM_MONTHLY_PLAN = PLAN_CATALOG[BILLING_PLANS.PREMIUM_MONTHLY];
+const DASHBOARD_WIDE_MEDIA_QUERY = '(min-width: 1400px)';
+
+/**
+ * Track the shell's locked wide breakpoint for responsive disclosure behavior.
+ *
+ * Purpose: one Filters trigger and one mounted panel need the same docked versus
+ * drawer mode as the CSS shell. The server snapshot remains compact-safe, then
+ * the media-query listener keeps resize transitions synchronized in the client.
+ *
+ * @returns {boolean} Whether the viewport currently uses the wide shell.
+ */
+function useDashboardWideLayout() {
+  const [isWide, setIsWide] = useState(false);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') {
+      return undefined;
+    }
+
+    const mediaQuery = window.matchMedia(DASHBOARD_WIDE_MEDIA_QUERY);
+
+    /**
+     * Synchronize disclosure semantics with the live media query.
+     *
+     * @returns {void}
+     */
+    const syncWideLayout = () => setIsWide(mediaQuery.matches);
+
+    syncWideLayout();
+    mediaQuery.addEventListener('change', syncWideLayout);
+    return () => mediaQuery.removeEventListener('change', syncWideLayout);
+  }, []);
+
+  return isWide;
+}
 
 export default function Dashboard() {
   const { user, loading: authLoading, signOut } = useAuth();
   const router = useRouter();
+  const isWideLayout = useDashboardWideLayout();
+  const filtersTriggerRef = useRef(null);
   const [statusFilter, setStatusFilter] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [salaryFilterMin, setSalaryFilterMin] = useState(null);
   const [salaryFilterMax, setSalaryFilterMax] = useState(null);
   const [selectedDates, setSelectedDates] = useState(new Set());
+  const [filtersExpanded, setFiltersExpanded] = useState(true);
 
   const handleDateToggle = (dateStr) => {
     setSelectedDates(prev => {
@@ -81,6 +120,12 @@ export default function Dashboard() {
   const [upgradeModalOpen, setUpgradeModalOpen] = useState(false);
   const [jobToDelete, setJobToDelete] = useState(null);
 
+  useEffect(() => {
+    if (isWideLayout && sidebarOpen) {
+      setSidebarOpen(false);
+    }
+  }, [isWideLayout, sidebarOpen]);
+
   const {
     showForm,
     editingJob,
@@ -102,6 +147,42 @@ export default function Dashboard() {
       </DashboardShell>
     );
   }
+
+  /**
+   * Toggle the Filters disclosure that belongs to the current responsive mode.
+   *
+   * @returns {void}
+   */
+  const handleFiltersToggle = () => {
+    if (isWideLayout) {
+      setFiltersExpanded(previous => !previous);
+      return;
+    }
+    setSidebarOpen(previous => !previous);
+  };
+
+  /**
+   * Close Filters and return docked focus to the persistent navigation trigger.
+   *
+   * @returns {void}
+   */
+  const handleFiltersClose = () => {
+    if (isWideLayout) {
+      setFiltersExpanded(false);
+      filtersTriggerRef.current?.focus();
+      return;
+    }
+    setSidebarOpen(false);
+  };
+
+  /**
+   * Toggle the existing Activity drawer from its navigation disclosure.
+   *
+   * @returns {void}
+   */
+  const handleActivityToggle = () => {
+    setActivityOpen(previous => !previous);
+  };
 
   const handleAddJob = async (jobData) => {
     const result = await addJob(jobData);
@@ -181,7 +262,7 @@ export default function Dashboard() {
       dashboardBillingEntryPoint.action
       === DASHBOARD_BILLING_ENTRY_ACTIONS.OPEN_UPGRADE_MODAL
     ) {
-      const hasActiveOverlay = sidebarOpen
+      const hasActiveOverlay = (!isWideLayout && sidebarOpen)
         || activityOpen
         || Boolean(editingJob)
         || Boolean(jobToDelete);
@@ -195,28 +276,40 @@ export default function Dashboard() {
     handleBillingNavigation();
   };
 
+  const filtersOpen = isWideLayout ? filtersExpanded : sidebarOpen;
+  const hasActiveFilters = Boolean(
+    statusFilter
+    || searchQuery
+    || salaryFilterMin != null
+    || salaryFilterMax != null
+  );
+  const billingOpensDialog = dashboardBillingEntryPoint.action
+    === DASHBOARD_BILLING_ENTRY_ACTIONS.OPEN_UPGRADE_MODAL;
+
   return (
-    <DashboardShell>
-      <header className="bg-white shadow-sm py-4 px-6">
-        <div className="max-w-5xl mx-auto flex items-center justify-between">
-          <h1 className="text-xl font-semibold text-gray-800">Track The App</h1>
-          <ProfileDropdown user={user} onSignOut={handleSignOut} />
-        </div>
-      </header>
-
-      <main className="max-w-6xl mx-auto px-6 py-6">
-        {error && (
-          <div className="bg-red-100 text-red-800 px-4 py-3 rounded mb-5 flex justify-between items-center">
-            <span>{error.message}</span>
-            <button onClick={clearError} className="text-red-800 hover:text-red-900 text-sm">
-              Dismiss
-            </button>
-          </div>
-        )}
-
+    <DashboardShell
+      filtersExpanded={filtersExpanded}
+      navigation={(
+        <DashboardNavigation
+          filtersOpen={filtersOpen}
+          hasActiveFilters={hasActiveFilters}
+          onFiltersToggle={handleFiltersToggle}
+          filtersTriggerRef={filtersTriggerRef}
+          activityOpen={activityOpen}
+          hasSelectedDates={selectedDates.size > 0}
+          onActivityToggle={handleActivityToggle}
+          billingEntryLoading={dashboardBillingEntryLoading}
+          billingLabel={dashboardBillingEntryPoint.label}
+          billingOpensDialog={billingOpensDialog}
+          billingDialogOpen={upgradeModalOpen}
+          onBillingEntry={handleDashboardBillingEntry}
+        />
+      )}
+      filters={(
         <JobStatsSidebar
-          isOpen={sidebarOpen}
-          onClose={() => setSidebarOpen(false)}
+          mode={isWideLayout ? 'docked' : 'drawer'}
+          isOpen={filtersOpen}
+          onClose={handleFiltersClose}
           statusCounts={statusCounts}
           total={totalJobs}
           loading={loading}
@@ -231,69 +324,29 @@ export default function Dashboard() {
           onSalaryFilterMaxChange={setSalaryFilterMax}
           archivedCount={archivedCount}
         />
+      )}
+    >
+      <header className="bg-white shadow-sm py-4 px-6">
+        <div className="max-w-5xl mx-auto flex items-center justify-end">
+          <ProfileDropdown user={user} onSignOut={handleSignOut} />
+        </div>
+      </header>
+
+      <main className="max-w-6xl mx-auto px-6 py-6">
+        {error && (
+          <div className="bg-red-100 text-red-800 px-4 py-3 rounded mb-5 flex justify-between items-center">
+            <span>{error.message}</span>
+            <button onClick={clearError} className="text-red-800 hover:text-red-900 text-sm">
+              Dismiss
+            </button>
+          </div>
+        )}
 
         <StorageDowngradeBanner storageSummary={storageSummary} />
         <LockedArchivePanel storageSummary={storageSummary} onArchiveDeleted={refreshStorageSummary} />
 
         <div>
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setSidebarOpen(true)}
-                className="relative flex items-center gap-2 bg-white border border-gray-300 text-gray-700 px-4 py-2.5 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4h18M7 8h10M10 12h4" />
-                </svg>
-                Filters
-                {(statusFilter || searchQuery || salaryFilterMin != null || salaryFilterMax != null) && (
-                  <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-blue-500" />
-                )}
-              </button>
-              <button
-                onClick={() => setActivityOpen(true)}
-                className="relative flex items-center gap-2 bg-white border border-gray-300 text-gray-700 px-4 py-2.5 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-                Activity
-                {selectedDates.size > 0 && (
-                  <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-blue-500" />
-                )}
-              </button>
-              {dashboardBillingEntryLoading ? (
-                <div
-                  data-testid="billing-entry-skeleton"
-                  role="status"
-                  aria-label="Loading plan options"
-                  className="h-[42px] w-28 animate-pulse rounded-md border border-gray-200 bg-gray-200"
-                />
-              ) : (
-                <button
-                  type="button"
-                  onClick={handleDashboardBillingEntry}
-                  aria-haspopup={
-                    dashboardBillingEntryPoint.action
-                      === DASHBOARD_BILLING_ENTRY_ACTIONS.OPEN_UPGRADE_MODAL
-                      ? 'dialog'
-                      : undefined
-                  }
-                  aria-expanded={
-                    dashboardBillingEntryPoint.action
-                      === DASHBOARD_BILLING_ENTRY_ACTIONS.OPEN_UPGRADE_MODAL
-                      ? upgradeModalOpen
-                      : undefined
-                  }
-                  className="relative flex items-center gap-2 bg-white border border-gray-300 text-gray-700 px-4 py-2.5 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.25 8.25h19.5M3.75 18h16.5a1.5 1.5 0 001.5-1.5v-9A1.5 1.5 0 0020.25 6H3.75a1.5 1.5 0 00-1.5 1.5v9A1.5 1.5 0 003.75 18z" />
-                  </svg>
-                  {dashboardBillingEntryPoint.label}
-                </button>
-              )}
-            </div>
+          <div className="mb-6 flex items-center justify-end">
             <div className="flex items-center gap-3">
               <InfoTooltip />
               <button
@@ -355,14 +408,20 @@ export default function Dashboard() {
         </div>
 
         {/* Activity calendar — desktop: inline bottom-left, mobile: drawer */}
-        <ActivityDrawer
-          isOpen={activityOpen}
-          onClose={() => setActivityOpen(false)}
-          jobs={allJobs}
-          selectedDates={selectedDates}
-          onDateToggle={handleDateToggle}
-          onClearDates={clearSelectedDates}
-        />
+        <div
+          id="dashboard-activity-drawer"
+          aria-hidden={activityOpen ? undefined : 'true'}
+          inert={activityOpen ? undefined : ''}
+        >
+          <ActivityDrawer
+            isOpen={activityOpen}
+            onClose={() => setActivityOpen(false)}
+            jobs={allJobs}
+            selectedDates={selectedDates}
+            onDateToggle={handleDateToggle}
+            onClearDates={clearSelectedDates}
+          />
+        </div>
         <UpgradePlanModal
           isOpen={upgradeModalOpen}
           plan={PREMIUM_MONTHLY_PLAN}
