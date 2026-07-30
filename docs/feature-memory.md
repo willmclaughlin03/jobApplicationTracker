@@ -14,7 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-26
 
-- `2026-07-30` - `Dashboard shell page regression coverage`: Added focused auth-loading and settled billing-render assertions for the dashboard visual root and font variable contract.
+- `2026-07-30` - `Dashboard shell page regression coverage`: Added focused auth-loading skeleton, settled billing-render, visual-root, and font-variable assertions.
 - `2026-07-30` - `Dashboard skeleton reduced motion`: Extended the dashboard reduced-motion override to neutralize the delayed skeleton fade and added focused regression coverage for the component-to-stylesheet contract.
 - `2026-07-29` - `Dashboard redesign design foundation`: Added the dashboard-scoped Inter and emerald-noir token system, static root-owned light field and vignette, responsive shell geometry, reduced-motion primitives, and the approved Lucide and Radix dropdown dependency records.
   - impact: The authenticated dashboard now owns a reusable green-black foundation without moving auth, jobs, filters, billing, or overlay workflows; focused page tests, Tailwind compilation, contrast checks, lockfile validation, and the production dependency audit pass, while the full build remains environment-blocked by its four documented process variables.

@@ -106,6 +106,7 @@ describe('DashboardSkeleton', () => {
     let reducedMotionRule;
     let skeletonAnimationRule;
     let animationDuration;
+    let animationDelay;
     let animationIterationCount;
 
     expect(outer.className).toContain('animate-skeleton-in');
@@ -132,12 +133,16 @@ describe('DashboardSkeleton', () => {
       if (node.prop === 'animation-duration') {
         animationDuration = node;
       }
+      if (node.prop === 'animation-delay') {
+        animationDelay = node;
+      }
       if (node.prop === 'animation-iteration-count') {
         animationIterationCount = node;
       }
     }
 
     expect(animationDuration).toMatchObject({ value: '0.01ms', important: true });
+    expect(animationDelay).toMatchObject({ value: '0ms', important: true });
     expect(animationIterationCount).toMatchObject({ value: '1', important: true });
   });
 });

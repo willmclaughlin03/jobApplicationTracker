@@ -186,9 +186,11 @@ jest.mock('../../client/components/Spinner', () => {
 });
 
 jest.mock('../../client/components/skeletons/DashboardSkeleton', () => {
-  /** Omit the auth-loading shell from authenticated Dashboard tests. */
+  /** Mark the auth-loading skeleton without rendering its implementation details. */
   return function MockDashboardSkeleton() {
-    return null;
+    return require('react').createElement('div', {
+      'data-testid': 'dashboard-skeleton-marker',
+    });
   };
 });
 
@@ -355,6 +357,9 @@ describe('Dashboard billing entry integration', () => {
     const element = renderDashboard();
 
     expectDashboardShell(element);
+    expect(
+      element.querySelector('.dashboard-root [data-testid=dashboard-skeleton-marker]')
+    ).toBeTruthy();
   });
 
   it('opens the configured Premium modal only for terminal Free without navigating', () => {
