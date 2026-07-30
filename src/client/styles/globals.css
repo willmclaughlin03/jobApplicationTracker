@@ -1,3 +1,186 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+.dashboard-root {
+  --dash-canvas: 2 15 13;
+  --dash-rail: 3 20 17;
+  --dash-surface: 6 31 24;
+  --dash-surface-raised: 10 42 32;
+  --dash-surface-hover: 12 51 38;
+  --dash-text: 243 247 244;
+  --dash-muted: 167 184 176;
+  --dash-line: 32 72 58;
+  --dash-accent: 93 218 112;
+  --dash-accent-hover: 120 234 134;
+  --dash-accent-ink: 4 17 7;
+  --dash-active-fill: rgb(var(--dash-accent) / 0.16);
+  --dash-panel-border: rgb(var(--dash-accent) / 0.48);
+  --dash-control-border: rgb(var(--dash-accent) / 0.5);
+  --dash-focus-ring: rgb(var(--dash-accent-hover) / 0.9);
+  --dash-panel-glow:
+    0 0 0 1px rgb(var(--dash-accent) / 0.08),
+    0 0 28px rgb(var(--dash-accent) / 0.1);
+  --dash-radius-control: 0.5rem;
+  --dash-radius-panel: 0.75rem;
+  --dash-font-size-caption: 0.8125rem;
+  --dash-line-height-caption: 1.25rem;
+  --dash-font-size-body: 0.875rem;
+  --dash-line-height-body: 1.375rem;
+  --dash-font-size-heading: 1.875rem;
+  --dash-line-height-heading: 2.25rem;
+  --dash-motion-duration: 200ms;
+  --dash-motion-easing: cubic-bezier(0.2, 0, 0, 1);
+  --dash-rail-compact: 4.5rem;
+  --dash-rail-wide: 14rem;
+  --dash-filters-wide: 18rem;
+
+  position: relative;
+  isolation: isolate;
+  min-height: 100vh;
+  overflow-x: clip;
+  color-scheme: dark;
+  background:
+    radial-gradient(circle at 62% 4%, rgb(var(--dash-accent) / 0.1), transparent 38%),
+    radial-gradient(circle at 86% 100%, rgb(13 148 101 / 0.09), transparent 44%),
+    radial-gradient(circle at 5% 76%, rgb(34 197 94 / 0.05), transparent 32%),
+    linear-gradient(135deg, #020f0d 0%, #031713 52%, #020d0c 100%);
+}
+
+.dashboard-root::before,
+.dashboard-root::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.dashboard-root::before {
+  inset: 0 0 auto 35%;
+  height: min(30rem, 38vh);
+  background:
+    linear-gradient(
+      124deg,
+      transparent 16%,
+      rgb(var(--dash-accent) / 0.025) 40%,
+      rgb(var(--dash-accent) / 0.04) 51%,
+      transparent 76%
+    ),
+    linear-gradient(
+      127deg,
+      transparent 31%,
+      rgb(var(--dash-accent) / 0.07) 49.2%,
+      transparent 50.4%
+    ),
+    linear-gradient(
+      119deg,
+      transparent 45%,
+      rgb(var(--dash-accent) / 0.055) 57%,
+      transparent 58.2%
+    ),
+    radial-gradient(
+      ellipse at 76% 14%,
+      transparent 39%,
+      rgb(var(--dash-accent) / 0.045) 45%,
+      transparent 51%
+    );
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 42%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0%, #000 42%, transparent 100%);
+}
+
+.dashboard-root::after {
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 35%, rgb(0 5 4 / 0.42) 100%);
+}
+
+@layer components {
+  .dashboard-root .dashboard-major-panel {
+    border: 1px solid var(--dash-panel-border);
+    border-radius: var(--dash-radius-panel);
+    background-color: rgb(var(--dash-surface) / 0.94);
+    box-shadow: var(--dash-panel-glow);
+  }
+
+  .dashboard-root .dashboard-raised-panel {
+    border: 1px solid var(--dash-panel-border);
+    border-radius: var(--dash-radius-panel);
+    background-color: rgb(var(--dash-surface-raised) / 0.96);
+    box-shadow: var(--dash-panel-glow);
+  }
+
+  .dashboard-root .dashboard-control {
+    border: 1px solid var(--dash-control-border);
+    border-radius: var(--dash-radius-control);
+    background-color: rgb(var(--dash-surface-raised) / 0.9);
+  }
+}
+
+@layer utilities {
+  .dashboard-root .dashboard-focus-ring:focus-visible {
+    outline: 2px solid var(--dash-focus-ring);
+    outline-offset: 2px;
+  }
+
+  .dashboard-root .dashboard-motion {
+    transition-duration: var(--dash-motion-duration);
+    transition-timing-function: var(--dash-motion-easing);
+  }
+}
+
+@media (max-width: 1399px) {
+  .dashboard-root::before {
+    inset-inline-start: 28%;
+    opacity: 0.72;
+    background:
+      linear-gradient(
+        124deg,
+        transparent 16%,
+        rgb(var(--dash-accent) / 0.025) 40%,
+        rgb(var(--dash-accent) / 0.04) 51%,
+        transparent 76%
+      ),
+      linear-gradient(
+        127deg,
+        transparent 31%,
+        rgb(var(--dash-accent) / 0.065) 49.2%,
+        transparent 50.4%
+      ),
+      linear-gradient(
+        119deg,
+        transparent 45%,
+        rgb(var(--dash-accent) / 0.05) 57%,
+        transparent 58.2%
+      );
+  }
+}
+
+@media (max-width: 767px) {
+  .dashboard-root::before {
+    inset-inline-start: 0;
+    height: 15rem;
+    opacity: 0.55;
+    background:
+      linear-gradient(
+        124deg,
+        transparent 16%,
+        rgb(var(--dash-accent) / 0.025) 40%,
+        rgb(var(--dash-accent) / 0.035) 51%,
+        transparent 76%
+      ),
+      linear-gradient(
+        127deg,
+        transparent 31%,
+        rgb(var(--dash-accent) / 0.05) 49.2%,
+        transparent 50.4%
+      );
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-root .dashboard-motion,
+  .animate-skeleton-in {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
