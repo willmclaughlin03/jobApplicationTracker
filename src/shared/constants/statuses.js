@@ -14,6 +14,7 @@ export const STATUS_CONFIG = {
     bgClass: 'bg-blue-100',
     textClass: 'text-blue-800',
     borderClass: 'border-blue-300',
+    dashboardClass: 'border-sky-400/40 bg-sky-400/10 text-sky-200',
     dotColor: 'bg-blue-500',
     hexColor: '#3b82f6',
     order: 1
@@ -23,6 +24,7 @@ export const STATUS_CONFIG = {
     bgClass: 'bg-orange-100',
     textClass: 'text-orange-800',
     borderClass: 'border-orange-300',
+    dashboardClass: 'border-amber-400/40 bg-amber-400/10 text-amber-200',
     dotColor: 'bg-orange-500',
     hexColor: '#f97316',
     order: 2
@@ -32,6 +34,7 @@ export const STATUS_CONFIG = {
     bgClass: 'bg-green-100',
     textClass: 'text-green-800',
     borderClass: 'border-green-300',
+    dashboardClass: 'border-violet-400/40 bg-violet-400/10 text-violet-200',
     dotColor: 'bg-green-500',
     hexColor: '#22c55e',
     order: 3
@@ -41,6 +44,7 @@ export const STATUS_CONFIG = {
     bgClass: 'bg-green-200',
     textClass: 'text-green-900',
     borderClass: 'border-green-400',
+    dashboardClass: 'border-emerald-400/40 bg-emerald-400/10 text-emerald-200',
     dotColor: 'bg-green-700',
     hexColor: '#15803d',
     order: 4
@@ -50,6 +54,7 @@ export const STATUS_CONFIG = {
     bgClass: 'bg-red-100',
     textClass: 'text-red-800',
     borderClass: 'border-red-300',
+    dashboardClass: 'border-rose-400/40 bg-rose-400/10 text-rose-200',
     dotColor: 'bg-red-500',
     hexColor: '#ef4444',
     order: 5

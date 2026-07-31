@@ -1,60 +1,108 @@
-import { useState } from 'react';
-import { STATUS_COLORS } from './forms/constants';
+import { useId, useState } from 'react';
+import { Pencil, Trash2 } from 'lucide-react';
 import Spinner from './Spinner.jsx';
 import { formatSalary } from '../lib/formatSalary.js';
+import { STATUS_CONFIG } from '../../shared/constants/statuses.js';
 
 /**
- * Mobile card layout for a single job application
+ * Format a compact-card application date with a safe missing-value fallback.
  *
- * Purpose: Renders job data as a stacked card for viewports below md (768px)
- * Counterpart: JobTableRow.jsx handles the desktop table row layout
+ * Purpose: mobile Added and status dates mirror the desktop UTC calendar
+ * semantics without exposing Invalid Date text.
  *
- * @param {Object} job - Job application data (id, company, position, status, notes)
- * @param {Function} onEdit - Called with job object when Edit is clicked
- * @param {Function} onDelete - Called with job.id when Delete is clicked
- * @param {boolean} isDeleting - Whether this job is currently being deleted
+ * @param {unknown} value - Raw date-like job field.
+ * @returns {string} Formatted date or an em dash when unavailable.
+ */
+function formatApplicationDate(value) {
+  if (!value) {
+    return '\u2014';
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return '\u2014';
+  }
+
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+}
+
+/**
+ * Render one application card with direct mobile Edit/Delete controls.
+ *
+ * Purpose: below 1024px all supported fields remain readable without a wide
+ * table, while destructive actions stay visible, large, and guarded.
+ *
+ * @param {object} props - Card presentation contract.
+ * @param {object} props.job - Supported application data.
+ * @param {Function} props.onEdit - Existing edit callback receiving job.
+ * @param {Function} props.onDelete - Existing delete callback receiving job.id.
+ * @param {boolean} props.isDeleting - Whether this job is currently deleting.
+ * @returns {React.ReactElement} Responsive application card.
  */
 export default function JobCardMobile({ job, onEdit, onDelete, isDeleting }) {
   const [expanded, setExpanded] = useState(false);
-  const hasNotes = Boolean(job.notes);
-  const isLongNotes = hasNotes && job.notes.length > 90;
+  const notesId = useId();
+  const notes = typeof job.notes === 'string' ? job.notes : '';
+  const hasNotes = notes.trim().length > 0;
+  const isLongNotes = hasNotes && notes.length > 90;
+  const status = STATUS_CONFIG[job.status];
+  const statusDate = job.status_date ? formatApplicationDate(job.status_date) : null;
 
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 space-y-3">
-      {/* Header: Company + Status */}
-      <div className="flex items-start justify-between gap-2">
-        <h3 className="text-sm font-semibold text-gray-800 break-words min-w-0">
-          {job.company}
-        </h3>
-        <span className={`shrink-0 inline-block px-2.5 py-1 rounded-full border text-xs font-medium capitalize ${STATUS_COLORS[job.status] || 'bg-gray-100 text-gray-800 border-gray-300'}`}>
-          {job.status}
+    <article className="dashboard-major-panel space-y-3 rounded-dashboard-panel bg-dashboard-surface p-4 text-dashboard-body text-dashboard-text">
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="break-words font-semibold text-dashboard-text">{job.position}</h2>
+          <p className="mt-0.5 break-words text-dashboard-muted">{job.company}</p>
+        </div>
+        <span className={`shrink-0 rounded-full border px-2.5 py-1 text-dashboard-caption font-medium ${status?.dashboardClass || 'border-dashboard-line bg-dashboard-surface-raised text-dashboard-muted'}`}>
+          {status?.label || 'Status unavailable'}
         </span>
       </div>
 
-      {/* Position */}
-      <p className="text-sm text-gray-600 break-words">{job.position}</p>
-
-      {/* Salary + Status Date */}
-      <div className="flex items-center gap-3 text-xs text-gray-500">
-        {(job.salary_min != null || job.salary_max != null) && (
-          <span>{formatSalary(job.salary_min, job.salary_max)}</span>
+      <dl className="grid grid-cols-1 gap-2 border-y border-dashboard-line py-3 text-dashboard-caption sm:grid-cols-2">
+        <div>
+          <dt className="text-dashboard-muted">Added</dt>
+          <dd className="mt-0.5 tabular-nums text-dashboard-text">
+            {formatApplicationDate(job.created_at)}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-dashboard-muted">Salary</dt>
+          <dd className="mt-0.5 tabular-nums text-dashboard-text">
+            {formatSalary(job.salary_min, job.salary_max)}
+          </dd>
+        </div>
+        {statusDate && statusDate !== '\u2014' && (
+          <div className="sm:col-span-2">
+            <dt className="text-dashboard-muted">Status since</dt>
+            <dd className="mt-0.5 tabular-nums text-dashboard-text">{statusDate}</dd>
+          </div>
         )}
-        {job.status_date && (
-          <span>Since {new Date(job.status_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
-        )}
-      </div>
+      </dl>
 
-      {/* Notes (only shown when present) */}
       {hasNotes && (
-        <div className="text-sm text-gray-500 overflow-hidden">
-          <span className="font-medium text-gray-600">Notes: </span>
-          <span className={`break-words overflow-hidden ${isLongNotes && !expanded ? 'line-clamp-2' : ''}`}>
-            {job.notes}
-          </span>
+        <div className="text-dashboard-muted">
+          <span className="font-medium text-dashboard-text">Notes</span>
+          <p
+            id={notesId}
+            className={`mt-1 break-words ${isLongNotes && !expanded ? 'line-clamp-2' : ''}`}
+          >
+            {notes}
+          </p>
           {isLongNotes && (
             <button
-              onClick={() => setExpanded(prev => !prev)}
-              className="block mt-1 text-xs text-blue-600 hover:text-blue-800 font-medium"
+              type="button"
+              onClick={() => setExpanded(previous => !previous)}
+              aria-expanded={expanded}
+              aria-controls={notesId}
+              className="dashboard-focus-ring mt-1 inline-flex min-h-9 items-center rounded-dashboard-control px-2 text-dashboard-caption font-medium text-dashboard-accent-hover transition-colors hover:bg-dashboard-surface-hover"
             >
               {expanded ? 'Show less' : 'Show more'}
             </button>
@@ -62,23 +110,35 @@ export default function JobCardMobile({ job, onEdit, onDelete, isDeleting }) {
         </div>
       )}
 
-      {/* Actions */}
-      <div className="flex gap-2 pt-2 border-t border-gray-100">
+      <div className="grid grid-cols-2 gap-2 border-t border-dashboard-line pt-3">
         <button
+          type="button"
           onClick={() => onEdit(job)}
-          className="flex-1 bg-blue-600 text-white px-3 py-2 rounded text-xs font-medium hover:bg-blue-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           disabled={isDeleting}
+          className="dashboard-control dashboard-focus-ring inline-flex min-h-9 items-center justify-center gap-2 px-3 py-2 font-medium text-dashboard-text transition-colors hover:border-dashboard-accent/60 hover:bg-dashboard-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
         >
+          <Pencil aria-hidden="true" size={16} />
           Edit
         </button>
         <button
+          type="button"
           onClick={() => onDelete(job.id)}
-          className="flex-1 bg-red-600 text-white px-3 py-2 rounded text-xs font-medium hover:bg-red-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           disabled={isDeleting}
+          className="dashboard-focus-ring inline-flex min-h-9 items-center justify-center gap-2 rounded-dashboard-control border border-red-400/40 bg-red-500/10 px-3 py-2 font-medium text-red-200 transition-colors hover:border-red-300/60 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {isDeleting ? <><Spinner size="sm" className="inline mr-1" />Deleting...</> : 'Delete'}
+          {isDeleting ? (
+            <>
+              <Spinner size="sm" className="inline" />
+              Deleting...
+            </>
+          ) : (
+            <>
+              <Trash2 aria-hidden="true" size={16} />
+              Delete
+            </>
+          )}
         </button>
       </div>
-    </div>
+    </article>
   );
 }

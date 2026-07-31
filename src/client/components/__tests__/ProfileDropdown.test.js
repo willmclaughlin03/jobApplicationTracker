@@ -16,10 +16,18 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 jest.mock('next/link', () => {
   const React = require('react');
 
-  /** Render Next links as ordinary anchors for focused DOM assertions. */
-  return function MockLink({ href, children, ...props }) {
-    return React.createElement('a', { href, ...props }, children);
-  };
+  /**
+   * Render Next links as ref-forwarding anchors for Radix asChild semantics.
+   *
+   * @param {object} props - Mock anchor props.
+   * @param {React.Ref<HTMLAnchorElement>} ref - Radix focus-management ref.
+   * @returns {React.ReactElement} Ordinary anchor used by focused DOM assertions.
+   */
+  const MockLink = React.forwardRef(function MockLink({ href, children, ...props }, ref) {
+    return React.createElement('a', { ref, href, ...props }, children);
+  });
+
+  return MockLink;
 });
 
 let ProfileDropdown;
@@ -49,11 +57,26 @@ function renderDropdown(user, onSignOut = jest.fn()) {
  * Dispatch a bubbling click through React's delegated event handler.
  *
  * @param {HTMLElement} target - Element to click.
- * @returns {void}
+ * @returns {Promise<void>} Resolves after queued Radix work.
  */
-function click(target) {
-  act(() => {
+async function click(target) {
+  await act(async () => {
     target.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+  });
+}
+
+/**
+ * Dispatch one keyboard command through the focused Radix control.
+ *
+ * @param {HTMLElement} target - Element receiving the key command.
+ * @param {string} key - Keyboard key value.
+ * @returns {Promise<void>} Resolves after queued Radix work.
+ */
+async function press(target, key) {
+  await act(async () => {
+    target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    await Promise.resolve();
   });
 }
 
@@ -75,40 +98,59 @@ describe('ProfileDropdown', () => {
 
   afterEach(cleanup);
 
-  it('contains no Billing or Admin link for an ordinary user and keeps Sign Out functional', () => {
+  it('contains no Billing or Admin link for an ordinary user and keeps Sign Out functional', async () => {
     const onSignOut = jest.fn();
     const element = renderDropdown({
       email: 'member@example.com',
       role: 'user',
     }, onSignOut);
 
-    click(element.querySelector('button'));
+    const trigger = element.querySelector('button');
+    expect(trigger.textContent).toContain('member@example.com');
+    expect(element.querySelector('img')).toBeNull();
+    await press(trigger, 'Enter');
 
-    expect(element.textContent).not.toContain('Billing');
-    expect(element.textContent).not.toContain('Admin');
-    expect(element.querySelector('a[href="/billing"]')).toBeNull();
+    expect(document.body.textContent).not.toContain('Billing');
+    expect(document.body.textContent).not.toContain('Admin');
+    expect(document.body.querySelector('a[href="/billing"]')).toBeNull();
 
-    const signOutButton = Array.from(element.querySelectorAll('button')).find(
+    const signOutButton = Array.from(document.body.querySelectorAll('button')).find(
       (button) => button.textContent.trim() === 'Sign Out'
     );
-    click(signOutButton);
+    await click(signOutButton);
 
     expect(onSignOut).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps Admin conditional without restoring a Billing link', () => {
+  it('keeps Admin conditional without restoring a Billing link', async () => {
     const element = renderDropdown({
       email: 'admin@example.com',
       role: 'admin',
     });
 
-    click(element.querySelector('button'));
+    await press(element.querySelector('button'), 'Enter');
 
-    expect(element.textContent).not.toContain('Billing');
-    expect(element.querySelector('a[href="/billing"]')).toBeNull();
-    expect(element.querySelector('a[href="/admin/users"]')?.textContent.trim()).toBe('Admin');
-    expect(Array.from(element.querySelectorAll('button')).some(
+    expect(document.body.textContent).not.toContain('Billing');
+    expect(document.body.querySelector('a[href="/billing"]')).toBeNull();
+    expect(document.body.querySelector('a[href="/admin/users"]')?.textContent.trim()).toBe('Admin');
+    expect(Array.from(document.body.querySelectorAll('button')).some(
       (button) => button.textContent.trim() === 'Sign Out'
     )).toBe(true);
+  });
+
+  it('opens from the keyboard, closes with Escape, and returns focus', async () => {
+    const element = renderDropdown({
+      email: 'member@example.com',
+      role: 'user',
+    });
+    const trigger = element.querySelector('button');
+
+    trigger.focus();
+    await press(trigger, 'Enter');
+    expect(document.body.querySelector('[role="menu"]')).toBeTruthy();
+
+    await press(document.activeElement, 'Escape');
+    expect(document.body.querySelector('[role="menu"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 });
