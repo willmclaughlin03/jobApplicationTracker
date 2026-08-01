@@ -1,20 +1,43 @@
 import JobTableRow from './JobTableRow';
 import JobCardMobile from './JobCardMobile';
 
+/**
+ * Render responsive application results from one unchanged job collection.
+ *
+ * Purpose: the locked 1024px breakpoint exposes either the dense six-column
+ * table or direct-action cards without changing ordering, data, or callbacks.
+ *
+ * @param {object} props - Result presentation contract.
+ * @param {Array<object>} props.jobs - Current fixed-size page of jobs.
+ * @param {Function} props.onEdit - Existing edit callback.
+ * @param {Function} props.onDelete - Existing confirmed-delete entry callback.
+ * @param {string|null} props.deleting - Id of the job currently deleting.
+ * @returns {React.ReactElement} Desktop table and compact card alternatives.
+ */
 export default function JobTable({ jobs, onEdit, onDelete, deleting }) {
   return (
     <>
-      {/* Desktop: table layout (visible at md and above) */}
-      <div className="hidden md:block bg-white rounded-lg overflow-hidden shadow-sm">
-        <table className="w-full border-collapse">
-          <thead>
-            <tr className="bg-gray-50 border-b border-gray-200">
-              <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Company</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Position</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Status</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Salary</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Notes</th>
-              <th className="px-4 py-3 text-left text-sm font-semibold text-gray-700">Actions</th>
+      <div className="dashboard-major-panel hidden overflow-hidden rounded-dashboard-panel bg-dashboard-surface lg:block">
+        <table className="w-full table-fixed border-collapse" aria-label="Job applications">
+          <colgroup>
+            <col className="w-[28%]" />
+            <col className="w-[14%]" />
+            <col className="w-[16%]" />
+            <col className="w-[15%]" />
+            <col className="w-[21%]" />
+            <col className="w-[6%]" />
+          </colgroup>
+          <thead className="bg-dashboard-surface-raised">
+            <tr className="border-b border-dashboard-line">
+              {['Application', 'Added', 'Status', 'Salary', 'Notes', 'Actions'].map((label) => (
+                <th
+                  key={label}
+                  scope="col"
+                  className={`px-3 py-3 text-dashboard-caption font-semibold uppercase tracking-wide text-dashboard-muted ${label === 'Actions' ? 'text-right' : 'text-left'}`}
+                >
+                  {label}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -31,8 +54,7 @@ export default function JobTable({ jobs, onEdit, onDelete, deleting }) {
         </table>
       </div>
 
-      {/* Mobile: card layout (visible below md) */}
-      <div className="md:hidden space-y-3">
+      <div className="space-y-3 lg:hidden">
         {jobs.map(job => (
           <JobCardMobile
             key={job.id}

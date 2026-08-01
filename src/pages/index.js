@@ -9,12 +9,11 @@ import EditModal from '../client/components/EditModal';
 import DeleteModal from '../client/components/DeleteModal';
 import NextPageButton from '../client/components/NextPageButton';
 import JobStatsSidebar from '../client/components/JobStatsSidebar';
-import ProfileDropdown from '../client/components/ProfileDropdown';
 import Spinner from '../client/components/Spinner';
 import DashboardSkeleton from '../client/components/skeletons/DashboardSkeleton';
 import DashboardShell from '../client/components/dashboard/DashboardShell';
 import DashboardNavigation from '../client/components/dashboard/DashboardNavigation';
-import InfoTooltip from '../client/components/InfoTooltip';
+import DashboardToolbar from '../client/components/dashboard/DashboardToolbar';
 import ActivityDrawer from '../client/components/ActivityDrawer';
 import StorageDowngradeBanner from '../client/components/StorageDowngradeBanner';
 import LockedArchivePanel from '../client/components/LockedArchivePanel';
@@ -69,8 +68,10 @@ export default function Dashboard() {
   const router = useRouter();
   const isWideLayout = useDashboardWideLayout();
   const filtersTriggerRef = useRef(null);
+  const deleteInFlightRef = useRef(false);
   const [statusFilter, setStatusFilter] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchResetKey, setSearchResetKey] = useState(0);
   const [salaryFilterMin, setSalaryFilterMin] = useState(null);
   const [salaryFilterMax, setSalaryFilterMax] = useState(null);
   const [selectedDates, setSelectedDates] = useState(new Set());
@@ -176,6 +177,22 @@ export default function Dashboard() {
   };
 
   /**
+   * Clear every Filters-owned criterion and invalidate pending toolbar search.
+   *
+   * Purpose: preserves the single explicit Clear All path while ensuring a
+   * pre-debounce company-search draft cannot restore stale filter state.
+   *
+   * @returns {void}
+   */
+  const handleClearAllFilters = () => {
+    setStatusFilter(null);
+    setSearchQuery('');
+    setSalaryFilterMin(null);
+    setSalaryFilterMax(null);
+    setSearchResetKey(previous => previous + 1);
+  };
+
+  /**
    * Toggle the existing Activity drawer from its navigation disclosure.
    *
    * @returns {void}
@@ -194,14 +211,37 @@ export default function Dashboard() {
     if (result.success) closeEditForm();
   };
 
+  /**
+   * Open the existing confirmation dialog for one visible application.
+   *
+   * @param {string} id - Visible application id selected from row/card actions.
+   * @returns {void}
+   */
   const handleDeleteJob = (id) => {
     const job = jobs.find(j => j.id === id);
     if (job) setJobToDelete(job);
   };
 
+  /**
+   * Confirm one guarded application deletion through the existing mutation.
+   *
+   * Purpose: close the synchronous duplicate-confirmation gap before the
+   * deleting hook state can re-render the modal as disabled.
+   *
+   * @returns {Promise<void>} Resolves after the mutation settles or is skipped.
+   */
   const confirmDeleteJob = async () => {
-    const result = await deleteJob(jobToDelete.id);
-    if (result.success) setJobToDelete(null);
+    if (!jobToDelete || deleting || deleteInFlightRef.current) {
+      return;
+    }
+
+    deleteInFlightRef.current = true;
+    try {
+      const result = await deleteJob(jobToDelete.id);
+      if (result.success) setJobToDelete(null);
+    } finally {
+      deleteInFlightRef.current = false;
+    }
   };
 
   const handleSignOut = async () => {
@@ -315,50 +355,45 @@ export default function Dashboard() {
           loading={loading}
           activeFilter={statusFilter}
           onFilterChange={setStatusFilter}
-          searchQuery={searchQuery}
-          onSearchChange={setSearchQuery}
+          hasSearchFilter={Boolean(searchQuery)}
           jobs={allJobs}
           salaryFilterMin={salaryFilterMin}
           salaryFilterMax={salaryFilterMax}
           onSalaryFilterMinChange={setSalaryFilterMin}
           onSalaryFilterMaxChange={setSalaryFilterMax}
+          onClearAllFilters={handleClearAllFilters}
           archivedCount={archivedCount}
         />
       )}
     >
-      <header className="bg-white shadow-sm py-4 px-6">
-        <div className="max-w-5xl mx-auto flex items-center justify-end">
-          <ProfileDropdown user={user} onSignOut={handleSignOut} />
-        </div>
-      </header>
+      <main className="min-w-0 px-3 py-4 sm:px-4 lg:px-5 wide:px-6">
+        <DashboardToolbar
+          user={user}
+          onSignOut={handleSignOut}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          searchResetKey={searchResetKey}
+          searchDisabled={loading}
+          addExpanded={showForm}
+          addDisabled={saving}
+          onAddToggle={toggleAddForm}
+        />
 
-      <main className="max-w-6xl mx-auto px-6 py-6">
         {error && (
-          <div className="bg-red-100 text-red-800 px-4 py-3 rounded mb-5 flex justify-between items-center">
+          <div className="mt-4 bg-red-100 text-red-800 px-4 py-3 rounded mb-5 flex justify-between items-center">
             <span>{error.message}</span>
-            <button onClick={clearError} className="text-red-800 hover:text-red-900 text-sm">
+            <button type="button" onClick={clearError} className="text-red-800 hover:text-red-900 text-sm">
               Dismiss
             </button>
           </div>
         )}
 
-        <StorageDowngradeBanner storageSummary={storageSummary} />
+        <div className="mt-4">
+          <StorageDowngradeBanner storageSummary={storageSummary} />
+        </div>
         <LockedArchivePanel storageSummary={storageSummary} onArchiveDeleted={refreshStorageSummary} />
 
-        <div>
-          <div className="mb-6 flex items-center justify-end">
-            <div className="flex items-center gap-3">
-              <InfoTooltip />
-              <button
-                onClick={toggleAddForm}
-                className="bg-blue-600 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
-                disabled={saving}
-              >
-                {showForm ? 'Cancel' : 'Add New Job'}
-              </button>
-            </div>
-          </div>
-
+        <div className="mt-4">
           {showForm && (
             <JobForm
               onSubmit={handleAddJob}
@@ -373,7 +408,11 @@ export default function Dashboard() {
             </div>
           ) : jobs.length === 0 ? (
             <div className="text-center py-16 px-5 text-gray-500 bg-white rounded-lg">
-              {searchQuery || statusFilter || selectedDates.size > 0 ? (
+              {searchQuery
+              || statusFilter
+              || selectedDates.size > 0
+              || salaryFilterMin != null
+              || salaryFilterMax != null ? (
                 <ul className="space-y-1">
                   {searchQuery && (
                     <li>No jobs matching &ldquo;{searchQuery}&rdquo;.</li>
@@ -384,26 +423,29 @@ export default function Dashboard() {
                   {selectedDates.size > 0 && (
                     <li>No jobs found for the selected dates.</li>
                   )}
+                  {(salaryFilterMin != null || salaryFilterMax != null) && (
+                    <li>No jobs in the selected salary range.</li>
+                  )}
                 </ul>
               ) : (
-                <p>No job applications yet. Click &ldquo;Add New Job&rdquo; to get started!</p>
+                <p>No job applications yet. Click &ldquo;Add Application&rdquo; to get started!</p>
               )}
             </div>
           ) : (
-            <>
-              <JobTable
-                jobs={jobs}
-                onEdit={openEditForm}
-                onDelete={handleDeleteJob}
-                deleting={deleting}
-              />
-              <NextPageButton
-                currentPage={currentPage}
-                totalCount={totalCount}
-                pageSize={pageSize}
-                onPageChange={goToPage}
-              />
-            </>
+            <JobTable
+              jobs={jobs}
+              onEdit={openEditForm}
+              onDelete={handleDeleteJob}
+              deleting={deleting}
+            />
+          )}
+          {!loading && (
+            <NextPageButton
+              currentPage={currentPage}
+              totalCount={totalCount}
+              pageSize={pageSize}
+              onPageChange={goToPage}
+            />
           )}
         </div>
 
@@ -445,8 +487,8 @@ export default function Dashboard() {
           deleting={deleting === jobToDelete?.id}
         />
       </main>
-      <footer className="text-center text-xs text-gray-400 py-4">
-        <a target="_blank" rel="noopener noreferrer" href="https://icons8.com/icon/hH1yYj2eECWj/job" className="hover:text-gray-500">Icon</a> by <a target="_blank" rel="noopener noreferrer" href="https://icons8.com" className="hover:text-gray-500">Icons8</a>
+      <footer className="py-4 text-center text-dashboard-caption text-dashboard-muted">
+        <a target="_blank" rel="noopener noreferrer" href="https://icons8.com/icon/hH1yYj2eECWj/job" className="hover:text-dashboard-text">Icon</a> by <a target="_blank" rel="noopener noreferrer" href="https://icons8.com" className="hover:text-dashboard-text">Icons8</a>
       </footer>
     </DashboardShell>
   );

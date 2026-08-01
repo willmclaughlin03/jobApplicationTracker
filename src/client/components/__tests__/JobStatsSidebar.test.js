@@ -94,13 +94,13 @@ function buildProps(overrides = {}) {
     loading: false,
     activeFilter: null,
     onFilterChange: jest.fn(),
-    searchQuery: '',
-    onSearchChange: jest.fn(),
+    hasSearchFilter: false,
     jobs: [],
     salaryFilterMin: null,
     salaryFilterMax: null,
     onSalaryFilterMinChange: jest.fn(),
     onSalaryFilterMaxChange: jest.fn(),
+    onClearAllFilters: jest.fn(),
     archivedCount: 0,
     ...overrides,
   };
@@ -170,52 +170,45 @@ describe('JobStatsSidebar storage counts', () => {
     }
   });
 
-  it('keeps one docked control set mounted and preserves immediate debounced edits', () => {
+  it('keeps one docked salary control set mounted and preserves debounced edits', () => {
     jest.useFakeTimers();
     const props = buildProps();
     const el = render(React.createElement(JobStatsSidebar, props));
     const panel = el.querySelector('#dashboard-filters-panel');
-    const searchInput = el.querySelector('#job-search');
     const salaryMinInput = el.querySelector('#salary-filter-min');
     const salaryMaxInput = el.querySelector('#salary-filter-max');
 
     expect(panel.getAttribute('role')).toBe('region');
     expect(panel.hasAttribute('aria-modal')).toBe(false);
-    expect(el.querySelectorAll('#job-search')).toHaveLength(1);
+    expect(el.querySelector('#job-search')).toBeNull();
     expect(el.querySelectorAll('#salary-filter-min')).toHaveLength(1);
     expect(el.querySelectorAll('#salary-filter-max')).toHaveLength(1);
 
-    changeInput(searchInput, 'Acme');
     changeInput(salaryMinInput, '60000');
     changeInput(salaryMaxInput, '120000');
     rerender(React.createElement(JobStatsSidebar, { ...props, isOpen: false }));
 
     expect(panel.getAttribute('aria-hidden')).toBe('true');
     expect(panel.hasAttribute('inert')).toBe(true);
-    expect(searchInput.value).toBe('Acme');
     expect(salaryMinInput.value).toBe('60000');
     expect(salaryMaxInput.value).toBe('120000');
     expect(props.onFilterChange).not.toHaveBeenCalled();
 
     act(() => jest.advanceTimersByTime(300));
 
-    expect(props.onSearchChange).toHaveBeenCalledWith('Acme');
     expect(props.onSalaryFilterMinChange).toHaveBeenCalledWith(60000);
     expect(props.onSalaryFilterMaxChange).toHaveBeenCalledWith(120000);
 
     rerender(React.createElement(JobStatsSidebar, props));
     expect(panel.hasAttribute('inert')).toBe(false);
-    expect(searchInput.value).toBe('Acme');
     expect(salaryMinInput.value).toBe('60000');
     expect(salaryMaxInput.value).toBe('120000');
 
-    changeInput(searchInput, '<strong>Beta</strong>');
     changeInput(salaryMinInput, '-1000');
     changeInput(salaryMaxInput, String(SALARY_MAX_VALUE + 1));
 
     act(() => jest.advanceTimersByTime(300));
 
-    expect(props.onSearchChange).toHaveBeenLastCalledWith('Beta');
     expect(props.onSalaryFilterMinChange).toHaveBeenLastCalledWith(0);
     expect(props.onSalaryFilterMaxChange).toHaveBeenLastCalledWith(SALARY_MAX_VALUE);
   });
@@ -252,30 +245,16 @@ describe('JobStatsSidebar storage counts', () => {
 
     expect(salaryMinInput.value).toBe('');
     expect(salaryMaxInput.value).toBe('');
-    expect(props.onSalaryFilterMinChange).toHaveBeenCalledTimes(1);
-    expect(props.onSalaryFilterMinChange).toHaveBeenCalledWith(null);
-    expect(props.onSalaryFilterMaxChange).toHaveBeenCalledTimes(1);
-    expect(props.onSalaryFilterMaxChange).toHaveBeenCalledWith(null);
+    expect(props.onClearAllFilters).toHaveBeenCalledTimes(1);
+    expect(props.onSalaryFilterMinChange).not.toHaveBeenCalled();
+    expect(props.onSalaryFilterMaxChange).not.toHaveBeenCalled();
 
     act(() => jest.advanceTimersByTime(300));
 
-    expect(props.onSalaryFilterMinChange).toHaveBeenCalledTimes(1);
+    expect(props.onSalaryFilterMinChange).not.toHaveBeenCalled();
     expect(props.onSalaryFilterMinChange).not.toHaveBeenCalledWith(60000);
-    expect(props.onSalaryFilterMaxChange).toHaveBeenCalledTimes(1);
+    expect(props.onSalaryFilterMaxChange).not.toHaveBeenCalled();
     expect(props.onSalaryFilterMaxChange).not.toHaveBeenCalledWith(120000);
-  });
-
-  it('cancels a pending search update when unmounted', () => {
-    jest.useFakeTimers();
-    const props = buildProps();
-    const el = render(React.createElement(JobStatsSidebar, props));
-
-    changeInput(el.querySelector('#job-search'), 'Acme');
-    act(() => root.unmount());
-    root = null;
-    act(() => jest.advanceTimersByTime(300));
-
-    expect(props.onSearchChange).not.toHaveBeenCalled();
   });
 
   it('preserves pending edits and cleans up an open drawer across mode changes', () => {
@@ -287,14 +266,12 @@ describe('JobStatsSidebar storage counts', () => {
     const props = buildProps({ mode: 'drawer' });
     const el = render(React.createElement(JobStatsSidebar, props));
     const panel = el.querySelector('#dashboard-filters-panel');
-    const searchInput = el.querySelector('#job-search');
     const salaryMinInput = el.querySelector('#salary-filter-min');
     const salaryMaxInput = el.querySelector('#salary-filter-max');
 
     expect(panel.getAttribute('role')).toBe('dialog');
     expect(document.body.style.overflow).toBe('hidden');
 
-    changeInput(searchInput, 'Acme');
     changeInput(salaryMinInput, '60000');
     changeInput(salaryMaxInput, '120000');
     rerender(React.createElement(JobStatsSidebar, { ...props, mode: 'docked' }));
@@ -306,13 +283,11 @@ describe('JobStatsSidebar storage counts', () => {
     expect(panel.hasAttribute('aria-hidden')).toBe(false);
     expect(panel.hasAttribute('inert')).toBe(false);
     expect(el.querySelector('[data-testid=filters-backdrop]')).toBeNull();
-    expect(el.querySelector('#job-search')).toBe(searchInput);
+    expect(el.querySelector('#job-search')).toBeNull();
     expect(el.querySelector('#salary-filter-min')).toBe(salaryMinInput);
     expect(el.querySelector('#salary-filter-max')).toBe(salaryMaxInput);
-    expect(searchInput.value).toBe('Acme');
     expect(salaryMinInput.value).toBe('60000');
     expect(salaryMaxInput.value).toBe('120000');
-    expect(props.onSearchChange).not.toHaveBeenCalled();
     expect(props.onSalaryFilterMinChange).not.toHaveBeenCalled();
     expect(props.onSalaryFilterMaxChange).not.toHaveBeenCalled();
 
@@ -320,13 +295,11 @@ describe('JobStatsSidebar storage counts', () => {
 
     expect(panel.getAttribute('aria-hidden')).toBe('true');
     expect(panel.hasAttribute('inert')).toBe(true);
-    expect(searchInput.value).toBe('Acme');
     expect(salaryMinInput.value).toBe('60000');
     expect(salaryMaxInput.value).toBe('120000');
 
     act(() => jest.advanceTimersByTime(300));
 
-    expect(props.onSearchChange).toHaveBeenCalledWith('Acme');
     expect(props.onSalaryFilterMinChange).toHaveBeenCalledWith(60000);
     expect(props.onSalaryFilterMaxChange).toHaveBeenCalledWith(120000);
   });
@@ -334,7 +307,7 @@ describe('JobStatsSidebar storage counts', () => {
   it('resets criteria only through Clear All Filters', () => {
     const props = buildProps({
       activeFilter: 'applied',
-      searchQuery: 'Acme',
+      hasSearchFilter: true,
       salaryFilterMin: 60000,
       salaryFilterMax: 120000,
     });
@@ -342,7 +315,6 @@ describe('JobStatsSidebar storage counts', () => {
 
     rerender(React.createElement(JobStatsSidebar, { ...props, isOpen: false }));
     expect(props.onFilterChange).not.toHaveBeenCalled();
-    expect(props.onSearchChange).not.toHaveBeenCalled();
     expect(props.onSalaryFilterMinChange).not.toHaveBeenCalled();
     expect(props.onSalaryFilterMaxChange).not.toHaveBeenCalled();
 
@@ -351,10 +323,10 @@ describe('JobStatsSidebar storage counts', () => {
       button => button.textContent.trim() === 'Clear All Filters'
     ));
 
-    expect(props.onFilterChange).toHaveBeenCalledWith(null);
-    expect(props.onSearchChange).toHaveBeenCalledWith('');
-    expect(props.onSalaryFilterMinChange).toHaveBeenCalledWith(null);
-    expect(props.onSalaryFilterMaxChange).toHaveBeenCalledWith(null);
+    expect(props.onClearAllFilters).toHaveBeenCalledTimes(1);
+    expect(props.onFilterChange).not.toHaveBeenCalled();
+    expect(props.onSalaryFilterMinChange).not.toHaveBeenCalled();
+    expect(props.onSalaryFilterMaxChange).not.toHaveBeenCalled();
   });
 
   it('uses dialog semantics and restores drawer focus after Escape', () => {

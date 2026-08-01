@@ -6,6 +6,63 @@ import AdminUserTable from '../../client/components/admin/AdminUserTable';
 import AdminDeleteUserModal from '../../client/components/admin/AdminDeleteUserModal';
 import ProfileDropdown from '../../client/components/ProfileDropdown';
 import Spinner from '../../client/components/Spinner';
+import { getUserFromRequest } from '../../server/lib/supabaseServer.js';
+import { requireAdmin } from '../../server/lib/requireAdmin.js';
+
+/**
+ * Adapt a page response to the chainable interface used by requireAdmin.
+ *
+ * Purpose: getServerSideProps receives a Node ServerResponse rather than a
+ * NextApiResponse, so this adapter forwards the existing 403 response without
+ * weakening or duplicating the shared admin-role decision.
+ *
+ * @param {import('http').ServerResponse} res - Direct page response.
+ * @returns {object} Minimal status/json response used by requireAdmin.
+ */
+function createPageAdminResponse(res) {
+  const response = {
+    /** Forward the authorization status code to the page response. */
+    status(statusCode) {
+      res.statusCode = statusCode;
+      return response;
+    },
+    /** Serialize and finish the authorization response before page rendering. */
+    json(payload) {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify(payload));
+      return response;
+    },
+  };
+
+  return response;
+}
+
+/**
+ * Authenticate and authorize direct requests before rendering the Admin shell.
+ *
+ * Purpose: client redirects remain a UX fallback, while server-side validation
+ * prevents authenticated non-admins from receiving protected page markup.
+ * Authentication may refresh session cookies; requireAdmin finishes denied
+ * responses with the existing standardized 403 body.
+ *
+ * @param {import('next').GetServerSidePropsContext} context - Page request context.
+ * @returns {Promise<object>} Redirect, denied-response sentinel, or page props.
+ */
+export async function getServerSideProps({ req, res }) {
+  const { user } = await getUserFromRequest(req, res);
+
+  if (!user) {
+    return {
+      redirect: { destination: '/login', permanent: false },
+    };
+  }
+
+  if (!requireAdmin(user, createPageAdminResponse(res))) {
+    return { props: {} };
+  }
+
+  return { props: {} };
+}
 
 export default function AdminUsersPage() {
   const { user, loading: authLoading, signOut } = useAuth();

@@ -1,77 +1,70 @@
-import { useState, useRef, useEffect } from 'react';
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
+import { ChevronDown, LogOut, ShieldCheck } from 'lucide-react';
 import Link from 'next/link';
 
 /**
- * ProfileDropdown component
+ * Render the email-only account control and existing account actions.
  *
- * Purpose: Displays user email with a dropdown menu for profile actions
- * Connects to:
- * - Parent component (index.js) for user data and sign-out handler
+ * Purpose: Removes the former avatar while Radix supplies keyboard navigation,
+ * outside dismissal, Escape handling, and focus return for Admin and Sign Out.
  *
- * @param {Object} props
- * @param {Object} props.user - Supabase user object (must have .email)
- * @param {Function} props.onSignOut - Callback to sign out and redirect
+ * @param {object} props - Account presentation contract.
+ * @param {object} props.user - Supabase user object with email and optional role.
+ * @param {Function} props.onSignOut - Existing sign-out and redirect callback.
+ * @returns {React.ReactElement} Accessible account dropdown.
  */
 export default function ProfileDropdown({ user, onSignOut }) {
-  const [open, setOpen] = useState(false);
-  const dropdownRef = useRef(null);
-
-  useEffect(() => {
-    function handleClickOutside(e) {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
-        setOpen(false);
-      }
-    }
-
-    if (open) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [open]);
-
   return (
-    <div className="relative" ref={dropdownRef}>
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-800 transition-colors px-3 py-2 rounded-md hover:bg-gray-100"
-      >
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z" />
-        </svg>
-        <span className="hidden sm:inline">{user?.email}</span>
-        <svg className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          aria-label={`Account menu for ${user?.email || 'current user'}`}
+          className="dashboard-control dashboard-focus-ring inline-flex min-h-9 min-w-0 max-w-full items-center gap-2 px-3 py-2 text-dashboard-body font-medium text-dashboard-text transition-colors hover:border-dashboard-accent/60 hover:bg-dashboard-surface-hover sm:max-w-64"
+        >
+          <span className="min-w-0 truncate">{user?.email || 'Account'}</span>
+          <ChevronDown aria-hidden="true" size={15} className="shrink-0" />
+        </button>
+      </DropdownMenu.Trigger>
 
-      {open && (
-        <div className="absolute right-0 mt-1 w-72 bg-white border border-gray-200 rounded-lg shadow-lg z-50">
-          <div className="px-4 py-3 border-b border-gray-100">
-            <p className="text-xs text-gray-500">Signed in as</p>
-            <p className="text-sm font-medium text-gray-800 truncate">{user?.email}</p>
-          </div>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="end"
+          sideOffset={6}
+          className="z-[70] w-[min(18rem,calc(100vw-2rem))] rounded-dashboard-panel border border-dashboard-control-border bg-dashboard-surface-raised p-1.5 text-dashboard-body text-dashboard-text shadow-xl"
+        >
+          <DropdownMenu.Label className="px-3 py-2">
+            <span className="block text-dashboard-caption text-dashboard-muted">Signed in as</span>
+            <span className="block truncate font-medium text-dashboard-text">{user?.email}</span>
+          </DropdownMenu.Label>
+          <DropdownMenu.Separator className="my-1 h-px bg-dashboard-line" />
 
-          <div className="p-2">
+          <div>
             {user?.role === 'admin' && (
-              <Link
-                href="/admin/users"
-                onClick={() => setOpen(false)}
-                className="block px-3 py-2 text-sm text-orange-600 hover:bg-orange-50 rounded-md transition-colors"
-              >
-                Admin
-              </Link>
+              <DropdownMenu.Item asChild>
+                <Link
+                  href="/admin/users"
+                  className="dashboard-focus-ring flex min-h-9 cursor-pointer select-none items-center gap-2 rounded-dashboard-control px-3 py-2 text-amber-200 outline-none data-[highlighted]:bg-dashboard-surface-hover"
+                >
+                  <ShieldCheck aria-hidden="true" size={16} />
+                  Admin
+                </Link>
+              </DropdownMenu.Item>
             )}
 
-            <button
-              onClick={onSignOut}
-              className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 rounded-md transition-colors"
-            >
-              Sign Out
-            </button>
+            <DropdownMenu.Item asChild>
+              <button
+                type="button"
+                onClick={onSignOut}
+                className="dashboard-focus-ring flex min-h-9 w-full cursor-pointer select-none items-center gap-2 rounded-dashboard-control px-3 py-2 text-left text-red-300 outline-none data-[highlighted]:bg-red-500/10 data-[highlighted]:text-red-200"
+              >
+                <LogOut aria-hidden="true" size={16} />
+                Sign Out
+              </button>
+            </DropdownMenu.Item>
           </div>
-        </div>
-      )}
-    </div>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }
