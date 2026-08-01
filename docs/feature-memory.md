@@ -14,6 +14,9 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-26
 
+- `2026-08-01` - `Toolbar search draft preservation`: Limited toolbar draft resets to explicit reset-key changes so applied sanitized queries no longer overwrite newer draft text or cancel pending debounce work.
+- `2026-08-01` - `Profile dropdown missing-email coverage`: Added focused regression coverage proving users without an email receive the visible Account fallback and its current-user accessible name.
+- `2026-08-01` - `Job row zero-epoch status date`: Routed zero-valued status timestamps through shared safe date formatting so Added and status dates both render January 1, 1970 instead of treating the status date as missing.
 - `2026-08-01` - `Admin users server-render guard`: Added cookie-backed server authentication and shared admin-role enforcement so direct non-admin requests receive a 403 before the Admin page shell renders.
 - `2026-08-01` - `Dashboard deletion confirmation latch`: Added a synchronous in-flight guard that prevents duplicate application deletion dispatches and releases after settlement for safe retries.
 - `2026-08-01` - `Salary-filtered empty state`: Updated the Dashboard empty state to recognize minimum-only and maximum-only salary filters and added focused regression coverage for both bounds.

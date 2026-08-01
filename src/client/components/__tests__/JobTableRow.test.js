@@ -133,6 +133,21 @@ describe('JobTableRow', () => {
     expect(cells[3].textContent).toContain('$100k - $130k');
   });
 
+  it('renders zero epoch timestamps for both Added and status dates', () => {
+    const row = renderRow({
+      job: {
+        ...BASE_JOB,
+        created_at: 0,
+        status_date: 0,
+      },
+    });
+    const cells = row.querySelectorAll('td');
+
+    expect(cells[1].textContent.trim()).toBe('Jan 1, 1970');
+    expect(cells[2].textContent).toContain('Jan 1, 1970');
+    expect(row.textContent).not.toContain('Invalid Date');
+  });
+
   it.each(Object.entries(STATUS_CONFIG).map(([value, config]) => [value, config.label]))(
     'renders canonical status %s as %s',
     (value, label) => {

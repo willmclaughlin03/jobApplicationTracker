@@ -98,6 +98,14 @@ describe('ProfileDropdown', () => {
 
   afterEach(cleanup);
 
+  it('uses the Account fallback when the user email is missing', () => {
+    const element = renderDropdown({ role: 'user' });
+    const trigger = element.querySelector('button');
+
+    expect(trigger.textContent.trim()).toBe('Account');
+    expect(trigger.getAttribute('aria-label')).toBe('Account menu for current user');
+  });
+
   it('contains no Billing or Admin link for an ordinary user and keeps Sign Out functional', async () => {
     const onSignOut = jest.fn();
     const element = renderDropdown({

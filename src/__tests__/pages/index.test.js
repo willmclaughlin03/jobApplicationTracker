@@ -727,6 +727,7 @@ describe('Dashboard billing entry integration', () => {
     act(() => jest.advanceTimersByTime(1));
     expect(mockUseJobs.mock.calls.at(-1)[2]).toBe('Acme');
     expect(mockLatestSidebarProps.hasSearchFilter).toBe(true);
+    expect(searchInput.value).toBe('<strong>Acme</strong>');
 
     changeInput(searchInput, 'Stale company');
     act(() => mockLatestSidebarProps.onClearAllFilters());

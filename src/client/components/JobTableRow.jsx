@@ -26,7 +26,7 @@ export default function JobTableRow({ job, onEdit, onDelete, isDeleting }) {
   const isLongNotes = hasNotes && notes.length > 90;
   const status = STATUS_CONFIG[job.status];
   const addedDate = formatApplicationDate(job.created_at);
-  const statusDate = job.status_date ? formatApplicationDate(job.status_date) : null;
+  const statusDate = formatApplicationDate(job.status_date);
 
   return (
     <tr className="border-b border-dashboard-line bg-dashboard-surface text-dashboard-body transition-colors last:border-b-0 hover:bg-dashboard-surface-hover">

@@ -38,17 +38,17 @@ export default function DashboardToolbar({
   const searchTimerRef = useRef(null);
 
   /**
-   * Mirror applied search resets and cancel drafts invalidated by Clear All.
+   * Clear draft search work only for an explicit page-owned reset.
    *
-   * Purpose: the toolbar keeps only the draft needed for the approved 300ms
-   * debounce; Dashboard remains the single owner of the applied criterion.
+   * Purpose: applied search updates must not overwrite a newer draft or cancel
+   * its debounce; Dashboard signals invalidation by changing searchResetKey.
    *
    * @returns {void}
    */
   useEffect(() => {
     clearTimeout(searchTimerRef.current);
-    setLocalSearch(searchQuery || '');
-  }, [searchQuery, searchResetKey]);
+    setLocalSearch('');
+  }, [searchResetKey]);
 
   /** Cancel pending company-search work when the toolbar unmounts. */
   useEffect(() => () => {
