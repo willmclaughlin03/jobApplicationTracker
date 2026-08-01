@@ -32,6 +32,7 @@ const mockToggleAddForm = jest.fn();
 let mockLatestUpgradeModalProps = null;
 let mockLatestSidebarProps = null;
 let mockLatestActivityProps = null;
+let mockLatestProfileProps = null;
 const mockWideMediaQuery = {
   matches: false,
   addEventListener: jest.fn(),
@@ -165,9 +166,12 @@ jest.mock('../../client/components/InfoTooltip', () => {
 });
 
 jest.mock('../../client/components/ProfileDropdown', () => {
+  const React = require('react');
+
   /** Keep ProfileDropdown behavior isolated to its focused component suite. */
-  return function MockProfileDropdown() {
-    return null;
+  return function MockProfileDropdown(props) {
+    mockLatestProfileProps = props;
+    return React.createElement('div', { 'data-testid': 'account-control' }, props.user?.email);
   };
 });
 
@@ -356,6 +360,25 @@ function click(target) {
 }
 
 /**
+ * Replace a controlled input value and dispatch React's input event.
+ *
+ * @param {HTMLInputElement} input - Toolbar search input.
+ * @param {string} value - Next visible search draft.
+ * @returns {void}
+ */
+function changeInput(input, value) {
+  const valueSetter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    'value'
+  ).set;
+
+  act(() => {
+    valueSetter.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+
+/**
  * Dispatch a click and flush asynchronous handler continuations.
  *
  * @param {HTMLElement} target - Element to click.
@@ -393,6 +416,7 @@ describe('Dashboard billing entry integration', () => {
     mockLatestUpgradeModalProps = null;
     mockLatestSidebarProps = null;
     mockLatestActivityProps = null;
+    mockLatestProfileProps = null;
     mockSignOut.mockResolvedValue({ error: null });
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123', email: 'member@example.com' },
@@ -406,7 +430,10 @@ describe('Dashboard billing entry integration', () => {
     mockUseJobFormModal.mockReturnValue(buildJobFormState());
   });
 
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    jest.useRealTimers();
+  });
 
   it('keeps the dashboard shell and font variable while authentication loads', () => {
     mockUseAuth.mockReturnValue({
@@ -421,6 +448,23 @@ describe('Dashboard billing entry integration', () => {
     expect(
       element.querySelector('.dashboard-root [data-testid=dashboard-skeleton-marker]')
     ).toBeTruthy();
+  });
+
+  it('renders Dismiss as a non-submitting button and clears the current error', () => {
+    const jobsState = buildJobsState({
+      status: STORAGE_STATUSES.TERMINAL_FREE,
+      lockedCount: 0,
+    });
+    jobsState.error = { message: 'Unable to load applications.' };
+    mockUseJobs.mockReturnValue(jobsState);
+    const element = renderDashboard();
+    const dismissButton = findButtonByText(element, 'Dismiss');
+
+    expect(dismissButton.getAttribute('type')).toBe('button');
+
+    click(dismissButton);
+
+    expect(jobsState.clearError).toHaveBeenCalledTimes(1);
   });
 
   it('opens the configured Premium modal only for terminal Free without navigating', () => {
@@ -567,12 +611,19 @@ describe('Dashboard billing entry integration', () => {
     expect(mockLatestUpgradeModalProps.isOpen).toBe(false);
   });
 
-  it('keeps Filters, Activity, tooltip, and Add Job controls wired', () => {
+  it('keeps toolbar, Filters, Activity, account, tooltip, and Add Application wired', () => {
     const element = renderDashboard();
     const filtersButton = findButtonByText(element, 'Filters');
     const activityButton = findButtonByText(element, 'Activity');
 
     expect(element.querySelector('[data-testid="info-tooltip"]')).toBeTruthy();
+    expect(element.querySelector('[data-testid="account-control"]').textContent)
+      .toBe('member@example.com');
+    expect(mockLatestProfileProps.user.email).toBe('member@example.com');
+    expect(element.querySelector('#applications-heading').textContent).toBe('Applications');
+    expect(element.textContent).toContain('Track and manage your job applications.');
+    expect(element.querySelector('#job-search').getAttribute('placeholder'))
+      .toBe('Search companies...');
     expect(filtersButton.getAttribute('aria-expanded')).toBe('false');
     expect(filtersButton.getAttribute('aria-controls')).toBe('dashboard-filters-panel');
     expect(activityButton.getAttribute('aria-expanded')).toBe('false');
@@ -591,8 +642,30 @@ describe('Dashboard billing entry integration', () => {
     expect(activityButton.getAttribute('aria-expanded')).toBe('true');
     expect(element.querySelector('[data-testid="activity-overlay"]')).toBeTruthy();
 
-    click(findButtonByText(element, 'Add New Job'));
+    click(findButtonByText(element, 'Add Application'));
     expect(mockToggleAddForm).toHaveBeenCalledTimes(1);
+  });
+
+  it('debounces and sanitizes company search while Clear All cancels a pending draft', () => {
+    jest.useFakeTimers();
+    const element = renderDashboard();
+    const searchInput = element.querySelector('#job-search');
+
+    changeInput(searchInput, '<strong>Acme</strong>');
+    act(() => jest.advanceTimersByTime(299));
+    expect(mockUseJobs.mock.calls.at(-1)[2]).toBe('');
+
+    act(() => jest.advanceTimersByTime(1));
+    expect(mockUseJobs.mock.calls.at(-1)[2]).toBe('Acme');
+    expect(mockLatestSidebarProps.hasSearchFilter).toBe(true);
+
+    changeInput(searchInput, 'Stale company');
+    act(() => mockLatestSidebarProps.onClearAllFilters());
+    expect(searchInput.value).toBe('');
+
+    act(() => jest.advanceTimersByTime(300));
+    expect(mockUseJobs.mock.calls.at(-1)[2]).toBe('');
+    expect(mockLatestSidebarProps.hasSearchFilter).toBe(false);
   });
 
   it('keeps the closed Activity container hidden and inert', () => {
@@ -617,10 +690,12 @@ describe('Dashboard billing entry integration', () => {
   });
 
   it('starts wide Filters expanded, releases the track, and preserves every criterion', () => {
+    jest.useFakeTimers();
     setWideLayout(true);
     const element = renderDashboard();
     const filtersButton = findButtonByText(element, 'Filters');
     const shellContent = element.querySelector('[data-filters-expanded]');
+    const searchInput = element.querySelector('#job-search');
 
     expect(mockLatestSidebarProps).toMatchObject({ mode: 'docked', isOpen: true });
     expect(filtersButton.getAttribute('aria-expanded')).toBe('true');
@@ -628,15 +703,16 @@ describe('Dashboard billing entry integration', () => {
 
     act(() => {
       mockLatestSidebarProps.onFilterChange('interviewing');
-      mockLatestSidebarProps.onSearchChange('Acme');
       mockLatestSidebarProps.onSalaryFilterMinChange(60000);
       mockLatestSidebarProps.onSalaryFilterMaxChange(120000);
       mockLatestActivityProps.onDateToggle('2026-07-30');
     });
+    changeInput(searchInput, 'Acme');
+    act(() => jest.advanceTimersByTime(300));
 
     expect(mockLatestSidebarProps).toMatchObject({
       activeFilter: 'interviewing',
-      searchQuery: 'Acme',
+      hasSearchFilter: true,
       salaryFilterMin: 60000,
       salaryFilterMax: 120000,
     });
@@ -658,10 +734,11 @@ describe('Dashboard billing entry integration', () => {
       mode: 'docked',
       isOpen: true,
       activeFilter: 'interviewing',
-      searchQuery: 'Acme',
+      hasSearchFilter: true,
       salaryFilterMin: 60000,
       salaryFilterMax: 120000,
     });
+    expect(searchInput.value).toBe('Acme');
     expect(mockLatestActivityProps.selectedDates.has('2026-07-30')).toBe(true);
   });
 

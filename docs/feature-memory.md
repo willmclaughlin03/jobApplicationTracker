@@ -14,6 +14,12 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-26
 
+- `2026-08-01` - `Application date input guard`: Limited shared application-date formatting to string and numeric inputs so unsupported values retain the safe fallback while epoch zero formats as January 1, 1970.
+- `2026-08-01` - `Dashboard error-dismiss button hardening`: Marked the dashboard Dismiss control as an explicit non-submitting button and covered its type and clear-error behavior.
+- `2026-08-01` - `Shared application date formatting`: Centralized desktop-row and mobile-card Added/status date formatting while preserving the safe em-dash fallback and UTC calendar semantics.
+- `2026-07-30` - `Dashboard workspace toolbar, application results, and pagination`: Added the Applications toolbar with sanitized 300ms company search, email-only Radix account menu, single Add Application action, responsive six-column results and mobile cards, canonical status treatments, safe dates and expandable notes, guarded Radix row actions, and accurate fixed-size pagination ranges.
+  - impact: Existing filtering, ordering, page-size, add, edit, delete, Admin, and Sign Out workflows remain page-owned; 59 focused tests, all 1,242 non-integration tests, full lint, the production build, and diff checks pass.
+  - residual: Signed-in viewport comparison remains pending because the local browser runtime did not have the required process-supplied Supabase variables; no `.env` file was read.
 - `2026-07-30` - `Maximum salary debounce reset coverage`: Extended the Clear All Filters regression test to prove pending minimum and maximum salary updates are both canceled before their timers expire.
 - `2026-07-30` - `Pending salary filter reset`: Kept Clear All Filters available during debounced salary edits and covered cancellation of the queued salary update.
 - `2026-07-30` - `Filters date and debounce regression coverage`: Pinned the Latest Status Change calendar to UTC and added focused coverage for its formatting contract, clearing minimum salary after 300ms, and canceling pending search work on unmount.

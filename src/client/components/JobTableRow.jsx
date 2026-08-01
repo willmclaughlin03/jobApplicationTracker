@@ -1,73 +1,93 @@
-import { useState } from 'react';
-import { STATUS_COLORS } from './forms/constants';
-import Spinner from './Spinner.jsx';
+import { useId, useState } from 'react';
+import { ChevronDown } from 'lucide-react';
+import { formatApplicationDate } from '../lib/formatApplicationDate.js';
 import { formatSalary } from '../lib/formatSalary.js';
+import { STATUS_CONFIG } from '../../shared/constants/statuses.js';
+import JobActionsMenu from './dashboard/JobActionsMenu';
 
+/**
+ * Render one dense desktop application row using only supported job fields.
+ *
+ * Purpose: combines position/company, safely exposes Added and long notes, and
+ * delegates the existing Edit/Delete workflows to the accessible row menu.
+ *
+ * @param {object} props - Row presentation contract.
+ * @param {object} props.job - Supported application data.
+ * @param {Function} props.onEdit - Existing edit callback receiving job.
+ * @param {Function} props.onDelete - Existing delete callback receiving job.id.
+ * @param {boolean} props.isDeleting - Whether this row is being deleted.
+ * @returns {React.ReactElement} Six-cell application row.
+ */
 export default function JobTableRow({ job, onEdit, onDelete, isDeleting }) {
   const [expanded, setExpanded] = useState(false);
-  const hasNotes = Boolean(job.notes);
-  const isLongNotes = hasNotes && job.notes.length > 90;
-  const isLongCompany = job.company.length > 20;
-  const isLongPosition = job.position.length > 22;
-  const isAnyLong = isLongCompany || isLongPosition || isLongNotes;
+  const notesId = useId();
+  const notes = typeof job.notes === 'string' ? job.notes : '';
+  const hasNotes = notes.trim().length > 0;
+  const isLongNotes = hasNotes && notes.length > 90;
+  const status = STATUS_CONFIG[job.status];
+  const addedDate = formatApplicationDate(job.created_at);
+  const statusDate = job.status_date ? formatApplicationDate(job.status_date) : null;
 
   return (
-    <tr className="border-b border-gray-200 last:border-b-0">
-      <td className="px-4 py-3 text-sm text-gray-800 max-w-[9rem]" title={isLongCompany && !expanded ? job.company : undefined}>
-        <span className={isLongCompany && !expanded ? 'block truncate' : 'whitespace-normal break-words'}>{job.company}</span>
-      </td>
-      <td className="px-4 py-3 text-sm text-gray-800 max-w-[9rem]" title={isLongPosition && !expanded ? job.position : undefined}>
-        <span className={isLongPosition && !expanded ? 'block truncate' : 'whitespace-normal break-words'}>{job.position}</span>
-      </td>
-      <td className="px-4 py-3 text-sm">
-        <span className={`inline-block px-2.5 py-1 rounded-full border text-xs font-medium capitalize ${STATUS_COLORS[job.status] || 'bg-gray-100 text-gray-800 border-gray-300'}`}>
-          {job.status}
+    <tr className="border-b border-dashboard-line bg-dashboard-surface text-dashboard-body transition-colors last:border-b-0 hover:bg-dashboard-surface-hover">
+      <td className="min-w-0 px-3 py-3 align-top">
+        <span className="block truncate font-semibold text-dashboard-text" title={job.position}>
+          {job.position}
         </span>
-        {job.status_date && (
-          <span className="block text-xs text-gray-400 mt-1">
-            {new Date(job.status_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+        <span className="mt-0.5 block truncate text-dashboard-caption text-dashboard-muted" title={job.company}>
+          {job.company}
+        </span>
+      </td>
+      <td className="px-3 py-3 align-top tabular-nums text-dashboard-muted">
+        {addedDate}
+      </td>
+      <td className="px-3 py-3 align-top">
+        <span className={`inline-flex rounded-full border px-2.5 py-1 text-dashboard-caption font-medium ${status?.dashboardClass || 'border-dashboard-line bg-dashboard-surface-raised text-dashboard-muted'}`}>
+          {status?.label || 'Status unavailable'}
+        </span>
+        {statusDate && statusDate !== '\u2014' && (
+          <span className="mt-1 block text-dashboard-caption text-dashboard-muted">
+            {statusDate}
           </span>
         )}
       </td>
-      <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">
+      <td className="whitespace-nowrap px-3 py-3 align-top tabular-nums text-dashboard-muted">
         {formatSalary(job.salary_min, job.salary_max)}
       </td>
-      <td
-        className="px-4 py-3 text-sm text-gray-600 max-w-xs"
-        title={!expanded && isLongNotes ? job.notes : undefined}
-      >
-        <div className="flex items-start gap-1.5">
-          <span className={`min-w-0 ${isLongNotes && !expanded ? 'truncate' : 'whitespace-normal break-words'}`}>
-            {job.notes || '-'}
+      <td className="min-w-0 px-3 py-3 align-top text-dashboard-muted">
+        <div className="flex min-w-0 items-start gap-1">
+          <span
+            id={notesId}
+            title={!expanded && isLongNotes ? notes : undefined}
+            className={`min-w-0 flex-1 ${isLongNotes && !expanded ? 'truncate' : 'whitespace-normal break-words'}`}
+          >
+            {hasNotes ? notes : '\u2014'}
           </span>
-          {isAnyLong && (
+          {isLongNotes && (
             <button
-              onClick={() => setExpanded(prev => !prev)}
-              className={`shrink-0 text-gray-400 hover:text-gray-600 transition-transform duration-200 ${expanded ? 'rotate-180' : 'rotate-0'}`}
-              aria-label={expanded ? 'Collapse note' : 'Expand note'}
+              type="button"
+              onClick={() => setExpanded(previous => !previous)}
+              aria-expanded={expanded}
+              aria-controls={notesId}
+              aria-label={expanded ? 'Collapse notes' : 'Expand notes'}
+              className="dashboard-focus-ring inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded text-dashboard-muted transition-colors hover:bg-dashboard-surface-raised hover:text-dashboard-text"
             >
-              ▼
+              <ChevronDown
+                aria-hidden="true"
+                size={16}
+                className={`dashboard-motion transition-transform ${expanded ? 'rotate-180' : ''}`}
+              />
             </button>
           )}
         </div>
       </td>
-      <td className="px-4 py-3 text-sm">
-        <div className="flex gap-2">
-          <button
-            onClick={() => onEdit(job)}
-            className="bg-blue-600 text-white px-3 py-1.5 rounded text-xs font-medium hover:bg-blue-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-            disabled={isDeleting}
-          >
-            Edit
-          </button>
-          <button
-            onClick={() => onDelete(job.id)}
-            className="bg-red-600 text-white px-3 py-1.5 rounded text-xs font-medium hover:bg-red-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-            disabled={isDeleting}
-          >
-            {isDeleting ? <><Spinner size="sm" className="inline mr-1" />Deleting...</> : 'Delete'}
-          </button>
-        </div>
+      <td className="px-3 py-3 text-right align-top">
+        <JobActionsMenu
+          job={job}
+          onEdit={onEdit}
+          onDelete={onDelete}
+          disabled={isDeleting}
+        />
       </td>
     </tr>
   );

@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { PanelLeftClose, Search, X } from 'lucide-react';
-import DOMPurify from 'isomorphic-dompurify';
+import { PanelLeftClose, X } from 'lucide-react';
 import { STATUS_OPTIONS, STATUS_DOT_COLORS } from './forms/constants';
 import StatusPieChart from './StatusPieChart';
 import { formatSalary, formatSalarySingle } from '../lib/formatSalary.js';
@@ -11,9 +10,9 @@ import { useOverlayAccessibility } from '../hooks/useOverlayAccessibility';
  * Render one responsive Filters panel as either a wide dock or compact drawer.
  *
  * Purpose: Keeps one mounted set of filter inputs and IDs so disclosure changes
- * never duplicate controls or discard local debounced values. Dashboard owns
+ * never duplicate controls or discard local debounced salaries. Dashboard owns
  * the actual criteria, responsive mode, and open state; this component owns
- * only input presentation, debounce timers, and drawer accessibility.
+ * only salary input presentation, debounce timers, and drawer accessibility.
  *
  * @param {object} props - Filter presentation and controlled criteria.
  * @param {'docked'|'drawer'} props.mode - Active responsive presentation.
@@ -24,13 +23,13 @@ import { useOverlayAccessibility } from '../hooks/useOverlayAccessibility';
  * @param {boolean} props.loading - Whether jobs are being fetched.
  * @param {string|null} props.activeFilter - Active status filter.
  * @param {Function} props.onFilterChange - Updates the status filter.
- * @param {string} props.searchQuery - Controlled company search query.
- * @param {Function} props.onSearchChange - Updates company search.
+ * @param {boolean} props.hasSearchFilter - Whether toolbar company search is applied.
  * @param {Array} props.jobs - Unfiltered jobs used by summary statistics.
  * @param {number|null} props.salaryFilterMin - Controlled minimum salary.
  * @param {number|null} props.salaryFilterMax - Controlled maximum salary.
  * @param {Function} props.onSalaryFilterMinChange - Updates minimum salary.
  * @param {Function} props.onSalaryFilterMaxChange - Updates maximum salary.
+ * @param {Function} props.onClearAllFilters - Clears all page-owned criteria.
  * @param {number} props.archivedCount - Locked archive count.
  * @returns {React.ReactElement} One docked or drawer Filters panel.
  */
@@ -43,21 +42,19 @@ export default function JobStatsSidebar({
   loading,
   activeFilter,
   onFilterChange,
-  searchQuery,
-  onSearchChange,
+  hasSearchFilter,
   jobs = [],
   salaryFilterMin,
   salaryFilterMax,
   onSalaryFilterMinChange,
   onSalaryFilterMaxChange,
+  onClearAllFilters,
   archivedCount = 0,
 }) {
   const isDrawerOpen = mode === 'drawer' && isOpen;
   const { containerRef } = useOverlayAccessibility(isDrawerOpen, onClose);
-  const [localSearch, setLocalSearch] = useState(searchQuery || '');
   const [localSalaryMin, setLocalSalaryMin] = useState('');
   const [localSalaryMax, setLocalSalaryMax] = useState('');
-  const debounceTimerRef = useRef(null);
   const salaryMinTimerRef = useRef(null);
   const salaryMaxTimerRef = useRef(null);
 
@@ -89,11 +86,6 @@ export default function JobStatsSidebar({
     ));
   }, [jobs]);
 
-  /** Mirror controlled company-search resets into the mounted input. */
-  useEffect(() => {
-    setLocalSearch(searchQuery || '');
-  }, [searchQuery]);
-
   /** Mirror controlled minimum-salary resets into the mounted input. */
   useEffect(() => {
     setLocalSalaryMin(salaryFilterMin != null ? String(salaryFilterMin) : '');
@@ -106,7 +98,6 @@ export default function JobStatsSidebar({
 
   /** Cancel pending debounce work if Dashboard removes the Filters panel. */
   useEffect(() => () => {
-    clearTimeout(debounceTimerRef.current);
     clearTimeout(salaryMinTimerRef.current);
     clearTimeout(salaryMaxTimerRef.current);
   }, []);
@@ -127,32 +118,6 @@ export default function JobStatsSidebar({
       document.body.style.overflow = previousOverflow;
     };
   }, [isDrawerOpen]);
-
-  /**
-   * Debounce and sanitize one company-search edit before updating Dashboard.
-   *
-   * @param {React.ChangeEvent<HTMLInputElement>} event - Search input event.
-   * @returns {void}
-   */
-  const handleSearchChange = (event) => {
-    const value = event.target.value;
-    setLocalSearch(value);
-    clearTimeout(debounceTimerRef.current);
-    debounceTimerRef.current = setTimeout(() => {
-      onSearchChange(DOMPurify.sanitize(value, { ALLOWED_TAGS: [] }));
-    }, 300);
-  };
-
-  /**
-   * Clear the local and controlled company search immediately.
-   *
-   * @returns {void}
-   */
-  const handleClearSearch = () => {
-    setLocalSearch('');
-    clearTimeout(debounceTimerRef.current);
-    onSearchChange('');
-  };
 
   /**
    * Debounce and clamp the minimum salary boundary.
@@ -212,16 +177,11 @@ export default function JobStatsSidebar({
    * @returns {void}
    */
   const handleClearAllFilters = () => {
-    onFilterChange(null);
-    onSalaryFilterMinChange(null);
-    onSalaryFilterMaxChange(null);
-    onSearchChange('');
     setLocalSalaryMin('');
     setLocalSalaryMax('');
-    setLocalSearch('');
     clearTimeout(salaryMinTimerRef.current);
     clearTimeout(salaryMaxTimerRef.current);
-    clearTimeout(debounceTimerRef.current);
+    onClearAllFilters();
   };
 
   const panelClasses = mode === 'docked'
@@ -235,7 +195,7 @@ export default function JobStatsSidebar({
     ].join(' ');
   const hasFilters = Boolean(
     activeFilter
-    || localSearch
+    || hasSearchFilter
     || localSalaryMin
     || localSalaryMax
     || salaryFilterMin != null
@@ -415,42 +375,6 @@ export default function JobStatsSidebar({
                 className="dashboard-control dashboard-focus-ring min-h-9 w-full px-2 py-1.5 text-sm text-dashboard-text placeholder:text-dashboard-muted/70 disabled:cursor-not-allowed disabled:opacity-50"
               />
             </div>
-          </div>
-        </div>
-
-        <div className="border-t border-dashboard-line px-4 py-3">
-          <label
-            htmlFor="job-search"
-            className="mb-1 block text-xs font-medium uppercase tracking-wide text-dashboard-muted"
-          >
-            Search by company
-          </label>
-          <div className="relative">
-            <Search
-              aria-hidden="true"
-              size={16}
-              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-dashboard-muted"
-            />
-            <input
-              id="job-search"
-              type="text"
-              value={localSearch}
-              onChange={handleSearchChange}
-              placeholder="Search companies..."
-              disabled={loading}
-              maxLength={100}
-              className="dashboard-control dashboard-focus-ring min-h-9 w-full py-2 pl-9 pr-9 text-sm text-dashboard-text placeholder:text-dashboard-muted/70 disabled:cursor-not-allowed disabled:opacity-50"
-            />
-            {localSearch && (
-              <button
-                type="button"
-                onClick={handleClearSearch}
-                aria-label="Clear search"
-                className="dashboard-focus-ring absolute right-1 top-1/2 inline-flex min-h-7 min-w-7 -translate-y-1/2 items-center justify-center rounded text-dashboard-muted hover:text-dashboard-text"
-              >
-                <X aria-hidden="true" size={15} />
-              </button>
-            )}
           </div>
         </div>
 
