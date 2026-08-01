@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-26
 
+- `2026-08-01` - `Job action focus-test synchronization`: Aligned the row-menu Escape regression with Radix's deferred close-autofocus boundary while retaining the exact trigger-focus assertion.
 - `2026-08-01` - `Toolbar search draft preservation`: Limited toolbar draft resets to explicit reset-key changes so applied sanitized queries no longer overwrite newer draft text or cancel pending debounce work.
 - `2026-08-01` - `Profile dropdown missing-email coverage`: Added focused regression coverage proving users without an email receive the visible Account fallback and its current-user accessible name.
 - `2026-08-01` - `Job row zero-epoch status date`: Routed zero-valued status timestamps through shared safe date formatting so Added and status dates both render January 1, 1970 instead of treating the status date as missing.

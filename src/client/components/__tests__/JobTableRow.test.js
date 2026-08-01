@@ -219,6 +219,9 @@ describe('JobTableRow', () => {
 
     await press(trigger, 'Enter');
     await press(document.activeElement, 'Escape');
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
     expect(document.body.querySelector('[role="menu"]')).toBeNull();
     expect(document.activeElement).toBe(trigger);
   });
