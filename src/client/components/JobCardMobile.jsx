@@ -3,7 +3,7 @@ import { Pencil, Trash2 } from 'lucide-react';
 import Spinner from './Spinner.jsx';
 import { formatApplicationDate } from '../lib/formatApplicationDate.js';
 import { formatSalary } from '../lib/formatSalary.js';
-import { STATUS_CONFIG } from '../../shared/constants/statuses.js';
+import { getApplicationPresentation } from '../lib/getApplicationPresentation.js';
 
 /**
  * Render one application card with direct mobile Edit/Delete controls.
@@ -21,11 +21,7 @@ import { STATUS_CONFIG } from '../../shared/constants/statuses.js';
 export default function JobCardMobile({ job, onEdit, onDelete, isDeleting }) {
   const [expanded, setExpanded] = useState(false);
   const notesId = useId();
-  const notes = typeof job.notes === 'string' ? job.notes : '';
-  const hasNotes = notes.trim().length > 0;
-  const isLongNotes = hasNotes && notes.length > 90;
-  const status = STATUS_CONFIG[job.status];
-  const statusDate = job.status_date ? formatApplicationDate(job.status_date) : null;
+  const { notes, hasNotes, isLongNotes, status, statusDate } = getApplicationPresentation(job);
 
   return (
     <article className="dashboard-major-panel space-y-3 rounded-dashboard-panel bg-dashboard-surface p-4 text-dashboard-body text-dashboard-text">

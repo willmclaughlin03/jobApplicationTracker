@@ -14,6 +14,9 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-26
 
+- `2026-08-01` - `Pagination label cleanup`: Removed an ineffective label from the pagination controls wrapper while retaining the surrounding labeled navigation landmark and meaningful no-controls coverage.
+- `2026-08-01` - `Filtered pagination page clamp`: Synchronized useJobs pagination state with filtered result counts so deletion or updates cannot strand users on an empty out-of-range page.
+- `2026-08-01` - `Shared application presentation derivation`: Centralized desktop-row and mobile-card notes thresholds, canonical status lookup, and safe status-date formatting behind one tested helper.
 - `2026-08-01` - `Job action focus-test synchronization`: Aligned the row-menu Escape regression with Radix's deferred close-autofocus boundary while retaining the exact trigger-focus assertion.
 - `2026-08-01` - `Toolbar search draft preservation`: Limited toolbar draft resets to explicit reset-key changes so applied sanitized queries no longer overwrite newer draft text or cancel pending debounce work.
 - `2026-08-01` - `Profile dropdown missing-email coverage`: Added focused regression coverage proving users without an email receive the visible Account fallback and its current-user accessible name.

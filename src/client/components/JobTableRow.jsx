@@ -2,7 +2,7 @@ import { useId, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { formatApplicationDate } from '../lib/formatApplicationDate.js';
 import { formatSalary } from '../lib/formatSalary.js';
-import { STATUS_CONFIG } from '../../shared/constants/statuses.js';
+import { getApplicationPresentation } from '../lib/getApplicationPresentation.js';
 import JobActionsMenu from './dashboard/JobActionsMenu';
 
 /**
@@ -21,12 +21,8 @@ import JobActionsMenu from './dashboard/JobActionsMenu';
 export default function JobTableRow({ job, onEdit, onDelete, isDeleting }) {
   const [expanded, setExpanded] = useState(false);
   const notesId = useId();
-  const notes = typeof job.notes === 'string' ? job.notes : '';
-  const hasNotes = notes.trim().length > 0;
-  const isLongNotes = hasNotes && notes.length > 90;
-  const status = STATUS_CONFIG[job.status];
+  const { notes, hasNotes, isLongNotes, status, statusDate } = getApplicationPresentation(job);
   const addedDate = formatApplicationDate(job.created_at);
-  const statusDate = formatApplicationDate(job.status_date);
 
   return (
     <tr className="border-b border-dashboard-line bg-dashboard-surface text-dashboard-body transition-colors last:border-b-0 hover:bg-dashboard-surface-hover">

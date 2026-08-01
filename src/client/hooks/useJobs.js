@@ -60,10 +60,14 @@ export function useJobs(userId, statusFilter = null, searchQuery = '', salaryMin
     [allJobs, statusFilter, searchQuery, salaryMin, salaryMax, selectedDates]
   );
 
-  // Keep usePagination's internal totalPages correct so goToPage can clamp properly
+  // Keep pagination totals and the active page valid as filtered results change.
   useEffect(() => {
-    setTotalCount(filteredJobs.length);
-  }, [filteredJobs.length, setTotalCount]);
+    const totalCount = filteredJobs.length;
+    const lastPage = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+
+    setTotalCount(totalCount);
+    setCurrentPage(page => Math.min(page, lastPage));
+  }, [filteredJobs.length, setCurrentPage, setTotalCount]);
 
   // Reset to page 1 when filters change. Uses setCurrentPage (stable useState setter)
   // rather than goToPage to avoid a double-run caused by goToPage changing reference
