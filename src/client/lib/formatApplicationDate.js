@@ -8,7 +8,10 @@
  * @returns {string} Formatted date or an em dash when unavailable.
  */
 export function formatApplicationDate(value) {
-  if (!value) {
+  const isString = typeof value === 'string';
+  const isNumber = typeof value === 'number';
+
+  if ((!isString && !isNumber) || (isString && value.trim() === '')) {
     return '\u2014';
   }
 
