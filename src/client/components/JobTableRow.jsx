@@ -1,36 +1,9 @@
 import { useId, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
+import { formatApplicationDate } from '../lib/formatApplicationDate.js';
 import { formatSalary } from '../lib/formatSalary.js';
 import { STATUS_CONFIG } from '../../shared/constants/statuses.js';
 import JobActionsMenu from './dashboard/JobActionsMenu';
-
-/**
- * Format an application timestamp without exposing Invalid Date text.
- *
- * Purpose: Added and optional status dates need stable UTC calendar copy in
- * dense rows, including a safe fallback for missing or malformed values.
- *
- * @param {unknown} value - Raw date-like job field.
- * @returns {string} Formatted date or an em dash when unavailable.
- */
-function formatApplicationDate(value) {
-  if (!value) {
-    return '\u2014';
-  }
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return '\u2014';
-  }
-
-  return date.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    timeZone: 'UTC',
-  });
-}
 
 /**
  * Render one dense desktop application row using only supported job fields.

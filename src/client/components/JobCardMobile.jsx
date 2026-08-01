@@ -1,36 +1,9 @@
 import { useId, useState } from 'react';
 import { Pencil, Trash2 } from 'lucide-react';
 import Spinner from './Spinner.jsx';
+import { formatApplicationDate } from '../lib/formatApplicationDate.js';
 import { formatSalary } from '../lib/formatSalary.js';
 import { STATUS_CONFIG } from '../../shared/constants/statuses.js';
-
-/**
- * Format a compact-card application date with a safe missing-value fallback.
- *
- * Purpose: mobile Added and status dates mirror the desktop UTC calendar
- * semantics without exposing Invalid Date text.
- *
- * @param {unknown} value - Raw date-like job field.
- * @returns {string} Formatted date or an em dash when unavailable.
- */
-function formatApplicationDate(value) {
-  if (!value) {
-    return '\u2014';
-  }
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return '\u2014';
-  }
-
-  return date.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    timeZone: 'UTC',
-  });
-}
 
 /**
  * Render one application card with direct mobile Edit/Delete controls.

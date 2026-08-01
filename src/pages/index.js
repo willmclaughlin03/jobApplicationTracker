@@ -373,7 +373,7 @@ export default function Dashboard() {
         {error && (
           <div className="mt-4 bg-red-100 text-red-800 px-4 py-3 rounded mb-5 flex justify-between items-center">
             <span>{error.message}</span>
-            <button onClick={clearError} className="text-red-800 hover:text-red-900 text-sm">
+            <button type="button" onClick={clearError} className="text-red-800 hover:text-red-900 text-sm">
               Dismiss
             </button>
           </div>

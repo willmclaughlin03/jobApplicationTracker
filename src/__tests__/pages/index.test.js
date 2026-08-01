@@ -450,6 +450,23 @@ describe('Dashboard billing entry integration', () => {
     ).toBeTruthy();
   });
 
+  it('renders Dismiss as a non-submitting button and clears the current error', () => {
+    const jobsState = buildJobsState({
+      status: STORAGE_STATUSES.TERMINAL_FREE,
+      lockedCount: 0,
+    });
+    jobsState.error = { message: 'Unable to load applications.' };
+    mockUseJobs.mockReturnValue(jobsState);
+    const element = renderDashboard();
+    const dismissButton = findButtonByText(element, 'Dismiss');
+
+    expect(dismissButton.getAttribute('type')).toBe('button');
+
+    click(dismissButton);
+
+    expect(jobsState.clearError).toHaveBeenCalledTimes(1);
+  });
+
   it('opens the configured Premium modal only for terminal Free without navigating', () => {
     const element = renderDashboard();
     const upgradeButton = findButtonByText(element, 'Upgrade');
