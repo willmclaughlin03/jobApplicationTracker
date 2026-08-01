@@ -75,7 +75,7 @@ export default function NextPageButton({ currentPage, totalCount, pageSize, onPa
       </p>
 
       {totalPages > 1 && (
-        <div className="flex flex-wrap items-center gap-1.5" aria-label="Application pages">
+        <div className="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
             onClick={() => onPageChange(safeCurrentPage - 1)}

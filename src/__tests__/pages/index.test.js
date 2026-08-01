@@ -33,6 +33,8 @@ let mockLatestUpgradeModalProps = null;
 let mockLatestSidebarProps = null;
 let mockLatestActivityProps = null;
 let mockLatestProfileProps = null;
+let mockLatestJobTableProps = null;
+let mockLatestDeleteModalProps = null;
 const mockWideMediaQuery = {
   matches: false,
   addEventListener: jest.fn(),
@@ -176,8 +178,9 @@ jest.mock('../../client/components/ProfileDropdown', () => {
 });
 
 jest.mock('../../client/components/JobTable', () => {
-  /** Omit job rows from billing-entry integration tests. */
-  return function MockJobTable() {
+  /** Capture job-table callbacks without rendering job rows. */
+  return function MockJobTable(props) {
+    mockLatestJobTableProps = props;
     return null;
   };
 });
@@ -197,8 +200,9 @@ jest.mock('../../client/components/EditModal', () => {
 });
 
 jest.mock('../../client/components/DeleteModal', () => {
-  /** Omit delete-modal rendering from focused Dashboard tests. */
-  return function MockDeleteModal() {
+  /** Capture delete-modal callbacks without rendering the dialog. */
+  return function MockDeleteModal(props) {
+    mockLatestDeleteModalProps = props;
     return null;
   };
 });
@@ -417,6 +421,8 @@ describe('Dashboard billing entry integration', () => {
     mockLatestSidebarProps = null;
     mockLatestActivityProps = null;
     mockLatestProfileProps = null;
+    mockLatestJobTableProps = null;
+    mockLatestDeleteModalProps = null;
     mockSignOut.mockResolvedValue({ error: null });
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123', email: 'member@example.com' },
@@ -465,6 +471,69 @@ describe('Dashboard billing entry integration', () => {
     click(dismissButton);
 
     expect(jobsState.clearError).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats each salary bound as an active filter in the empty state', () => {
+    const element = renderDashboard();
+
+    expect(element.textContent).toContain('No job applications yet.');
+
+    act(() => mockLatestSidebarProps.onSalaryFilterMinChange(60000));
+
+    expect(element.textContent).toContain('No jobs in the selected salary range.');
+    expect(element.textContent).not.toContain('No job applications yet.');
+
+    act(() => {
+      mockLatestSidebarProps.onSalaryFilterMinChange(null);
+      mockLatestSidebarProps.onSalaryFilterMaxChange(120000);
+    });
+
+    expect(element.textContent).toContain('No jobs in the selected salary range.');
+    expect(element.textContent).not.toContain('No job applications yet.');
+  });
+
+  it('ignores duplicate delete confirmations and releases the latch after settlement', async () => {
+    let resolveFirstDelete;
+    const firstDelete = new Promise((resolve) => {
+      resolveFirstDelete = resolve;
+    });
+    const job = { id: 'job-123' };
+    const jobsState = buildJobsState({
+      status: STORAGE_STATUSES.TERMINAL_FREE,
+      lockedCount: 0,
+    });
+    jobsState.jobs = [job];
+    jobsState.allJobs = [job];
+    jobsState.deleteJob = jest.fn()
+      .mockReturnValueOnce(firstDelete)
+      .mockResolvedValueOnce({ success: true });
+    mockUseJobs.mockReturnValue(jobsState);
+    renderDashboard();
+
+    act(() => mockLatestJobTableProps.onDelete(job.id));
+    expect(mockLatestDeleteModalProps.job).toBe(job);
+
+    let firstConfirmation;
+    act(() => {
+      firstConfirmation = mockLatestDeleteModalProps.onConfirm();
+      mockLatestDeleteModalProps.onConfirm();
+    });
+
+    expect(jobsState.deleteJob).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFirstDelete({ success: false });
+      await firstConfirmation;
+    });
+
+    expect(mockLatestDeleteModalProps.job).toBe(job);
+
+    await act(async () => {
+      await mockLatestDeleteModalProps.onConfirm();
+    });
+
+    expect(jobsState.deleteJob).toHaveBeenCalledTimes(2);
+    expect(mockLatestDeleteModalProps.job).toBeNull();
   });
 
   it('opens the configured Premium modal only for terminal Free without navigating', () => {
@@ -658,6 +727,7 @@ describe('Dashboard billing entry integration', () => {
     act(() => jest.advanceTimersByTime(1));
     expect(mockUseJobs.mock.calls.at(-1)[2]).toBe('Acme');
     expect(mockLatestSidebarProps.hasSearchFilter).toBe(true);
+    expect(searchInput.value).toBe('<strong>Acme</strong>');
 
     changeInput(searchInput, 'Stale company');
     act(() => mockLatestSidebarProps.onClearAllFilters());

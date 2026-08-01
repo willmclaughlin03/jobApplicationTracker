@@ -14,6 +14,17 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-26
 
+- `2026-08-01` - `Admin users authorization branch coverage`: Added direct-request coverage for missing-user login redirects and successful admin rendering without response mutation.
+- `2026-08-01` - `Pagination label cleanup`: Removed an ineffective label from the pagination controls wrapper while retaining the surrounding labeled navigation landmark and meaningful no-controls coverage.
+- `2026-08-01` - `Filtered pagination page clamp`: Synchronized useJobs pagination state with filtered result counts so deletion or updates cannot strand users on an empty out-of-range page.
+- `2026-08-01` - `Shared application presentation derivation`: Centralized desktop-row and mobile-card notes thresholds, canonical status lookup, and safe status-date formatting behind one tested helper.
+- `2026-08-01` - `Job action focus-test synchronization`: Aligned the row-menu Escape regression with Radix's deferred close-autofocus boundary while retaining the exact trigger-focus assertion.
+- `2026-08-01` - `Toolbar search draft preservation`: Limited toolbar draft resets to explicit reset-key changes so applied sanitized queries no longer overwrite newer draft text or cancel pending debounce work.
+- `2026-08-01` - `Profile dropdown missing-email coverage`: Added focused regression coverage proving users without an email receive the visible Account fallback and its current-user accessible name.
+- `2026-08-01` - `Job row zero-epoch status date`: Routed zero-valued status timestamps through shared safe date formatting so Added and status dates both render January 1, 1970 instead of treating the status date as missing.
+- `2026-08-01` - `Admin users server-render guard`: Added cookie-backed server authentication and shared admin-role enforcement so direct non-admin requests receive a 403 before the Admin page shell renders.
+- `2026-08-01` - `Dashboard deletion confirmation latch`: Added a synchronous in-flight guard that prevents duplicate application deletion dispatches and releases after settlement for safe retries.
+- `2026-08-01` - `Salary-filtered empty state`: Updated the Dashboard empty state to recognize minimum-only and maximum-only salary filters and added focused regression coverage for both bounds.
 - `2026-08-01` - `Application date input guard`: Limited shared application-date formatting to string and numeric inputs so unsupported values retain the safe fallback while epoch zero formats as January 1, 1970.
 - `2026-08-01` - `Dashboard error-dismiss button hardening`: Marked the dashboard Dismiss control as an explicit non-submitting button and covered its type and clear-error behavior.
 - `2026-08-01` - `Shared application date formatting`: Centralized desktop-row and mobile-card Added/status date formatting while preserving the safe em-dash fallback and UTC calendar semantics.

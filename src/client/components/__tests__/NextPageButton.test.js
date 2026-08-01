@@ -82,6 +82,8 @@ describe('NextPageButton', () => {
     expect(previous.disabled).toBe(true);
     expect(next.disabled).toBe(false);
     expect(active.getAttribute('aria-label')).toBe('Page 1');
+    expect(element.querySelector('nav').getAttribute('aria-label')).toBe('Applications pagination');
+    expect(element.querySelector('nav > div').hasAttribute('aria-label')).toBe(false);
 
     click(element.querySelector('[aria-label="Page 2"]'));
     click(next);
@@ -110,14 +112,14 @@ describe('NextPageButton', () => {
     const element = renderPagination({ currentPage: 8, totalCount: 0 });
 
     expect(element.textContent).toContain('Showing 0-0 of 0 applications');
-    expect(element.querySelector('[aria-label="Application pages"]')).toBeNull();
+    expect(element.querySelector('button')).toBeNull();
   });
 
   it('keeps one-page count copy visible without page buttons', () => {
     const element = renderPagination({ totalCount: 7 });
 
     expect(element.textContent).toContain('Showing 1-7 of 7 applications');
-    expect(element.querySelector('[aria-label="Application pages"]')).toBeNull();
+    expect(element.querySelector('button')).toBeNull();
   });
 
   it('shows no more than five numbered pages for large result sets', () => {

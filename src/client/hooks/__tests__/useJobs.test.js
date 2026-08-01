@@ -101,10 +101,12 @@ function createDeferred() {
  * Purpose: expose hook state without adding a test-only dependency on a hook
  * testing library.
  *
+ * @param {object} props - Optional filter props passed to useJobs.
+ * @param {string|null} props.statusFilter - Status filter used by the hook.
  * @returns {import('react').ReactElement} Test harness marker element.
  */
-function HookHarness() {
-  latestHook = useJobs('user-123');
+function HookHarness({ statusFilter = null }) {
+  latestHook = useJobs('user-123', statusFilter);
 
   return React.createElement(
     'div',
@@ -150,15 +152,16 @@ async function flushEffects() {
  *
  * Purpose: centralize root creation and initial effect flushing for each test.
  *
+ * @param {object} props - Optional props passed to HookHarness.
  * @returns {Promise<HTMLElement>} Rendered container.
  */
-async function renderUseJobs() {
+async function renderUseJobs(props = {}) {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
 
   await act(async () => {
-    root.render(React.createElement(HookHarness));
+    root.render(React.createElement(HookHarness, props));
   });
 
   await flushEffects();
@@ -626,6 +629,54 @@ describe('useJobs storage summary refresh', () => {
 
     expect(latestHook.loading).toBe(false);
     expect(latestHook.allJobs).toEqual([{ ...initialJob, notes: 'Updated' }]);
+  });
+
+  it('clamps the active page when an update removes the final filtered row', async () => {
+    const initialJobs = Array.from({ length: 11 }, (_, index) => ({
+      id: `job-${index + 1}`,
+      company: `Company ${index + 1}`,
+      position: 'Engineer',
+      status: 'applied',
+    }));
+    const finalJob = initialJobs[10];
+
+    mockApiGet.mockImplementation((endpoint) => {
+      if (endpoint === '/api') {
+        return Promise.resolve(buildJobsResponse({
+          jobs: initialJobs,
+          storageSummary: {
+            status: 'free',
+            activeLimit: 300,
+            activeCount: 11,
+            lockedCount: 0,
+            projectedOverflowCount: 0,
+            cancelAtPeriodEnd: false,
+          },
+        }));
+      }
+
+      return Promise.resolve(buildApiSuccess(null));
+    });
+    mockApiPut.mockResolvedValue(buildApiSuccess([{ ...finalJob, status: 'rejected' }]));
+
+    await renderUseJobs({ statusFilter: 'applied' });
+
+    await act(async () => {
+      latestHook.goToPage(2);
+      await Promise.resolve();
+    });
+
+    expect(latestHook.currentPage).toBe(2);
+    expect(latestHook.jobs).toEqual([finalJob]);
+
+    await act(async () => {
+      await latestHook.updateJob(finalJob.id, { status: 'rejected' });
+      await Promise.resolve();
+    });
+
+    expect(latestHook.filteredJobs).toHaveLength(10);
+    expect(latestHook.currentPage).toBe(1);
+    expect(latestHook.jobs).toEqual(initialJobs.slice(0, 10));
   });
 
   it('ignores duplicate add calls while one add is in flight', async () => {
