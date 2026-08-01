@@ -68,6 +68,7 @@ export default function Dashboard() {
   const router = useRouter();
   const isWideLayout = useDashboardWideLayout();
   const filtersTriggerRef = useRef(null);
+  const deleteInFlightRef = useRef(false);
   const [statusFilter, setStatusFilter] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResetKey, setSearchResetKey] = useState(0);
@@ -224,15 +225,23 @@ export default function Dashboard() {
   /**
    * Confirm one guarded application deletion through the existing mutation.
    *
+   * Purpose: close the synchronous duplicate-confirmation gap before the
+   * deleting hook state can re-render the modal as disabled.
+   *
    * @returns {Promise<void>} Resolves after the mutation settles or is skipped.
    */
   const confirmDeleteJob = async () => {
-    if (!jobToDelete || deleting) {
+    if (!jobToDelete || deleting || deleteInFlightRef.current) {
       return;
     }
 
-    const result = await deleteJob(jobToDelete.id);
-    if (result.success) setJobToDelete(null);
+    deleteInFlightRef.current = true;
+    try {
+      const result = await deleteJob(jobToDelete.id);
+      if (result.success) setJobToDelete(null);
+    } finally {
+      deleteInFlightRef.current = false;
+    }
   };
 
   const handleSignOut = async () => {
@@ -399,7 +408,11 @@ export default function Dashboard() {
             </div>
           ) : jobs.length === 0 ? (
             <div className="text-center py-16 px-5 text-gray-500 bg-white rounded-lg">
-              {searchQuery || statusFilter || selectedDates.size > 0 ? (
+              {searchQuery
+              || statusFilter
+              || selectedDates.size > 0
+              || salaryFilterMin != null
+              || salaryFilterMax != null ? (
                 <ul className="space-y-1">
                   {searchQuery && (
                     <li>No jobs matching &ldquo;{searchQuery}&rdquo;.</li>
@@ -409,6 +422,9 @@ export default function Dashboard() {
                   )}
                   {selectedDates.size > 0 && (
                     <li>No jobs found for the selected dates.</li>
+                  )}
+                  {(salaryFilterMin != null || salaryFilterMax != null) && (
+                    <li>No jobs in the selected salary range.</li>
                   )}
                 </ul>
               ) : (
