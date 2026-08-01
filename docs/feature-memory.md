@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-26
 
+- `2026-08-01` - `Admin users authorization branch coverage`: Added direct-request coverage for missing-user login redirects and successful admin rendering without response mutation.
 - `2026-08-01` - `Pagination label cleanup`: Removed an ineffective label from the pagination controls wrapper while retaining the surrounding labeled navigation landmark and meaningful no-controls coverage.
 - `2026-08-01` - `Filtered pagination page clamp`: Synchronized useJobs pagination state with filtered result counts so deletion or updates cannot strand users on an empty out-of-range page.
 - `2026-08-01` - `Shared application presentation derivation`: Centralized desktop-row and mobile-card notes thresholds, canonical status lookup, and safe status-date formatting behind one tested helper.
