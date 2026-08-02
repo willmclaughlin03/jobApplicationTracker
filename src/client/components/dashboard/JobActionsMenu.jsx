@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
 
@@ -20,25 +21,44 @@ export default function JobActionsMenu({
   onDelete,
   disabled = false,
 }) {
+  const pendingActionRef = useRef(null);
+
   /**
-   * Invoke the existing edit workflow unless deletion owns the row.
+   * Queue the existing edit workflow until the menu finishes restoring focus.
    *
    * @returns {void}
    */
   const handleEdit = () => {
     if (!disabled) {
-      onEdit(job);
+      pendingActionRef.current = () => onEdit(job);
     }
   };
 
   /**
-   * Invoke the existing confirmed-delete entry point exactly once per selection.
+   * Queue confirmed deletion until the menu finishes restoring focus.
    *
    * @returns {void}
    */
   const handleDelete = () => {
     if (!disabled) {
-      onDelete(job.id);
+      pendingActionRef.current = () => onDelete(job.id);
+    }
+  };
+
+  /**
+   * Open the selected dialog after Radix returns focus to the persistent trigger.
+   *
+   * Purpose: the dialog can then capture the trigger as its focus-return origin
+   * without Radix's delayed menu cleanup stealing focus from the open dialog.
+   *
+   * @returns {void}
+   */
+  const handleCloseAutoFocus = () => {
+    const pendingAction = pendingActionRef.current;
+    pendingActionRef.current = null;
+
+    if (pendingAction) {
+      queueMicrotask(pendingAction);
     }
   };
 
@@ -59,6 +79,7 @@ export default function JobActionsMenu({
         <DropdownMenu.Content
           align="end"
           sideOffset={6}
+          onCloseAutoFocus={handleCloseAutoFocus}
           className="dashboard-portal-theme z-[70] min-w-40 rounded-dashboard-panel border border-dashboard-control-border bg-dashboard-surface-raised p-1.5 text-dashboard-body text-dashboard-text shadow-xl"
         >
           <DropdownMenu.Item

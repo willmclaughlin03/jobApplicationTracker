@@ -12,6 +12,7 @@
 const React = require('react');
 const { createRoot } = require('react-dom/client');
 const { act } = require('react');
+const { TIER_LIMITS, TIERS } = require('../../../shared/constants/tiers.js');
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -200,14 +201,22 @@ describe('InfoTooltip', () => {
     expect(getTooltip(el).getAttribute('id')).toBe(describedBy);
   });
 
-  it('displays tier limit values in tooltip content', () => {
+  it('displays canonical instructions, Free limits, and the real support address', () => {
     const el = render(React.createElement(InfoTooltip));
     const btn = getButton(el);
 
     mouseEnter(btn);
 
     const tooltip = getTooltip(el);
-    expect(tooltip.textContent).toContain('300');
-    expect(tooltip.textContent).toContain('30');
+    const freeLimits = TIER_LIMITS[TIERS.FREE];
+    expect(tooltip.textContent).toContain('Add Application');
+    expect(tooltip.textContent).toContain('On desktop, open a row\'s Actions menu to choose Edit or Delete');
+    expect(tooltip.textContent).toContain('On mobile, use the direct Edit and Delete controls');
+    expect(tooltip.textContent).not.toContain('Reset Password');
+    expect(tooltip.textContent).toContain(`Max ${freeLimits.storage.maxJobs} saved jobs`);
+    expect(tooltip.textContent).toContain(`Up to ${freeLimits.insert.hourly} new jobs per hour`);
+    const supportLink = tooltip.querySelector('a');
+    expect(supportLink.textContent).toBe('tracktheapp.support@gmail.com');
+    expect(supportLink.getAttribute('href')).toBe('mailto:tracktheapp.support@gmail.com');
   });
 });

@@ -82,6 +82,20 @@ function click(target) {
   });
 }
 
+/**
+ * Assert the opt-in dashboard variant does not fall back to light/blue styles.
+ *
+ * @param {HTMLElement} element - Rendered dashboard card container.
+ * @returns {void}
+ */
+function expectDashboardAppearance(element) {
+  const card = element.querySelector('section');
+  expect(card.className).toContain('dashboard-raised-panel');
+  expect(element.innerHTML).not.toContain('bg-white');
+  expect(element.innerHTML).not.toContain('blue-');
+  expect(element.innerHTML).not.toContain('gray-');
+}
+
 /** Remove the active React root and DOM container after each test. */
 function cleanup() {
   if (root) {
@@ -130,6 +144,7 @@ describe('PlanUpgradeCard', () => {
   it('keeps Upgrade disabled while canonical availability is checking', () => {
     const element = renderCard({
       eligibilityState: UPGRADE_ELIGIBILITY_STATES.CHECKING,
+      appearance: 'dashboard',
     });
     const button = findButtonByText(element, 'Checking availability…');
 
@@ -137,13 +152,24 @@ describe('PlanUpgradeCard', () => {
     expect(element.querySelector('[role="status"]').textContent).toContain(
       'Checking your current billing status.'
     );
+    expectDashboardAppearance(element);
+  });
+
+  it('uses the dashboard appearance for an eligible Upgrade action', () => {
+    const element = renderCard({ appearance: 'dashboard' });
+    const button = findButtonByText(element, 'Upgrade');
+
+    expectDashboardAppearance(element);
+    expect(button.className).toContain('bg-dashboard-accent');
+    expect(button.className).toContain('text-dashboard-accent-ink');
   });
 
   it('shows an active redirect label and disables the primary action', () => {
-    const element = renderCard({ actionLoading: true });
+    const element = renderCard({ actionLoading: true, appearance: 'dashboard' });
     const button = findButtonByText(element, 'Redirecting to checkout…');
 
     expect(button.disabled).toBe(true);
+    expectDashboardAppearance(element);
   });
 
   it('renders a bounded cooldown and sanitized rate-limit error', () => {
@@ -155,6 +181,7 @@ describe('PlanUpgradeCard', () => {
         retryAfterSeconds: 12,
       },
       retryAfterSeconds: 12,
+      appearance: 'dashboard',
     });
     const button = findButtonByText(element, 'Try again in 12s');
 
@@ -162,6 +189,7 @@ describe('PlanUpgradeCard', () => {
     expect(element.querySelector('[role="alert"]').textContent).toBe(
       'Rate limit exceeded. Please try again later.'
     );
+    expectDashboardAppearance(element);
   });
 
   it('replaces Upgrade with the Billing fallback when status is ineligible', () => {
@@ -169,6 +197,7 @@ describe('PlanUpgradeCard', () => {
     const element = renderCard({
       eligibilityState: UPGRADE_ELIGIBILITY_STATES.INELIGIBLE,
       onGoToBilling,
+      appearance: 'dashboard',
     });
 
     expect(findButtonByText(element, 'Upgrade')).toBeUndefined();
@@ -178,6 +207,7 @@ describe('PlanUpgradeCard', () => {
 
     click(findButtonByText(element, 'Go to billing'));
     expect(onGoToBilling).toHaveBeenCalledTimes(1);
+    expectDashboardAppearance(element);
   });
 
   it('renders Retry and Billing callbacks after a status-read failure', () => {
@@ -187,6 +217,7 @@ describe('PlanUpgradeCard', () => {
       eligibilityState: UPGRADE_ELIGIBILITY_STATES.ERROR,
       onRetryStatus,
       onGoToBilling,
+      appearance: 'dashboard',
     });
 
     expect(findButtonByText(element, 'Upgrade')).toBeUndefined();
@@ -199,6 +230,7 @@ describe('PlanUpgradeCard', () => {
 
     expect(onRetryStatus).toHaveBeenCalledTimes(1);
     expect(onGoToBilling).toHaveBeenCalledTimes(1);
+    expectDashboardAppearance(element);
   });
 
   it('shows a sanitized recoverable Checkout error without removing Upgrade', () => {
@@ -209,11 +241,13 @@ describe('PlanUpgradeCard', () => {
         httpStatus: 503,
         retryAfterSeconds: null,
       },
+      appearance: 'dashboard',
     });
 
     expect(element.querySelector('[role="alert"]').textContent).toContain(
       'Unable to start checkout right now. Please try again later.'
     );
     expect(findButtonByText(element, 'Upgrade').disabled).toBe(false);
+    expectDashboardAppearance(element);
   });
 });

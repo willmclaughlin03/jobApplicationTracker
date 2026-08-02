@@ -75,7 +75,7 @@ export default function DeleteModal({ job, onConfirm, onClose, deleting }) {
           </button>
           <button
             type="button"
-            onClick={onConfirm}
+            onClick={() => onConfirm()}
             disabled={deleting}
             className="dashboard-focus-ring min-h-9 rounded-dashboard-control border border-red-400/70 bg-red-600 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
           >

@@ -26,6 +26,33 @@ jest.mock('../../lib/api.js', () => ({
 
 let container;
 let root;
+let useOverlayAccessibility;
+
+/**
+ * Create a controllable promise for loading-state assertions.
+ *
+ * @returns {{promise: Promise<object>, resolve: Function}} Deferred handle.
+ */
+function createDeferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+/**
+ * Register a simple underlying focus owner for stacked-lock coverage.
+ *
+ * @param {{onClose: Function}} props - Background overlay close callback.
+ * @returns {React.ReactElement} Focus-owning background panel.
+ */
+function BackgroundOverlay({ onClose }) {
+  const { containerRef } = useOverlayAccessibility(true, onClose);
+  return React.createElement('div', { ref: containerRef, tabIndex: -1 },
+    React.createElement('button', { type: 'button' }, 'Background focus')
+  );
+}
 
 /**
  * Renders a React element into a detached jsdom root.
@@ -43,6 +70,13 @@ function render(element) {
   });
 
   return container;
+}
+
+/** Re-render the active test root while preserving component state by key. */
+function rerender(element) {
+  act(() => {
+    root.render(element);
+  });
 }
 
 /**
@@ -94,6 +128,8 @@ function cleanup() {
 
   container = null;
   root = null;
+  document.body.innerHTML = '';
+  document.body.style.overflow = '';
 }
 
 describe('LockedArchivePanel', () => {
@@ -101,6 +137,7 @@ describe('LockedArchivePanel', () => {
 
   beforeAll(() => {
     LockedArchivePanel = require('../LockedArchivePanel').default;
+    useOverlayAccessibility = require('../../hooks/useOverlayAccessibility.js').useOverlayAccessibility;
   });
 
   beforeEach(() => {
@@ -120,7 +157,9 @@ describe('LockedArchivePanel', () => {
               position: 'Hidden Role',
               notes: 'Hidden notes',
               salary_min: 100000,
+              salary_max: 140000,
               status: 'interviewing',
+              history: [{ status: 'applied' }],
             },
           ],
           count: 1,
@@ -168,7 +207,71 @@ describe('LockedArchivePanel', () => {
     expect(el.textContent).not.toContain('Hidden Role');
     expect(el.textContent).not.toContain('Hidden notes');
     expect(el.textContent).not.toContain('100000');
+    expect(el.textContent).not.toContain('140000');
     expect(el.textContent).not.toContain('interviewing');
+    expect(el.textContent).not.toContain('history');
+  });
+
+  it('links disclosure state to the archive content and collapses it without another fetch', async () => {
+    const el = render(React.createElement(LockedArchivePanel, {
+      storageSummary: { lockedCount: 1 },
+    }));
+    const viewButton = findButtonByText(el, 'View archive');
+    const contentId = viewButton.getAttribute('aria-controls');
+
+    expect(viewButton.getAttribute('aria-expanded')).toBe('false');
+    expect(document.getElementById(contentId)).toBeNull();
+
+    click(viewButton);
+    await flushEffects();
+    const hideButton = findButtonByText(el, 'Hide archive');
+    expect(hideButton.getAttribute('aria-expanded')).toBe('true');
+    expect(document.getElementById(contentId)).toBeTruthy();
+
+    click(hideButton);
+    expect(document.getElementById(contentId)).toBeNull();
+    click(findButtonByText(el, 'View archive'));
+    await flushEffects();
+    expect(mockApiGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('announces loading and renders the empty preview state safely', async () => {
+    const deferred = createDeferred();
+    mockApiGet.mockReturnValueOnce(deferred.promise);
+    const el = render(React.createElement(LockedArchivePanel, {
+      storageSummary: { lockedCount: 2 },
+    }));
+
+    click(findButtonByText(el, 'View archive'));
+    expect(el.querySelector('[role=status]').textContent).toBe('Loading archive...');
+
+    await act(async () => {
+      deferred.resolve({
+        error: null,
+        data: { data: { data: [], count: 0 } },
+      });
+      await deferred.promise;
+    });
+
+    expect(el.querySelector('[role=status]')).toBeNull();
+    expect(el.textContent).toContain('No archived applications were returned for this preview.');
+    expect(el.textContent).toContain('Showing 0 of 2 archived applications.');
+  });
+
+  it('announces preview errors without rendering teaser details', async () => {
+    mockApiGet.mockResolvedValueOnce({
+      error: null,
+      data: { data: null, error: 'ARCHIVE_UNAVAILABLE', message: 'Archive preview is unavailable.' },
+    });
+    const el = render(React.createElement(LockedArchivePanel, {
+      storageSummary: { lockedCount: 1 },
+    }));
+
+    click(findButtonByText(el, 'View archive'));
+    await flushEffects();
+
+    expect(el.querySelector('[role=alert]').textContent).toBe('Archive preview is unavailable.');
+    expect(el.textContent).not.toContain('Archived application 1');
   });
 
   it('shows locked bulk delete only for terminal-Free archive summaries', () => {
@@ -311,5 +414,45 @@ describe('LockedArchivePanel', () => {
     expect(el.textContent).toContain(
       'Locked archive deletion is available only for confirmed Free accounts with archived applications.'
     );
+  });
+
+  it('contains focus, returns it to Delete Archive, and preserves an underlying scroll lock', () => {
+    document.body.style.overflow = 'clip';
+    const panel = React.createElement(LockedArchivePanel, {
+      key: 'archive',
+      storageSummary: {
+        status: 'terminal_free',
+        lockedCount: 1,
+        activeCount: 300,
+        activeLimit: 300,
+      },
+    });
+    const el = render(React.createElement(React.Fragment, null, [
+      React.createElement(BackgroundOverlay, { key: 'background', onClose: jest.fn() }),
+      panel,
+    ]));
+    const deleteTrigger = findButtonByText(el, 'Delete Archive');
+    deleteTrigger.focus();
+    click(deleteTrigger);
+    const dialog = el.querySelector('[role=dialog]');
+    const closeButton = el.querySelector('[aria-label=\'Close locked archive delete confirmation\']');
+    const confirmButton = findButtonByText(el, 'Permanently Delete Archive');
+
+    expect(document.activeElement).toBe(closeButton);
+    expect(document.body.style.overflow).toBe('hidden');
+
+    confirmButton.focus();
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+    });
+    expect(document.activeElement).toBe(closeButton);
+
+    click(findButtonByText(el, 'Cancel'));
+    expect(dialog.isConnected).toBe(false);
+    expect(document.activeElement).toBe(deleteTrigger);
+    expect(document.body.style.overflow).toBe('hidden');
+
+    rerender(null);
+    expect(document.body.style.overflow).toBe('clip');
   });
 });

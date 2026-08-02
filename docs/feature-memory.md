@@ -14,6 +14,11 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-26
 
+- `2026-08-02` - `Dashboard focused tests and regression review`: Completed Chunk 4 Phase 3 focused coverage for forms, overlays, menus, conditional states, billing/storage presentation, and canonical help/status copy while fixing the confirmed row-menu-to-dialog focus handoff.
+  - overlay contract: Compact Activity and Filters drawers retain z-30 backdrops with z-40 panels, Radix menus use z-70 portal presentation, and full dialogs use z-80 `#010907`/85 backdrops. `useOverlayAccessibility` owns Activity, compact Filters, Edit, Delete, Upgrade, and locked-archive confirmation focus/scroll behavior; Radix owns menu focus return, Dashboard owns Add Application return, and the row menu now finishes trigger restoration before opening Edit or Delete.
+  - semantic states: Emerald remains primary, eligible, and success emphasis; amber remains downgrade/storage warning emphasis; red remains error and destructive emphasis; muted dashboard tones remain loading, empty, and unavailable presentation.
+  - validation: 157 focused tests, all 1,305 non-integration unit tests, repository-wide lint, the placeholder-only production build, and diff checks pass.
+  - residual: Authenticated viewport, zoom, contrast, and assistive-technology walkthroughs still require Will's signed-in browser state; no remote environment or data mutation was performed.
 - `2026-08-02` - `Dashboard activity and conditional surfaces`: Added emerald-dark Activity, help, storage/archive, Upgrade, loading, error, empty, and filtered-result presentation with archive-dialog focus ownership, canonical status copy, and a dashboard-only plan-card appearance while preserving billing, filtering, privacy, and mutation guards.
 - `2026-08-02` - `Dashboard forms and primary overlay foundation`: Added scoped portal theme inheritance, coordinated top-overlay focus and body-scroll ownership, Add Application focus return, accessible emerald-dark form fields, and primary Edit/Delete dialog presentation without changing validation, payloads, or mutation latches.
 - `2026-08-01` - `Admin users authorization branch coverage`: Added direct-request coverage for missing-user login redirects and successful admin rendering without response mutation.

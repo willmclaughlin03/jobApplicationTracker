@@ -121,6 +121,7 @@ function cleanup() {
   container = null;
   root = null;
   document.body.innerHTML = '';
+  document.body.style.overflow = '';
 }
 
 describe('JobStatsSidebar storage counts', () => {
@@ -358,6 +359,17 @@ describe('JobStatsSidebar storage counts', () => {
     expect(panel.getAttribute('role')).toBe('region');
     expect(panel.hasAttribute('aria-modal')).toBe(false);
     expect(document.body.style.overflow).toBe('');
+  });
+
+  it('preserves the original body overflow through the shared compact-drawer lock', () => {
+    document.body.style.overflow = 'clip';
+    const props = buildProps({ mode: 'drawer' });
+    render(React.createElement(JobStatsSidebar, props));
+
+    expect(document.body.style.overflow).toBe('hidden');
+
+    rerender(React.createElement(JobStatsSidebar, { ...props, isOpen: false }));
+    expect(document.body.style.overflow).toBe('clip');
   });
 
   it('closes the compact drawer from its backdrop and close control', () => {
