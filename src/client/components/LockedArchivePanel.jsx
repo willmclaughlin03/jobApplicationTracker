@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
+import { Archive, ChevronDown, Download, Trash2, TriangleAlert, X } from 'lucide-react';
+import { useOverlayAccessibility } from '../hooks/useOverlayAccessibility.js';
 import { api } from '../lib/api.js';
 import { formatStorageDate, getStorageCount, hasLockedArchive } from '../lib/storageSummaryUi.js';
 import { normalizeError, ERROR_MESSAGES } from '../../shared/errors.js';
@@ -62,26 +64,26 @@ function canShowLockedArchiveDelete(storageSummary) {
 function LockedArchiveTeaserList({ teasers }) {
   if (teasers.length === 0) {
     return (
-      <p className="rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-500">
+      <p className="rounded-dashboard-control border border-dashboard-line bg-dashboard-canvas/60 px-3 py-2 text-sm text-dashboard-muted">
         No archived applications were returned for this preview.
       </p>
     );
   }
 
   return (
-    <ul className="divide-y divide-gray-100 rounded-md border border-gray-200 bg-white">
+    <ul className="divide-y divide-dashboard-line rounded-dashboard-control border border-dashboard-line bg-dashboard-canvas/45">
       {teasers.map((teaser, index) => (
-        <li key={teaser.id ?? index} className="px-3 py-2">
+        <li key={teaser.id} className="px-3 py-2.5">
           <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-800">
+              <p className="text-sm font-medium text-dashboard-text">
                 Archived application {index + 1}
               </p>
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-dashboard-muted">
                 Created {formatArchiveTeaserDate(teaser.created_at)}
               </p>
             </div>
-            <div className="text-left text-xs text-gray-500 sm:text-right">
+            <div className="text-left text-xs text-dashboard-muted sm:text-right">
               <p>Locked {formatArchiveTeaserDate(teaser.locked_at)}</p>
               <p>{formatLockedReason(teaser.locked_reason)}</p>
             </div>
@@ -117,6 +119,10 @@ function LockedArchiveDeleteModal({
   deleting,
   error,
 }) {
+  const titleId = useId();
+  const descriptionId = useId();
+  const { containerRef } = useOverlayAccessibility(true, onClose);
+
   /**
    * Closes the modal when the backdrop itself is clicked.
    *
@@ -134,48 +140,66 @@ function LockedArchiveDeleteModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-5"
-      role="dialog"
-      aria-modal="true"
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-[#010907]/85 p-4 sm:p-5"
       onClick={handleOverlayClick}
     >
-      <div className="w-full max-w-md rounded-lg bg-white p-6">
+      <div
+        ref={containerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        aria-busy={deleting || undefined}
+        tabIndex={-1}
+        className="dashboard-raised-panel w-full max-w-md p-4 text-dashboard-text sm:p-6"
+      >
         <div className="mb-4 flex items-center justify-between gap-4">
-          <h2 className="text-lg font-semibold text-gray-900">Delete Locked Archive</h2>
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-red-400/40 bg-red-500/10 text-red-300">
+              <TriangleAlert aria-hidden="true" size={20} />
+            </span>
+            <h2 id={titleId} className="text-lg font-semibold text-dashboard-text">
+              Delete Locked Archive
+            </h2>
+          </div>
           <button
             type="button"
             onClick={onClose}
             disabled={deleting}
-            className="text-2xl leading-none text-gray-400 hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-60"
+            className="dashboard-focus-ring inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-dashboard-control text-dashboard-muted transition-colors hover:bg-dashboard-surface-hover hover:text-dashboard-text disabled:cursor-not-allowed disabled:opacity-60"
             aria-label="Close locked archive delete confirmation"
           >
-            &times;
+            <X aria-hidden="true" size={19} />
           </button>
         </div>
 
-        <div className="space-y-3 text-sm text-gray-600">
+        <div id={descriptionId} className="space-y-3 border-y border-dashboard-line py-4 text-sm text-dashboard-muted">
           <p>
             Permanently delete {lockedCount} archived application{lockedCount === 1 ? '' : 's'}?
-            This cannot be undone.
+            <span className="font-medium text-red-300"> This cannot be undone.</span>
           </p>
-          <p>
-            Deleting locked applications does not restore add capacity if you still have
-            {' '}{activeLimit} active applications. You currently have {activeCount} active.
-          </p>
+          <div className="flex items-start gap-2 rounded-dashboard-control border border-amber-400/45 bg-amber-500/10 px-3 py-2 text-amber-100">
+            <TriangleAlert aria-hidden="true" className="mt-0.5 shrink-0" size={16} />
+            <p>
+              <span className="font-medium">Capacity warning:</span> Deleting locked applications
+              does not restore add capacity if you still have {activeLimit} active applications.
+              You currently have {activeCount} active.
+            </p>
+          </div>
         </div>
 
         {error && (
-          <p className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
+          <p role="alert" className="mt-4 rounded-dashboard-control border border-red-400/50 bg-red-500/10 px-3 py-2 text-sm text-red-200">
             {error.message}
           </p>
         )}
 
-        <div className="mt-5 flex justify-end gap-3">
+        <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
           <button
             type="button"
             onClick={onClose}
             disabled={deleting}
-            className="rounded border border-gray-300 bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-60"
+            className="dashboard-control dashboard-focus-ring min-h-9 px-4 py-2 text-sm font-medium text-dashboard-muted transition-colors hover:border-dashboard-accent/60 hover:bg-dashboard-surface-hover hover:text-dashboard-text disabled:cursor-not-allowed disabled:opacity-60"
           >
             Cancel
           </button>
@@ -183,7 +207,7 @@ function LockedArchiveDeleteModal({
             type="button"
             onClick={onConfirm}
             disabled={deleting}
-            className="rounded bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-gray-400"
+            className="dashboard-focus-ring min-h-9 rounded-dashboard-control border border-red-400/70 bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {deleting ? 'Deleting...' : 'Permanently Delete Archive'}
           </button>
@@ -204,6 +228,7 @@ function LockedArchiveDeleteModal({
  * @returns {import('react').ReactElement|null} Archive panel or null.
  */
 export default function LockedArchivePanel({ storageSummary = null, onArchiveDeleted = null }) {
+  const archiveContentId = useId();
   const [isOpen, setIsOpen] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -351,37 +376,51 @@ export default function LockedArchivePanel({ storageSummary = null, onArchiveDel
   }
 
   return (
-    <section className="mb-5 rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm">
+    <section className="dashboard-major-panel mb-5 rounded-dashboard-panel bg-dashboard-surface/95 px-4 py-3 text-dashboard-text">
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div>
-          <h2 className="text-sm font-semibold text-gray-900">Locked archive</h2>
-          <p className="mt-1 text-sm text-gray-600">
-            {lockedCount} archived application{lockedCount === 1 ? '' : 's'} are preserved outside
-            your active dashboard.
-          </p>
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-dashboard-control-border bg-dashboard-active text-dashboard-accent-hover">
+            <Archive aria-hidden="true" size={18} />
+          </span>
+          <div>
+            <h2 className="text-sm font-semibold text-dashboard-text">Locked archive</h2>
+            <p className="mt-1 text-sm text-dashboard-muted">
+              {lockedCount} archived application{lockedCount === 1 ? '' : 's'} are preserved outside
+              your active dashboard.
+            </p>
+          </div>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row">
           <button
             type="button"
             onClick={() => setIsOpen((current) => !current)}
-            className="inline-flex items-center justify-center rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            aria-expanded={isOpen}
+            aria-controls={archiveContentId}
+            className="dashboard-control dashboard-focus-ring inline-flex min-h-9 items-center justify-center gap-2 px-3 py-2 text-sm font-medium text-dashboard-text transition-colors hover:border-dashboard-accent/60 hover:bg-dashboard-surface-hover"
           >
             {isOpen ? 'Hide archive' : 'View archive'}
+            <ChevronDown
+              aria-hidden="true"
+              size={16}
+              className={`transition-transform ${isOpen ? 'rotate-180' : ''}`}
+            />
           </button>
           {/* This API navigation intentionally triggers a browser-managed CSV download. */}
           {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
           <a
             href="/api/storage/export"
-            className="inline-flex items-center justify-center rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            className="dashboard-focus-ring inline-flex min-h-9 items-center justify-center gap-2 rounded-dashboard-control border border-dashboard-accent/60 bg-dashboard-active px-3 py-2 text-sm font-medium text-dashboard-accent-hover transition-colors hover:bg-dashboard-surface-hover"
           >
+            <Download aria-hidden="true" size={16} />
             Export CSV
           </a>
           {showDeleteAction && (
             <button
               type="button"
               onClick={openDeleteModal}
-              className="inline-flex items-center justify-center rounded-md border border-red-300 px-3 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
+              className="dashboard-focus-ring inline-flex min-h-9 items-center justify-center gap-2 rounded-dashboard-control border border-red-400/50 bg-red-500/10 px-3 py-2 text-sm font-medium text-red-200 transition-colors hover:border-red-300/70 hover:bg-red-500/20"
             >
+              <Trash2 aria-hidden="true" size={16} />
               Delete Archive
             </button>
           )}
@@ -389,21 +428,30 @@ export default function LockedArchivePanel({ storageSummary = null, onArchiveDel
       </div>
 
       {isOpen && (
-        <div className="mt-3 space-y-3 border-t border-gray-100 pt-3">
-          <p className="text-xs text-gray-500">
+        <div id={archiveContentId} className="mt-3 space-y-3 border-t border-dashboard-line pt-3">
+          <p className="text-xs text-dashboard-muted">
             This preview shows archive dates only. Export CSV includes your full application data.
           </p>
           {showDeleteAction && (
-            <p className="text-xs text-gray-500">
+            <p className="rounded-dashboard-control border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+              <span className="font-medium">Capacity warning:</span>{' '}
               Deleting locked applications is permanent and does not restore add capacity while
               your active applications are at the Free limit.
             </p>
           )}
-          {loading && <p className="text-sm text-gray-500">Loading archive...</p>}
-          {error && <p className="text-sm text-red-700">{error.message}</p>}
+          {loading && (
+            <p role="status" aria-live="polite" className="text-sm text-dashboard-muted">
+              Loading archive...
+            </p>
+          )}
+          {error && (
+            <p role="alert" className="rounded-dashboard-control border border-red-400/50 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+              {error.message}
+            </p>
+          )}
           {!loading && !error && <LockedArchiveTeaserList teasers={teasers} />}
           {!loading && !error && lockedCount > teasers.length && (
-            <p className="text-xs text-gray-500">
+            <p className="text-xs text-dashboard-muted">
               Showing {teasers.length} of {lockedCount} archived applications.
             </p>
           )}

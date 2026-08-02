@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Info } from 'lucide-react';
 import { TIER_LIMITS, TIERS } from '../../shared/constants/tiers';
 
 const freeLimits = TIER_LIMITS[TIERS.FREE];
@@ -37,43 +38,38 @@ export default function InfoTooltip() {
         aria-label="Application info"
         aria-expanded={visible}
         aria-describedby={visible ? TOOLTIP_ID : undefined}
-        className="w-8 h-8 rounded-full bg-gray-200 text-gray-500 hover:bg-gray-300 hover:text-gray-700 flex items-center justify-center text-sm font-semibold transition-colors"
+        className="dashboard-control dashboard-focus-ring inline-flex h-9 w-9 items-center justify-center rounded-full text-dashboard-muted transition-colors hover:border-dashboard-accent/60 hover:bg-dashboard-surface-hover hover:text-dashboard-text"
       >
-        i
+        <Info aria-hidden="true" size={17} />
       </button>
 
       {visible && (
         <div
           id={TOOLTIP_ID}
           role="tooltip"
-          className="absolute right-0 top-full mt-2 w-72 bg-white border border-gray-200 rounded-lg shadow-lg z-50 p-4 text-sm text-gray-600"
+          className="absolute right-0 top-full z-[70] mt-2 w-[min(18rem,calc(100vw-2rem))] rounded-dashboard-panel border border-dashboard-control-border bg-dashboard-surface-raised p-4 text-sm text-dashboard-muted shadow-xl"
         >
-          <div className="pb-3 mb-3 border-b border-gray-100">
-            <p className="font-medium text-gray-800 mb-1">Managing Jobs</p>
+          <div className="mb-3 border-b border-dashboard-line pb-3">
+            <p className="mb-1 font-medium text-dashboard-text">Managing Applications</p>
             <ul className="list-disc list-inside space-y-1">
-              <li>Click <span className="font-medium text-gray-700">&quot;Add New Job&quot;</span> to create an entry</li>
-              <li>Click the edit icon to edit a listing</li>
-              <li>Use the delete icon on a row to delete a listing</li>
+              <li>Choose <span className="font-medium text-dashboard-text">Add Application</span> to create an entry</li>
+              <li>On desktop, open a row&apos;s Actions menu to choose Edit or Delete</li>
+              <li>On mobile, use the direct Edit and Delete controls</li>
             </ul>
           </div>
 
-          <div className="pb-3 mb-3 border-b border-gray-100">
-            <p className="font-medium text-gray-800 mb-1">Limits</p>
+          <div className="mb-3 border-b border-dashboard-line pb-3">
+            <p className="mb-1 font-medium text-dashboard-text">Limits</p>
             <ul className="list-disc list-inside space-y-1">
               <li>Max {freeLimits.storage.maxJobs} saved jobs</li>
               <li>Up to {freeLimits.insert.hourly} new jobs per hour</li>
             </ul>
           </div>
 
-          <div className="pb-3 mb-3 border-b border-gray-100">
-            <p className="font-medium text-gray-800 mb-1">Change Password</p>
-            <p>Click your profile icon in the top-right corner and select &quot;Reset Password&quot;.</p>
-          </div>
-
           <div>
-            <p className="font-medium text-gray-800 mb-1">Support</p>
+            <p className="mb-1 font-medium text-dashboard-text">Support</p>
             <p>Found a bug or having an issue? Reach out at{' '}
-              <a href="mailto:tracktheapp.support@gmail.com" className="text-blue-600 hover:underline">tracktheapp.support@gmail.com</a>.
+              <a href="mailto:tracktheapp.support@gmail.com" className="font-medium text-dashboard-accent-hover hover:underline">tracktheapp.support@gmail.com</a>.
             </p>
           </div>
         </div>

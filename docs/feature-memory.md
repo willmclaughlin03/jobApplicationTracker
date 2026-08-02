@@ -14,6 +14,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-26
 
+- `2026-08-02` - `Dashboard activity and conditional surfaces`: Added emerald-dark Activity, help, storage/archive, Upgrade, loading, error, empty, and filtered-result presentation with archive-dialog focus ownership, canonical status copy, and a dashboard-only plan-card appearance while preserving billing, filtering, privacy, and mutation guards.
 - `2026-08-02` - `Dashboard forms and primary overlay foundation`: Added scoped portal theme inheritance, coordinated top-overlay focus and body-scroll ownership, Add Application focus return, accessible emerald-dark form fields, and primary Edit/Delete dialog presentation without changing validation, payloads, or mutation latches.
 - `2026-08-01` - `Admin users authorization branch coverage`: Added direct-request coverage for missing-user login redirects and successful admin rendering without response mutation.
 - `2026-08-01` - `Pagination label cleanup`: Removed an ineffective label from the pagination controls wrapper while retaining the surrounding labeled navigation landmark and meaningful no-controls coverage.

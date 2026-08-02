@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { TriangleAlert } from 'lucide-react';
 import {
   formatStorageDate,
   getStorageCount,
@@ -28,20 +29,25 @@ export default function StorageDowngradeBanner({ storageSummary = null }) {
     <section
       role="status"
       aria-live="polite"
-      className="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-amber-950"
+      className="mb-5 rounded-dashboard-panel border border-amber-400/55 bg-amber-500/10 px-4 py-3 text-amber-100 shadow-lg"
     >
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div className="min-w-0">
-          <h2 className="text-sm font-semibold">Premium storage ending</h2>
-          <p className="mt-1 text-sm leading-6">
-            Your Premium plan ends on {periodEnd}. Free accounts can keep {activeLimit} active
-            applications. You currently have {activeCount}. If you do not renew, {overflowCount}
-            {' '}applications will move to a locked archive. Nothing will be deleted.
-          </p>
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-amber-400/50 bg-amber-500/15 text-amber-200">
+            <TriangleAlert aria-hidden="true" size={18} />
+          </span>
+          <div>
+            <h2 className="text-sm font-semibold text-amber-100">Premium storage ending</h2>
+            <p className="mt-1 text-sm leading-6 text-amber-100/90">
+              Your Premium plan ends on {periodEnd}. Free accounts can keep {activeLimit} active
+              applications. You currently have {activeCount}. If you do not renew, {overflowCount}
+              {' '}applications will move to a locked archive. Nothing will be deleted.
+            </p>
+          </div>
         </div>
         <Link
           href="/billing"
-          className="inline-flex shrink-0 items-center justify-center rounded-md border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-900 hover:bg-amber-100"
+          className="dashboard-focus-ring inline-flex min-h-9 shrink-0 items-center justify-center rounded-dashboard-control border border-amber-400/60 bg-dashboard-surface-raised px-3 py-2 text-sm font-medium text-amber-100 transition-colors hover:bg-amber-500/15"
         >
           Review billing
         </Link>
