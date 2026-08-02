@@ -68,6 +68,8 @@ export default function Dashboard() {
   const router = useRouter();
   const isWideLayout = useDashboardWideLayout();
   const filtersTriggerRef = useRef(null);
+  const addApplicationTriggerRef = useRef(null);
+  const shouldRestoreAddFocusRef = useRef(false);
   const deleteInFlightRef = useRef(false);
   const [statusFilter, setStatusFilter] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -136,6 +138,22 @@ export default function Dashboard() {
     closeEditForm,
   } = useJobFormModal();
 
+  /**
+   * Return focus after an explicit inline Add form close completes rendering.
+   *
+   * Purpose: successful submissions can resolve while the toolbar trigger is
+   * still disabled, so the page waits for the closed, enabled render before
+   * returning focus to the persistent Add Application control.
+   *
+   * @returns {void}
+   */
+  useEffect(() => {
+    if (!showForm && shouldRestoreAddFocusRef.current) {
+      shouldRestoreAddFocusRef.current = false;
+      addApplicationTriggerRef.current?.focus();
+    }
+  }, [showForm]);
+
   if (!authLoading && !user) {
     router.push('/login');
     return null;
@@ -201,9 +219,25 @@ export default function Dashboard() {
     setActivityOpen(previous => !previous);
   };
 
+  /**
+   * Close the inline Add form and request focus return to its toolbar trigger.
+   *
+   * @returns {void}
+   */
+  const handleAddFormClose = () => {
+    shouldRestoreAddFocusRef.current = true;
+    closeAddForm();
+  };
+
+  /**
+   * Submit one application through the existing guarded mutation workflow.
+   *
+   * @param {object} jobData - Existing validated application payload.
+   * @returns {Promise<void>} Resolves after the mutation result is handled.
+   */
   const handleAddJob = async (jobData) => {
     const result = await addJob(jobData);
-    if (result.success) closeAddForm();
+    if (result.success) handleAddFormClose();
   };
 
   const handleUpdateJob = async (id, updates) => {
@@ -376,6 +410,7 @@ export default function Dashboard() {
           searchDisabled={loading}
           addExpanded={showForm}
           addDisabled={saving}
+          addTriggerRef={addApplicationTriggerRef}
           onAddToggle={toggleAddForm}
         />
 
@@ -397,7 +432,7 @@ export default function Dashboard() {
           {showForm && (
             <JobForm
               onSubmit={handleAddJob}
-              onCancel={closeAddForm}
+              onCancel={handleAddFormClose}
               saving={saving}
             />
           )}

@@ -59,7 +59,7 @@ export default function JobActionsMenu({
         <DropdownMenu.Content
           align="end"
           sideOffset={6}
-          className="z-[70] min-w-40 rounded-dashboard-panel border border-dashboard-control-border bg-dashboard-surface-raised p-1.5 text-dashboard-body text-dashboard-text shadow-xl"
+          className="dashboard-portal-theme z-[70] min-w-40 rounded-dashboard-panel border border-dashboard-control-border bg-dashboard-surface-raised p-1.5 text-dashboard-body text-dashboard-text shadow-xl"
         >
           <DropdownMenu.Item
             disabled={disabled}
