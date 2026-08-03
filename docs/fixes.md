@@ -1,8 +1,9 @@
 # Fixes
 
-Use this file to briefly record fixes before every `git push` so the entry is included in the branch being pushed.
+Use this file to briefly record fixes when preparing a push to a pull-request branch so the entry is included in that push. Do not update it for individual edits, intermediate commits, or local-only changes.
 
 ## What to record
+- Summarize only fixes included in the PR push being prepared.
 - Briefly describe the issue that was addressed.
 - Note the approach taken to fix it.
 - Summarize how the fix was implemented.
@@ -12,6 +13,7 @@ Use this file to briefly record fixes before every `git push` so the entry is in
 - `YYYY-MM-DD` - `Issue name`: issue summary. Approach: short note on the strategy used. Fix: short note on how it was resolved.
 
 ## Entries
+- `2026-08-03` - `Staging CodeRabbit follow-ups`: Review found undocumented filter-state intent, an interactive closed Activity drawer, mutation-time modal dismissal paths, missing Edit saving-state coverage, hardcoded validation limits, and overly frequent change-log requirements. Approach: verify each current execution path and keep fixes at the affected comment, accessibility boundary, close callback, and assertion. Fix: documented the filter predicates, hid/inerted the closed drawer, guarded Edit/Delete close buttons, backdrops, and Escape during mutations, added focused regressions, interpolated shared validation constants, and aligned `AGENTS.md`, `CLAUDE.md`, and both logs on PR-push-only summaries.
 - `2026-08-02` - `Overlay callback effect rationale`: The committed callback synchronization was correct, but its concurrent-render safety constraint was undocumented and could regress to render-phase mutation. Approach: keep behavior unchanged and document why synchronization must remain post-commit. Fix: added a concise rationale above the `onCloseRef` effect so abandoned concurrent renders cannot leak callbacks through a future render-phase mutation.
 - `2026-08-02` - `Dashboard review findings`: PR #121 retained an Add-to-Edit focus race, render-time overlay callback mutation, unannounced field errors, duplicate Add action copy, singular archive grammar, declaration spacing drift, and timezone-sensitive date fixtures. Approach: verify every report on the current branch and patch only the affected state boundary, semantics, copy, spacing, and fixtures without changing payloads or rendering behavior. Fix: gated Add focus restoration on live form state, synchronized overlay callbacks after commit, added field-error alerts and distinct Save copy, corrected archive grammar and CSS spacing, stabilized local-date fixtures, and added regression coverage; 64 focused tests, changed-file ESLint, UTC+14/UTC-10 fixture runs, and diff checks pass.
 - `2026-08-02` - `Dashboard focused regression gaps`: Chunk 4 presentation lacked promotion-level interaction coverage, DeleteModal forwarded React's click event to its documented no-argument confirm callback, and opening Edit/Delete directly from the Radix row menu let delayed menu cleanup steal focus from the dialog. Approach: add focused real-component coverage across forms, overlays, menus, conditional states, storage, billing, help copy, and shared overlay stacking, then keep production repairs at the two confirmed contract boundaries. Fix: DeleteModal now invokes confirmation with no arguments, JobActionsMenu waits for Radix trigger-focus restoration before opening the selected dialog, and the integration tests prove initial focus, trapping, scroll locking, dismissal, and return focus; 157 focused tests, all 1,305 non-integration unit tests, repository-wide lint, the placeholder-only production build, and diff checks pass.

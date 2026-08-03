@@ -3,7 +3,9 @@
 Use this file as a quick-running log of implemented changes.
 
 ## What to record
-- Briefly note the feature, enhancement, or addition that was completed.
+- Add or update entries only when preparing a push to a pull-request branch.
+- Summarize only the changes included in that push, not individual edits, intermediate commits, or local-only work.
+- Briefly note the feature, enhancement, or addition included in the push.
 - Keep entries short and easy to scan.
 - Add the date so the history is easy to follow.
 
@@ -11,6 +13,10 @@ Use this file as a quick-running log of implemented changes.
 - `YYYY-MM-DD` - `Feature or change name`: short note on what was added or updated.
 
 ## Entries
+
+### Week of 2026-08-02
+
+- `2026-08-03` - `Staging CodeRabbit follow-ups`: Clarified dashboard filter-state intent, made the closed Activity drawer inaccessible and noninteractive, prevented Edit/Delete modal dismissal during active mutations, coupled validation tests to shared limits, added saving-state coverage, and limited both change logs to PR-push-only summaries.
 
 ### Week of 2026-07-26
 

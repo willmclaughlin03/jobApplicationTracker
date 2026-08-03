@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { X } from 'lucide-react';
 import { JobFormFields, INITIAL_FORM_DATA } from './forms/index.js';
 import Spinner from './Spinner.jsx';
@@ -10,7 +10,15 @@ const EDIT_DIALOG_TITLE_ID = 'edit-application-dialog-title';
 export default function EditModal({ job, onSave, onClose, saving }) {
   const [formData, setFormData] = useState(INITIAL_FORM_DATA);
   const [fieldErrors, setFieldErrors] = useState({});
-  const { containerRef } = useOverlayAccessibility(Boolean(job), onClose);
+
+  /** Dismiss only when no save request is in flight. */
+  const requestClose = useCallback(() => {
+    if (!saving) {
+      onClose();
+    }
+  }, [onClose, saving]);
+
+  const { containerRef } = useOverlayAccessibility(Boolean(job), requestClose);
 
   useEffect(() => {
     if (job) {
@@ -65,7 +73,7 @@ export default function EditModal({ job, onSave, onClose, saving }) {
 
   const handleOverlayClick = (e) => {
     if (e.target === e.currentTarget) {
-      onClose();
+      requestClose();
     }
   };
 
@@ -89,7 +97,8 @@ export default function EditModal({ job, onSave, onClose, saving }) {
           </h2>
           <button
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
+            disabled={saving}
             aria-label="Close edit application dialog"
             className="dashboard-focus-ring inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-dashboard-control text-dashboard-muted transition-colors hover:bg-dashboard-surface-hover hover:text-dashboard-text"
           >

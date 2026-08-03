@@ -158,6 +158,9 @@ describe('ActivityDrawer', () => {
 
     press('Escape');
     expect(drawer.className).toContain('-translate-x-full');
+    expect(drawer.getAttribute('aria-hidden')).toBe('true');
+    expect(drawer.getAttribute('inert')).toBe('');
+    expect(drawer.className).toContain('pointer-events-none');
     expect(document.body.style.overflow).toBe('');
     expect(document.activeElement).toBe(trigger);
   });
