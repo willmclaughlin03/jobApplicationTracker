@@ -830,6 +830,35 @@ describe('Dashboard billing entry integration', () => {
     expect(document.activeElement).toBe(addTrigger);
   });
 
+  it('waits for saving to finish before returning focus after form cancellation', () => {
+    mockUseJobFormModal.mockImplementation(useControlledJobFormState);
+    const jobsState = buildJobsState({
+      status: STORAGE_STATUSES.TERMINAL_FREE,
+      lockedCount: 0,
+    });
+    mockUseJobs.mockReturnValue(jobsState);
+    const element = renderDashboard();
+    const addTrigger = findButtonByText(element, 'Add Application');
+
+    click(addTrigger);
+    const cancelButton = findButtonByText(element, 'Cancel form');
+    cancelButton.focus();
+    jobsState.saving = true;
+    act(() => root.render(React.createElement(Dashboard)));
+    expect(addTrigger.disabled).toBe(true);
+
+    click(cancelButton);
+
+    expect(element.querySelector('[data-testid=job-form]')).toBeNull();
+    expect(document.activeElement).not.toBe(addTrigger);
+
+    jobsState.saving = false;
+    act(() => root.render(React.createElement(Dashboard)));
+
+    expect(addTrigger.disabled).toBe(false);
+    expect(document.activeElement).toBe(addTrigger);
+  });
+
   it('returns focus to Add Application after a successful guarded add', async () => {
     mockUseJobFormModal.mockImplementation(useControlledJobFormState);
     const jobsState = buildJobsState({

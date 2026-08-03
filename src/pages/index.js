@@ -152,11 +152,11 @@ export default function Dashboard() {
   useEffect(() => {
     isAddFormActiveRef.current = showForm;
 
-    if (!showForm && shouldRestoreAddFocusRef.current) {
+    if (!showForm && !saving && shouldRestoreAddFocusRef.current) {
       shouldRestoreAddFocusRef.current = false;
       addApplicationTriggerRef.current?.focus();
     }
-  }, [showForm]);
+  }, [showForm, saving]);
 
   if (!authLoading && !user) {
     router.push('/login');
