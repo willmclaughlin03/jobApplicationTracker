@@ -244,6 +244,8 @@ export function useOverlayAccessibility(isOpen, onClose) {
   const containerRef = useRef(null);
   const onCloseRef = useRef(onClose);
 
+  // Keep this assignment in the effect—render-phase mutation can leak callbacks
+  // from abandoned concurrent renders and must not be reintroduced.
   useEffect(() => {
     onCloseRef.current = onClose;
   }, [onClose]);
