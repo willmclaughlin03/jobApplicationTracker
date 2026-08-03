@@ -18,9 +18,9 @@ let container;
 let root;
 
 const TEST_JOBS = Object.freeze([
-  Object.freeze({ id: 'job-1', created_at: '2026-08-02T12:00:00.000Z' }),
-  Object.freeze({ id: 'job-2', created_at: '2026-08-02T18:00:00.000Z' }),
-  Object.freeze({ id: 'job-3', created_at: '2026-08-04T12:00:00.000Z' }),
+  Object.freeze({ id: 'job-1', created_at: '2026-08-02T12:00:00.000' }),
+  Object.freeze({ id: 'job-2', created_at: '2026-08-02T18:00:00.000' }),
+  Object.freeze({ id: 'job-3', created_at: '2026-08-04T12:00:00.000' }),
 ]);
 
 /**

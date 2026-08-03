@@ -66,7 +66,7 @@ export default function JobForm({ onSubmit, onCancel, saving }) {
           className="dashboard-focus-ring min-h-9 rounded-dashboard-control border border-dashboard-accent bg-dashboard-accent px-5 py-2 text-sm font-semibold text-dashboard-accent-ink shadow-dashboard-panel transition-colors hover:bg-dashboard-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
           disabled={saving}
         >
-          {saving ? <><Spinner size="sm" className="mr-1.5 inline" />Adding...</> : 'Add Application'}
+          {saving ? <><Spinner size="sm" className="mr-1.5 inline" />Adding...</> : 'Save Application'}
         </button>
       </div>
     </form>

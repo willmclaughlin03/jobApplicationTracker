@@ -12,7 +12,9 @@ const { createRoot } = require('react-dom/client');
 const { act } = require('react');
 const {
   COMPANY_MAX_LENGTH,
+  POSITION_MAX_LENGTH,
   NOTES_MAX_LENGTH,
+  SALARY_MAX_VALUE,
 } = require('../../../shared/validations/jobSchema.js');
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -114,12 +116,12 @@ describe('JobForm', () => {
 
   afterEach(cleanup);
 
-  it('uses current Add Application copy and cancels through the parent callback', () => {
+  it('distinguishes the Add heading from the Save action and supports cancellation', () => {
     const onCancel = jest.fn();
     const element = renderForm({ onCancel });
 
     expect(element.querySelector('h2').textContent).toBe('Add Application');
-    expect(findButton('Add Application')).toBeTruthy();
+    expect(findButton('Save Application')).toBeTruthy();
 
     click(findButton('Cancel'));
     expect(onCancel).toHaveBeenCalledTimes(1);
@@ -148,6 +150,27 @@ describe('JobForm', () => {
     expect(salaryMax.getAttribute('aria-describedby')).toBe('salary_max-error');
     expect(element.querySelector('#salary_max-error').textContent)
       .toBe('Max salary must be greater than or equal to min salary');
+  });
+
+  it('announces every rendered field validation error', () => {
+    const element = renderForm();
+
+    changeField(element.querySelector('[name="company"]'), 'C'.repeat(COMPANY_MAX_LENGTH + 1));
+    changeField(element.querySelector('[name="position"]'), 'P'.repeat(POSITION_MAX_LENGTH + 1));
+    changeField(element.querySelector('[name="salary_min"]'), '-1');
+    changeField(element.querySelector('[name="salary_max"]'), String(SALARY_MAX_VALUE + 1));
+    changeField(element.querySelector('[name="notes"]'), 'N'.repeat(NOTES_MAX_LENGTH + 1));
+    submit(element.querySelector('form'));
+
+    for (const errorId of [
+      'company-error',
+      'position-error',
+      'salary_min-error',
+      'salary_max-error',
+      'notes-error',
+    ]) {
+      expect(element.querySelector(`#${errorId}`).getAttribute('role')).toBe('alert');
+    }
   });
 
   it('submits the exact valid payload with numeric and empty salaries normalized', () => {

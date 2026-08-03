@@ -31,7 +31,7 @@ export default function JobFormFields({ formData, onChange, idPrefix = '', error
             className={`dashboard-control dashboard-focus-ring min-h-9 w-full px-3 py-2.5 text-sm text-dashboard-text placeholder:text-dashboard-muted/70 transition-colors hover:border-dashboard-accent/50 focus:border-dashboard-accent/70 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${errors.company ? 'border-red-400/70' : ''}`}
           />
           {errors.company && (
-            <p id={companyErrorId} className="mt-1 text-xs text-red-300">{errors.company}</p>
+            <p id={companyErrorId} role="alert" className="mt-1 text-xs text-red-300">{errors.company}</p>
           )}
         </div>
 
@@ -52,7 +52,7 @@ export default function JobFormFields({ formData, onChange, idPrefix = '', error
             className={`dashboard-control dashboard-focus-ring min-h-9 w-full px-3 py-2.5 text-sm text-dashboard-text placeholder:text-dashboard-muted/70 transition-colors hover:border-dashboard-accent/50 focus:border-dashboard-accent/70 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${errors.position ? 'border-red-400/70' : ''}`}
           />
           {errors.position && (
-            <p id={positionErrorId} className="mt-1 text-xs text-red-300">{errors.position}</p>
+            <p id={positionErrorId} role="alert" className="mt-1 text-xs text-red-300">{errors.position}</p>
           )}
         </div>
       </div>
@@ -96,7 +96,7 @@ export default function JobFormFields({ formData, onChange, idPrefix = '', error
             className={`dashboard-control dashboard-focus-ring min-h-9 w-full px-3 py-2.5 text-sm text-dashboard-text placeholder:text-dashboard-muted/70 transition-colors hover:border-dashboard-accent/50 focus:border-dashboard-accent/70 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${errors.salary_min ? 'border-red-400/70' : ''}`}
           />
           {errors.salary_min && (
-            <p id={salaryMinErrorId} className="mt-1 text-xs text-red-300">{errors.salary_min}</p>
+            <p id={salaryMinErrorId} role="alert" className="mt-1 text-xs text-red-300">{errors.salary_min}</p>
           )}
         </div>
 
@@ -119,7 +119,7 @@ export default function JobFormFields({ formData, onChange, idPrefix = '', error
             className={`dashboard-control dashboard-focus-ring min-h-9 w-full px-3 py-2.5 text-sm text-dashboard-text placeholder:text-dashboard-muted/70 transition-colors hover:border-dashboard-accent/50 focus:border-dashboard-accent/70 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${errors.salary_max ? 'border-red-400/70' : ''}`}
           />
           {errors.salary_max && (
-            <p id={salaryMaxErrorId} className="mt-1 text-xs text-red-300">{errors.salary_max}</p>
+            <p id={salaryMaxErrorId} role="alert" className="mt-1 text-xs text-red-300">{errors.salary_max}</p>
           )}
         </div>
       </div>
@@ -139,7 +139,7 @@ export default function JobFormFields({ formData, onChange, idPrefix = '', error
           className={`dashboard-control dashboard-focus-ring min-h-[72px] w-full resize-none px-3 py-2.5 text-sm text-dashboard-text placeholder:text-dashboard-muted/70 transition-colors [field-sizing:content] hover:border-dashboard-accent/50 focus:border-dashboard-accent/70 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${errors.notes ? 'border-red-400/70' : ''}`}
         />
         {errors.notes && (
-          <p id={notesErrorId} className="mt-1 text-xs text-red-300">{errors.notes}</p>
+          <p id={notesErrorId} role="alert" className="mt-1 text-xs text-red-300">{errors.notes}</p>
         )}
       </div>
     </>

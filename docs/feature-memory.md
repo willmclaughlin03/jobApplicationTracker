@@ -14,6 +14,13 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-07-26
 
+- `2026-08-02` - `Timezone-stable component fixtures`: Kept Activity drawer and Edit modal date fixtures on their intended local calendar days across test-runner timezones.
+- `2026-08-02` - `Job form validation announcements`: Marked all five conditional field-error messages as alerts so newly rendered validation feedback is announced.
+- `2026-08-02` - `Job form submit label`: Renamed the idle Add form submit action to Save Application while preserving the Add heading and Adding saving state.
+- `2026-08-02` - `Locked archive count grammar`: Matched the locked archive summary verb to singular and plural application counts while preserving the existing wording.
+- `2026-08-02` - `Overlay callback commit synchronization`: Moved shared overlay close-callback synchronization into a pre-registration effect so abandoned concurrent renders cannot replace the committed Escape callback.
+- `2026-08-02` - `Dashboard stylesheet declaration spacing`: Separated the dashboard custom-property group from `color-scheme` without changing any values or rendering behavior.
+- `2026-08-02` - `Dashboard Add-to-Edit focus guard`: Prevented an Add submission that settles after Edit takes over from leaving a stale toolbar focus-restoration request, with deferred-mutation regression coverage.
 - `2026-08-02` - `Dashboard focused tests and regression review`: Completed Chunk 4 Phase 3 focused coverage for forms, overlays, menus, conditional states, billing/storage presentation, and canonical help/status copy while fixing the confirmed row-menu-to-dialog focus handoff.
   - overlay contract: Compact Activity and Filters drawers retain z-30 backdrops with z-40 panels, Radix menus use z-70 portal presentation, and full dialogs use z-80 `#010907`/85 backdrops. `useOverlayAccessibility` owns Activity, compact Filters, Edit, Delete, Upgrade, and locked-archive confirmation focus/scroll behavior; Radix owns menu focus return, Dashboard owns Add Application return, and the row menu now finishes trigger restoration before opening Edit or Delete.
   - semantic states: Emerald remains primary, eligible, and success emphasis; amber remains downgrade/storage warning emphasis; red remains error and destructive emphasis; muted dashboard tones remain loading, empty, and unavailable presentation.

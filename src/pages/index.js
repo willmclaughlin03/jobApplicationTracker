@@ -70,6 +70,7 @@ export default function Dashboard() {
   const isWideLayout = useDashboardWideLayout();
   const filtersTriggerRef = useRef(null);
   const addApplicationTriggerRef = useRef(null);
+  const isAddFormActiveRef = useRef(false);
   const shouldRestoreAddFocusRef = useRef(false);
   const deleteInFlightRef = useRef(false);
   const [statusFilter, setStatusFilter] = useState(null);
@@ -149,6 +150,8 @@ export default function Dashboard() {
    * @returns {void}
    */
   useEffect(() => {
+    isAddFormActiveRef.current = showForm;
+
     if (!showForm && shouldRestoreAddFocusRef.current) {
       shouldRestoreAddFocusRef.current = false;
       addApplicationTriggerRef.current?.focus();
@@ -226,7 +229,9 @@ export default function Dashboard() {
    * @returns {void}
    */
   const handleAddFormClose = () => {
-    shouldRestoreAddFocusRef.current = true;
+    if (isAddFormActiveRef.current) {
+      shouldRestoreAddFocusRef.current = true;
+    }
     closeAddForm();
   };
 

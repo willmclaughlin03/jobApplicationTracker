@@ -34,6 +34,7 @@ let mockLatestSidebarProps = null;
 let mockLatestActivityProps = null;
 let mockLatestProfileProps = null;
 let mockLatestJobTableProps = null;
+let mockLatestEditModalProps = null;
 let mockLatestDeleteModalProps = null;
 let mockLatestJobFormProps = null;
 const mockWideMediaQuery = {
@@ -208,8 +209,9 @@ jest.mock('../../client/components/JobForm', () => {
 });
 
 jest.mock('../../client/components/EditModal', () => {
-  /** Omit edit-modal rendering from focused Dashboard tests. */
-  return function MockEditModal() {
+  /** Capture edit-modal callbacks without rendering the dialog. */
+  return function MockEditModal(props) {
+    mockLatestEditModalProps = props;
     return null;
   };
 });
@@ -325,7 +327,10 @@ function useControlledJobFormState() {
     editingJob,
     toggleAddForm: () => setShowForm((current) => !current),
     closeAddForm: () => setShowForm(false),
-    openEditForm: (job) => setEditingJob(job),
+    openEditForm: (job) => {
+      setEditingJob(job);
+      setShowForm(false);
+    },
     closeEditForm: () => setEditingJob(null),
   };
 }
@@ -459,6 +464,7 @@ describe('Dashboard billing entry integration', () => {
     mockLatestActivityProps = null;
     mockLatestProfileProps = null;
     mockLatestJobTableProps = null;
+    mockLatestEditModalProps = null;
     mockLatestDeleteModalProps = null;
     mockLatestJobFormProps = null;
     mockSignOut.mockResolvedValue({ error: null });
@@ -845,6 +851,46 @@ describe('Dashboard billing entry integration', () => {
     expect(element.querySelector('[data-testid=job-form]')).toBeNull();
     expect(document.activeElement).toBe(addTrigger);
     expect(mockLatestJobFormProps.saving).toBe(false);
+  });
+
+  it('does not retain Add focus restoration when Edit replaces an in-flight add', async () => {
+    mockUseJobFormModal.mockImplementation(useControlledJobFormState);
+    let resolveAddJob;
+    const addJobResult = new Promise((resolve) => {
+      resolveAddJob = resolve;
+    });
+    const job = { id: 'job-123', company: 'Acme', position: 'Engineer' };
+    const jobsState = buildJobsState({
+      status: STORAGE_STATUSES.TERMINAL_FREE,
+      lockedCount: 0,
+    });
+    jobsState.jobs = [job];
+    jobsState.allJobs = [job];
+    jobsState.addJob.mockReturnValue(addJobResult);
+    mockUseJobs.mockReturnValue(jobsState);
+    const element = renderDashboard();
+    const addTrigger = findButtonByText(element, 'Add Application');
+    const activityTrigger = findButtonByText(element, 'Activity');
+
+    click(addTrigger);
+    click(findButtonByText(element, 'Submit Add'));
+    act(() => mockLatestJobTableProps.onEdit(job));
+
+    expect(element.querySelector('[data-testid=job-form]')).toBeNull();
+    expect(mockLatestEditModalProps.job).toBe(job);
+
+    await act(async () => {
+      resolveAddJob({ success: true });
+      await addJobResult;
+    });
+
+    act(() => mockLatestEditModalProps.onClose());
+    click(addTrigger);
+    activityTrigger.focus();
+    act(() => mockLatestJobTableProps.onEdit(job));
+
+    expect(element.querySelector('[data-testid=job-form]')).toBeNull();
+    expect(document.activeElement).toBe(activityTrigger);
   });
 
   it('debounces and sanitizes company search while Clear All cancels a pending draft', () => {

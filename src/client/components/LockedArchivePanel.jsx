@@ -385,8 +385,8 @@ export default function LockedArchivePanel({ storageSummary = null, onArchiveDel
           <div>
             <h2 className="text-sm font-semibold text-dashboard-text">Locked archive</h2>
             <p className="mt-1 text-sm text-dashboard-muted">
-              {lockedCount} archived application{lockedCount === 1 ? '' : 's'} are preserved outside
-              your active dashboard.
+              {lockedCount} archived application{lockedCount === 1 ? ' is' : 's are'} preserved
+              outside your active dashboard.
             </p>
           </div>
         </div>

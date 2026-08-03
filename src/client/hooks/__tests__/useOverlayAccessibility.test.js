@@ -20,11 +20,20 @@ let root;
 /**
  * Render one test overlay that joins the production accessibility stack.
  *
- * @param {object} props - Open state, close callback, and visible label.
+ * @param {object} props - Open state, close callback, label, and optional suspension.
  * @returns {React.ReactElement|null} Focus-owning test panel when open.
  */
-function TestOverlay({ isOpen, onClose, label }) {
+function TestOverlay({
+  isOpen,
+  onClose,
+  label,
+  suspendWith,
+}) {
   const { containerRef } = useOverlayAccessibility(isOpen, onClose);
+
+  if (suspendWith) {
+    throw suspendWith;
+  }
 
   if (!isOpen) {
     return null;
@@ -192,6 +201,47 @@ describe('useOverlayAccessibility', () => {
 
     expect(latestClose).toHaveBeenCalledTimes(1);
     expect(staleClose).not.toHaveBeenCalled();
+  });
+
+  it('retains the committed close callback when a concurrent render is abandoned', () => {
+    const committedClose = jest.fn();
+    const abandonedClose = jest.fn();
+    const suspendedRender = new Promise(() => {
+      // Intentionally unresolved so the concurrent render cannot commit.
+    });
+    const committedTree = React.createElement(
+      React.Suspense,
+      { fallback: React.createElement('div', null, 'Loading overlay') },
+      React.createElement(TestOverlay, {
+        isOpen: true,
+        onClose: committedClose,
+        label: 'Committed',
+      })
+    );
+    render(committedTree);
+
+    act(() => {
+      React.startTransition(() => {
+        root.render(React.createElement(
+          React.Suspense,
+          { fallback: React.createElement('div', null, 'Loading overlay') },
+          React.createElement(TestOverlay, {
+            isOpen: true,
+            onClose: abandonedClose,
+            label: 'Abandoned',
+            suspendWith: suspendedRender,
+          })
+        ));
+      });
+    });
+
+    expect(container.querySelector('[data-overlay=Committed]')).toBeTruthy();
+    expect(container.querySelector('[data-overlay=Abandoned]')).toBeNull();
+
+    press('Escape');
+
+    expect(committedClose).toHaveBeenCalledTimes(1);
+    expect(abandonedClose).not.toHaveBeenCalled();
   });
 
   it('returns focus only to a connected, focusable origin', () => {

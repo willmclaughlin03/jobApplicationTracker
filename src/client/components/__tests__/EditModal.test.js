@@ -28,7 +28,7 @@ const TEST_JOB = Object.freeze({
   salary_min: 70000,
   salary_max: 90000,
   created_at: '2026-08-01T12:00:00.000Z',
-  status_date: '2026-08-02T12:00:00.000Z',
+  status_date: '2026-08-02T12:00:00.000',
 });
 
 /**

@@ -192,6 +192,9 @@ describe('LockedArchivePanel', () => {
     }));
 
     expect(el.textContent).toContain('Locked archive');
+    expect(el.textContent).toContain(
+      '1 archived application is preserved outside your active dashboard.'
+    );
     expect(el.querySelector('a[href="/api/storage/export"]')).toBeTruthy();
     expect(findButtonByText(el, 'Delete Archive')).toBeUndefined();
 
@@ -242,6 +245,9 @@ describe('LockedArchivePanel', () => {
       storageSummary: { lockedCount: 2 },
     }));
 
+    expect(el.textContent).toContain(
+      '2 archived applications are preserved outside your active dashboard.'
+    );
     click(findButtonByText(el, 'View archive'));
     expect(el.querySelector('[role=status]').textContent).toBe('Loading archive...');
 
