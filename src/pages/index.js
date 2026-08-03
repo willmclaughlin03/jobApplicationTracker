@@ -25,6 +25,7 @@ import {
 import { PLAN_CATALOG } from '../client/lib/planCatalog.js';
 import { getStorageCount } from '../client/lib/storageSummaryUi.js';
 import { BILLING_PLANS } from '../shared/constants/billing.js';
+import { STATUS_CONFIG } from '../shared/constants/statuses.js';
 
 const PREMIUM_MONTHLY_PLAN = PLAN_CATALOG[BILLING_PLANS.PREMIUM_MONTHLY];
 const DASHBOARD_WIDE_MEDIA_QUERY = '(min-width: 1400px)';
@@ -68,6 +69,9 @@ export default function Dashboard() {
   const router = useRouter();
   const isWideLayout = useDashboardWideLayout();
   const filtersTriggerRef = useRef(null);
+  const addApplicationTriggerRef = useRef(null);
+  const isAddFormActiveRef = useRef(false);
+  const shouldRestoreAddFocusRef = useRef(false);
   const deleteInFlightRef = useRef(false);
   const [statusFilter, setStatusFilter] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -136,6 +140,24 @@ export default function Dashboard() {
     closeEditForm,
   } = useJobFormModal();
 
+  /**
+   * Return focus after an explicit inline Add form close completes rendering.
+   *
+   * Purpose: successful submissions can resolve while the toolbar trigger is
+   * still disabled, so the page waits for the closed, enabled render before
+   * returning focus to the persistent Add Application control.
+   *
+   * @returns {void}
+   */
+  useEffect(() => {
+    isAddFormActiveRef.current = showForm;
+
+    if (!showForm && shouldRestoreAddFocusRef.current) {
+      shouldRestoreAddFocusRef.current = false;
+      addApplicationTriggerRef.current?.focus();
+    }
+  }, [showForm]);
+
   if (!authLoading && !user) {
     router.push('/login');
     return null;
@@ -201,9 +223,27 @@ export default function Dashboard() {
     setActivityOpen(previous => !previous);
   };
 
+  /**
+   * Close the inline Add form and request focus return to its toolbar trigger.
+   *
+   * @returns {void}
+   */
+  const handleAddFormClose = () => {
+    if (isAddFormActiveRef.current) {
+      shouldRestoreAddFocusRef.current = true;
+    }
+    closeAddForm();
+  };
+
+  /**
+   * Submit one application through the existing guarded mutation workflow.
+   *
+   * @param {object} jobData - Existing validated application payload.
+   * @returns {Promise<void>} Resolves after the mutation result is handled.
+   */
   const handleAddJob = async (jobData) => {
     const result = await addJob(jobData);
-    if (result.success) closeAddForm();
+    if (result.success) handleAddFormClose();
   };
 
   const handleUpdateJob = async (id, updates) => {
@@ -323,6 +363,14 @@ export default function Dashboard() {
     || salaryFilterMin != null
     || salaryFilterMax != null
   );
+  const hasResultFilters = Boolean(
+    statusFilter
+    || searchQuery
+    || selectedDates.size > 0
+    || salaryFilterMin != null
+    || salaryFilterMax != null
+  );
+  const statusFilterLabel = STATUS_CONFIG[statusFilter]?.label ?? 'Selected status';
   const billingOpensDialog = dashboardBillingEntryPoint.action
     === DASHBOARD_BILLING_ENTRY_ACTIONS.OPEN_UPGRADE_MODAL;
 
@@ -376,13 +424,21 @@ export default function Dashboard() {
           searchDisabled={loading}
           addExpanded={showForm}
           addDisabled={saving}
+          addTriggerRef={addApplicationTriggerRef}
           onAddToggle={toggleAddForm}
         />
 
         {error && (
-          <div className="mt-4 bg-red-100 text-red-800 px-4 py-3 rounded mb-5 flex justify-between items-center">
-            <span>{error.message}</span>
-            <button type="button" onClick={clearError} className="text-red-800 hover:text-red-900 text-sm">
+          <div
+            role="alert"
+            className="mb-5 mt-4 flex flex-col gap-3 rounded-dashboard-panel border border-red-400/55 bg-red-500/10 px-4 py-3 text-red-100 sm:flex-row sm:items-center sm:justify-between"
+          >
+            <span className="text-sm leading-6">{error.message}</span>
+            <button
+              type="button"
+              onClick={clearError}
+              className="dashboard-focus-ring inline-flex min-h-9 shrink-0 items-center justify-center self-start rounded-dashboard-control border border-red-400/50 bg-red-500/10 px-3 py-2 text-sm font-medium text-red-100 transition-colors hover:bg-red-500/20 sm:self-auto"
+            >
               Dismiss
             </button>
           </div>
@@ -397,38 +453,45 @@ export default function Dashboard() {
           {showForm && (
             <JobForm
               onSubmit={handleAddJob}
-              onCancel={closeAddForm}
+              onCancel={handleAddFormClose}
               saving={saving}
             />
           )}
 
           {loading ? (
-            <div className="flex items-center justify-center py-12">
-              <Spinner size="md" className="text-gray-400" />
+            <div
+              role="status"
+              aria-live="polite"
+              className="dashboard-major-panel flex min-h-40 items-center justify-center gap-3 rounded-dashboard-panel bg-dashboard-surface/90 px-5 py-12 text-sm text-dashboard-muted"
+            >
+              <Spinner size="md" className="text-dashboard-accent-hover" />
+              <span>Loading applications...</span>
             </div>
           ) : jobs.length === 0 ? (
-            <div className="text-center py-16 px-5 text-gray-500 bg-white rounded-lg">
-              {searchQuery
-              || statusFilter
-              || selectedDates.size > 0
-              || salaryFilterMin != null
-              || salaryFilterMax != null ? (
-                <ul className="space-y-1">
-                  {searchQuery && (
-                    <li>No jobs matching &ldquo;{searchQuery}&rdquo;.</li>
-                  )}
-                  {statusFilter && (
-                    <li>No jobs with status &ldquo;{statusFilter}&rdquo;.</li>
-                  )}
-                  {selectedDates.size > 0 && (
-                    <li>No jobs found for the selected dates.</li>
-                  )}
-                  {(salaryFilterMin != null || salaryFilterMax != null) && (
-                    <li>No jobs in the selected salary range.</li>
-                  )}
-                </ul>
+            <div className="dashboard-major-panel rounded-dashboard-panel bg-dashboard-surface/90 px-5 py-14 text-center text-dashboard-muted">
+              {hasResultFilters ? (
+                <div>
+                  <h2 className="text-base font-semibold text-dashboard-text">No matching applications</h2>
+                  <ul className="mt-2 space-y-1 text-sm">
+                    {searchQuery && (
+                      <li>No jobs matching &ldquo;{searchQuery}&rdquo;.</li>
+                    )}
+                    {statusFilter && (
+                      <li>No jobs with status &ldquo;{statusFilterLabel}&rdquo;.</li>
+                    )}
+                    {selectedDates.size > 0 && (
+                      <li>No jobs found for the selected dates.</li>
+                    )}
+                    {(salaryFilterMin != null || salaryFilterMax != null) && (
+                      <li>No jobs in the selected salary range.</li>
+                    )}
+                  </ul>
+                </div>
               ) : (
-                <p>No job applications yet. Click &ldquo;Add Application&rdquo; to get started!</p>
+                <div>
+                  <h2 className="text-base font-semibold text-dashboard-text">No job applications yet.</h2>
+                  <p className="mt-2 text-sm">Choose Add Application to get started.</p>
+                </div>
               )}
             </div>
           ) : (

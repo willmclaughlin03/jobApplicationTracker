@@ -103,23 +103,6 @@ export default function JobStatsSidebar({
   }, []);
 
   /**
-   * Lock page scrolling only while the compact drawer owns focus.
-   * Restores the prior inline overflow value on close, resize, or unmount.
-   */
-  useEffect(() => {
-    if (!isDrawerOpen) {
-      return undefined;
-    }
-
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-
-    return () => {
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [isDrawerOpen]);
-
-  /**
    * Debounce and clamp the minimum salary boundary.
    *
    * @param {React.ChangeEvent<HTMLInputElement>} event - Minimum salary input event.

@@ -20,6 +20,7 @@ import ProfileDropdown from '../ProfileDropdown';
  * @param {boolean} props.searchDisabled - Whether company search is temporarily unavailable.
  * @param {boolean} props.addExpanded - Whether the existing add form is open.
  * @param {boolean} props.addDisabled - Whether an add/update save is in flight.
+ * @param {React.RefObject} props.addTriggerRef - Page-owned Add Application focus target.
  * @param {Function} props.onAddToggle - Existing Add Application form toggle.
  * @returns {React.ReactElement} Presentational dashboard workspace toolbar.
  */
@@ -32,6 +33,7 @@ export default function DashboardToolbar({
   searchDisabled,
   addExpanded,
   addDisabled,
+  addTriggerRef,
   onAddToggle,
 }) {
   const [localSearch, setLocalSearch] = useState(searchQuery || '');
@@ -135,6 +137,7 @@ export default function DashboardToolbar({
             <ProfileDropdown user={user} onSignOut={onSignOut} />
             <InfoTooltip />
             <button
+              ref={addTriggerRef}
               type="button"
               onClick={onAddToggle}
               aria-expanded={addExpanded}

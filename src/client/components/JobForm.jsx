@@ -45,25 +45,28 @@ export default function JobForm({ onSubmit, onCancel, saving }) {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="bg-white p-6 rounded-lg shadow-sm mb-5">
-      <h2 className="text-lg font-semibold text-gray-800 mb-5">Add New Job Application</h2>
+    <form
+      onSubmit={handleSubmit}
+      className="dashboard-raised-panel mb-5 p-4 text-dashboard-text sm:p-6"
+    >
+      <h2 className="mb-5 text-lg font-semibold text-dashboard-text">Add Application</h2>
 
       <JobFormFields formData={formData} onChange={handleChange} errors={fieldErrors} />
 
-      <div className="flex gap-3 justify-end">
+      <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
         <button
           type="button"
           onClick={onCancel}
-          className="bg-gray-100 text-gray-700 border border-gray-300 px-5 py-2 rounded text-sm font-medium hover:bg-gray-200 transition-colors"
+          className="dashboard-control dashboard-focus-ring min-h-9 px-5 py-2 text-sm font-medium text-dashboard-muted transition-colors hover:border-dashboard-accent/60 hover:bg-dashboard-surface-hover hover:text-dashboard-text"
         >
           Cancel
         </button>
         <button
           type="submit"
-          className="bg-blue-600 text-white px-5 py-2 rounded text-sm font-medium hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+          className="dashboard-focus-ring min-h-9 rounded-dashboard-control border border-dashboard-accent bg-dashboard-accent px-5 py-2 text-sm font-semibold text-dashboard-accent-ink shadow-dashboard-panel transition-colors hover:bg-dashboard-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
           disabled={saving}
         >
-          {saving ? <><Spinner size="sm" className="inline mr-1.5" />Adding...</> : 'Add Job'}
+          {saving ? <><Spinner size="sm" className="mr-1.5 inline" />Adding...</> : 'Save Application'}
         </button>
       </div>
     </form>

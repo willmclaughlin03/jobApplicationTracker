@@ -31,7 +31,7 @@ export default function ProfileDropdown({ user, onSignOut }) {
         <DropdownMenu.Content
           align="end"
           sideOffset={6}
-          className="z-[70] w-[min(18rem,calc(100vw-2rem))] rounded-dashboard-panel border border-dashboard-control-border bg-dashboard-surface-raised p-1.5 text-dashboard-body text-dashboard-text shadow-xl"
+          className="dashboard-portal-theme z-[70] w-[min(18rem,calc(100vw-2rem))] rounded-dashboard-panel border border-dashboard-control-border bg-dashboard-surface-raised p-1.5 text-dashboard-body text-dashboard-text shadow-xl"
         >
           <DropdownMenu.Label className="px-3 py-2">
             <span className="block text-dashboard-caption text-dashboard-muted">Signed in as</span>

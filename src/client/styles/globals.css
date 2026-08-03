@@ -2,7 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
-.dashboard-root {
+.dashboard-root,
+.dashboard-portal-theme {
   --dash-canvas: 2 15 13;
   --dash-rail: 3 20 17;
   --dash-surface: 6 31 24;
@@ -35,11 +36,14 @@
   --dash-rail-wide: 14rem;
   --dash-filters-wide: 18rem;
 
+  color-scheme: dark;
+}
+
+.dashboard-root {
   position: relative;
   isolation: isolate;
   min-height: 100vh;
   overflow-x: clip;
-  color-scheme: dark;
   background:
     radial-gradient(circle at 62% 4%, rgb(var(--dash-accent) / 0.1), transparent 38%),
     radial-gradient(circle at 86% 100%, rgb(13 148 101 / 0.09), transparent 44%),
@@ -116,7 +120,8 @@
 }
 
 @layer utilities {
-  .dashboard-root .dashboard-focus-ring:focus-visible {
+  .dashboard-root .dashboard-focus-ring:focus-visible,
+  .dashboard-portal-theme .dashboard-focus-ring:focus-visible {
     outline: 2px solid var(--dash-focus-ring);
     outline-offset: 2px;
   }

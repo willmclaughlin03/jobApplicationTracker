@@ -1,11 +1,19 @@
 import { useState, useMemo } from 'react';
-import { getActivityCounts, getIntensityLevel, INTENSITY_COLORS } from '../lib/getActivityCounts';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { getActivityCounts, getIntensityLevel } from '../lib/getActivityCounts';
 
 const MAX_SELECTED_DATES = 7;
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
+];
+const ACTIVITY_INTENSITY_CLASSES = [
+  'border-dashboard-line/80 bg-dashboard-canvas',
+  'border-emerald-900 bg-emerald-950',
+  'border-emerald-700 bg-emerald-800',
+  'border-emerald-500 bg-emerald-600',
+  'border-dashboard-accent/80 bg-emerald-400',
 ];
 
 /**
@@ -110,44 +118,46 @@ export default function ActivityCalendar({ jobs, selectedDates = new Set(), onDa
   const isCurrentMonth = viewYear === today.getFullYear() && viewMonth === today.getMonth();
 
   return (
-    <div>
+    <div className="text-dashboard-text">
       {/* Header with navigation */}
-      <div className="flex items-center justify-between mb-3">
+      <div className="mb-3 flex items-center justify-between">
         <button
+          type="button"
           onClick={goToPrevMonth}
           disabled={isEarliestMonth}
-          className={`p-1 transition-colors ${
-            isEarliestMonth ? 'text-gray-200 cursor-not-allowed' : 'text-gray-400 hover:text-gray-600'
+          className={`dashboard-focus-ring inline-flex min-h-9 min-w-9 items-center justify-center rounded-dashboard-control transition-colors ${
+            isEarliestMonth
+              ? 'cursor-not-allowed text-dashboard-muted/35'
+              : 'text-dashboard-muted hover:bg-dashboard-surface-hover hover:text-dashboard-text'
           }`}
           aria-label="Previous month"
         >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-          </svg>
+          <ChevronLeft aria-hidden="true" size={17} />
         </button>
 
-        <h3 className="text-sm font-semibold text-gray-700">
+        <h3 className="text-sm font-semibold text-dashboard-text">
           {MONTH_NAMES[viewMonth]} {viewYear}
         </h3>
 
         <button
+          type="button"
           onClick={goToNextMonth}
           disabled={isCurrentMonth}
-          className={`p-1 transition-colors ${
-            isCurrentMonth ? 'text-gray-200 cursor-not-allowed' : 'text-gray-400 hover:text-gray-600'
+          className={`dashboard-focus-ring inline-flex min-h-9 min-w-9 items-center justify-center rounded-dashboard-control transition-colors ${
+            isCurrentMonth
+              ? 'cursor-not-allowed text-dashboard-muted/35'
+              : 'text-dashboard-muted hover:bg-dashboard-surface-hover hover:text-dashboard-text'
           }`}
           aria-label="Next month"
         >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-          </svg>
+          <ChevronRight aria-hidden="true" size={17} />
         </button>
       </div>
 
       {/* Day-of-week headers */}
-      <div className="grid grid-cols-7 gap-1 mb-1">
+      <div className="mb-1 grid grid-cols-7 gap-1">
         {DAY_LABELS.map(label => (
-          <div key={label} className="text-xs text-gray-400 text-center">
+          <div key={label} className="text-center text-xs font-medium text-dashboard-muted">
             {label.charAt(0)}
           </div>
         ))}
@@ -162,7 +172,7 @@ export default function ActivityCalendar({ jobs, selectedDates = new Set(), onDa
 
           const count = counts.get(cell.key) || 0;
           const level = getIntensityLevel(count);
-          const color = INTENSITY_COLORS[level];
+          const intensityClass = ACTIVITY_INTENSITY_CLASSES[level];
           const isToday =
             cell.day === today.getDate() &&
             viewMonth === today.getMonth() &&
@@ -182,12 +192,17 @@ export default function ActivityCalendar({ jobs, selectedDates = new Set(), onDa
               onClick={() => onDateToggle(cell.key)}
               disabled={!canSelect}
               aria-label={title}
-              className={`aspect-square rounded-sm ${color} flex items-center justify-center w-full
-                cursor-pointer disabled:cursor-not-allowed disabled:opacity-50
-                ${isSelected ? 'ring-2 ring-blue-500' : isToday ? 'ring-1 ring-gray-400' : ''}`}
+              aria-pressed={isSelected}
+              className={`dashboard-focus-ring flex aspect-square min-h-9 min-w-9 w-full cursor-pointer items-center justify-center rounded-dashboard-control border ${intensityClass}
+                transition-colors disabled:cursor-not-allowed disabled:opacity-40
+                ${isSelected
+                  ? 'ring-2 ring-dashboard-accent ring-offset-1 ring-offset-dashboard-surface-raised'
+                  : isToday ? 'ring-1 ring-dashboard-muted/70' : ''}`}
               title={title}
             >
-              <span className={`text-xs leading-none ${level >= 3 ? 'text-white/80' : 'text-gray-500'}`}>
+              <span className={`text-xs font-medium leading-none ${
+                level === 4 ? 'text-emerald-950' : level >= 2 ? 'text-white' : 'text-dashboard-muted'
+              }`}>
                 {cell.day}
               </span>
             </button>
@@ -196,14 +211,22 @@ export default function ActivityCalendar({ jobs, selectedDates = new Set(), onDa
       </div>
 
       {/* Month summary + legend */}
-      <div className="flex items-center justify-between mt-3">
-        <span className="text-xs text-gray-500">
+      <div className="mt-3 flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <span className="text-xs text-dashboard-muted">
           {monthTotal} application{monthTotal !== 1 ? 's' : ''} this month
         </span>
-        <div className="flex items-center gap-1 text-xs text-gray-400">
+        <div
+          role="img"
+          aria-label="Activity intensity from less to more"
+          className="flex items-center gap-1 text-xs text-dashboard-muted"
+        >
           <span>Less</span>
-          {INTENSITY_COLORS.map((color, i) => (
-            <div key={i} className={`${color} rounded-sm`} style={{ width: '10px', height: '10px' }} />
+          {ACTIVITY_INTENSITY_CLASSES.map((intensityClass) => (
+            <span
+              key={intensityClass}
+              aria-hidden="true"
+              className={`h-3 w-3 rounded-sm border ${intensityClass}`}
+            />
           ))}
           <span>More</span>
         </div>

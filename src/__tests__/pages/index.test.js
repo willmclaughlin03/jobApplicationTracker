@@ -34,7 +34,9 @@ let mockLatestSidebarProps = null;
 let mockLatestActivityProps = null;
 let mockLatestProfileProps = null;
 let mockLatestJobTableProps = null;
+let mockLatestEditModalProps = null;
 let mockLatestDeleteModalProps = null;
+let mockLatestJobFormProps = null;
 const mockWideMediaQuery = {
   matches: false,
   addEventListener: jest.fn(),
@@ -186,15 +188,30 @@ jest.mock('../../client/components/JobTable', () => {
 });
 
 jest.mock('../../client/components/JobForm', () => {
-  /** Omit the add form while retaining its parent toggle callback. */
-  return function MockJobForm() {
-    return null;
+  const React = require('react');
+
+  /** Expose page-owned Add callbacks without duplicating component validation. */
+  return function MockJobForm(props) {
+    mockLatestJobFormProps = props;
+    return React.createElement('div', { 'data-testid': 'job-form' }, [
+      React.createElement('button', {
+        key: 'cancel',
+        type: 'button',
+        onClick: props.onCancel,
+      }, 'Cancel form'),
+      React.createElement('button', {
+        key: 'submit',
+        type: 'button',
+        onClick: () => props.onSubmit({ company: 'Acme', position: 'Engineer' }),
+      }, 'Submit Add'),
+    ]);
   };
 });
 
 jest.mock('../../client/components/EditModal', () => {
-  /** Omit edit-modal rendering from focused Dashboard tests. */
-  return function MockEditModal() {
+  /** Capture edit-modal callbacks without rendering the dialog. */
+  return function MockEditModal(props) {
+    mockLatestEditModalProps = props;
     return null;
   };
 });
@@ -290,6 +307,31 @@ function buildJobFormState() {
     closeAddForm: jest.fn(),
     openEditForm: jest.fn(),
     closeEditForm: jest.fn(),
+  };
+}
+
+/**
+ * Provide page-local form state for focus-return integration tests.
+ *
+ * Purpose: exercise Dashboard close/success orchestration while JobForm and
+ * mutation duplicate protection remain covered in their focused suites.
+ *
+ * @returns {object} Stateful useJobFormModal-compatible contract.
+ */
+function useControlledJobFormState() {
+  const [showForm, setShowForm] = React.useState(false);
+  const [editingJob, setEditingJob] = React.useState(null);
+
+  return {
+    showForm,
+    editingJob,
+    toggleAddForm: () => setShowForm((current) => !current),
+    closeAddForm: () => setShowForm(false),
+    openEditForm: (job) => {
+      setEditingJob(job);
+      setShowForm(false);
+    },
+    closeEditForm: () => setEditingJob(null),
   };
 }
 
@@ -422,7 +464,9 @@ describe('Dashboard billing entry integration', () => {
     mockLatestActivityProps = null;
     mockLatestProfileProps = null;
     mockLatestJobTableProps = null;
+    mockLatestEditModalProps = null;
     mockLatestDeleteModalProps = null;
+    mockLatestJobFormProps = null;
     mockSignOut.mockResolvedValue({ error: null });
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123', email: 'member@example.com' },
@@ -465,7 +509,12 @@ describe('Dashboard billing entry integration', () => {
     mockUseJobs.mockReturnValue(jobsState);
     const element = renderDashboard();
     const dismissButton = findButtonByText(element, 'Dismiss');
+    const alert = element.querySelector('[role=alert]');
 
+    expect(alert).toBeTruthy();
+    expect(alert.textContent).toContain('Unable to load applications.');
+    expect(alert.className).toContain('border-red-400');
+    expect(alert.contains(dismissButton)).toBe(true);
     expect(dismissButton.getAttribute('type')).toBe('button');
 
     click(dismissButton);
@@ -473,10 +522,29 @@ describe('Dashboard billing entry integration', () => {
     expect(jobsState.clearError).toHaveBeenCalledTimes(1);
   });
 
+  it('announces the visible applications loading state', () => {
+    const jobsState = buildJobsState({
+      status: STORAGE_STATUSES.TERMINAL_FREE,
+      lockedCount: 0,
+    });
+    jobsState.loading = true;
+    mockUseJobs.mockReturnValue(jobsState);
+    const element = renderDashboard();
+    const loadingStatus = Array.from(element.querySelectorAll('[role=status]')).find(
+      (status) => status.textContent.includes('Loading applications...')
+    );
+
+    expect(loadingStatus).toBeTruthy();
+    expect(loadingStatus.getAttribute('aria-live')).toBe('polite');
+    expect(element.querySelector('#job-search').disabled).toBe(true);
+    expect(element.textContent).not.toContain('No job applications yet.');
+  });
+
   it('treats each salary bound as an active filter in the empty state', () => {
     const element = renderDashboard();
 
     expect(element.textContent).toContain('No job applications yet.');
+    expect(element.textContent).not.toContain('No matching applications');
 
     act(() => mockLatestSidebarProps.onSalaryFilterMinChange(60000));
 
@@ -488,6 +556,36 @@ describe('Dashboard billing entry integration', () => {
       mockLatestSidebarProps.onSalaryFilterMaxChange(120000);
     });
 
+    expect(element.textContent).toContain('No jobs in the selected salary range.');
+    expect(element.textContent).not.toContain('No job applications yet.');
+
+    act(() => mockLatestSidebarProps.onSalaryFilterMinChange(60000));
+    expect(element.textContent).toContain('No jobs in the selected salary range.');
+    expect(mockLatestSidebarProps.salaryFilterMin).toBe(60000);
+    expect(mockLatestSidebarProps.salaryFilterMax).toBe(120000);
+  });
+
+  it('describes every combined filter and uses the canonical status label', () => {
+    jest.useFakeTimers();
+    const element = renderDashboard();
+    const searchInput = element.querySelector('#job-search');
+
+    act(() => {
+      mockLatestSidebarProps.onFilterChange('interviewing');
+      mockLatestSidebarProps.onSalaryFilterMinChange(60000);
+      mockLatestSidebarProps.onSalaryFilterMaxChange(120000);
+      mockLatestActivityProps.onDateToggle('2026-08-01');
+    });
+    changeInput(searchInput, 'Acme');
+    act(() => jest.advanceTimersByTime(300));
+
+    expect(element.textContent).toContain('No matching applications');
+    expect(element.textContent).toContain('No jobs matching');
+    expect(element.textContent).toContain('Acme');
+    expect(element.textContent).toContain('No jobs with status');
+    expect(element.textContent).toContain('Interviewing');
+    expect(element.textContent).not.toContain('status “interviewing”');
+    expect(element.textContent).toContain('No jobs found for the selected dates.');
     expect(element.textContent).toContain('No jobs in the selected salary range.');
     expect(element.textContent).not.toContain('No job applications yet.');
   });
@@ -713,6 +811,86 @@ describe('Dashboard billing entry integration', () => {
 
     click(findButtonByText(element, 'Add Application'));
     expect(mockToggleAddForm).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns focus to Add Application after form cancellation', () => {
+    mockUseJobFormModal.mockImplementation(useControlledJobFormState);
+    const element = renderDashboard();
+    const addTrigger = findButtonByText(element, 'Add Application');
+    addTrigger.focus();
+
+    click(addTrigger);
+    expect(element.querySelector('[data-testid=job-form]')).toBeTruthy();
+    const cancelButton = findButtonByText(element, 'Cancel form');
+    cancelButton.focus();
+    click(cancelButton);
+
+    expect(element.querySelector('[data-testid=job-form]')).toBeNull();
+    expect(addTrigger.textContent).toContain('Add Application');
+    expect(document.activeElement).toBe(addTrigger);
+  });
+
+  it('returns focus to Add Application after a successful guarded add', async () => {
+    mockUseJobFormModal.mockImplementation(useControlledJobFormState);
+    const jobsState = buildJobsState({
+      status: STORAGE_STATUSES.TERMINAL_FREE,
+      lockedCount: 0,
+    });
+    mockUseJobs.mockReturnValue(jobsState);
+    const element = renderDashboard();
+    const addTrigger = findButtonByText(element, 'Add Application');
+    addTrigger.focus();
+
+    click(addTrigger);
+    const submitButton = findButtonByText(element, 'Submit Add');
+    submitButton.focus();
+    await clickAsync(submitButton);
+
+    expect(jobsState.addJob).toHaveBeenCalledTimes(1);
+    expect(jobsState.addJob).toHaveBeenCalledWith({ company: 'Acme', position: 'Engineer' });
+    expect(element.querySelector('[data-testid=job-form]')).toBeNull();
+    expect(document.activeElement).toBe(addTrigger);
+    expect(mockLatestJobFormProps.saving).toBe(false);
+  });
+
+  it('does not retain Add focus restoration when Edit replaces an in-flight add', async () => {
+    mockUseJobFormModal.mockImplementation(useControlledJobFormState);
+    let resolveAddJob;
+    const addJobResult = new Promise((resolve) => {
+      resolveAddJob = resolve;
+    });
+    const job = { id: 'job-123', company: 'Acme', position: 'Engineer' };
+    const jobsState = buildJobsState({
+      status: STORAGE_STATUSES.TERMINAL_FREE,
+      lockedCount: 0,
+    });
+    jobsState.jobs = [job];
+    jobsState.allJobs = [job];
+    jobsState.addJob.mockReturnValue(addJobResult);
+    mockUseJobs.mockReturnValue(jobsState);
+    const element = renderDashboard();
+    const addTrigger = findButtonByText(element, 'Add Application');
+    const activityTrigger = findButtonByText(element, 'Activity');
+
+    click(addTrigger);
+    click(findButtonByText(element, 'Submit Add'));
+    act(() => mockLatestJobTableProps.onEdit(job));
+
+    expect(element.querySelector('[data-testid=job-form]')).toBeNull();
+    expect(mockLatestEditModalProps.job).toBe(job);
+
+    await act(async () => {
+      resolveAddJob({ success: true });
+      await addJobResult;
+    });
+
+    act(() => mockLatestEditModalProps.onClose());
+    click(addTrigger);
+    activityTrigger.focus();
+    act(() => mockLatestJobTableProps.onEdit(job));
+
+    expect(element.querySelector('[data-testid=job-form]')).toBeNull();
+    expect(document.activeElement).toBe(activityTrigger);
   });
 
   it('debounces and sanitizes company search while Clear All cancels a pending draft', () => {
