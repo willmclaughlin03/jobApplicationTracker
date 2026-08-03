@@ -363,6 +363,9 @@ export default function Dashboard() {
     || salaryFilterMin != null
     || salaryFilterMax != null
   );
+  // hasActiveFilters covers only Filters-panel criteria, so the panel indicator
+  // ignores Activity-drawer dates. hasResultFilters adds selected dates because
+  // dates also narrow the result set shown in the empty state.
   const hasResultFilters = Boolean(
     statusFilter
     || searchQuery

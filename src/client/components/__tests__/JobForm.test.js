@@ -144,9 +144,11 @@ describe('JobForm', () => {
     expect(onSubmit).not.toHaveBeenCalled();
     expect(company.getAttribute('aria-invalid')).toBe('true');
     expect(company.getAttribute('aria-describedby')).toBe('company-error');
-    expect(element.querySelector('#company-error').textContent).toContain('100 characters or fewer');
+    expect(element.querySelector('#company-error').textContent)
+      .toContain(`${COMPANY_MAX_LENGTH} characters or fewer`);
     expect(notes.getAttribute('aria-describedby')).toBe('notes-error');
-    expect(element.querySelector('#notes-error').textContent).toContain('250 characters or fewer');
+    expect(element.querySelector('#notes-error').textContent)
+      .toContain(`${NOTES_MAX_LENGTH} characters or fewer`);
     expect(salaryMax.getAttribute('aria-describedby')).toBe('salary_max-error');
     expect(element.querySelector('#salary_max-error').textContent)
       .toBe('Max salary must be greater than or equal to min salary');

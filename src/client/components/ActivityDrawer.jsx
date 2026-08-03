@@ -35,10 +35,12 @@ export default function ActivityDrawer({ isOpen, onClose, jobs, selectedDates = 
         role="dialog"
         aria-modal="true"
         aria-label="Activity calendar drawer"
+        aria-hidden={isOpen ? undefined : 'true'}
+        inert={isOpen ? undefined : ''}
         tabIndex={-1}
         className={`fixed inset-y-0 left-0 z-40 flex w-full max-w-[20rem] flex-col overflow-y-auto border-r border-dashboard-panel-border bg-dashboard-surface-raised text-dashboard-text shadow-2xl
           dashboard-motion transition-transform
-          ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}
+          ${isOpen ? 'translate-x-0' : '-translate-x-full pointer-events-none'}`}
       >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-dashboard-line px-4 py-3">

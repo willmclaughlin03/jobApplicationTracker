@@ -36,8 +36,8 @@
 ## 5. Documentation
 - Document important functions: purpose, connections/dependencies, params, returns
 - Explain complex business logic and side effects
-- Use `docs/feature-memory.md` as a quick-running log of changes; briefly note the feature or what was added whenever work is completed
-- Before every `git push`, update `docs/fixes.md` with a brief note covering the issue, the approach taken, and how it was fixed; include that edit in the branch being pushed
+- Only update `docs/feature-memory.md` and `docs/fixes.md` when preparing a push to a pull-request branch; do not edit either log for every individual change, intermediate commit, or local-only work
+- Summarize only the changes included in that PR push, and include both log edits in the branch being pushed
 - Use terminal `git` commands for staging, committing, and pushing to GitHub; do not use `gh` or public API calls to push changes
 
 ## 6. Permission to Edit

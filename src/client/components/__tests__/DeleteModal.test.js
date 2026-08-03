@@ -155,19 +155,26 @@ describe('DeleteModal', () => {
   });
 
   it('marks the dialog busy and disables mutable actions while deleting', () => {
+    const onClose = jest.fn();
     const element = render(React.createElement(DeleteModal, {
       job: TEST_JOB,
       onConfirm: jest.fn(),
-      onClose: jest.fn(),
+      onClose,
       deleting: true,
     }));
     const dialog = element.querySelector('[role="dialog"]');
+    const closeButton = element.querySelector('[aria-label="Close delete application dialog"]');
     const deletingButton = findButton('Deleting...');
 
     expect(dialog.getAttribute('aria-busy')).toBe('true');
+    expect(closeButton.disabled).toBe(true);
     expect(findButton('Cancel').disabled).toBe(true);
     expect(deletingButton.disabled).toBe(true);
     expect(deletingButton.querySelector('svg[aria-hidden="true"]')).toBeTruthy();
+    click(closeButton);
+    click(dialog.parentElement);
+    press('Escape');
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('supports Cancel, backdrop, and top-level Escape dismissal', () => {

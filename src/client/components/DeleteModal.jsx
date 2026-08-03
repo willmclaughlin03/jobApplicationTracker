@@ -1,3 +1,4 @@
+import { useCallback } from 'react';
 import { TriangleAlert, X } from 'lucide-react';
 import Spinner from './Spinner.jsx';
 import { useOverlayAccessibility } from '../hooks/useOverlayAccessibility.js';
@@ -14,12 +15,23 @@ const DELETE_DIALOG_DESCRIPTION_ID = 'delete-application-dialog-description';
  * @param {boolean} deleting - Whether a delete request is in flight
  */
 export default function DeleteModal({ job, onConfirm, onClose, deleting }) {
-  const { containerRef } = useOverlayAccessibility(Boolean(job), onClose);
+  /**
+   * Request dismissal from useOverlayAccessibility, backdrop clicks, or the
+   * close button. While deleting, the guard prevents dismissal; otherwise it
+   * calls onClose to close the dialog.
+   */
+  const requestClose = useCallback(() => {
+    if (!deleting) {
+      onClose();
+    }
+  }, [deleting, onClose]);
+
+  const { containerRef } = useOverlayAccessibility(Boolean(job), requestClose);
 
   if (!job) return null;
 
   const handleOverlayClick = (e) => {
-    if (e.target === e.currentTarget) onClose();
+    if (e.target === e.currentTarget) requestClose();
   };
 
   return (
@@ -48,7 +60,8 @@ export default function DeleteModal({ job, onConfirm, onClose, deleting }) {
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
+            disabled={deleting}
             aria-label="Close delete application dialog"
             className="dashboard-focus-ring inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-dashboard-control text-dashboard-muted transition-colors hover:bg-dashboard-surface-hover hover:text-dashboard-text"
           >
