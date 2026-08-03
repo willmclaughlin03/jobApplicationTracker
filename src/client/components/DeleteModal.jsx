@@ -15,7 +15,11 @@ const DELETE_DIALOG_DESCRIPTION_ID = 'delete-application-dialog-description';
  * @param {boolean} deleting - Whether a delete request is in flight
  */
 export default function DeleteModal({ job, onConfirm, onClose, deleting }) {
-  /** Dismiss only when no deletion request is in flight. */
+  /**
+   * Request dismissal from useOverlayAccessibility, backdrop clicks, or the
+   * close button. While deleting, the guard prevents dismissal; otherwise it
+   * calls onClose to close the dialog.
+   */
   const requestClose = useCallback(() => {
     if (!deleting) {
       onClose();

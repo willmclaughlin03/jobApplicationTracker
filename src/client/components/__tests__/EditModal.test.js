@@ -258,8 +258,8 @@ describe('EditModal', () => {
     expect(document.activeElement).toBe(trigger);
   });
 
-  /** Verify saving state is exposed and prevents repeat submissions. */
-  it('marks the dialog busy and disables Save Changes while saving', () => {
+  /** Verify saving state is exposed and blocks dismissal or repeat submissions. */
+  it('marks the dialog busy and blocks dismissal while saving', () => {
     const onClose = jest.fn();
     const element = render(React.createElement(EditModal, {
       job: TEST_JOB,
@@ -269,11 +269,14 @@ describe('EditModal', () => {
     }));
     const dialog = element.querySelector('[role="dialog"]');
     const closeButton = element.querySelector('[aria-label="Close edit application dialog"]');
+    const cancelButton = findButton('Cancel');
 
     expect(dialog.getAttribute('aria-busy')).toBe('true');
     expect(closeButton.disabled).toBe(true);
+    expect(cancelButton.disabled).toBe(true);
     expect(findButton('Saving...').disabled).toBe(true);
     click(closeButton);
+    click(cancelButton);
     click(dialog.parentElement);
     press('Escape');
     expect(onClose).not.toHaveBeenCalled();

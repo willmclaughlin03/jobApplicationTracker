@@ -11,7 +11,11 @@ export default function EditModal({ job, onSave, onClose, saving }) {
   const [formData, setFormData] = useState(INITIAL_FORM_DATA);
   const [fieldErrors, setFieldErrors] = useState({});
 
-  /** Dismiss only when no save request is in flight. */
+  /**
+   * Request dismissal from useOverlayAccessibility, backdrop clicks, or the
+   * close button. While saving, the guard prevents dismissal; otherwise it
+   * calls onClose to close the dialog.
+   */
   const requestClose = useCallback(() => {
     if (!saving) {
       onClose();
@@ -118,7 +122,8 @@ export default function EditModal({ job, onSave, onClose, saving }) {
           <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
             <button
               type="button"
-              onClick={onClose}
+              onClick={requestClose}
+              disabled={saving}
               className="dashboard-control dashboard-focus-ring min-h-9 px-5 py-2 text-sm font-medium text-dashboard-muted transition-colors hover:border-dashboard-accent/60 hover:bg-dashboard-surface-hover hover:text-dashboard-text"
             >
               Cancel
