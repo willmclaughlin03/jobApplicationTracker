@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-02
 
+- `2026-08-03` - `Dashboard Add focus ownership guard`: Canceled deferred Add Application focus restoration when a competing Dashboard overlay takes focus, including Edit opening before an active save settles.
+- `2026-08-03` - `Dashboard Add focus saving gate`: Deferred Add Application focus restoration until saving finishes when the inline form closes during an active mutation.
 - `2026-08-03` - `Staging CodeRabbit follow-ups`: Clarified dashboard filter-state intent, made the closed Activity drawer inaccessible and noninteractive, prevented Edit/Delete modal dismissal during active mutations, coupled validation tests to shared limits, added saving-state coverage, and limited both change logs to PR-push-only summaries.
 
 ### Week of 2026-07-26

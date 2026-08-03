@@ -139,6 +139,13 @@ export default function Dashboard() {
     openEditForm,
     closeEditForm,
   } = useJobFormModal();
+  const hasCompetingFocusOwner = Boolean(
+    editingJob
+    || jobToDelete
+    || activityOpen
+    || upgradeModalOpen
+    || (!isWideLayout && sidebarOpen)
+  );
 
   /**
    * Return focus after an explicit inline Add form close completes rendering.
@@ -152,11 +159,16 @@ export default function Dashboard() {
   useEffect(() => {
     isAddFormActiveRef.current = showForm;
 
-    if (!showForm && shouldRestoreAddFocusRef.current) {
+    if (hasCompetingFocusOwner) {
+      shouldRestoreAddFocusRef.current = false;
+      return;
+    }
+
+    if (!showForm && !saving && shouldRestoreAddFocusRef.current) {
       shouldRestoreAddFocusRef.current = false;
       addApplicationTriggerRef.current?.focus();
     }
-  }, [showForm]);
+  }, [showForm, saving, hasCompetingFocusOwner]);
 
   if (!authLoading && !user) {
     router.push('/login');
