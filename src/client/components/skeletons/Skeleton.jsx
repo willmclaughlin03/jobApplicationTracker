@@ -1,9 +1,9 @@
 /**
  * Generic pulse-block primitive used to compose skeleton loading states.
  *
- * Purpose: Render a neutral, animated placeholder that mirrors the shape of
- * real content while data is loading. Intentionally minimal so it can be
- * sized/shaped by consumers via Tailwind className overrides.
+ * Purpose: Render an emerald-dashboard placeholder that mirrors the shape of
+ * real content while data is loading. Intentionally minimal so consumers can
+ * size and shape it through Tailwind className overrides.
  *
  * Usage: <Skeleton className="h-4 w-24" />
  *
@@ -12,7 +12,7 @@
 export default function Skeleton({ className = '' }) {
   return (
     <div
-      className={`animate-pulse bg-gray-200 rounded ${className}`}
+      className={`dashboard-motion animate-pulse rounded bg-dashboard-surface-hover/80 ${className}`}
       aria-hidden="true"
     />
   );

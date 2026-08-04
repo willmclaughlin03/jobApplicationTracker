@@ -1,9 +1,8 @@
 /**
  * Tests for DashboardSkeleton component.
  *
- * Purpose: Verify the full-page dashboard loading skeleton renders the real
- * page chrome (header title, footer attribution, skeleton rows/cards) and
- * exposes a status role for assistive tech.
+ * Purpose: verify the initial loading state mirrors the redesigned dashboard
+ * shell without exposing decorative placeholders as real controls or content.
  *
  * Connects to: src/client/components/skeletons/DashboardSkeleton.jsx
  *
@@ -24,6 +23,21 @@ const GLOBAL_STYLES_PATH = join(__dirname, '../../../styles/globals.css');
 let container;
 let root;
 
+/**
+ * Replace Next's build-time font loader with deterministic dashboard hooks.
+ */
+jest.mock('next/font/google', () => ({
+  Inter: jest.fn().mockReturnValue({
+    variable: 'mock-dashboard-font-variable',
+  }),
+}));
+
+/**
+ * Render one dashboard skeleton into the test document.
+ *
+ * @param {React.ReactElement} element - Skeleton element under test.
+ * @returns {HTMLElement} Mounted test container.
+ */
 function render(element) {
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -34,6 +48,7 @@ function render(element) {
   return container;
 }
 
+/** Remove the active React root and its test container. */
 function cleanup() {
   if (root) {
     act(() => root.unmount());
@@ -54,65 +69,91 @@ describe('DashboardSkeleton', () => {
     DashboardSkeleton = require('../DashboardSkeleton').default;
   });
 
-  it('renders the real header title so the shell matches the live dashboard', () => {
-    const el = render(React.createElement(DashboardSkeleton));
-    expect(el.querySelector('h1').textContent).toBe('Track The App');
+  it('renders the real responsive shell regions and scoped dashboard root', () => {
+    const element = render(React.createElement(DashboardSkeleton));
+    const shell = element.querySelector('.dashboard-root');
+
+    expect(shell).toBeTruthy();
+    expect(shell.classList.contains('mock-dashboard-font-variable')).toBe(true);
+    expect(element.querySelector('[data-testid="skeleton-navigation"]')).toBeTruthy();
+    expect(element.querySelector('[data-testid="skeleton-filters"]')).toBeTruthy();
+    expect(element.querySelector('[data-testid="skeleton-toolbar"]')).toBeTruthy();
+    expect(element.querySelector('[data-testid="skeleton-pagination"]')).toBeTruthy();
   });
 
-  it('exposes a status role with an sr-only loading label', () => {
-    const el = render(React.createElement(DashboardSkeleton));
-    const status = el.querySelector('[role="status"]');
+  it('exposes one concise loading status outside the decorative scaffold', () => {
+    const element = render(React.createElement(DashboardSkeleton));
+    const status = element.querySelector('[role="status"]');
+    const visual = element.querySelector('[data-testid="dashboard-skeleton-visual"]');
+
     expect(status).toBeTruthy();
-    expect(status.textContent).toContain('Loading dashboard');
+    expect(status.textContent.trim()).toBe('Loading dashboard');
+    expect(status.getAttribute('aria-live')).toBe('polite');
+    expect(visual.getAttribute('aria-hidden')).toBe('true');
+    expect(visual.contains(status)).toBe(false);
   });
 
-  it('renders the footer attribution link outside the status region', () => {
-    const el = render(React.createElement(DashboardSkeleton));
-    const footer = el.querySelector('footer');
-    expect(footer).toBeTruthy();
-    expect(footer.textContent).toContain('Icon');
+  it('keeps every placeholder non-interactive, including billing and footer geometry', () => {
+    const element = render(React.createElement(DashboardSkeleton));
+    const billing = element.querySelector('[data-testid="billing-entry-skeleton"]');
 
-    // Footer must not be announced as part of the loading status
-    const status = el.querySelector('[role="status"]');
-    expect(status.contains(footer)).toBe(false);
+    expect(billing).toBeTruthy();
+    expect(billing.tagName).toBe('DIV');
+    expect(billing.classList.contains('h-10')).toBe(true);
+    expect(element.querySelectorAll('a, button, input, select, textarea').length).toBe(0);
   });
 
-  it('renders 6 desktop skeleton rows', () => {
-    const el = render(React.createElement(DashboardSkeleton));
-    const rows = el.querySelectorAll('[data-testid="skeleton-row"]');
-    expect(rows.length).toBe(6);
+  it('retains the approved six-row and four-card loading density', () => {
+    const element = render(React.createElement(DashboardSkeleton));
+
+    expect(element.querySelectorAll('[data-testid="skeleton-row"]').length).toBe(6);
+    expect(element.querySelectorAll('[data-testid="skeleton-card"]').length).toBe(4);
   });
 
-  it('renders 4 mobile skeleton cards', () => {
-    const el = render(React.createElement(DashboardSkeleton));
-    const cards = el.querySelectorAll('[data-testid="skeleton-card"]');
-    expect(cards.length).toBe(4);
+  it('matches the locked table/card and wide Filters breakpoints', () => {
+    const element = render(React.createElement(DashboardSkeleton));
+    const tableFrame = element.querySelector('table').parentElement;
+    const cardFrame = element.querySelector('[data-testid="skeleton-card"]').parentElement;
+    const filters = element.querySelector('[data-testid="skeleton-filters"]');
+
+    expect(tableFrame.classList.contains('lg:block')).toBe(true);
+    expect(tableFrame.classList.contains('hidden')).toBe(true);
+    expect(cardFrame.classList.contains('lg:hidden')).toBe(true);
+    expect(filters.classList.contains('hidden')).toBe(true);
+    expect(filters.classList.contains('wide:flex')).toBe(true);
+  });
+
+  it('uses emerald dashboard surfaces without the superseded light palette', () => {
+    const element = render(React.createElement(DashboardSkeleton));
+    const visualMarkup = element
+      .querySelector('[data-testid="dashboard-skeleton-visual"]')
+      .innerHTML;
+
+    expect(visualMarkup).toContain('bg-dashboard-surface');
+    expect(visualMarkup).toContain('border-dashboard-line');
+    expect(visualMarkup).not.toContain('bg-gray');
+    expect(visualMarkup).not.toContain('bg-white');
   });
 
   it('applies the delayed fade-in animation to prevent flicker on fast loads', () => {
-    const el = render(React.createElement(DashboardSkeleton));
-    const outer = el.firstChild;
-    expect(outer.className).toContain('animate-skeleton-in');
+    const element = render(React.createElement(DashboardSkeleton));
+    const visual = element.querySelector('[data-testid="dashboard-skeleton-visual"]');
+
+    expect(visual.className).toContain('animate-skeleton-in');
   });
 
-  /**
-   * Protects the link between the skeleton's animation utility and the global
-   * reduced-motion override so the delayed fade does not run for opted-out users.
-   */
-  it('neutralizes the skeleton animation when reduced motion is enabled', () => {
-    const el = render(React.createElement(DashboardSkeleton));
-    const outer = el.firstChild;
+  it('neutralizes dashboard transitions and animations for reduced motion', () => {
+    render(React.createElement(DashboardSkeleton));
     const stylesheet = postcss.parse(readFileSync(GLOBAL_STYLES_PATH, 'utf8'));
     let reducedMotionRule;
-    let skeletonAnimationRule;
-    let animationDuration;
-    let animationDelay;
-    let animationIterationCount;
-
-    expect(outer.className).toContain('animate-skeleton-in');
+    let scopedMotionRule;
 
     for (const node of stylesheet.nodes) {
-      if (node.type === 'atrule' && node.name === 'media' && node.params === '(prefers-reduced-motion: reduce)') {
+      if (
+        node.type === 'atrule'
+        && node.name === 'media'
+        && node.params === '(prefers-reduced-motion: reduce)'
+      ) {
         reducedMotionRule = node;
         break;
       }
@@ -121,28 +162,39 @@ describe('DashboardSkeleton', () => {
     expect(reducedMotionRule).toBeTruthy();
 
     for (const node of reducedMotionRule.nodes) {
-      if (node.type === 'rule' && node.selector.includes('.animate-skeleton-in')) {
-        skeletonAnimationRule = node;
+      if (
+        node.type === 'rule'
+        && node.selector.includes('.dashboard-root *')
+        && node.selector.includes('.dashboard-portal-theme *')
+        && node.selector.includes('.animate-skeleton-in')
+      ) {
+        scopedMotionRule = node;
         break;
       }
     }
 
-    expect(skeletonAnimationRule.selector).toContain('.dashboard-root .dashboard-motion');
-
-    for (const node of skeletonAnimationRule.nodes) {
-      if (node.prop === 'animation-duration') {
-        animationDuration = node;
-      }
-      if (node.prop === 'animation-delay') {
-        animationDelay = node;
-      }
-      if (node.prop === 'animation-iteration-count') {
-        animationIterationCount = node;
-      }
-    }
-
-    expect(animationDuration).toMatchObject({ value: '0.01ms', important: true });
-    expect(animationDelay).toMatchObject({ value: '0ms', important: true });
-    expect(animationIterationCount).toMatchObject({ value: '1', important: true });
+    expect(scopedMotionRule).toBeTruthy();
+    expect(scopedMotionRule.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        prop: 'transition-duration',
+        value: '0.01ms',
+        important: true,
+      }),
+      expect.objectContaining({
+        prop: 'transition-delay',
+        value: '0ms',
+        important: true,
+      }),
+      expect.objectContaining({
+        prop: 'animation-duration',
+        value: '0.01ms',
+        important: true,
+      }),
+      expect.objectContaining({
+        prop: 'animation-iteration-count',
+        value: '1',
+        important: true,
+      }),
+    ]));
   });
 });

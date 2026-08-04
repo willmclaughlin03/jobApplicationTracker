@@ -258,11 +258,15 @@ jest.mock('../../client/components/Spinner', () => {
 });
 
 jest.mock('../../client/components/skeletons/DashboardSkeleton', () => {
+  const React = require('react');
+
   /** Mark the auth-loading skeleton without rendering its implementation details. */
   return function MockDashboardSkeleton() {
-    return require('react').createElement('div', {
-      'data-testid': 'dashboard-skeleton-marker',
-    });
+    return React.createElement(
+      'div',
+      { className: 'dashboard-root mock-dashboard-font-variable' },
+      React.createElement('div', { 'data-testid': 'dashboard-skeleton-marker' })
+    );
   };
 });
 
@@ -503,6 +507,7 @@ describe('Dashboard billing entry integration', () => {
     expect(
       element.querySelector('.dashboard-root [data-testid=dashboard-skeleton-marker]')
     ).toBeTruthy();
+    expect(element.querySelectorAll('.dashboard-root')).toHaveLength(1);
   });
 
   it('renders Dismiss as a non-submitting button and clears the current error', () => {
@@ -927,6 +932,11 @@ describe('Dashboard billing entry integration', () => {
     const searchInput = element.querySelector('#job-search');
 
     changeInput(searchInput, '<strong>Acme</strong>');
+    const clearSearchButton = element.querySelector('[aria-label="Clear company search"]');
+
+    expect(searchInput.classList.contains('pr-12')).toBe(true);
+    expect(clearSearchButton.classList.contains('min-h-9')).toBe(true);
+    expect(clearSearchButton.classList.contains('min-w-9')).toBe(true);
     act(() => jest.advanceTimersByTime(299));
     expect(mockUseJobs.mock.calls.at(-1)[2]).toBe('');
 
