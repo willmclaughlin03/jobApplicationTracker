@@ -35,7 +35,9 @@ export default function JobTable({ jobs, onEdit, onDelete, deleting }) {
                   scope="col"
                   className={`px-3 py-3 text-dashboard-caption font-semibold uppercase tracking-wide text-dashboard-muted ${label === 'Actions' ? 'text-right' : 'text-left'}`}
                 >
-                  {label}
+                  {label === 'Actions' ? (
+                    <span className="inline-block -translate-x-5">{label}</span>
+                  ) : label}
                 </th>
               ))}
             </tr>

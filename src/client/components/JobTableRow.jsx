@@ -78,12 +78,14 @@ export default function JobTableRow({ job, onEdit, onDelete, isDeleting }) {
         </div>
       </td>
       <td className="px-3 py-3 text-right align-top">
-        <JobActionsMenu
-          job={job}
-          onEdit={onEdit}
-          onDelete={onDelete}
-          disabled={isDeleting}
-        />
+        <div className="inline-flex -translate-x-5">
+          <JobActionsMenu
+            job={job}
+            onEdit={onEdit}
+            onDelete={onDelete}
+            disabled={isDeleting}
+          />
+        </div>
       </td>
     </tr>
   );
