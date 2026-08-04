@@ -24,6 +24,7 @@ const STATUS_READ_FAILED_MESSAGE = 'We could not verify your billing status righ
  * @param {Function} props.onUpgrade - Requests Checkout from the controller.
  * @param {Function} props.onRetryStatus - Re-reads canonical billing status.
  * @param {Function} props.onGoToBilling - Opens the canonical Billing page.
+ * @param {'default'|'dashboard'} props.appearance - Optional dashboard-scoped presentation.
  * @returns {import('react').ReactElement} Presentational Premium plan card.
  */
 export default function PlanUpgradeCard({
@@ -36,7 +37,9 @@ export default function PlanUpgradeCard({
   onUpgrade,
   onRetryStatus,
   onGoToBilling,
+  appearance = 'default',
 }) {
+  const isDashboard = appearance === 'dashboard';
   const hasRetryCooldown = Number.isSafeInteger(retryAfterSeconds) && retryAfterSeconds > 0;
   const isChecking = eligibilityState === UPGRADE_ELIGIBILITY_STATES.CHECKING;
   const isIneligible = eligibilityState === UPGRADE_ELIGIBILITY_STATES.INELIGIBLE;
@@ -53,23 +56,33 @@ export default function PlanUpgradeCard({
   return (
     <section
       aria-labelledby={headingId}
-      className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-6 shadow-xl sm:p-8"
+      className={isDashboard
+        ? 'dashboard-raised-panel w-full max-w-md p-6 text-dashboard-text sm:p-8'
+        : 'w-full max-w-md rounded-xl border border-gray-200 bg-white p-6 shadow-xl sm:p-8'}
     >
       <div className="pr-10">
-        <p className="text-sm font-semibold uppercase tracking-wide text-blue-600">
+        <p className={`text-sm font-semibold uppercase tracking-wide ${
+          isDashboard ? 'text-dashboard-accent-hover' : 'text-blue-600'
+        }`}>
           {plan.displayName}
         </p>
-        <h2 id={headingId} className="mt-1 text-2xl font-semibold text-gray-900">
+        <h2 id={headingId} className={`mt-1 text-2xl font-semibold ${
+          isDashboard ? 'text-dashboard-text' : 'text-gray-900'
+        }`}>
           {plan.title}
         </h2>
       </div>
 
-      <ul className="mt-6 space-y-3 text-sm leading-6 text-gray-700">
+      <ul className={`mt-6 space-y-3 text-sm leading-6 ${
+        isDashboard ? 'text-dashboard-muted' : 'text-gray-700'
+      }`}>
         {plan.benefits.map((benefit) => (
           <li key={benefit} className="flex items-start gap-3">
             <svg
               aria-hidden="true"
-              className="mt-1 h-4 w-4 flex-none text-blue-600"
+              className={`mt-1 h-4 w-4 flex-none ${
+                isDashboard ? 'text-dashboard-accent-hover' : 'text-blue-600'
+              }`}
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -86,9 +99,13 @@ export default function PlanUpgradeCard({
         ))}
       </ul>
 
-      <div className="mt-6 border-t border-gray-100 pt-5">
+      <div className={`mt-6 border-t pt-5 ${
+        isDashboard ? 'border-dashboard-line' : 'border-gray-100'
+      }`}>
         {isChecking && !actionError && (
-          <p role="status" aria-live="polite" className="mb-4 text-sm text-gray-600">
+          <p role="status" aria-live="polite" className={`mb-4 text-sm ${
+            isDashboard ? 'text-dashboard-muted' : 'text-gray-600'
+          }`}>
             Checking your current billing status.
           </p>
         )}
@@ -97,7 +114,11 @@ export default function PlanUpgradeCard({
           <div
             role={actionError ? 'alert' : 'status'}
             aria-live={actionError ? undefined : 'polite'}
-            className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+            className={`mb-4 rounded-md border px-4 py-3 text-sm ${
+              isDashboard
+                ? 'border-amber-400/50 bg-amber-500/10 text-amber-100'
+                : 'border-amber-200 bg-amber-50 text-amber-900'
+            }`}
           >
             {actionError?.message || STATUS_CHANGED_MESSAGE}
           </div>
@@ -106,7 +127,11 @@ export default function PlanUpgradeCard({
         {statusReadFailed && (
           <div
             role="alert"
-            className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+            className={`mb-4 rounded-md border px-4 py-3 text-sm ${
+              isDashboard
+                ? 'border-red-400/50 bg-red-500/10 text-red-200'
+                : 'border-red-200 bg-red-50 text-red-700'
+            }`}
           >
             {STATUS_READ_FAILED_MESSAGE} Try again or review Billing.
           </div>
@@ -115,14 +140,20 @@ export default function PlanUpgradeCard({
         {actionError && !isIneligible && !isChecking && !statusReadFailed && (
           <div
             role="alert"
-            className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+            className={`mb-4 rounded-md border px-4 py-3 text-sm ${
+              isDashboard
+                ? 'border-red-400/50 bg-red-500/10 text-red-200'
+                : 'border-red-200 bg-red-50 text-red-700'
+            }`}
           >
             {actionError.message}
           </div>
         )}
 
         {hasRetryCooldown && !actionError && (
-          <p role="status" aria-live="polite" className="mb-4 text-sm text-gray-600">
+          <p role="status" aria-live="polite" className={`mb-4 text-sm ${
+            isDashboard ? 'text-dashboard-muted' : 'text-gray-600'
+          }`}>
             Please wait before trying Checkout again.
           </p>
         )}
@@ -132,14 +163,18 @@ export default function PlanUpgradeCard({
             <button
               type="button"
               onClick={onRetryStatus}
-              className="inline-flex w-full items-center justify-center rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+              className={isDashboard
+                ? 'dashboard-control dashboard-focus-ring inline-flex min-h-9 w-full items-center justify-center px-4 py-2.5 text-sm font-medium text-dashboard-text transition-colors hover:border-dashboard-accent/60 hover:bg-dashboard-surface-hover'
+                : 'inline-flex w-full items-center justify-center rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700'}
             >
               Retry
             </button>
             <button
               type="button"
               onClick={onGoToBilling}
-              className="inline-flex w-full items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+              className={isDashboard
+                ? 'dashboard-control dashboard-focus-ring inline-flex min-h-9 w-full items-center justify-center px-4 py-2.5 text-sm font-medium text-dashboard-muted transition-colors hover:border-dashboard-accent/60 hover:bg-dashboard-surface-hover hover:text-dashboard-text'
+                : 'inline-flex w-full items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50'}
             >
               Go to billing
             </button>
@@ -148,20 +183,26 @@ export default function PlanUpgradeCard({
           <button
             type="button"
             onClick={onGoToBilling}
-            className="inline-flex w-full items-center justify-center rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+            className={isDashboard
+              ? 'dashboard-control dashboard-focus-ring inline-flex min-h-9 w-full items-center justify-center px-4 py-2.5 text-sm font-medium text-dashboard-text transition-colors hover:border-dashboard-accent/60 hover:bg-dashboard-surface-hover'
+              : 'inline-flex w-full items-center justify-center rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700'}
           >
             Go to billing
           </button>
         ) : (
           <>
-            <p className="mb-3 text-sm leading-5 text-gray-600">
+            <p className={`mb-3 text-sm leading-5 ${
+              isDashboard ? 'text-dashboard-muted' : 'text-gray-600'
+            }`}>
               {plan.checkoutHelperText}
             </p>
             <button
               type="button"
               onClick={onUpgrade}
               disabled={upgradeDisabled}
-              className="inline-flex w-full items-center justify-center rounded-md bg-blue-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-400"
+              className={isDashboard
+                ? 'dashboard-focus-ring inline-flex min-h-9 w-full items-center justify-center rounded-dashboard-control border border-dashboard-accent bg-dashboard-accent px-5 py-3 text-sm font-semibold text-dashboard-accent-ink shadow-dashboard-panel transition-colors hover:bg-dashboard-accent-hover disabled:cursor-not-allowed disabled:border-dashboard-line disabled:bg-dashboard-surface-hover disabled:text-dashboard-muted'
+                : 'inline-flex w-full items-center justify-center rounded-md bg-blue-600 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-400'}
             >
               {upgradeLabel}
             </button>

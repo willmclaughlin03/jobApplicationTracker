@@ -1,11 +1,28 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { X } from 'lucide-react';
 import { JobFormFields, INITIAL_FORM_DATA } from './forms/index.js';
 import Spinner from './Spinner.jsx';
+import { useOverlayAccessibility } from '../hooks/useOverlayAccessibility.js';
 import { COMPANY_MAX_LENGTH, POSITION_MAX_LENGTH, NOTES_MAX_LENGTH, SALARY_MAX_VALUE } from '../../shared/validations/jobSchema.js';
+
+const EDIT_DIALOG_TITLE_ID = 'edit-application-dialog-title';
 
 export default function EditModal({ job, onSave, onClose, saving }) {
   const [formData, setFormData] = useState(INITIAL_FORM_DATA);
   const [fieldErrors, setFieldErrors] = useState({});
+
+  /**
+   * Request dismissal from useOverlayAccessibility, backdrop clicks, or the
+   * close button. While saving, the guard prevents dismissal; otherwise it
+   * calls onClose to close the dialog.
+   */
+  const requestClose = useCallback(() => {
+    if (!saving) {
+      onClose();
+    }
+  }, [onClose, saving]);
+
+  const { containerRef } = useOverlayAccessibility(Boolean(job), requestClose);
 
   useEffect(() => {
     if (job) {
@@ -60,25 +77,41 @@ export default function EditModal({ job, onSave, onClose, saving }) {
 
   const handleOverlayClick = (e) => {
     if (e.target === e.currentTarget) {
-      onClose();
+      requestClose();
     }
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-5" onClick={handleOverlayClick}>
-      <div className="bg-white p-6 rounded-lg w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <div className="flex justify-between items-center mb-5">
-          <h2 className="text-lg font-semibold text-gray-800">Edit Job Application</h2>
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-[#010907]/85 p-4 sm:p-5"
+      onClick={handleOverlayClick}
+    >
+      <div
+        ref={containerRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={EDIT_DIALOG_TITLE_ID}
+        aria-busy={saving || undefined}
+        tabIndex={-1}
+        className="dashboard-raised-panel max-h-[90vh] w-full max-w-lg overflow-y-auto p-4 text-dashboard-text sm:p-6"
+      >
+        <div className="mb-5 flex items-center justify-between gap-4">
+          <h2 id={EDIT_DIALOG_TITLE_ID} className="text-lg font-semibold text-dashboard-text">
+            Edit Job Application
+          </h2>
           <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 text-2xl leading-none"
+            type="button"
+            onClick={requestClose}
+            disabled={saving}
+            aria-label="Close edit application dialog"
+            className="dashboard-focus-ring inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-dashboard-control text-dashboard-muted transition-colors hover:bg-dashboard-surface-hover hover:text-dashboard-text"
           >
-            &times;
+            <X aria-hidden="true" size={19} />
           </button>
         </div>
 
         {job?.status_date && (
-          <p className="text-xs text-gray-500 mb-4">
+          <p className="mb-4 border-b border-dashboard-line pb-3 text-xs text-dashboard-muted">
             Status since: {new Date(job.status_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
           </p>
         )}
@@ -86,20 +119,21 @@ export default function EditModal({ job, onSave, onClose, saving }) {
         <form onSubmit={handleSubmit}>
           <JobFormFields formData={formData} onChange={handleChange} idPrefix="edit" errors={fieldErrors} />
 
-          <div className="flex gap-3 justify-end">
+          <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
             <button
               type="button"
-              onClick={onClose}
-              className="bg-gray-100 text-gray-700 border border-gray-300 px-5 py-2 rounded text-sm font-medium hover:bg-gray-200 transition-colors"
+              onClick={requestClose}
+              disabled={saving}
+              className="dashboard-control dashboard-focus-ring min-h-9 px-5 py-2 text-sm font-medium text-dashboard-muted transition-colors hover:border-dashboard-accent/60 hover:bg-dashboard-surface-hover hover:text-dashboard-text"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="bg-blue-600 text-white px-5 py-2 rounded text-sm font-medium hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+              className="dashboard-focus-ring min-h-9 rounded-dashboard-control border border-dashboard-accent bg-dashboard-accent px-5 py-2 text-sm font-semibold text-dashboard-accent-ink shadow-dashboard-panel transition-colors hover:bg-dashboard-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
               disabled={saving}
             >
-              {saving ? <><Spinner size="sm" className="inline mr-1.5" />Saving...</> : 'Save Changes'}
+              {saving ? <><Spinner size="sm" className="mr-1.5 inline" />Saving...</> : 'Save Changes'}
             </button>
           </div>
         </form>

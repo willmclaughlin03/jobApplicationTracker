@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { X } from 'lucide-react';
 import { useBillingActions, BILLING_ACTION_RESULT_STATUSES } from '../hooks/useBillingActions.js';
 import { useOverlayAccessibility } from '../hooks/useOverlayAccessibility.js';
 import { api } from '../lib/api.js';
@@ -227,7 +228,7 @@ export default function UpgradePlanModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/50 p-4 sm:p-6"
+      className="fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-[#010907]/85 p-4 sm:p-6"
       onClick={handleBackdropClick}
     >
       <div
@@ -237,18 +238,16 @@ export default function UpgradePlanModal({
         aria-labelledby={titleId}
         aria-busy={checkoutActive || undefined}
         tabIndex={-1}
-        className="relative w-full max-w-md"
+        className="relative w-full max-w-md text-dashboard-text"
       >
         <button
           type="button"
           onClick={requestClose}
           disabled={checkoutActive}
           aria-label="Close upgrade modal"
-          className="absolute right-4 top-4 z-10 inline-flex h-9 w-9 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+          className="dashboard-focus-ring absolute right-4 top-4 z-10 inline-flex h-9 w-9 items-center justify-center rounded-dashboard-control text-dashboard-muted transition-colors hover:bg-dashboard-surface-hover hover:text-dashboard-text disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path d="M6 18L18 6M6 6l12 12" strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} />
-          </svg>
+          <X aria-hidden="true" size={19} />
         </button>
 
         <PlanUpgradeCard
@@ -261,6 +260,7 @@ export default function UpgradePlanModal({
           onUpgrade={handleUpgrade}
           onRetryStatus={readBillingStatus}
           onGoToBilling={onGoToBilling}
+          appearance="dashboard"
         />
       </div>
     </div>

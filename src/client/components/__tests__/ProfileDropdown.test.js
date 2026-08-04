@@ -77,6 +77,14 @@ async function press(target, key) {
   await act(async () => {
     target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
     await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+/** Wait for Radix FocusScope's post-unmount return-focus timer. */
+async function flushRadixFocusReturn() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
 
@@ -146,6 +154,23 @@ describe('ProfileDropdown', () => {
     )).toBe(true);
   });
 
+  it('supports Radix arrow navigation between account actions', async () => {
+    const element = renderDropdown({
+      email: 'admin@example.com',
+      role: 'admin',
+    });
+    const trigger = element.querySelector('button');
+
+    await press(trigger, 'Enter');
+    expect(document.activeElement.textContent.trim()).toBe('Admin');
+
+    await press(document.activeElement, 'ArrowDown');
+    expect(document.activeElement.textContent.trim()).toBe('Sign Out');
+
+    await press(document.activeElement, 'ArrowUp');
+    expect(document.activeElement.textContent.trim()).toBe('Admin');
+  });
+
   it('opens from the keyboard, closes with Escape, and returns focus', async () => {
     const element = renderDropdown({
       email: 'member@example.com',
@@ -155,9 +180,12 @@ describe('ProfileDropdown', () => {
 
     trigger.focus();
     await press(trigger, 'Enter');
+    const menu = document.body.querySelector('[role=menu]');
+    expect(menu.className).toContain('dashboard-portal-theme');
     expect(document.body.querySelector('[role="menu"]')).toBeTruthy();
 
     await press(document.activeElement, 'Escape');
+    await flushRadixFocusReturn();
     expect(document.body.querySelector('[role="menu"]')).toBeNull();
     expect(document.activeElement).toBe(trigger);
   });

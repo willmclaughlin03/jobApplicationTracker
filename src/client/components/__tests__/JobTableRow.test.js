@@ -15,6 +15,8 @@ const { STATUS_CONFIG } = require('../../../shared/constants/statuses.js');
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 let JobTableRow;
+let EditModal;
+let DeleteModal;
 let container;
 let root;
 
@@ -29,6 +31,56 @@ const BASE_JOB = {
   salary_max: 130000,
   notes: 'A'.repeat(120),
 };
+
+/**
+ * Connect the real desktop row menu to one real page-owned dialog.
+ *
+ * @param {{dialogType: 'Edit'|'Delete'}} props - Dialog opened by its menu item.
+ * @returns {React.ReactElement} Table row plus conditional dialog.
+ */
+function RowDialogHarness({ dialogType }) {
+  const [selectedJob, setSelectedJob] = React.useState(null);
+  const row = React.createElement('table', null,
+    React.createElement('tbody', null,
+      React.createElement(JobTableRow, {
+        job: BASE_JOB,
+        onEdit: (job) => setSelectedJob(job),
+        onDelete: (jobId) => {
+          if (jobId === BASE_JOB.id) {
+            setSelectedJob(BASE_JOB);
+          }
+        },
+        isDeleting: false,
+      })
+    )
+  );
+  const dialog = selectedJob && (dialogType === 'Edit'
+    ? React.createElement(EditModal, {
+      job: selectedJob,
+      onSave: jest.fn(),
+      onClose: () => setSelectedJob(null),
+      saving: false,
+    })
+    : React.createElement(DeleteModal, {
+      job: selectedJob,
+      onConfirm: jest.fn(),
+      onClose: () => setSelectedJob(null),
+      deleting: false,
+    }));
+
+  return React.createElement(React.Fragment, null, row, dialog);
+}
+
+/** Render the real row-to-dialog integration into a test-owned root. */
+function renderRowDialogHarness(dialogType) {
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  act(() => {
+    root.render(React.createElement(RowDialogHarness, { dialogType }));
+  });
+  return container;
+}
 
 /**
  * Render one row inside valid table ancestry.
@@ -76,6 +128,18 @@ async function click(target) {
 }
 
 /**
+ * Flush Radix's deferred close autofocus and the queued dialog-open callback.
+ *
+ * @returns {Promise<void>} Resolves after the menu-to-dialog focus handoff.
+ */
+async function flushMenuDialogHandoff() {
+  await act(async () => {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await Promise.resolve();
+  });
+}
+
+/**
  * Dispatch one keyboard command and flush Radix state updates.
  *
  * @param {HTMLElement} target - Focused command target.
@@ -96,6 +160,7 @@ function cleanup() {
   }
 
   document.body.innerHTML = '';
+  document.body.style.overflow = '';
   container = null;
   root = null;
 }
@@ -116,6 +181,8 @@ describe('JobTableRow', () => {
     }
 
     JobTableRow = require('../JobTableRow.jsx').default;
+    EditModal = require('../EditModal.jsx').default;
+    DeleteModal = require('../DeleteModal.jsx').default;
   });
 
   afterEach(cleanup);
@@ -202,11 +269,14 @@ describe('JobTableRow', () => {
 
     trigger.focus();
     await press(trigger, 'Enter');
+    const themedMenu = document.body.querySelector('[role=menu]');
+    expect(themedMenu.className).toContain('dashboard-portal-theme');
     expect(document.body.querySelector('[role="menu"]')).toBeTruthy();
 
     await click(Array.from(document.body.querySelectorAll('[role="menuitem"]')).find(
       item => item.textContent.trim() === 'Edit'
     ));
+    await flushMenuDialogHandoff();
     expect(onEdit).toHaveBeenCalledTimes(1);
     expect(onEdit).toHaveBeenCalledWith(BASE_JOB);
 
@@ -214,6 +284,7 @@ describe('JobTableRow', () => {
     await click(Array.from(document.body.querySelectorAll('[role="menuitem"]')).find(
       item => item.textContent.trim() === 'Delete'
     ));
+    await flushMenuDialogHandoff();
     expect(onDelete).toHaveBeenCalledTimes(1);
     expect(onDelete).toHaveBeenCalledWith('job-123');
 
@@ -225,6 +296,34 @@ describe('JobTableRow', () => {
     expect(document.body.querySelector('[role="menu"]')).toBeNull();
     expect(document.activeElement).toBe(trigger);
   });
+
+  it.each(['Edit', 'Delete'])(
+    'transfers focus from the row menu to the real %s dialog and back to the trigger',
+    async (dialogType) => {
+      const element = renderRowDialogHarness(dialogType);
+      const trigger = element.querySelector('[aria-label^=Actions]');
+      trigger.focus();
+
+      await press(trigger, 'Enter');
+      const menuItem = Array.from(document.body.querySelectorAll('[role=menuitem]')).find(
+        (item) => item.textContent.trim() === dialogType
+      );
+      await click(menuItem);
+      await flushMenuDialogHandoff();
+      const dialog = element.querySelector('[role=dialog]');
+
+      expect(dialog).toBeTruthy();
+      expect(document.activeElement).toBe(dialog.querySelector('button'));
+      expect(document.body.style.overflow).toBe('hidden');
+
+      await click(Array.from(dialog.querySelectorAll('button')).find(
+        (button) => button.textContent.trim() === 'Cancel'
+      ));
+      expect(element.querySelector('[role=dialog]')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+      expect(document.body.style.overflow).toBe('');
+    }
+  );
 
   it('disables the overflow trigger while this application is deleting', async () => {
     const onEdit = jest.fn();

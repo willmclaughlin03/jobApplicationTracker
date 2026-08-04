@@ -190,6 +190,7 @@ function cleanup() {
   }
 
   document.body.innerHTML = '';
+  document.body.style.overflow = '';
   container = null;
   root = null;
 }
@@ -235,6 +236,13 @@ describe('UpgradePlanModal', () => {
     expect(mockApiGet).toHaveBeenCalledTimes(1);
     expect(mockApiGet).toHaveBeenCalledWith('/api/billing/status');
     expect(mockStartCheckout).not.toHaveBeenCalled();
+    const dashboardCard = container.querySelector('section[aria-labelledby]');
+    expect(dashboardCard.className).toContain('dashboard-raised-panel');
+    expect(dashboardCard.className).not.toContain('bg-white');
+    expect(document.body.style.overflow).toBe('hidden');
+
+    rerenderModal(baseProps);
+    expect(document.body.style.overflow).toBe('');
   });
 
   it('enables Upgrade only after canonical eligibility and submits the catalog plan', async () => {

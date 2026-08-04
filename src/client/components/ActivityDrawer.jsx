@@ -1,3 +1,4 @@
+import { X } from 'lucide-react';
 import ActivityCalendar from './ActivityCalendar';
 import { useOverlayAccessibility } from '../hooks/useOverlayAccessibility';
 
@@ -22,7 +23,7 @@ export default function ActivityDrawer({ isOpen, onClose, jobs, selectedDates = 
       {/* Backdrop */}
       {isOpen && (
         <div
-          className="fixed inset-0 bg-black/40 z-30"
+          className="fixed inset-0 z-30 bg-[#010907]/80"
           onClick={onClose}
           aria-hidden="true"
         />
@@ -34,51 +35,55 @@ export default function ActivityDrawer({ isOpen, onClose, jobs, selectedDates = 
         role="dialog"
         aria-modal="true"
         aria-label="Activity calendar drawer"
-        className={`fixed inset-y-0 left-0 z-40 w-80 bg-white shadow-xl flex flex-col overflow-y-auto
-          transition-transform duration-200
-          ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}
+        aria-hidden={isOpen ? undefined : 'true'}
+        inert={isOpen ? undefined : ''}
+        tabIndex={-1}
+        className={`fixed inset-y-0 left-0 z-40 flex w-full max-w-[20rem] flex-col overflow-y-auto border-r border-dashboard-panel-border bg-dashboard-surface-raised text-dashboard-text shadow-2xl
+          dashboard-motion transition-transform
+          ${isOpen ? 'translate-x-0' : '-translate-x-full pointer-events-none'}`}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200">
-          <h2 className="text-sm font-semibold text-gray-800">Application Activity</h2>
+        <div className="flex items-center justify-between border-b border-dashboard-line px-4 py-3">
+          <h2 className="text-sm font-semibold text-dashboard-text">Application Activity</h2>
           <button
+            type="button"
             onClick={onClose}
             aria-label="Close activity drawer"
-            className="text-gray-400 hover:text-gray-600 transition-colors"
+            className="dashboard-focus-ring inline-flex min-h-9 min-w-9 items-center justify-center rounded-dashboard-control text-dashboard-muted transition-colors hover:bg-dashboard-surface-hover hover:text-dashboard-text"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
+            <X aria-hidden="true" size={19} />
           </button>
         </div>
 
         {/* Selected dates list */}
         {selectedDates.size > 0 && (
-          <div className="px-4 py-3 border-b border-gray-200">
+          <div className="border-b border-dashboard-line px-4 py-3">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+              <h3 className="text-xs font-medium uppercase tracking-wide text-dashboard-muted">
                 Selected Dates ({selectedDates.size}/7)
               </h3>
               <button
+                type="button"
                 onClick={onClearDates}
-                className="text-xs text-blue-500 hover:text-blue-700 transition-colors"
+                className="dashboard-focus-ring inline-flex min-h-9 items-center rounded-dashboard-control px-2 text-xs font-medium text-dashboard-accent-hover transition-colors hover:bg-dashboard-surface-hover"
               >
-                Clear all
+                Clear All
               </button>
             </div>
-            <ul className="space-y-1">
+            <ul className="divide-y divide-dashboard-line/70">
               {Array.from(selectedDates).sort().map(dateStr => {
                 const [y, m, d] = dateStr.split('-').map(Number);
                 const label = new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
                 return (
-                  <li key={dateStr} className="flex items-center justify-between text-sm text-gray-700">
+                  <li key={dateStr} className="flex min-h-9 items-center justify-between py-1 text-sm text-dashboard-text">
                     <span>{label}</span>
                     <button
+                      type="button"
                       onClick={() => onDateToggle(dateStr)}
                       aria-label={`Remove ${label}`}
-                      className="text-gray-400 hover:text-gray-600 transition-colors ml-2"
+                      className="dashboard-focus-ring ml-2 inline-flex min-h-9 min-w-9 items-center justify-center rounded-dashboard-control text-dashboard-muted transition-colors hover:bg-dashboard-surface-hover hover:text-dashboard-text"
                     >
-                      ✕
+                      <X aria-hidden="true" size={16} />
                     </button>
                   </li>
                 );
@@ -88,7 +93,7 @@ export default function ActivityDrawer({ isOpen, onClose, jobs, selectedDates = 
         )}
 
         {/* Calendar content */}
-        <div className="p-3 overflow-x-auto">
+        <div className="overflow-x-auto p-3">
           <ActivityCalendar jobs={jobs} selectedDates={selectedDates} onDateToggle={onDateToggle} />
         </div>
       </div>
