@@ -176,11 +176,7 @@ export default function Dashboard() {
   }
 
   if (authLoading) {
-    return (
-      <DashboardShell>
-        <DashboardSkeleton />
-      </DashboardShell>
-    );
+    return <DashboardSkeleton />;
   }
 
   /**

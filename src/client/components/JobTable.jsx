@@ -20,12 +20,12 @@ export default function JobTable({ jobs, onEdit, onDelete, deleting }) {
       <div className="dashboard-major-panel hidden overflow-hidden rounded-dashboard-panel bg-dashboard-surface lg:block">
         <table className="w-full table-fixed border-collapse" aria-label="Job applications">
           <colgroup>
-            <col className="w-[28%]" />
+            <col className="w-[27%]" />
             <col className="w-[14%]" />
             <col className="w-[16%]" />
             <col className="w-[15%]" />
-            <col className="w-[21%]" />
-            <col className="w-[6%]" />
+            <col className="w-[20%]" />
+            <col className="w-[8%]" />
           </colgroup>
           <thead className="bg-dashboard-surface-raised">
             <tr className="border-b border-dashboard-line">

@@ -48,12 +48,14 @@ describe('Skeleton', () => {
     Skeleton = require('../Skeleton').default;
   });
 
-  it('renders a div with the pulse + bg classes', () => {
+  it('renders a dashboard-scoped emerald pulse block', () => {
     const el = render(React.createElement(Skeleton));
     const div = el.firstChild;
     expect(div.tagName).toBe('DIV');
     expect(div.className).toContain('animate-pulse');
-    expect(div.className).toContain('bg-gray-200');
+    expect(div.className).toContain('dashboard-motion');
+    expect(div.className).toContain('bg-dashboard-surface-hover/80');
+    expect(div.className).not.toContain('bg-gray');
     expect(div.className).toContain('rounded');
   });
 

@@ -115,6 +115,21 @@ describe('JobTable', () => {
     expect(element.textContent).not.toContain('Page size');
   });
 
+  it('reserves an eight-percent desktop track for the 36px Actions control', () => {
+    const element = renderTable();
+    const columnClasses = Array.from(element.querySelectorAll('col'))
+      .map(column => column.className);
+
+    expect(columnClasses).toEqual([
+      'w-[27%]',
+      'w-[14%]',
+      'w-[16%]',
+      'w-[15%]',
+      'w-[20%]',
+      'w-[8%]',
+    ]);
+  });
+
   it('keeps direct mobile Edit/Delete actions with exact existing arguments', () => {
     const onEdit = jest.fn();
     const onDelete = jest.fn();
