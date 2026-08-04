@@ -2,18 +2,15 @@ import { useEffect, useRef, useState } from 'react';
 import DOMPurify from 'isomorphic-dompurify';
 import { Plus, Search, X } from 'lucide-react';
 import InfoTooltip from '../InfoTooltip';
-import ProfileDropdown from '../ProfileDropdown';
 
 /**
- * Render the Applications heading and existing workspace controls.
+ * Render the Applications heading and application-specific workspace controls.
  *
- * Purpose: Keeps heading, company search, account, tooltip, and Add
- * Application presentation together while Dashboard continues to own the
- * applied search criterion and form workflow.
+ * Purpose: Keeps heading, company search, tooltip, and Add Application
+ * presentation together while Dashboard owns the separate account row, the
+ * applied search criterion, and form workflow.
  *
  * @param {object} props - Page-owned toolbar state and callbacks.
- * @param {object} props.user - Authenticated user displayed by the account menu.
- * @param {Function} props.onSignOut - Existing sign-out workflow.
  * @param {string} props.searchQuery - Applied company-search criterion.
  * @param {Function} props.onSearchChange - Applies one sanitized company search.
  * @param {number} props.searchResetKey - Changes when Clear All cancels draft search work.
@@ -25,8 +22,6 @@ import ProfileDropdown from '../ProfileDropdown';
  * @returns {React.ReactElement} Presentational dashboard workspace toolbar.
  */
 export default function DashboardToolbar({
-  user,
-  onSignOut,
   searchQuery,
   onSearchChange,
   searchResetKey,
@@ -134,7 +129,6 @@ export default function DashboardToolbar({
           </div>
 
           <div className="flex min-w-0 flex-wrap items-center gap-2 md:flex-nowrap">
-            <ProfileDropdown user={user} onSignOut={onSignOut} />
             <InfoTooltip />
             <button
               ref={addTriggerRef}

@@ -200,6 +200,16 @@ describe('JobTableRow', () => {
     expect(cells[3].textContent).toContain('$100k - $130k');
   });
 
+  it('moves the right-aligned Actions cell twenty pixels inward', () => {
+    const row = renderRow();
+    const actionsCell = row.querySelectorAll('td')[5];
+    const actionsPositioner = actionsCell.firstElementChild;
+
+    expect(actionsCell.classList.contains('px-3')).toBe(true);
+    expect(actionsCell.classList.contains('text-right')).toBe(true);
+    expect(actionsPositioner.classList.contains('-translate-x-5')).toBe(true);
+  });
+
   it('renders zero epoch timestamps for both Added and status dates', () => {
     const row = renderRow({
       job: {

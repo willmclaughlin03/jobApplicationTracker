@@ -792,10 +792,18 @@ describe('Dashboard billing entry integration', () => {
     const element = renderDashboard();
     const filtersButton = findButtonByText(element, 'Filters');
     const activityButton = findButtonByText(element, 'Activity');
+    const accountControl = element.querySelector('[data-testid="account-control"]');
+    const applicationsPanel = element.querySelector(
+      'section[aria-labelledby="applications-heading"]'
+    );
 
     expect(element.querySelector('[data-testid="info-tooltip"]')).toBeTruthy();
-    expect(element.querySelector('[data-testid="account-control"]').textContent)
-      .toBe('member@example.com');
+    expect(accountControl.textContent).toBe('member@example.com');
+    expect(applicationsPanel.contains(accountControl)).toBe(false);
+    expect(
+      accountControl.compareDocumentPosition(applicationsPanel)
+      & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
     expect(mockLatestProfileProps.user.email).toBe('member@example.com');
     expect(element.querySelector('#applications-heading').textContent).toBe('Applications');
     expect(element.textContent).toContain('Track and manage your job applications.');

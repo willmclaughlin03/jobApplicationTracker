@@ -130,6 +130,18 @@ describe('JobTable', () => {
     ]);
   });
 
+  it('moves the right-aligned Actions heading twenty pixels inward', () => {
+    const element = renderTable();
+    const actionsHeader = Array.from(element.querySelectorAll('th')).find(
+      header => header.textContent.trim() === 'Actions'
+    );
+    const actionsLabel = actionsHeader.querySelector('span');
+
+    expect(actionsHeader.classList.contains('px-3')).toBe(true);
+    expect(actionsHeader.classList.contains('text-right')).toBe(true);
+    expect(actionsLabel.classList.contains('-translate-x-5')).toBe(true);
+  });
+
   it('keeps direct mobile Edit/Delete actions with exact existing arguments', () => {
     const onEdit = jest.fn();
     const onDelete = jest.fn();
