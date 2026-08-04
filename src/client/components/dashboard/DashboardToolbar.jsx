@@ -119,14 +119,14 @@ export default function DashboardToolbar({
               placeholder="Search companies..."
               disabled={searchDisabled}
               maxLength={100}
-              className="dashboard-control dashboard-focus-ring min-h-9 w-full py-2 pl-10 pr-10 text-dashboard-body text-dashboard-text placeholder:text-dashboard-muted/70 disabled:cursor-not-allowed disabled:opacity-50"
+              className="dashboard-control dashboard-focus-ring min-h-9 w-full py-2 pl-10 pr-12 text-dashboard-body text-dashboard-text placeholder:text-dashboard-muted/70 disabled:cursor-not-allowed disabled:opacity-50"
             />
             {localSearch && (
               <button
                 type="button"
                 onClick={handleClearSearch}
                 aria-label="Clear company search"
-                className="dashboard-focus-ring absolute right-1 top-1/2 inline-flex min-h-7 min-w-7 -translate-y-1/2 items-center justify-center rounded text-dashboard-muted transition-colors hover:text-dashboard-text"
+                className="dashboard-focus-ring absolute right-0 top-1/2 inline-flex min-h-9 min-w-9 -translate-y-1/2 items-center justify-center rounded-dashboard-control text-dashboard-muted transition-colors hover:text-dashboard-text"
               >
                 <X aria-hidden="true" size={15} />
               </button>

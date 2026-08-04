@@ -16,6 +16,9 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-02
 
+- `2026-08-03` - `Dashboard skeleton, responsive, and accessibility polish`: Rebuilt the auth-loading scaffold around the settled emerald DashboardShell geometry, kept billing loading decorative and fail-closed, protected 36px controls and desktop Actions width, and broadened dashboard-scoped reduced-motion handling.
+  - validation: 50 focused tests and all 1,312 non-integration unit tests pass; changed-file ESLint, contrast calculations, public-route leakage checks at 320px and 1492px, and diff checks pass.
+  - residual: The production build still requires the four approved process-environment names, and authenticated viewport, zoom, keyboard, and overlay QA remains unexercised without an approved signed-in browser state.
 - `2026-08-03` - `Dashboard Add focus ownership guard`: Canceled deferred Add Application focus restoration when a competing Dashboard overlay takes focus, including Edit opening before an active save settles.
 - `2026-08-03` - `Dashboard Add focus saving gate`: Deferred Add Application focus restoration until saving finishes when the inline form closes during an active mutation.
 - `2026-08-03` - `Staging CodeRabbit follow-ups`: Clarified dashboard filter-state intent, made the closed Activity drawer inaccessible and noninteractive, prevented Edit/Delete modal dismissal during active mutations, coupled validation tests to shared limits, added saving-state coverage, and limited both change logs to PR-push-only summaries.
