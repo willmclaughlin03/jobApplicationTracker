@@ -16,6 +16,9 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-02
 
+- `2026-08-05` - `Shared public error-page shell`: Extracted the approved emerald login frame, TrackTheApp brand, primary action treatment, and responsive 22-strand particle wave into shared public components, then applied them to every dedicated and framework error page with centered status content and preserved recovery behavior.
+  - validation: 44 focused tests, changed-file ESLint, the placeholder-only production build, and diff checks pass.
+  - residual: Interactive error-route viewport comparison remains unexercised because the in-app browser runtime was unavailable; repository-wide lint retains the pre-existing integration-test lint errors.
 - `2026-08-05` - `Login OAuth and portal motion recovery`: Extended dashboard motion tokens to portal-rendered controls and restored the login action after rejected OAuth initiation without clearing the successful redirect state.
   - validation: 18 focused tests, changed-file ESLint, and diff checks pass.
 - `2026-08-05` - `Login reference responsive refinement`: Moved TrackTheApp to the viewport gutter, widened the centered desktop sign-in surface, replaced the cropped dotted fills with a responsive 22-strand particle wave, and removed decorative mobile overflow while preserving OAuth behavior.
