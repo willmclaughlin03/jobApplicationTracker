@@ -16,6 +16,9 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-02
 
+- `2026-08-05` - `Login reference responsive refinement`: Moved TrackTheApp to the viewport gutter, widened the centered desktop sign-in surface, replaced the cropped dotted fills with a responsive 22-strand particle wave, and removed decorative mobile overflow while preserving OAuth behavior.
+  - validation: 6 focused login tests, changed-file ESLint, Tailwind compilation, diff checks, and rendered QA at 265x443, 360x640, 390x844, 844x390, 1024x768, and 1440x900 pass.
+  - residual: The production build preflight still requires its four named process-environment values.
 - `2026-08-04` - `Reference-aligned login redesign`: Replaced the public login's light card with a responsive emerald-noir canvas, compact TrackTheApp branding, an outlined Google OAuth action, and static accessibility-hidden dotted-wave artwork while preserving redirect and error behavior.
   - validation: 6 focused login tests, 34 dashboard regressions, all 1,322 non-integration unit tests, changed-file and repository lint outside the known integration-test lint target, Tailwind compilation, the placeholder-only production build, and diff checks pass.
   - residual: Interactive viewport comparison remains unexercised because the in-app browser runtime was unavailable.

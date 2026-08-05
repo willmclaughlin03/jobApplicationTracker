@@ -98,14 +98,18 @@
 .login-dotted-wave {
   position: absolute;
   inset-inline: 0;
-  bottom: -0.75rem;
+  bottom: 0;
   z-index: 0;
   width: 100%;
-  height: clamp(13rem, 40vh, 24rem);
+  height: clamp(14rem, 50vh, 27rem);
+  overflow: hidden;
   pointer-events: none;
-  opacity: 0.92;
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 18%, #000 84%, transparent 100%);
-  mask-image: linear-gradient(to bottom, transparent 0%, #000 18%, #000 84%, transparent 100%);
+  opacity: 0.96;
+}
+
+.login-wave-strand {
+  stroke-dasharray: 0 5px;
+  stroke-width: 1.7px;
 }
 
 .dashboard-root::before,
@@ -237,6 +241,28 @@
         rgb(var(--dash-accent) / 0.05) 49.2%,
         transparent 50.4%
       );
+  }
+}
+
+@media (min-width: 640px) {
+  .login-dotted-wave {
+    height: clamp(16rem, 50vh, 29rem);
+  }
+
+  .login-wave-strand {
+    stroke-dasharray: 0 12px;
+    stroke-width: 2.15px;
+  }
+}
+
+@media (max-height: 520px) and (min-width: 640px) {
+  .login-panel {
+    padding-bottom: 2rem;
+  }
+
+  .login-dotted-wave {
+    height: clamp(10rem, 50vh, 13rem);
+    opacity: 0.78;
   }
 }
 

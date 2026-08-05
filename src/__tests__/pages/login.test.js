@@ -132,6 +132,8 @@ describe('Login', () => {
   it('renders the emerald sign-in composition and hides its artwork', () => {
     const element = renderLogin();
     const themeRoot = element.querySelector('.login-root');
+    const brand = element.querySelector('[data-testid="login-brand"]');
+    const panel = element.querySelector('[data-testid="login-panel"]');
     const heading = element.querySelector('h1');
     const button = element.querySelector('button');
     const wave = element.querySelector('[data-testid="login-dotted-wave"]');
@@ -140,13 +142,16 @@ describe('Login', () => {
     expect(themeRoot).toBeTruthy();
     expect(themeRoot.classList.contains('mock-login-font-variable')).toBe(true);
     expect(element.querySelector('.login-frame')).toBeTruthy();
-    expect(element.textContent).toContain('TrackTheApp');
+    expect(brand.textContent).toContain('TrackTheApp');
+    expect(panel.classList.contains('max-w-lg')).toBe(true);
     expect(heading.textContent).toBe('Sign In');
     expect(button.textContent).toContain('Continue with Google');
     expect(button.classList.contains('dashboard-focus-ring')).toBe(true);
     expect(googleMark.getAttribute('aria-hidden')).toBe('true');
     expect(wave.getAttribute('aria-hidden')).toBe('true');
     expect(wave.getAttribute('focusable')).toBe('false');
+    expect(wave.getAttribute('preserveAspectRatio')).toBe('none');
+    expect(wave.querySelectorAll('[data-wave-strand="true"]')).toHaveLength(22);
   });
 
   it('keeps the themed shell while authentication is loading', () => {

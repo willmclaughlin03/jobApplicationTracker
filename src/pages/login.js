@@ -103,15 +103,21 @@ export default function Login() {
       <div className="login-frame">
         <LoginDottedWave />
 
-        <div className="relative z-10 mx-auto flex min-h-[100dvh] w-full max-w-5xl flex-col px-4 py-6 sm:px-8 sm:py-8">
-          <header className="flex items-center gap-2 text-dashboard-caption font-semibold tracking-tight text-dashboard-text">
+        <div className="relative z-10 flex min-h-[100dvh] w-full flex-col px-4 py-6 sm:px-8 sm:py-8">
+          <header
+            data-testid="login-brand"
+            className="flex items-center gap-2 text-dashboard-caption font-semibold tracking-tight text-dashboard-text"
+          >
             <span className="inline-flex h-4 w-4 items-center justify-center rounded-[0.2rem] border border-dashboard-accent/70 text-dashboard-accent">
               <ChartNoAxesCombined aria-hidden="true" size={11} strokeWidth={1.7} />
             </span>
             <span>TrackTheApp</span>
           </header>
 
-          <main className="mx-auto w-full max-w-md flex-1 pt-20 sm:flex sm:flex-col sm:justify-center sm:pb-32 sm:pt-0">
+          <main
+            data-testid="login-panel"
+            className="login-panel mx-auto w-full max-w-lg flex-1 pt-20 sm:flex sm:flex-col sm:justify-center sm:pb-24 sm:pt-0"
+          >
             {authLoading ? (
               <div
                 role="status"
@@ -123,7 +129,7 @@ export default function Login() {
               </div>
             ) : (
               <>
-                <h1 className="text-2xl font-semibold tracking-tight text-dashboard-text">
+                <h1 className="text-2xl font-semibold tracking-tight text-dashboard-text sm:text-[1.75rem] sm:leading-9">
                   Sign In
                 </h1>
                 <p className="mt-1 text-dashboard-caption text-dashboard-muted">
@@ -142,7 +148,7 @@ export default function Login() {
                 <button
                   type="button"
                   className={[
-                    'dashboard-focus-ring inline-flex min-h-11 w-full items-center rounded-dashboard-control border border-dashboard-accent/60 bg-dashboard-surface/45 px-3.5 py-2.5 text-dashboard-caption font-medium text-dashboard-text shadow-dashboard-panel transition-[background-color,border-color,box-shadow,opacity] duration-dashboard ease-dashboard hover:border-dashboard-accent-hover/80 hover:bg-dashboard-surface-raised/65 hover:shadow-[0_0_24px_rgb(var(--dash-accent)/0.16)] disabled:cursor-not-allowed disabled:opacity-60',
+                    'dashboard-focus-ring inline-flex min-h-11 w-full items-center rounded-dashboard-control border border-dashboard-accent/60 bg-dashboard-surface/45 px-3.5 py-2.5 text-dashboard-caption font-medium text-dashboard-text shadow-dashboard-panel transition-[background-color,border-color,box-shadow,opacity] duration-dashboard ease-dashboard hover:border-dashboard-accent-hover/80 hover:bg-dashboard-surface-raised/65 hover:shadow-[0_0_24px_rgb(var(--dash-accent)/0.16)] disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-12 sm:px-4 sm:py-3 sm:text-dashboard-body',
                     error ? 'mt-4' : 'mt-8',
                   ].join(' ')}
                   disabled={loading}
