@@ -103,7 +103,9 @@ describe('DashboardSkeleton', () => {
     expect(actionsHeader.classList.contains('px-3')).toBe(true);
     expect(actionsCell.classList.contains('px-3')).toBe(true);
     expect(actionsHeader.firstElementChild.classList.contains('-translate-x-5')).toBe(true);
+    expect(actionsHeader.firstElementChild.classList.contains('ml-auto')).toBe(true);
     expect(actionsCell.firstElementChild.classList.contains('-translate-x-5')).toBe(true);
+    expect(actionsCell.firstElementChild.classList.contains('ml-auto')).toBe(true);
   });
 
   it('exposes one concise loading status outside the decorative scaffold', () => {

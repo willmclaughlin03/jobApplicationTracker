@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-02
 
+- `2026-08-04` - `Actions alignment class regression coverage`: Added explicit assertions for the inline-block Actions label and automatic right alignment on both loading-table Actions placeholders.
+  - validation: 16 focused tests and diff checks pass.
 - `2026-08-04` - `Dashboard account and Actions alignment polish`: Moved the authenticated account menu into a separate top-right row above Applications and shifted desktop Actions labels and controls 20px left, with matching loading geometry and regression coverage.
   - validation: 64 focused tests, changed-file ESLint, and diff checks pass; all 1,316 non-integration unit tests were verified in this session with the sandbox-sensitive subprocess suite rerun outside the sandbox.
   - residual: The production build still requires the four approved process-environment names, and authenticated dashboard visual QA remains unexercised without an approved signed-in browser state.
