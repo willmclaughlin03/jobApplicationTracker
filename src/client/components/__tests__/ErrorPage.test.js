@@ -23,6 +23,14 @@ jest.mock('next/router', () => ({
   }),
 }));
 
+/** Replace Next's font loader with a deterministic public-shell CSS hook. */
+jest.mock('next/font/google', () => ({
+  Inter: jest.fn().mockReturnValue({
+    className: 'mock-public-font',
+    variable: 'mock-public-font-variable',
+  }),
+}));
+
 jest.mock('next/head', () => {
   const React = require('react');
 
@@ -121,7 +129,19 @@ describe('ErrorPage', () => {
 
   it('renders the 429 recovery page with vague public-safe copy', () => {
     const el = render(React.createElement(ErrorPage, ERROR_PAGE_CONTENT[429]));
+    const themeRoot = el.querySelector('.public-page-root');
+    const brand = el.querySelector('[data-testid="public-page-brand"]');
+    const panel = el.querySelector('[data-testid="error-page-panel"]');
+    const statusCode = el.querySelector('[data-testid="error-status-code"]');
+    const wave = el.querySelector('[data-testid="public-dotted-wave"]');
 
+    expect(themeRoot).toBeTruthy();
+    expect(themeRoot.classList.contains('mock-public-font-variable')).toBe(true);
+    expect(brand.textContent).toContain('TrackTheApp');
+    expect(panel.classList.contains('text-center')).toBe(true);
+    expect(statusCode.textContent).toBe('429');
+    expect(statusCode.classList.contains('text-dashboard-accent')).toBe(true);
+    expect(wave.getAttribute('aria-hidden')).toBe('true');
     expect(el.textContent).toContain('429');
     expect(el.textContent).toContain('Too many requests');
     expect(el.textContent).toContain('Please wait a moment');
@@ -138,6 +158,9 @@ describe('ErrorPage', () => {
     expect(link).toBeTruthy();
     expect(link.getAttribute('href')).toBe('/');
     expect(link.textContent).toBe('Go to dashboard');
+    expect(link.classList.contains('dashboard-focus-ring')).toBe(true);
+    expect(link.classList.contains('border-dashboard-accent/60')).toBe(true);
+    expect(link.querySelector('svg').getAttribute('aria-hidden')).toBe('true');
   });
 
   it('uses browser history for the back action', () => {

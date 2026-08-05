@@ -25,7 +25,7 @@ jest.mock('next/router', () => ({
   useRouter: () => mockRouter,
 }));
 
-/** Replace Next's font loader with a deterministic login CSS hook. */
+/** Replace Next's font loader with a deterministic public-shell CSS hook. */
 jest.mock('next/font/google', () => ({
   Inter: jest.fn().mockReturnValue({
     className: 'mock-login-font',
@@ -131,17 +131,17 @@ describe('Login', () => {
 
   it('renders the emerald sign-in composition and hides its artwork', () => {
     const element = renderLogin();
-    const themeRoot = element.querySelector('.login-root');
-    const brand = element.querySelector('[data-testid="login-brand"]');
+    const themeRoot = element.querySelector('.public-page-root');
+    const brand = element.querySelector('[data-testid="public-page-brand"]');
     const panel = element.querySelector('[data-testid="login-panel"]');
     const heading = element.querySelector('h1');
     const button = element.querySelector('button');
-    const wave = element.querySelector('[data-testid="login-dotted-wave"]');
+    const wave = element.querySelector('[data-testid="public-dotted-wave"]');
     const googleMark = element.querySelector('[data-testid="google-mark"]');
 
     expect(themeRoot).toBeTruthy();
     expect(themeRoot.classList.contains('mock-login-font-variable')).toBe(true);
-    expect(element.querySelector('.login-frame')).toBeTruthy();
+    expect(element.querySelector('.public-page-frame')).toBeTruthy();
     expect(brand.textContent).toContain('TrackTheApp');
     expect(panel.classList.contains('max-w-lg')).toBe(true);
     expect(heading.textContent).toBe('Sign In');
@@ -164,7 +164,7 @@ describe('Login', () => {
     const element = renderLogin();
     const status = element.querySelector('[role="status"]');
 
-    expect(element.querySelector('.login-root')).toBeTruthy();
+    expect(element.querySelector('.public-page-root')).toBeTruthy();
     expect(status.textContent).toContain('Loading...');
     expect(status.getAttribute('aria-live')).toBe('polite');
     expect(element.querySelector('button')).toBeNull();
@@ -211,6 +211,27 @@ describe('Login', () => {
     });
   });
 
+  /** Verify same-batch clicks cannot start more than one OAuth handoff. */
+  it('ignores a second sign-in click before the loading state commits', async () => {
+    const deferred = createDeferred();
+    mockSignInWithOAuth.mockReturnValue(deferred.promise);
+    const element = renderLogin();
+    const button = element.querySelector('button');
+
+    act(() => {
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(mockSignInWithOAuth).toHaveBeenCalledTimes(1);
+    expect(mockSignInWithOAuth).toHaveBeenCalledWith('google');
+
+    await act(async () => {
+      deferred.resolve({ error: null });
+      await deferred.promise;
+    });
+  });
+
   it('restores the OAuth action and shows a provider initiation error', async () => {
     mockSignInWithOAuth.mockResolvedValue({
       error: { message: 'Google sign-in is temporarily unavailable.' },
@@ -227,6 +248,13 @@ describe('Login', () => {
     expect(button.disabled).toBe(false);
     expect(button.hasAttribute('aria-busy')).toBe(false);
     expect(button.textContent).toContain('Continue with Google');
+    expect(mockSignInWithOAuth).toHaveBeenCalledTimes(1);
+
+    click(button);
+    await flushEffects();
+
+    expect(mockSignInWithOAuth).toHaveBeenCalledTimes(2);
+    expect(mockSignInWithOAuth).toHaveBeenNthCalledWith(2, 'google');
   });
 
   /** Verify rejected OAuth requests recover the action without exposing raw errors. */
@@ -244,5 +272,12 @@ describe('Login', () => {
     expect(button.disabled).toBe(false);
     expect(button.hasAttribute('aria-busy')).toBe(false);
     expect(button.textContent).toContain('Continue with Google');
+    expect(mockSignInWithOAuth).toHaveBeenCalledTimes(1);
+
+    click(button);
+    await flushEffects();
+
+    expect(mockSignInWithOAuth).toHaveBeenCalledTimes(2);
+    expect(mockSignInWithOAuth).toHaveBeenNthCalledWith(2, 'google');
   });
 });
