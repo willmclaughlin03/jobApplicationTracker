@@ -16,6 +16,14 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-02
 
+- `2026-08-05` - `Login OAuth and portal motion recovery`: Extended dashboard motion tokens to portal-rendered controls and restored the login action after rejected OAuth initiation without clearing the successful redirect state.
+  - validation: 18 focused tests, changed-file ESLint, and diff checks pass.
+- `2026-08-05` - `Login reference responsive refinement`: Moved TrackTheApp to the viewport gutter, widened the centered desktop sign-in surface, replaced the cropped dotted fills with a responsive 22-strand particle wave, and removed decorative mobile overflow while preserving OAuth behavior.
+  - validation: 6 focused login tests, changed-file ESLint, Tailwind compilation, diff checks, and rendered QA at 265x443, 360x640, 390x844, 844x390, 1024x768, and 1440x900 pass.
+  - residual: The production build preflight still requires its four named process-environment values.
+- `2026-08-04` - `Reference-aligned login redesign`: Replaced the public login's light card with a responsive emerald-noir canvas, compact TrackTheApp branding, an outlined Google OAuth action, and static accessibility-hidden dotted-wave artwork while preserving redirect and error behavior.
+  - validation: 6 focused login tests, 34 dashboard regressions, all 1,322 non-integration unit tests, changed-file and repository lint outside the known integration-test lint target, Tailwind compilation, the placeholder-only production build, and diff checks pass.
+  - residual: Interactive viewport comparison remains unexercised because the in-app browser runtime was unavailable.
 - `2026-08-04` - `Actions alignment class regression coverage`: Added explicit assertions for the inline-block Actions label and automatic right alignment on both loading-table Actions placeholders.
   - validation: 16 focused tests and diff checks pass.
 - `2026-08-04` - `Dashboard account and Actions alignment polish`: Moved the authenticated account menu into a separate top-right row above Applications and shifted desktop Actions labels and controls 20px left, with matching loading geometry and regression coverage.
