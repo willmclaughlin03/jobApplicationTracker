@@ -3,7 +3,8 @@
 @tailwind utilities;
 
 .dashboard-root,
-.dashboard-portal-theme {
+.dashboard-portal-theme,
+.login-root {
   --dash-canvas: 2 15 13;
   --dash-rail: 3 20 17;
   --dash-surface: 6 31 24;
@@ -49,6 +50,66 @@
     radial-gradient(circle at 86% 100%, rgb(13 148 101 / 0.09), transparent 44%),
     radial-gradient(circle at 5% 76%, rgb(34 197 94 / 0.05), transparent 32%),
     linear-gradient(135deg, #020f0d 0%, #031713 52%, #020d0c 100%);
+}
+
+.login-root {
+  position: relative;
+  isolation: isolate;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: clip;
+  background:
+    radial-gradient(circle at 84% 0%, rgb(var(--dash-accent) / 0.12), transparent 34%),
+    radial-gradient(circle at 14% 100%, rgb(13 148 101 / 0.08), transparent 42%),
+    linear-gradient(152deg, #020e0c 0%, #031713 48%, #010a09 100%);
+}
+
+.login-root::before,
+.login-root::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.login-root::before {
+  background:
+    radial-gradient(ellipse at 78% 8%, rgb(var(--dash-accent) / 0.055), transparent 31%),
+    linear-gradient(124deg, transparent 24%, rgb(var(--dash-accent) / 0.018) 58%, transparent 82%);
+}
+
+.login-root::after {
+  background: radial-gradient(ellipse at center, transparent 42%, rgb(0 5 4 / 0.5) 100%);
+}
+
+.login-frame {
+  position: relative;
+  z-index: 1;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: clip;
+  border-radius: var(--dash-radius-panel) var(--dash-radius-panel) 0 0;
+  box-shadow:
+    inset 0 0 0 1px rgb(var(--dash-accent) / 0.34),
+    inset 0 1px 18px rgb(var(--dash-accent) / 0.035);
+}
+
+.login-dotted-wave {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 0;
+  width: 100%;
+  height: clamp(14rem, 50vh, 27rem);
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0.96;
+}
+
+.login-wave-strand {
+  stroke-dasharray: 0 5px;
+  stroke-width: 1.7px;
 }
 
 .dashboard-root::before,
@@ -121,12 +182,15 @@
 
 @layer utilities {
   .dashboard-root .dashboard-focus-ring:focus-visible,
-  .dashboard-portal-theme .dashboard-focus-ring:focus-visible {
+  .dashboard-portal-theme .dashboard-focus-ring:focus-visible,
+  .login-root .dashboard-focus-ring:focus-visible {
     outline: 2px solid var(--dash-focus-ring);
     outline-offset: 2px;
   }
 
-  .dashboard-root .dashboard-motion {
+  .dashboard-root .dashboard-motion,
+  .dashboard-portal-theme .dashboard-motion,
+  .login-root .dashboard-motion {
     transition-duration: var(--dash-motion-duration);
     transition-timing-function: var(--dash-motion-easing);
   }
@@ -181,11 +245,35 @@
   }
 }
 
+@media (min-width: 640px) {
+  .login-dotted-wave {
+    height: clamp(16rem, 50vh, 29rem);
+  }
+
+  .login-wave-strand {
+    stroke-dasharray: 0 12px;
+    stroke-width: 2.15px;
+  }
+}
+
+@media (max-height: 520px) and (min-width: 640px) {
+  .login-panel {
+    padding-bottom: 2rem;
+  }
+
+  .login-dotted-wave {
+    height: clamp(10rem, 50vh, 13rem);
+    opacity: 0.78;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dashboard-root,
   .dashboard-root *,
   .dashboard-portal-theme,
   .dashboard-portal-theme *,
+  .login-root,
+  .login-root *,
   .animate-skeleton-in {
     transition-duration: 0.01ms !important;
     transition-delay: 0ms !important;
