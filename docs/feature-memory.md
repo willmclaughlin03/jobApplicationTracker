@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-02
 
+- `2026-08-05` - `Login OAuth duplicate-click guard`: Added a synchronous in-flight latch so rapid Google sign-in clicks cannot start multiple OAuth handoffs before React commits the loading state, while failed initiations remain retryable.
+  - validation: 8 focused login tests, changed-file ESLint, and diff checks pass.
 - `2026-08-05` - `Shared public error-page shell`: Extracted the approved emerald login frame, TrackTheApp brand, primary action treatment, and responsive 22-strand particle wave into shared public components, then applied them to every dedicated and framework error page with centered status content and preserved recovery behavior.
   - validation: 44 focused tests, changed-file ESLint, the placeholder-only production build, and diff checks pass.
   - residual: Interactive error-route viewport comparison remains unexercised because the in-app browser runtime was unavailable; repository-wide lint retains the pre-existing integration-test lint errors.

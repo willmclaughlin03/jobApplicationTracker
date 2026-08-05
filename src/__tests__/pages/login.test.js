@@ -211,6 +211,27 @@ describe('Login', () => {
     });
   });
 
+  /** Verify same-batch clicks cannot start more than one OAuth handoff. */
+  it('ignores a second sign-in click before the loading state commits', async () => {
+    const deferred = createDeferred();
+    mockSignInWithOAuth.mockReturnValue(deferred.promise);
+    const element = renderLogin();
+    const button = element.querySelector('button');
+
+    act(() => {
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(mockSignInWithOAuth).toHaveBeenCalledTimes(1);
+    expect(mockSignInWithOAuth).toHaveBeenCalledWith('google');
+
+    await act(async () => {
+      deferred.resolve({ error: null });
+      await deferred.promise;
+    });
+  });
+
   it('restores the OAuth action and shows a provider initiation error', async () => {
     mockSignInWithOAuth.mockResolvedValue({
       error: { message: 'Google sign-in is temporarily unavailable.' },

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import { ArrowRight } from 'lucide-react';
 import { useAuth } from '../client/contexts/AuthContext';
@@ -56,6 +56,7 @@ function GoogleMark() {
 export default function Login() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const signInPendingRef = useRef(false);
   const { signInWithOAuth, user, loading: authLoading } = useAuth();
   const router = useRouter();
 
@@ -78,6 +79,11 @@ export default function Login() {
    * @returns {Promise<void>} Resolves only when initiation fails or navigation stalls.
    */
   const handleSignIn = async () => {
+    if (signInPendingRef.current) {
+      return;
+    }
+
+    signInPendingRef.current = true;
     setError('');
     setLoading(true);
 
@@ -92,6 +98,7 @@ export default function Login() {
       setError('Failed to initiate sign in.');
     }
 
+    signInPendingRef.current = false;
     setLoading(false);
   };
 
