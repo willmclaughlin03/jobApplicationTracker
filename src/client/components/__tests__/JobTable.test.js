@@ -139,6 +139,7 @@ describe('JobTable', () => {
 
     expect(actionsHeader.classList.contains('px-3')).toBe(true);
     expect(actionsHeader.classList.contains('text-right')).toBe(true);
+    expect(actionsLabel.classList.contains('inline-block')).toBe(true);
     expect(actionsLabel.classList.contains('-translate-x-5')).toBe(true);
   });
 
