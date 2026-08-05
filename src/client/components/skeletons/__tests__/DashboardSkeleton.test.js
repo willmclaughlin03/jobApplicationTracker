@@ -77,8 +77,35 @@ describe('DashboardSkeleton', () => {
     expect(shell.classList.contains('mock-dashboard-font-variable')).toBe(true);
     expect(element.querySelector('[data-testid="skeleton-navigation"]')).toBeTruthy();
     expect(element.querySelector('[data-testid="skeleton-filters"]')).toBeTruthy();
+    expect(element.querySelector('[data-testid="skeleton-account-row"]')).toBeTruthy();
     expect(element.querySelector('[data-testid="skeleton-toolbar"]')).toBeTruthy();
     expect(element.querySelector('[data-testid="skeleton-pagination"]')).toBeTruthy();
+  });
+
+  it('keeps the account placeholder above and outside the Applications toolbar', () => {
+    const element = render(React.createElement(DashboardSkeleton));
+    const accountRow = element.querySelector('[data-testid="skeleton-account-row"]');
+    const toolbar = element.querySelector('[data-testid="skeleton-toolbar"]');
+
+    expect(toolbar.contains(accountRow)).toBe(false);
+    expect(
+      accountRow.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(accountRow.classList.contains('justify-end')).toBe(true);
+  });
+
+  it('matches the twenty-pixel inward Actions alignment in the loading table', () => {
+    const element = render(React.createElement(DashboardSkeleton));
+    const actionsHeader = element.querySelectorAll('th')[5];
+    const actionsCell = element.querySelector('[data-testid="skeleton-row"]')
+      .querySelectorAll('td')[5];
+
+    expect(actionsHeader.classList.contains('px-3')).toBe(true);
+    expect(actionsCell.classList.contains('px-3')).toBe(true);
+    expect(actionsHeader.firstElementChild.classList.contains('-translate-x-5')).toBe(true);
+    expect(actionsHeader.firstElementChild.classList.contains('ml-auto')).toBe(true);
+    expect(actionsCell.firstElementChild.classList.contains('-translate-x-5')).toBe(true);
+    expect(actionsCell.firstElementChild.classList.contains('ml-auto')).toBe(true);
   });
 
   it('exposes one concise loading status outside the decorative scaffold', () => {

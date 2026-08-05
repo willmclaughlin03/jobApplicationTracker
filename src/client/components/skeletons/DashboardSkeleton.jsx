@@ -94,6 +94,13 @@ export default function DashboardSkeleton() {
           filtersExpanded
         >
           <main className="min-w-0 px-3 py-4 sm:px-4 lg:px-5 wide:px-6">
+            <div
+              data-testid="skeleton-account-row"
+              className="mb-3 flex min-w-0 justify-end"
+            >
+              <Skeleton className="h-9 w-52 max-w-full" />
+            </div>
+
             <section
               data-testid="skeleton-toolbar"
               className="dashboard-major-panel rounded-dashboard-panel bg-dashboard-surface/90 px-4 py-4 sm:px-5"
@@ -107,7 +114,6 @@ export default function DashboardSkeleton() {
                 <div className="flex flex-col gap-3 md:flex-row md:items-center">
                   <Skeleton className="h-9 min-w-0 flex-1" />
                   <div className="flex min-w-0 flex-wrap items-center gap-2 md:flex-nowrap">
-                    <Skeleton className="h-9 w-36 max-w-full" />
                     <Skeleton className="h-9 w-9 rounded-full" />
                     <Skeleton className="h-9 w-36 flex-1 sm:flex-none" />
                   </div>
@@ -129,8 +135,13 @@ export default function DashboardSkeleton() {
                   <thead className="bg-dashboard-surface-raised">
                     <tr className="border-b border-dashboard-line">
                       {Array.from({ length: 6 }).map((_, index) => (
-                        <th key={index} className="px-3 py-3">
-                          <Skeleton className="h-3 w-full max-w-20" />
+                        <th
+                          key={index}
+                          className="px-3 py-3"
+                        >
+                          <Skeleton
+                            className={`h-3 w-full max-w-20 ${index === 5 ? 'ml-auto -translate-x-5' : ''}`}
+                          />
                         </th>
                       ))}
                     </tr>
@@ -153,7 +164,7 @@ export default function DashboardSkeleton() {
                         </td>
                         <td className="px-3 py-3"><Skeleton className="h-4 w-full" /></td>
                         <td className="px-3 py-3"><Skeleton className="h-4 w-full" /></td>
-                        <td className="px-3 py-3"><Skeleton className="ml-auto h-9 w-9" /></td>
+                        <td className="px-3 py-3"><Skeleton className="ml-auto h-9 w-9 -translate-x-5" /></td>
                       </tr>
                     ))}
                   </tbody>

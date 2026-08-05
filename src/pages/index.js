@@ -9,6 +9,7 @@ import EditModal from '../client/components/EditModal';
 import DeleteModal from '../client/components/DeleteModal';
 import NextPageButton from '../client/components/NextPageButton';
 import JobStatsSidebar from '../client/components/JobStatsSidebar';
+import ProfileDropdown from '../client/components/ProfileDropdown';
 import Spinner from '../client/components/Spinner';
 import DashboardSkeleton from '../client/components/skeletons/DashboardSkeleton';
 import DashboardShell from '../client/components/dashboard/DashboardShell';
@@ -426,9 +427,11 @@ export default function Dashboard() {
       )}
     >
       <main className="min-w-0 px-3 py-4 sm:px-4 lg:px-5 wide:px-6">
+        <div className="mb-3 flex min-w-0 justify-end">
+          <ProfileDropdown user={user} onSignOut={handleSignOut} />
+        </div>
+
         <DashboardToolbar
-          user={user}
-          onSignOut={handleSignOut}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
           searchResetKey={searchResetKey}
