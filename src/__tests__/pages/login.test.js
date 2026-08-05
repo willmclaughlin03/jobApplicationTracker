@@ -248,6 +248,13 @@ describe('Login', () => {
     expect(button.disabled).toBe(false);
     expect(button.hasAttribute('aria-busy')).toBe(false);
     expect(button.textContent).toContain('Continue with Google');
+    expect(mockSignInWithOAuth).toHaveBeenCalledTimes(1);
+
+    click(button);
+    await flushEffects();
+
+    expect(mockSignInWithOAuth).toHaveBeenCalledTimes(2);
+    expect(mockSignInWithOAuth).toHaveBeenNthCalledWith(2, 'google');
   });
 
   /** Verify rejected OAuth requests recover the action without exposing raw errors. */
@@ -265,5 +272,12 @@ describe('Login', () => {
     expect(button.disabled).toBe(false);
     expect(button.hasAttribute('aria-busy')).toBe(false);
     expect(button.textContent).toContain('Continue with Google');
+    expect(mockSignInWithOAuth).toHaveBeenCalledTimes(1);
+
+    click(button);
+    await flushEffects();
+
+    expect(mockSignInWithOAuth).toHaveBeenCalledTimes(2);
+    expect(mockSignInWithOAuth).toHaveBeenNthCalledWith(2, 'google');
   });
 });
