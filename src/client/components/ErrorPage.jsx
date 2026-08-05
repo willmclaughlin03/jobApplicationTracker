@@ -1,7 +1,10 @@
 import Head from 'next/head';
-import Image from 'next/image';
 import { useRouter } from 'next/router';
+import { ArrowRight } from 'lucide-react';
 import { ERROR_STATUS_CODES } from '../../shared/constants/errorStatusCodes';
+import PublicPageShell, {
+  PUBLIC_PRIMARY_ACTION_CLASS_NAME,
+} from './public/PublicPageShell';
 
 export { ERROR_STATUS_CODES };
 
@@ -135,53 +138,64 @@ export default function ErrorPage({
         <meta name="robots" content="noindex" />
       </Head>
 
-      <main className="min-h-screen bg-gray-100 px-5 py-10 flex items-center justify-center">
+      <PublicPageShell
+        contentTestId="error-page-panel"
+        contentClassName="text-center"
+      >
         <section
           aria-labelledby="error-page-title"
-          className="w-full max-w-lg bg-white border border-gray-200 rounded-lg shadow-sm px-7 py-8 text-center"
+          className="w-full"
         >
-          <Image
-            src="/favicon.png"
-            alt=""
-            aria-hidden="true"
-            width={48}
-            height={48}
-            className="mx-auto mb-5 h-12 w-12"
-          />
-
-          <p className="text-sm font-semibold text-blue-600 mb-2">{statusCode}</p>
-          <h1 id="error-page-title" className="text-2xl font-semibold text-gray-900 mb-3">
+          <p
+            data-testid="error-status-code"
+            className="text-6xl font-semibold leading-none tracking-tight text-dashboard-accent sm:text-7xl"
+          >
+            {statusCode}
+          </p>
+          <h1
+            id="error-page-title"
+            className="mt-4 text-2xl font-semibold tracking-tight text-dashboard-text sm:text-[1.75rem] sm:leading-9"
+          >
             {title}
           </h1>
-          <p className="text-sm text-gray-600 leading-6">{description}</p>
-          <p className="text-sm text-gray-500 leading-6 mt-2">{guidance}</p>
+          <p className="mt-3 text-dashboard-body text-dashboard-muted">{description}</p>
+          <p className="mt-1 text-dashboard-caption text-dashboard-muted/90">{guidance}</p>
 
-          <div className="mt-7 flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-3">
+          <div className="mt-8">
             <a
               href={primaryHref}
-              className="inline-flex items-center justify-center rounded-md bg-blue-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+              className={[PUBLIC_PRIMARY_ACTION_CLASS_NAME, 'relative justify-center'].join(' ')}
             >
-              {primaryLabel}
+              <span>{primaryLabel}</span>
+              <ArrowRight
+                aria-hidden="true"
+                size={17}
+                strokeWidth={1.8}
+                className="absolute right-3.5 shrink-0 text-dashboard-accent sm:right-4"
+              />
             </a>
-            <button
-              type="button"
-              onClick={handleBack}
-              className="inline-flex items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
-            >
-              Back
-            </button>
-            {showRetry && (
+
+            <div className="mt-3 flex min-h-9 items-center justify-center gap-2">
               <button
                 type="button"
-                onClick={handleRetry}
-                className="inline-flex items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                onClick={handleBack}
+                className="dashboard-focus-ring inline-flex min-h-9 items-center justify-center rounded-dashboard-control px-3 text-dashboard-caption font-medium text-dashboard-muted transition-colors hover:bg-dashboard-surface/55 hover:text-dashboard-text"
               >
-                Try again
+                Back
               </button>
-            )}
+              {showRetry && (
+                <button
+                  type="button"
+                  onClick={handleRetry}
+                  className="dashboard-focus-ring inline-flex min-h-9 items-center justify-center rounded-dashboard-control px-3 text-dashboard-caption font-medium text-dashboard-muted transition-colors hover:bg-dashboard-surface/55 hover:text-dashboard-text"
+                >
+                  Try again
+                </button>
+              )}
+            </div>
           </div>
         </section>
-      </main>
+      </PublicPageShell>
     </>
   );
 }

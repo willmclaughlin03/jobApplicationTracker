@@ -190,7 +190,7 @@ describe('DashboardSkeleton', () => {
       if (
         node.type === 'rule'
         && node.selector.includes('.dashboard-root .dashboard-motion')
-        && node.selector.includes('.login-root .dashboard-motion')
+        && node.selector.includes('.public-page-root .dashboard-motion')
       ) {
         motionRule = node;
         break;

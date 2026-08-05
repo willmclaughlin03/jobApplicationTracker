@@ -1,7 +1,7 @@
 const WAVE_STRAND_COUNT = 22;
 
 /**
- * Build one depth row in the login particle mesh.
+ * Build one depth row in the public-page particle mesh.
  *
  * Purpose: Varies the curve, opacity, and dot phase by row so the inexpensive
  * static SVG reads as a dimensional particle surface at any viewport ratio.
@@ -41,26 +41,25 @@ const WAVE_STRANDS = Array.from(
 );
 
 /**
- * Render the login page's static dotted emerald particle wave.
+ * Render the shared public-page static dotted emerald particle wave.
  *
- * Purpose: Recreates the supplied reference's lower-canvas visual weight with
- * responsive vector geometry instead of a raster screenshot, remote asset, or
- * animated effect. The artwork is decorative and never interactive.
+ * Purpose: Keeps login and full-page errors on identical responsive vector
+ * artwork without a raster asset, remote request, animation, or interaction.
  *
  * @returns {React.ReactElement} Accessibility-hidden responsive wave artwork.
  */
-export default function LoginDottedWave() {
+export default function PublicDottedWave() {
   return (
     <svg
-      data-testid="login-dotted-wave"
+      data-testid="public-dotted-wave"
       aria-hidden="true"
       focusable="false"
       viewBox="0 0 100 100"
       preserveAspectRatio="none"
-      className="login-dotted-wave text-dashboard-accent"
+      className="public-page-dotted-wave text-dashboard-accent"
     >
       <defs>
-        <linearGradient id="login-wave-fade" x1="0" y1="0" x2="0" y2="1">
+        <linearGradient id="public-wave-fade" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0" stopColor="white" stopOpacity="0" />
           <stop offset="0.12" stopColor="white" stopOpacity="0.18" />
           <stop offset="0.3" stopColor="white" stopOpacity="0.78" />
@@ -68,12 +67,12 @@ export default function LoginDottedWave() {
           <stop offset="0.9" stopColor="white" stopOpacity="0.72" />
           <stop offset="1" stopColor="white" stopOpacity="0.08" />
         </linearGradient>
-        <mask id="login-wave-opacity-mask">
-          <rect width="100" height="100" fill="url(#login-wave-fade)" />
+        <mask id="public-wave-opacity-mask">
+          <rect width="100" height="100" fill="url(#public-wave-fade)" />
         </mask>
       </defs>
 
-      <g mask="url(#login-wave-opacity-mask)">
+      <g mask="url(#public-wave-opacity-mask)">
         {WAVE_STRANDS.map((strand, rowIndex) => (
           <path
             key={rowIndex}
@@ -85,7 +84,7 @@ export default function LoginDottedWave() {
             strokeLinecap="round"
             vectorEffect="non-scaling-stroke"
             opacity={strand.opacity}
-            className="login-wave-strand"
+            className="public-page-wave-strand"
           />
         ))}
       </g>

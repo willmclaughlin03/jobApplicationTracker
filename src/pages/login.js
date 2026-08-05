@@ -1,16 +1,11 @@
-import { useEffect, useState } from 'react';
-import { Inter } from 'next/font/google';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
-import { ArrowRight, ChartNoAxesCombined } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
 import { useAuth } from '../client/contexts/AuthContext';
-import LoginDottedWave from '../client/components/auth/LoginDottedWave';
+import PublicPageShell, {
+  PUBLIC_PRIMARY_ACTION_CLASS_NAME,
+} from '../client/components/public/PublicPageShell';
 import Spinner from '../client/components/Spinner';
-
-const loginFont = Inter({
-  subsets: ['latin'],
-  display: 'swap',
-  variable: '--font-dashboard',
-});
 
 /**
  * Render the compact four-color Google mark used by the OAuth action.
@@ -61,6 +56,7 @@ function GoogleMark() {
 export default function Login() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const signInPendingRef = useRef(false);
   const { signInWithOAuth, user, loading: authLoading } = useAuth();
   const router = useRouter();
 
@@ -83,6 +79,11 @@ export default function Login() {
    * @returns {Promise<void>} Resolves only when initiation fails or navigation stalls.
    */
   const handleSignIn = async () => {
+    if (signInPendingRef.current) {
+      return;
+    }
+
+    signInPendingRef.current = true;
     setError('');
     setLoading(true);
 
@@ -97,6 +98,7 @@ export default function Login() {
       setError('Failed to initiate sign in.');
     }
 
+    signInPendingRef.current = false;
     setLoading(false);
   };
 
@@ -105,82 +107,61 @@ export default function Login() {
   }
 
   return (
-    <div className={[loginFont.variable, 'login-root', 'font-dashboard'].join(' ')}>
-      <div className="login-frame">
-        <LoginDottedWave />
-
-        <div className="relative z-10 flex min-h-[100dvh] w-full flex-col px-4 py-6 sm:px-8 sm:py-8">
-          <header
-            data-testid="login-brand"
-            className="flex items-center gap-2 text-dashboard-caption font-semibold tracking-tight text-dashboard-text"
-          >
-            <span className="inline-flex h-4 w-4 items-center justify-center rounded-[0.2rem] border border-dashboard-accent/70 text-dashboard-accent">
-              <ChartNoAxesCombined aria-hidden="true" size={11} strokeWidth={1.7} />
-            </span>
-            <span>TrackTheApp</span>
-          </header>
-
-          <main
-            data-testid="login-panel"
-            className="login-panel mx-auto w-full max-w-lg flex-1 pt-20 sm:flex sm:flex-col sm:justify-center sm:pb-24 sm:pt-0"
-          >
-            {authLoading ? (
-              <div
-                role="status"
-                aria-live="polite"
-                className="flex items-center gap-2 text-dashboard-body text-dashboard-muted"
-              >
-                <Spinner size="sm" className="text-dashboard-accent" />
-                <span>Loading...</span>
-              </div>
-            ) : (
-              <>
-                <h1 className="text-2xl font-semibold tracking-tight text-dashboard-text sm:text-[1.75rem] sm:leading-9">
-                  Sign In
-                </h1>
-                <p className="mt-1 text-dashboard-caption text-dashboard-muted">
-                  Welcome back to Track The App
-                </p>
-
-                {error && (
-                  <div
-                    className="mt-5 rounded-dashboard-control border border-red-400/55 bg-red-500/10 px-3 py-2.5 text-dashboard-caption text-red-100"
-                    role="alert"
-                  >
-                    {error}
-                  </div>
-                )}
-
-                <button
-                  type="button"
-                  className={[
-                    'dashboard-focus-ring inline-flex min-h-11 w-full items-center rounded-dashboard-control border border-dashboard-accent/60 bg-dashboard-surface/45 px-3.5 py-2.5 text-dashboard-caption font-medium text-dashboard-text shadow-dashboard-panel transition-[background-color,border-color,box-shadow,opacity] duration-dashboard ease-dashboard hover:border-dashboard-accent-hover/80 hover:bg-dashboard-surface-raised/65 hover:shadow-[0_0_24px_rgb(var(--dash-accent)/0.16)] disabled:cursor-not-allowed disabled:opacity-60 sm:min-h-12 sm:px-4 sm:py-3 sm:text-dashboard-body',
-                    error ? 'mt-4' : 'mt-8',
-                  ].join(' ')}
-                  disabled={loading}
-                  aria-busy={loading || undefined}
-                  onClick={handleSignIn}
-                >
-                  <GoogleMark />
-                  <span className="ml-3 flex-1 text-left">
-                    {loading ? 'Redirecting...' : 'Continue with Google'}
-                  </span>
-                  {loading ? (
-                    <Spinner size="sm" className="ml-3 text-dashboard-accent" />
-                  ) : (
-                    <ArrowRight
-                      aria-hidden="true"
-                      size={17}
-                      strokeWidth={1.8}
-                      className="ml-3 shrink-0 text-dashboard-accent"
-                    />
-                  )}
-                </button>
-              </>
-            )}
-          </main>
+    <PublicPageShell contentTestId="login-panel">
+      {authLoading ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-center gap-2 text-dashboard-body text-dashboard-muted"
+        >
+          <Spinner size="sm" className="text-dashboard-accent" />
+          <span>Loading...</span>
         </div>
-      </div>
-    </div>
+      ) : (
+        <>
+          <h1 className="text-2xl font-semibold tracking-tight text-dashboard-text sm:text-[1.75rem] sm:leading-9">
+            Sign In
+          </h1>
+          <p className="mt-1 text-dashboard-caption text-dashboard-muted">
+            Welcome back to Track The App
+          </p>
+
+          {error && (
+            <div
+              className="mt-5 rounded-dashboard-control border border-red-400/55 bg-red-500/10 px-3 py-2.5 text-dashboard-caption text-red-100"
+              role="alert"
+            >
+              {error}
+            </div>
+          )}
+
+          <button
+            type="button"
+            className={[
+              PUBLIC_PRIMARY_ACTION_CLASS_NAME,
+              error ? 'mt-4' : 'mt-8',
+            ].join(' ')}
+            disabled={loading}
+            aria-busy={loading || undefined}
+            onClick={handleSignIn}
+          >
+            <GoogleMark />
+            <span className="ml-3 flex-1 text-left">
+              {loading ? 'Redirecting...' : 'Continue with Google'}
+            </span>
+            {loading ? (
+              <Spinner size="sm" className="ml-3 text-dashboard-accent" />
+            ) : (
+              <ArrowRight
+                aria-hidden="true"
+                size={17}
+                strokeWidth={1.8}
+                className="ml-3 shrink-0 text-dashboard-accent"
+              />
+            )}
+          </button>
+        </>
+      )}
+    </PublicPageShell>
   );
 }
