@@ -169,6 +169,38 @@ describe('DashboardSkeleton', () => {
     expect(visual.className).toContain('animate-skeleton-in');
   });
 
+  /**
+   * Protects the motion utility contract for controls rendered in dashboard portals.
+   */
+  it('applies dashboard motion tokens to portal-rendered controls', () => {
+    const stylesheet = postcss.parse(readFileSync(GLOBAL_STYLES_PATH, 'utf8'));
+    let utilitiesLayer;
+    let motionRule;
+
+    for (const node of stylesheet.nodes) {
+      if (node.type === 'atrule' && node.name === 'layer' && node.params === 'utilities') {
+        utilitiesLayer = node;
+        break;
+      }
+    }
+
+    expect(utilitiesLayer).toBeTruthy();
+
+    for (const node of utilitiesLayer.nodes) {
+      if (
+        node.type === 'rule'
+        && node.selector.includes('.dashboard-root .dashboard-motion')
+        && node.selector.includes('.login-root .dashboard-motion')
+      ) {
+        motionRule = node;
+        break;
+      }
+    }
+
+    expect(motionRule).toBeTruthy();
+    expect(motionRule.selector).toContain('.dashboard-portal-theme .dashboard-motion');
+  });
+
   it('neutralizes dashboard transitions and animations for reduced motion', () => {
     render(React.createElement(DashboardSkeleton));
     const stylesheet = postcss.parse(readFileSync(GLOBAL_STYLES_PATH, 'utf8'));

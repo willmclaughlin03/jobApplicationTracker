@@ -86,12 +86,18 @@ export default function Login() {
     setError('');
     setLoading(true);
 
-    const { error: oauthError } = await signInWithOAuth('google');
+    try {
+      const { error: oauthError } = await signInWithOAuth('google');
+      if (!oauthError) {
+        return;
+      }
 
-    if (oauthError) {
       setError(oauthError.message || 'Failed to initiate sign in.');
-      setLoading(false);
+    } catch {
+      setError('Failed to initiate sign in.');
     }
+
+    setLoading(false);
   };
 
   if (!authLoading && user) {

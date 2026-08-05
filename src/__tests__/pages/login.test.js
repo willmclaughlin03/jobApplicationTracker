@@ -228,4 +228,21 @@ describe('Login', () => {
     expect(button.hasAttribute('aria-busy')).toBe(false);
     expect(button.textContent).toContain('Continue with Google');
   });
+
+  /** Verify rejected OAuth requests recover the action without exposing raw errors. */
+  it('restores the OAuth action when provider initiation rejects', async () => {
+    mockSignInWithOAuth.mockRejectedValue(new Error('Provider request failed.'));
+    const element = renderLogin();
+
+    click(element.querySelector('button'));
+    await flushEffects();
+
+    const button = element.querySelector('button');
+    const alert = element.querySelector('[role=alert]');
+
+    expect(alert.textContent).toBe('Failed to initiate sign in.');
+    expect(button.disabled).toBe(false);
+    expect(button.hasAttribute('aria-busy')).toBe(false);
+    expect(button.textContent).toContain('Continue with Google');
+  });
 });

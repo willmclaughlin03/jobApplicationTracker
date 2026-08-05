@@ -189,6 +189,7 @@
   }
 
   .dashboard-root .dashboard-motion,
+  .dashboard-portal-theme .dashboard-motion,
   .login-root .dashboard-motion {
     transition-duration: var(--dash-motion-duration);
     transition-timing-function: var(--dash-motion-easing);
