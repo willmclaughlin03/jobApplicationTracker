@@ -31,7 +31,7 @@ jest.mock('../../../shared/constants/csrf.js', () => ({
     CSRF_COOKIE_NAME: 'csrf-token',
 }));
 
-const { apiRequest } = require('../api.js');
+const { api, apiRequest } = require('../api.js');
 
 // =========================================================================
 // Helpers
@@ -169,6 +169,22 @@ describe('apiRequest — GET requests', () => {
             status: null,
             retryAfterSeconds: null,
         });
+    });
+
+    /**
+     * Subject/work cancellation must reach convenience methods so callers do
+     * not need to bypass the shared API surface to supply an AbortSignal.
+     */
+    it('forwards caller options and AbortSignal through api.get', async () => {
+        const controller = new AbortController();
+        global.fetch = jest.fn().mockResolvedValue(mockFetchOnce(200, {}));
+
+        await api.get('/api/jobs', { signal: controller.signal });
+
+        expect(global.fetch).toHaveBeenCalledWith('/api/jobs', expect.objectContaining({
+            method: 'GET',
+            signal: controller.signal,
+        }));
     });
 });
 
@@ -466,6 +482,60 @@ describe('apiRequest - SERVICE_UNAVAILABLE retry', () => {
             status: 429,
             retryAfterSeconds: 45,
         });
+    });
+
+    /**
+     * Numeric prefixes and non-integer numeric forms are not valid complete
+     * delta-seconds values and must not influence client retry scheduling.
+     */
+    it.each(['5junk', '+5', '-1', '1.5'])(
+        'rejects malformed Retry-After value %s',
+        async (retryAfter) => {
+            global.fetch = jest.fn().mockResolvedValue(
+                mockFetchOnce(
+                    429,
+                    { error: 'RATE_LIMIT_EXCEEDED' },
+                    false,
+                    { 'retry-after': retryAfter }
+                )
+            );
+
+            const { meta } = await apiRequest('/api/jobs', { method: 'GET' });
+
+            expect(meta.retryAfterSeconds).toBeNull();
+        }
+    );
+
+    /**
+     * Aborting during backoff must clear the wait and prevent the next fetch
+     * so a subject/work epoch shutdown completes promptly.
+     */
+    it('aborts an in-flight retry sleep without dispatching another request', async () => {
+        const controller = new AbortController();
+        global.fetch = jest.fn().mockResolvedValue(
+            mockFetchOnce(503, { error: 'SERVICE_UNAVAILABLE' }, false)
+        );
+        let settled = false;
+
+        const requestPromise = apiRequest('/api/jobs', {
+            method: 'GET',
+            signal: controller.signal,
+        }).then((result) => {
+            settled = true;
+            return result;
+        });
+
+        await flushAsyncWork();
+        controller.abort();
+        await flushAsyncWork();
+
+        try {
+            expect(global.fetch).toHaveBeenCalledTimes(1);
+            expect(settled).toBe(true);
+            await requestPromise;
+        } finally {
+            jest.clearAllTimers();
+        }
     });
 });
 // =========================================================================

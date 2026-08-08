@@ -39,6 +39,13 @@ jest.mock('../../../../shared/logger.js', () => ({
 }));
 
 const handler = require('../../../../pages/api/auth/session.js').default;
+const {
+  AuthApiError,
+  AuthSessionMissingError,
+} = require('@supabase/auth-js');
+const {
+  SESSION_RESPONSE_FIXTURES,
+} = require('../../../../testSupport/authV2ContractFixtures.js');
 
 describe('/api/auth/session handler', () => {
   const noopLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
@@ -136,22 +143,100 @@ describe('/api/auth/session handler', () => {
   });
 
   /**
-   * Supabase returns an error (e.g. expired token, invalid JWT)
+   * Unknown session errors must remain unavailable until their exact deployed
+   * class/code/status tuple has been approved.
    */
-  it('returns 200 with user: null when getUser returns an error', async () => {
+  it('does not turn an unapproved Supabase error into false anonymity', async () => {
     mockGetUser.mockResolvedValue({
       data: { user: null },
-      error: { message: 'invalid JWT' },
+      error: new AuthApiError('sanitized session failure', 400, 'bad_jwt'),
     });
     const req = createMockReq();
     const res = createMockRes();
 
     await handler(req, res);
 
-    expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { user: null } })
-    );
+    expect(res.status).toHaveBeenCalledWith(SESSION_RESPONSE_FIXTURES.unavailable.httpStatus);
+    expect(res.json).toHaveBeenCalledWith(SESSION_RESPONSE_FIXTURES.unavailable.body);
+  });
+
+  /**
+   * Authenticated v2 responses use the literal-version body directly and do
+   * not inherit the shared legacy success envelope.
+   */
+  it('returns the exact v2 authenticated body', async () => {
+    const expected = SESSION_RESPONSE_FIXTURES.authenticated;
+    mockGetUser.mockResolvedValue({
+      data: {
+        user: {
+          id: expected.body.user.id,
+          email: null,
+          app_metadata: {},
+        },
+      },
+      error: null,
+    });
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(expected.httpStatus);
+    expect(res.json).toHaveBeenCalledWith(expected.body);
+  });
+
+  /**
+   * The locally verified missing-session class is the only repository-backed
+   * Supabase error tuple currently allowed to become ordinary anonymity.
+   */
+  it('maps only the verified AuthSessionMissingError tuple to exact v2 anonymity', async () => {
+    mockGetUser.mockResolvedValue({
+      data: { user: null },
+      error: new AuthSessionMissingError(),
+    });
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(SESSION_RESPONSE_FIXTURES.anonymous.httpStatus);
+    expect(res.json).toHaveBeenCalledWith(SESSION_RESPONSE_FIXTURES.anonymous.body);
+  });
+
+  /**
+   * A no-user/no-error authority result is malformed, not evidence of logout.
+   */
+  it('maps a no-user and no-error authority result to unavailable', async () => {
+    mockGetUser.mockResolvedValue({ data: { user: null }, error: null });
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(SESSION_RESPONSE_FIXTURES.unavailable.httpStatus);
+    expect(res.json).toHaveBeenCalledWith(SESSION_RESPONSE_FIXTURES.unavailable.body);
+  });
+
+  /**
+   * Explicit roles outside the exact safe allowlist fail closed as unavailable.
+   */
+  it('rejects an invalid explicit application role without normalizing it', async () => {
+    mockGetUser.mockResolvedValue({
+      data: {
+        user: {
+          ...mockUser,
+          app_metadata: { role: 'Admin' },
+        },
+      },
+      error: null,
+    });
+    const req = createMockReq();
+    const res = createMockRes();
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(SESSION_RESPONSE_FIXTURES.unavailable.httpStatus);
+    expect(res.json).toHaveBeenCalledWith(SESSION_RESPONSE_FIXTURES.unavailable.body);
   });
 
   /**
@@ -164,7 +249,7 @@ describe('/api/auth/session handler', () => {
 
     await handler(req, res);
 
-    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
+    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
   });
 
   /**

@@ -30,6 +30,7 @@ const mockUseAuth = jest.fn();
 const mockApiGet = jest.fn();
 const mockApiPost = jest.fn();
 const mockRandomUUID = jest.fn();
+let mockLatestProfileProps;
 const checkoutAttemptUuid = '01234567-89ab-cdef-0123-456789abcdef';
 const checkoutAttemptNonce = '0123456789abcdef0123456789abcdef';
 const retryCheckoutAttemptUuid = 'fedcba98-7654-3210-fedc-ba9876543210';
@@ -50,7 +51,9 @@ jest.mock('next/link', () => {
 jest.mock('../../../client/components/ProfileDropdown', () => {
   const React = require('react');
 
-  return function MockProfileDropdown() {
+  /** Captures billing profile actions without rendering dropdown internals. */
+  return function MockProfileDropdown(props) {
+    mockLatestProfileProps = props;
     return React.createElement('div', { 'data-testid': 'profile-dropdown' });
   };
 });
@@ -233,6 +236,7 @@ describe('BillingPage', () => {
       configurable: true,
     });
     mockRandomUUID.mockReturnValue(checkoutAttemptUuid);
+    mockLatestProfileProps = null;
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123', email: 'billing@example.com' },
       loading: false,
@@ -274,6 +278,45 @@ describe('BillingPage', () => {
     expect(signOut).toHaveBeenCalledTimes(1);
     expect(mockRouter.replace).toHaveBeenCalledWith('/login');
     expect(el.textContent).not.toContain(ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+  });
+
+  it('locks unavailable auth without loading billing data or redirecting to login', async () => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: false,
+      authStatus: 'unavailable',
+      canPerformUserWork: false,
+      signOut: jest.fn(),
+    });
+
+    await renderBillingPage();
+
+    expect(mockApiGet).not.toHaveBeenCalled();
+    expect(mockRouter.push).not.toHaveBeenCalledWith('/login');
+    expect(mockRouter.replace).not.toHaveBeenCalledWith('/login');
+  });
+
+  it('does not navigate to login when explicit billing sign-out is unconfirmed', async () => {
+    const signOut = jest.fn().mockResolvedValue({
+      status: 'logout_unconfirmed',
+      requestPending: false,
+      retryAllowed: true,
+    });
+    mockUseAuth.mockReturnValue({
+      user: { id: 'user-123' },
+      loading: false,
+      authStatus: 'authenticated',
+      signOut,
+    });
+
+    await renderBillingPage();
+    await act(async () => {
+      await mockLatestProfileProps.onSignOut();
+    });
+
+    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(mockRouter.push).not.toHaveBeenCalledWith('/login');
+    expect(mockRouter.replace).not.toHaveBeenCalledWith('/login');
   });
 
   it('signs out and redirects to login on body-coded unauthorized results', async () => {

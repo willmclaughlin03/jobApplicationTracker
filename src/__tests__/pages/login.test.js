@@ -20,6 +20,9 @@ const mockRouter = {
 };
 const mockUseAuth = jest.fn();
 const mockSignInWithOAuth = jest.fn();
+const {
+  TERMINAL_USER_BANNED_UI,
+} = require('../../testSupport/authV2ContractFixtures.js');
 
 jest.mock('next/router', () => ({
   useRouter: () => mockRouter,
@@ -181,6 +184,39 @@ describe('Login', () => {
 
     expect(mockRouter.push).toHaveBeenCalledWith('/');
     expect(element.childElementCount).toBe(0);
+  });
+
+  it('does not expose sign-in controls while session authority is unavailable', () => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: false,
+      authStatus: 'unavailable',
+      signInWithOAuth: mockSignInWithOAuth,
+    });
+
+    const element = renderLogin();
+
+    expect(element.querySelector('button')).toBeNull();
+    expect(mockRouter.push).not.toHaveBeenCalledWith('/');
+  });
+
+  it('renders the approved terminal account copy with only the support action', () => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: false,
+      authStatus: 'terminal_unauthenticated',
+      signInWithOAuth: mockSignInWithOAuth,
+    });
+
+    const element = renderLogin();
+    const supportLink = Array.from(element.querySelectorAll('a')).find(
+      (link) => link.getAttribute('href') === TERMINAL_USER_BANNED_UI.recoveryHref
+    );
+
+    expect(element.textContent).toContain(TERMINAL_USER_BANNED_UI.title);
+    expect(element.textContent).toContain(TERMINAL_USER_BANNED_UI.copy);
+    expect(supportLink).toBeTruthy();
+    expect(element.querySelector('button')).toBeNull();
   });
 
   it('surfaces the OAuth callback failure through a safe alert', () => {

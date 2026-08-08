@@ -51,6 +51,22 @@ describe('createApiRouteClient', () => {
   });
 
   /**
+   * Any route that constructs the cookie-capable adapter must become private
+   * before Supabase can refresh or write session cookies.
+   */
+  it('sets private no-store before constructing the Supabase client', () => {
+    const req = createMockReq();
+    const res = createMockRes();
+
+    createApiRouteClient(req, res);
+
+    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
+    expect(res.setHeader.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCreateServerClient.mock.invocationCallOrder[0]
+    );
+  });
+
+  /**
    * getAll returns all request cookies as {name, value} pairs
    */
   it('getAll reads all request cookies', () => {

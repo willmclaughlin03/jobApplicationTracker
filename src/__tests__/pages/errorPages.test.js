@@ -110,6 +110,7 @@ describe('custom error pages', () => {
     const Page = require(modulePath).default;
     const el = render(React.createElement(Page));
 
+    expect(Page.authMode).toBe('none');
     expect(el.textContent).toContain(statusCode);
     expect(el.textContent).toContain(title);
     expect(el.textContent).toContain('Go to dashboard');
@@ -199,5 +200,11 @@ describe('custom error pages', () => {
     expect(el.textContent).toContain('500');
     expect(el.textContent).toContain('Something went wrong');
     expect(el.textContent).not.toContain('database password leaked in stack');
+  });
+
+  it('marks the framework error page as auth-free', () => {
+    const NextErrorPage = require('../../pages/_error.js').default;
+
+    expect(NextErrorPage.authMode).toBe('none');
   });
 });

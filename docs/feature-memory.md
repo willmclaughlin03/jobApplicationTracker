@@ -16,6 +16,9 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-02
 
+- `2026-08-08` - `Auth correctness CHUNK-0 contract checkpoint`: Added strict test-only v2 session and sign-out fixtures, the seven-state auth transition and draft-containment contracts, route/cache/evidence inventories, and focused red regressions with a review mapping; production behavior remains unchanged.
+  - validation: The fixture contract passes 25/25; the 18-suite checkpoint executes all 359 assertions with 248 passing, 111 expected mapped failures, and zero runtime-error suites; changed-file ESLint and diff checks pass.
+  - residual: Deployed Supabase tuple evidence and an evidence-derived maximum auth-cookie chunk count remain blocked, and the intentionally red tests must land with their later production fixes before merge.
 - `2026-08-05` - `Login OAuth failure retry coverage`: Extended both returned-error and rejected-provider login tests to retry the restored Google action, proving the cleared pending latch permits a second OAuth call.
   - validation: 8 focused login tests, changed-file ESLint, and diff checks pass.
 - `2026-08-05` - `Login OAuth duplicate-click guard`: Added a synchronous in-flight latch so rapid Google sign-in clicks cannot start multiple OAuth handoffs before React commits the loading state, while failed initiations remain retryable.

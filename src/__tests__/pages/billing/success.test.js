@@ -171,6 +171,20 @@ describe('BillingSuccessPage', () => {
     expect(mockApiPost).toHaveBeenCalledTimes(2);
   });
 
+  it('does not poll or redirect while session authority is unavailable', async () => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: false,
+      authStatus: 'unavailable',
+      canPerformUserWork: false,
+    });
+
+    await renderBillingSuccessPage();
+
+    expect(mockApiPost).not.toHaveBeenCalled();
+    expect(mockRouter.push).not.toHaveBeenCalledWith('/login');
+  });
+
   it('shows a terminal error without polling when the checkout session id is missing', async () => {
     mockRouter.query = {};
 

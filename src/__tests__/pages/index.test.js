@@ -510,6 +510,74 @@ describe('Dashboard billing entry integration', () => {
     expect(element.querySelectorAll('.dashboard-root')).toHaveLength(1);
   });
 
+  it('locks unavailable auth without redirecting to login or exposing private jobs', () => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: false,
+      authStatus: 'unavailable',
+      canPerformUserWork: false,
+      signOut: mockSignOut,
+    });
+
+    const element = renderDashboard();
+
+    expect(mockRouter.replace).not.toHaveBeenCalledWith('/login');
+    expect(mockRouter.push).not.toHaveBeenCalledWith('/login');
+    expect(element.querySelector('#applications-heading')).toBeNull();
+  });
+
+  it('does not start private data hooks while session authority is unavailable', () => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: false,
+      authStatus: 'unavailable',
+      canPerformUserWork: false,
+      signOut: mockSignOut,
+    });
+
+    renderDashboard();
+
+    expect(mockUseJobs).not.toHaveBeenCalled();
+    expect(mockUseJobFormModal).not.toHaveBeenCalled();
+  });
+
+  it('does not automatically replay an active draft after unavailable auth recovers', () => {
+    let authState = {
+      user: { id: 'user-123', email: null },
+      loading: false,
+      authStatus: 'authenticated',
+      canPerformUserWork: true,
+      signOut: mockSignOut,
+    };
+    mockUseAuth.mockImplementation(() => authState);
+    mockUseJobFormModal.mockImplementation(useControlledJobFormState);
+    const element = renderDashboard();
+
+    click(findButtonByText(element, 'Add Application'));
+    expect(element.querySelector('[data-testid="job-form"]')).toBeTruthy();
+
+    authState = {
+      user: null,
+      loading: false,
+      authStatus: 'unavailable',
+      canPerformUserWork: false,
+      signOut: mockSignOut,
+    };
+    act(() => root.render(React.createElement(Dashboard)));
+    expect(element.querySelector('[data-testid="job-form"]')).toBeNull();
+
+    authState = {
+      user: { id: 'user-123', email: null },
+      loading: false,
+      authStatus: 'authenticated',
+      canPerformUserWork: true,
+      signOut: mockSignOut,
+    };
+    act(() => root.render(React.createElement(Dashboard)));
+
+    expect(element.querySelector('[data-testid="job-form"]')).toBeNull();
+  });
+
   it('renders Dismiss as a non-submitting button and clears the current error', () => {
     const jobsState = buildJobsState({
       status: STORAGE_STATUSES.TERMINAL_FREE,
@@ -786,6 +854,23 @@ describe('Dashboard billing entry integration', () => {
     expect(mockRouter.replace).toHaveBeenCalledWith('/login');
     expect(mockRouter.push).not.toHaveBeenCalledWith('/login');
     expect(mockLatestUpgradeModalProps.isOpen).toBe(false);
+  });
+
+  it('does not navigate to login when explicit sign-out remains unconfirmed', async () => {
+    mockSignOut.mockResolvedValue({
+      status: 'logout_unconfirmed',
+      requestPending: false,
+      retryAllowed: true,
+    });
+    renderDashboard();
+
+    await act(async () => {
+      await mockLatestProfileProps.onSignOut();
+    });
+
+    expect(mockSignOut).toHaveBeenCalledTimes(1);
+    expect(mockRouter.push).not.toHaveBeenCalledWith('/login');
+    expect(mockRouter.replace).not.toHaveBeenCalledWith('/login');
   });
 
   it('keeps toolbar, Filters, Activity, account, tooltip, and Add Application wired', () => {
