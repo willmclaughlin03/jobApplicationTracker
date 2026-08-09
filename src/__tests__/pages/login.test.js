@@ -125,6 +125,8 @@ describe('Login', () => {
     mockUseAuth.mockReturnValue({
       user: null,
       loading: false,
+      authStatus: 'anonymous',
+      canShowSignIn: true,
       signInWithOAuth: mockSignInWithOAuth,
     });
     mockSignInWithOAuth.mockResolvedValue({ error: null });
@@ -161,6 +163,7 @@ describe('Login', () => {
     mockUseAuth.mockReturnValue({
       user: null,
       loading: true,
+      authStatus: 'loading',
       signInWithOAuth: mockSignInWithOAuth,
     });
 
@@ -177,6 +180,7 @@ describe('Login', () => {
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123' },
       loading: false,
+      authStatus: 'authenticated',
       signInWithOAuth: mockSignInWithOAuth,
     });
 
@@ -186,11 +190,15 @@ describe('Login', () => {
     expect(element.childElementCount).toBe(0);
   });
 
-  it('does not expose sign-in controls while session authority is unavailable', () => {
+  it.each([
+    'unavailable',
+    'signed_out_local',
+    'logout_unconfirmed',
+  ])('does not expose sign-in controls while auth is %s', (authStatus) => {
     mockUseAuth.mockReturnValue({
       user: null,
       loading: false,
-      authStatus: 'unavailable',
+      authStatus,
       signInWithOAuth: mockSignInWithOAuth,
     });
 

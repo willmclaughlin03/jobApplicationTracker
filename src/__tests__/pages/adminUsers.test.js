@@ -158,7 +158,7 @@ describe('/admin/users direct-request authorization', () => {
   });
 
   it('rejects an authenticated non-admin before rendering the page shell', async () => {
-    const req = { headers: { cookie: 'session=present' } };
+    const req = { headers: { cookie: 'synthetic-cookie-marker' } };
     const res = {
       statusCode: 200,
       finished: false,
@@ -198,7 +198,7 @@ describe('/admin/users direct-request authorization', () => {
 
   /** Verify successful admin authorization leaves the page response untouched. */
   it('renders props for an authenticated admin without mutating the response', async () => {
-    const req = { headers: { cookie: 'session=admin' } };
+    const req = { headers: { cookie: 'synthetic-cookie-marker' } };
     const res = {
       statusCode: 200,
       finished: false,
@@ -224,6 +224,22 @@ describe('/admin/users direct-request authorization', () => {
     expect(res.end).not.toHaveBeenCalled();
     expect(res).not.toHaveProperty('body');
   });
+
+  it('sets private no-store before an authorization exception escapes', async () => {
+    const req = { headers: {} };
+    const res = {
+      statusCode: 200,
+      finished: false,
+      setHeader: jest.fn(),
+      end: jest.fn(),
+    };
+    mockGetUserFromRequest.mockRejectedValue(new Error('sanitized authority failure'));
+
+    await expect(getServerSideProps({ req, res })).rejects.toThrow(
+      'sanitized authority failure'
+    );
+    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
+  });
 });
 
 describe('/admin/users client auth outcomes', () => {
@@ -245,11 +261,62 @@ describe('/admin/users client auth outcomes', () => {
 
   afterEach(cleanup);
 
-  it('does not redirect or expose the private table while auth is unavailable', () => {
+  it('keeps loading auth from enabling admin work or navigation', () => {
+    useAuth.mockReturnValue({
+      user: null,
+      loading: true,
+      authStatus: 'loading',
+      canPerformUserWork: false,
+      signOut: jest.fn(),
+    });
+
+    const element = renderAdminUsersPage();
+
+    expect(useAdminUsers).toHaveBeenCalledWith({ enabled: false });
+    expect(mockRouter.replace).not.toHaveBeenCalled();
+    expect(element.querySelector('[data-testid=admin-user-table]')).toBeNull();
+  });
+
+  it('redirects only confirmed anonymous auth to ordinary login', () => {
     useAuth.mockReturnValue({
       user: null,
       loading: false,
-      authStatus: 'unavailable',
+      authStatus: 'anonymous',
+      canPerformUserWork: false,
+      signOut: jest.fn(),
+    });
+
+    renderAdminUsersPage();
+
+    expect(useAdminUsers).toHaveBeenCalledWith({ enabled: false });
+    expect(mockRouter.replace).toHaveBeenCalledWith('/login');
+  });
+
+  it('enables the private table only for an authenticated admin', () => {
+    useAuth.mockReturnValue({
+      user: { id: 'admin-subject', role: 'admin' },
+      loading: false,
+      authStatus: 'authenticated',
+      canPerformUserWork: true,
+      signOut: jest.fn(),
+    });
+
+    const element = renderAdminUsersPage();
+
+    expect(useAdminUsers).toHaveBeenCalledWith({ enabled: true });
+    expect(element.querySelector('[data-testid=admin-profile]')).toBeTruthy();
+  });
+
+  it.each([
+    'unavailable',
+    'signed_out_local',
+    'logout_unconfirmed',
+    'terminal_unauthenticated',
+  ])('does not redirect or expose the private table while auth is %s', (authStatus) => {
+    useAuth.mockReturnValue({
+      user: null,
+      loading: false,
+      authStatus,
       canPerformUserWork: false,
       signOut: jest.fn(),
     });

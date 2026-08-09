@@ -240,6 +240,7 @@ describe('BillingPage', () => {
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123', email: 'billing@example.com' },
       loading: false,
+      authStatus: 'authenticated',
       signOut: jest.fn().mockResolvedValue({ error: null }),
     });
     mockApiGet.mockResolvedValue({
@@ -259,8 +260,8 @@ describe('BillingPage', () => {
 
   afterEach(cleanup);
 
-  it('signs out and redirects to login on shared-client 401 errors', async () => {
-    const signOut = jest.fn().mockResolvedValue({ error: null });
+  it('contains a shared-client 401 without claiming confirmed anonymity', async () => {
+    const signOut = jest.fn().mockResolvedValue({ status: 'signed_out_local' });
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123', email: 'billing@example.com' },
       loading: false,
@@ -276,15 +277,54 @@ describe('BillingPage', () => {
 
     expect(mockApiGet).toHaveBeenCalledWith('/api/billing/status');
     expect(signOut).toHaveBeenCalledTimes(1);
-    expect(mockRouter.replace).toHaveBeenCalledWith('/login');
+    expect(mockRouter.push).not.toHaveBeenCalledWith('/login');
+    expect(mockRouter.replace).not.toHaveBeenCalledWith('/login');
     expect(el.textContent).not.toContain(ERROR_MESSAGES.SERVICE_UNAVAILABLE);
   });
 
-  it('locks unavailable auth without loading billing data or redirecting to login', async () => {
+  it('keeps loading auth from starting billing work or navigation', async () => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: true,
+      authStatus: 'loading',
+      canPerformUserWork: false,
+      signOut: jest.fn(),
+    });
+
+    await renderBillingPage();
+
+    expect(mockApiGet).not.toHaveBeenCalled();
+    expect(mockRouter.push).not.toHaveBeenCalledWith('/login');
+    expect(mockRouter.replace).not.toHaveBeenCalledWith('/login');
+  });
+
+  it('redirects only confirmed anonymous auth to ordinary login', async () => {
     mockUseAuth.mockReturnValue({
       user: null,
       loading: false,
-      authStatus: 'unavailable',
+      authStatus: 'anonymous',
+      canPerformUserWork: false,
+      signOut: jest.fn(),
+    });
+
+    await renderBillingPage();
+
+    expect(mockApiGet).not.toHaveBeenCalled();
+    expect(mockRouter.push).toHaveBeenCalledWith('/login');
+  });
+
+  it.each([
+    'unavailable',
+    'signed_out_local',
+    'logout_unconfirmed',
+    'terminal_unauthenticated',
+  ])('locks %s auth without loading billing data or redirecting to login', async (
+    authStatus
+  ) => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: false,
+      authStatus,
       canPerformUserWork: false,
       signOut: jest.fn(),
     });
@@ -319,8 +359,8 @@ describe('BillingPage', () => {
     expect(mockRouter.replace).not.toHaveBeenCalledWith('/login');
   });
 
-  it('signs out and redirects to login on body-coded unauthorized results', async () => {
-    const signOut = jest.fn().mockResolvedValue({ error: null });
+  it('contains a body-coded 401 without claiming confirmed anonymity', async () => {
+    const signOut = jest.fn().mockResolvedValue({ status: 'signed_out_local' });
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123', email: 'billing@example.com' },
       loading: false,
@@ -339,7 +379,8 @@ describe('BillingPage', () => {
     const el = await renderBillingPage();
 
     expect(signOut).toHaveBeenCalledTimes(1);
-    expect(mockRouter.replace).toHaveBeenCalledWith('/login');
+    expect(mockRouter.push).not.toHaveBeenCalledWith('/login');
+    expect(mockRouter.replace).not.toHaveBeenCalledWith('/login');
     expect(el.textContent).not.toContain(ERROR_MESSAGES.SERVICE_UNAVAILABLE);
   });
 
@@ -484,7 +525,7 @@ describe('BillingPage', () => {
   });
 
   it('routes typed Checkout authorization failures through auth recovery', async () => {
-    const signOut = jest.fn().mockResolvedValue({ error: null });
+    const signOut = jest.fn().mockResolvedValue({ status: 'signed_out_local' });
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123', email: 'billing@example.com' },
       loading: false,
@@ -498,12 +539,13 @@ describe('BillingPage', () => {
     await flushEffects();
 
     expect(signOut).toHaveBeenCalledTimes(1);
-    expect(mockRouter.replace).toHaveBeenCalledWith('/login');
+    expect(mockRouter.push).not.toHaveBeenCalledWith('/login');
+    expect(mockRouter.replace).not.toHaveBeenCalledWith('/login');
     expect(el.textContent).not.toContain('raw action details must not render');
   });
 
   it('routes status-only Checkout authorization failures through auth recovery', async () => {
-    const signOut = jest.fn().mockResolvedValue({ error: null });
+    const signOut = jest.fn().mockResolvedValue({ status: 'signed_out_local' });
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123', email: 'billing@example.com' },
       loading: false,
@@ -517,7 +559,8 @@ describe('BillingPage', () => {
     await flushEffects();
 
     expect(signOut).toHaveBeenCalledTimes(1);
-    expect(mockRouter.replace).toHaveBeenCalledWith('/login');
+    expect(mockRouter.push).not.toHaveBeenCalledWith('/login');
+    expect(mockRouter.replace).not.toHaveBeenCalledWith('/login');
     expect(el.textContent).not.toContain('raw action details must not render');
   });
 

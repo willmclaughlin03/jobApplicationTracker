@@ -72,17 +72,31 @@ function createJsonResponse(body, status = 200) {
  * a sequential mock.
  *
  * @param {Function} signoutRequest - Factory returning the sign-out fetch result.
+ * @param {object} immediateSessionFixture - Session result after accepted cleanup.
  * @returns {void}
  */
-function mockAuthenticatedSessionFlow(signoutRequest) {
+function mockAuthenticatedSessionFlow(
+  signoutRequest,
+  immediateSessionFixture = SESSION_RESPONSE_FIXTURES.anonymous
+) {
+  let logoutRequested = false;
+
   global.fetch.mockImplementation((url) => {
     if (url === '/api/auth/v2/signout' || url === '/api/auth/signout') {
+      logoutRequested = true;
       return signoutRequest();
     }
     if (url === '/api/auth/csrf') {
       return Promise.resolve(createJsonResponse({ data: null }));
     }
     if (url === '/api/auth/v2/session') {
+      if (logoutRequested) {
+        return Promise.resolve(createJsonResponse(
+          immediateSessionFixture.body,
+          immediateSessionFixture.httpStatus
+        ));
+      }
+
       return Promise.resolve(createJsonResponse({
         ...SESSION_RESPONSE_FIXTURES.authenticated.body,
         user: {
@@ -342,6 +356,51 @@ describe('AuthProvider request ordering and cancellation', () => {
     nowSpy.mockRestore();
   });
 
+  it('increments authorization state before publishing a same-subject role demotion', async () => {
+    let sessionRequestCount = 0;
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(60_000);
+    global.fetch.mockImplementation((url) => {
+      if (url === '/api/auth/csrf') {
+        return Promise.resolve(createJsonResponse({ data: null }));
+      }
+
+      sessionRequestCount += 1;
+      const role = sessionRequestCount === 1 ? 'admin' : 'user';
+      if (url === '/api/auth/v2/session') {
+        return Promise.resolve(createJsonResponse({
+          ...SESSION_RESPONSE_FIXTURES.authenticated.body,
+          user: {
+            ...SESSION_RESPONSE_FIXTURES.authenticated.body.user,
+            id: '00000000-0000-4000-8000-000000000003',
+            role,
+          },
+        }));
+      }
+
+      return Promise.resolve(createJsonResponse({
+        data: { user: { id: 'same-subject', email: null, role } },
+      }));
+    });
+
+    renderProvider();
+    await flushAsyncState();
+    const initialAuthorizationEpoch = latestAuth.authorizationEpoch;
+    expect(latestAuth.user.role).toBe('admin');
+
+    nowSpy.mockReturnValue(90_001);
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      value: 'visible',
+    });
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    await flushAsyncState();
+
+    expect(latestAuth.user.role).toBe('user');
+    expect(latestAuth.authorizationEpoch).toBeGreaterThan(initialAuthorizationEpoch);
+    expect(latestAuth.canPerformAdminWork).toBe(false);
+    nowSpy.mockRestore();
+  });
+
   it('aborts an in-flight session request when the provider unmounts', () => {
     const request = createDeferred();
     global.fetch.mockReturnValue(request.promise);
@@ -390,6 +449,7 @@ describe('AuthProvider truthful sign-out outcomes', () => {
       credentials: 'same-origin',
       headers: expect.objectContaining({ 'X-Logout-Intent': '1' }),
     }));
+    expect(global.fetch.mock.calls.at(-1)[1].body).toBeUndefined();
     expect(result.status).toBe('logout_unconfirmed');
     expect(latestAuth.authStatus).toBe('logout_unconfirmed');
     expect(latestAuth.canRetryLogout).toBe(true);
@@ -398,10 +458,53 @@ describe('AuthProvider truthful sign-out outcomes', () => {
   it.each([
     ['complete', SIGNOUT_RESPONSE_FIXTURES.completeConfirmed],
     ['local-only', SIGNOUT_RESPONSE_FIXTURES.localOnly],
-  ])('enters signed_out_local after a schema-valid %s response', async (_name, fixture) => {
+  ])('starts exactly one immediate session check after a schema-valid %s response', async (
+    _name,
+    fixture
+  ) => {
     mockAuthenticatedSessionFlow(() => Promise.resolve(
       createJsonResponse(fixture.body, fixture.httpStatus)
     ));
+
+    renderProvider();
+    await flushAsyncState();
+
+    const checksBeforeLogout = global.fetch.mock.calls.filter(([url]) => (
+      url === '/api/auth/v2/session'
+    )).length;
+
+    await act(async () => {
+      await latestAuth.signOut();
+    });
+
+    const checksAfterLogout = global.fetch.mock.calls.filter(([url]) => (
+      url === '/api/auth/v2/session'
+    )).length;
+    expect(checksAfterLogout - checksBeforeLogout).toBe(1);
+    expect(latestAuth.authStatus).toBe('anonymous');
+    expect(latestAuth.user).toBeNull();
+  });
+
+  it.each([
+    ['an active session', SESSION_RESPONSE_FIXTURES.authenticated, 'logout_unconfirmed'],
+    ['unavailable authority', SESSION_RESPONSE_FIXTURES.unavailable, 'unavailable'],
+    [
+      'a terminal restricted account',
+      SESSION_RESPONSE_FIXTURES.terminalUserBanned,
+      'terminal_unauthenticated',
+    ],
+  ])('does not expose sign-in when the immediate check finds %s', async (
+    _name,
+    immediateFixture,
+    expectedStatus
+  ) => {
+    mockAuthenticatedSessionFlow(
+      () => Promise.resolve(createJsonResponse(
+        SIGNOUT_RESPONSE_FIXTURES.completeConfirmed.body,
+        SIGNOUT_RESPONSE_FIXTURES.completeConfirmed.httpStatus
+      )),
+      immediateFixture
+    );
 
     renderProvider();
     await flushAsyncState();
@@ -410,8 +513,9 @@ describe('AuthProvider truthful sign-out outcomes', () => {
       await latestAuth.signOut();
     });
 
-    expect(latestAuth.authStatus).toBe('signed_out_local');
+    expect(latestAuth.authStatus).toBe(expectedStatus);
     expect(latestAuth.user).toBeNull();
+    expect(latestAuth.canShowSignIn).toBe(false);
   });
 
   it('keeps duplicate logout actions to one in-flight request', async () => {

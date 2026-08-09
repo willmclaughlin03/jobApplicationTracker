@@ -480,6 +480,8 @@ describe('Dashboard billing entry integration', () => {
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123', email: 'member@example.com' },
       loading: false,
+      authStatus: 'authenticated',
+      canPerformUserWork: true,
       signOut: mockSignOut,
     });
     mockUseJobs.mockReturnValue(buildJobsState({
@@ -498,6 +500,8 @@ describe('Dashboard billing entry integration', () => {
     mockUseAuth.mockReturnValue({
       user: null,
       loading: true,
+      authStatus: 'loading',
+      canPerformUserWork: false,
       signOut: mockSignOut,
     });
 
@@ -510,11 +514,31 @@ describe('Dashboard billing entry integration', () => {
     expect(element.querySelectorAll('.dashboard-root')).toHaveLength(1);
   });
 
-  it('locks unavailable auth without redirecting to login or exposing private jobs', () => {
+  it('redirects only confirmed anonymous auth to ordinary login', () => {
     mockUseAuth.mockReturnValue({
       user: null,
       loading: false,
-      authStatus: 'unavailable',
+      authStatus: 'anonymous',
+      canPerformUserWork: false,
+      signOut: mockSignOut,
+    });
+
+    const element = renderDashboard();
+
+    expect(mockRouter.push).toHaveBeenCalledWith('/login');
+    expect(element.querySelector('#applications-heading')).toBeNull();
+  });
+
+  it.each([
+    'unavailable',
+    'signed_out_local',
+    'logout_unconfirmed',
+    'terminal_unauthenticated',
+  ])('locks %s auth without redirecting to login or exposing private jobs', (authStatus) => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: false,
+      authStatus,
       canPerformUserWork: false,
       signOut: mockSignOut,
     });
@@ -843,16 +867,16 @@ describe('Dashboard billing entry integration', () => {
     expect(element.querySelector('[data-testid="upgrade-modal"]')).toBeNull();
   });
 
-  it('signs out and replaces login history for modal auth recovery', async () => {
+  it('contains modal authorization recovery without claiming confirmed anonymity', async () => {
+    mockSignOut.mockResolvedValue({ status: 'signed_out_local' });
     const element = renderDashboard();
 
     click(findButtonByText(element, 'Upgrade'));
     await clickAsync(findButtonByText(element, 'Modal unauthorized'));
 
     expect(mockSignOut).toHaveBeenCalledTimes(1);
-    expect(mockRouter.replace).toHaveBeenCalledTimes(1);
-    expect(mockRouter.replace).toHaveBeenCalledWith('/login');
     expect(mockRouter.push).not.toHaveBeenCalledWith('/login');
+    expect(mockRouter.replace).not.toHaveBeenCalledWith('/login');
     expect(mockLatestUpgradeModalProps.isOpen).toBe(false);
   });
 

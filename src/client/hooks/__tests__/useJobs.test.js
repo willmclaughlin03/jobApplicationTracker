@@ -279,6 +279,49 @@ describe('useJobs storage summary refresh', () => {
     expect(latestHook.allJobs).toEqual([subjectBJob]);
   });
 
+  it('aborts subject A and rejects its late completion after subject B publishes', async () => {
+    const subjectARequest = createDeferred();
+    const subjectAJob = {
+      id: 'late-subject-a-job',
+      company: 'Late A company',
+      position: 'Engineer',
+      status: 'applied',
+    };
+    const subjectBJob = {
+      id: 'current-subject-b-job',
+      company: 'Current B company',
+      position: 'Designer',
+      status: 'interviewing',
+    };
+
+    mockApiGet
+      .mockReturnValueOnce(subjectARequest.promise)
+      .mockResolvedValueOnce(buildJobsResponse({
+        jobs: [subjectBJob],
+        storageSummary: { activeCount: 1 },
+      }));
+
+    await renderUseJobs({ userId: 'subject-a' });
+    act(() => {
+      root.render(React.createElement(HookHarness, { userId: 'subject-b' }));
+    });
+    await flushEffects();
+
+    expect(latestHook.allJobs).toEqual([subjectBJob]);
+    const subjectASignal = mockApiGet.mock.calls[0][1]?.signal;
+    expect(subjectASignal).toBeInstanceOf(AbortSignal);
+    expect(subjectASignal.aborted).toBe(true);
+
+    subjectARequest.resolve(buildJobsResponse({
+      jobs: [subjectAJob],
+      storageSummary: { activeCount: 1 },
+    }));
+    await flushEffects();
+
+    expect(latestHook.allJobs).toEqual([subjectBJob]);
+    expect(latestHook.allJobs).not.toContainEqual(subjectAJob);
+  });
+
   it('keeps loading true when a stale full refetch resolves before a newer one', async () => {
     const initialJob = { id: 'job-1', company: 'Acme', position: 'Engineer', status: 'applied' };
     const staleJob = { id: 'job-2', company: 'Beta', position: 'Designer', status: 'applied' };

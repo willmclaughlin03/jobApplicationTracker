@@ -1,9 +1,9 @@
 /**
- * CHUNK-0 regression tests for truthful, bounded v2 sign-out behavior.
+ * CHUNK-0 regression tests for narrow, safer v1 sign-out compatibility.
  *
- * Purpose: Demonstrate missing same-origin acceptance, explicit local scope,
- * bounded cookie cleanup, strict result bodies, and cache isolation.
- * Connects to: src/pages/api/auth/signout.js and the frozen v2 fixtures.
+ * Purpose: Preserve the legacy request/response shape while demonstrating the
+ * local-scope, bounded-cleanup, and cache adaptations required during overlap.
+ * Connects to: src/pages/api/auth/signout.js and future isolated v2 tests.
  */
 
 const mockSignOut = jest.fn();
@@ -59,10 +59,8 @@ jest.mock('../../../../server/lib/csrf.js', () => ({
 const handler = require('../../../../pages/api/auth/signout.js').default;
 const {
   AUTH_COOKIE_STORAGE_KEY,
-  LOGOUT_INTENT_HEADER,
-  LOGOUT_INTENT_VALUE,
-  SIGNOUT_RESPONSE_FIXTURES,
-  TRUSTED_LOCAL_APP_ORIGIN,
+  MAX_AUTH_COOKIE_CHUNKS,
+  signoutResponseSchema,
 } = require('../../../../testSupport/authV2ContractFixtures.js');
 
 const noopLog = {
@@ -73,7 +71,7 @@ const noopLog = {
 };
 
 /**
- * Creates a locally accepted v2 sign-out request double.
+ * Creates a legacy v1 sign-out request double without the future v2 intent.
  *
  * @param {object} overrides - Request fields to replace for rejection cases.
  * @returns {object} Next.js API request double.
@@ -83,11 +81,7 @@ function createMockReq(overrides = {}) {
     method: 'POST',
     body: {},
     cookies: {},
-    headers: {
-      [LOGOUT_INTENT_HEADER.toLowerCase()]: LOGOUT_INTENT_VALUE,
-      'sec-fetch-site': 'same-origin',
-      origin: TRUSTED_LOCAL_APP_ORIGIN,
-    },
+    headers: {},
     log: noopLog,
     ...overrides,
   };
@@ -123,8 +117,8 @@ beforeEach(() => {
   mockSignOut.mockResolvedValue({ error: null });
 });
 
-describe('/api/auth/signout CHUNK-0 contract', () => {
-  it('uses explicit local Supabase scope for an accepted request', async () => {
+describe('/api/auth/signout v1 compatibility contract', () => {
+  it('uses explicit local Supabase scope without requiring a v2 intent header', async () => {
     const req = createMockReq();
     const res = createMockRes();
 
@@ -133,61 +127,34 @@ describe('/api/auth/signout CHUNK-0 contract', () => {
     expect(mockSignOut).toHaveBeenCalledWith({ scope: 'local' });
   });
 
-  it.each([
-    ['missing intent', { headers: { 'sec-fetch-site': 'same-origin' } }, 403],
-    ['missing source proof', {
-      headers: { [LOGOUT_INTENT_HEADER.toLowerCase()]: LOGOUT_INTENT_VALUE },
-    }, 403],
-    ['cross-site metadata', {
-      headers: {
-        [LOGOUT_INTENT_HEADER.toLowerCase()]: LOGOUT_INTENT_VALUE,
-        'sec-fetch-site': 'cross-site',
-      },
-    }, 403],
-    ['contradictory origin', {
-      headers: {
-        [LOGOUT_INTENT_HEADER.toLowerCase()]: LOGOUT_INTENT_VALUE,
-        'sec-fetch-site': 'same-origin',
-        origin: 'https://untrusted.invalid',
-      },
-    }, 403],
-    ['unexpected body field', { body: { unexpected: true } }, 400],
-    ['wrong method', { method: 'GET' }, 405],
-  ])('rejects %s before remote work or cleanup', async (_name, overrides, statusCode) => {
-    const req = createMockReq(overrides);
+  it('preserves the legacy v1 success body instead of returning a v2 result', async () => {
+    const req = createMockReq();
     const res = createMockRes();
 
     await handler(req, res);
 
-    expect(res.statusCode).toBe(statusCode);
-    expect(res.json).toHaveBeenCalledWith(
-      SIGNOUT_RESPONSE_FIXTURES.rejectedForbidden.body
-    );
-    expect(mockSignOut).not.toHaveBeenCalled();
-    expect(res.getHeader('Set-Cookie')).toBeUndefined();
-  });
-
-  it('does not trust Host as the application origin', async () => {
-    const req = createMockReq({
-      headers: {
-        [LOGOUT_INTENT_HEADER.toLowerCase()]: LOGOUT_INTENT_VALUE,
-        host: 'localhost:3000',
-      },
+    expect(res.statusCode).toBe(200);
+    const responseBody = res.json.mock.calls[0][0];
+    expect(responseBody).toEqual({
+      data: null,
+      error: null,
+      message: 'Signed out successfully',
     });
-    const res = createMockRes();
-
-    await handler(req, res);
-
-    expect(res.statusCode).toBe(403);
-    expect(mockSignOut).not.toHaveBeenCalled();
+    expect(signoutResponseSchema.safeParse(responseBody).success).toBe(false);
   });
 
-  it('does not clear attacker-selected Supabase-like cookie names', async () => {
+  it('clears the exact derived cookie allowlist once without accepting suffix lookalikes', async () => {
     mockSignOut.mockResolvedValue({ error: new Error('sanitized remote failure') });
+    const hasDerivedChunkCap = Number.isInteger(MAX_AUTH_COOKIE_CHUNKS)
+      && MAX_AUTH_COOKIE_CHUNKS > 0;
+    const firstRejectedSuffix = hasDerivedChunkCap ? MAX_AUTH_COOKIE_CHUNKS : 999999;
     const req = createMockReq({
       cookies: {
         [`${AUTH_COOKIE_STORAGE_KEY}`]: null,
         [`${AUTH_COOKIE_STORAGE_KEY}.0`]: null,
+        [`${AUTH_COOKIE_STORAGE_KEY}.${firstRejectedSuffix}`]: null,
+        [`${AUTH_COOKIE_STORAGE_KEY}.01`]: null,
+        [`${AUTH_COOKIE_STORAGE_KEY}.x`]: null,
         'sb-attacker-auth-token': null,
         'sb-attacker-auth-token.999999': null,
       },
@@ -197,25 +164,38 @@ describe('/api/auth/signout CHUNK-0 contract', () => {
     await handler(req, res);
 
     const setCookie = res.getHeader('Set-Cookie') ?? [];
-    const serialized = Array.isArray(setCookie) ? setCookie.join('\n') : String(setCookie);
+    const setCookieValues = Array.isArray(setCookie) ? setCookie : [String(setCookie)];
+    const serialized = setCookieValues.join('\n');
 
     expect(serialized).toContain(`${AUTH_COOKIE_STORAGE_KEY}=`);
+    expect(serialized).toContain(`${AUTH_COOKIE_STORAGE_KEY}.0=`);
+    expect(serialized).not.toContain(`${AUTH_COOKIE_STORAGE_KEY}.${firstRejectedSuffix}=`);
+    expect(serialized).not.toContain(`${AUTH_COOKIE_STORAGE_KEY}.01=`);
+    expect(serialized).not.toContain(`${AUTH_COOKIE_STORAGE_KEY}.x=`);
     expect(serialized).not.toContain('sb-attacker-auth-token=');
     expect(serialized).not.toContain('sb-attacker-auth-token.999999=');
+
+    if (hasDerivedChunkCap) {
+      const allowedCookieNames = [
+        AUTH_COOKIE_STORAGE_KEY,
+        ...Array.from(
+          { length: MAX_AUTH_COOKIE_CHUNKS },
+          (_unused, index) => `${AUTH_COOKIE_STORAGE_KEY}.${index}`
+        ),
+      ];
+
+      allowedCookieNames.forEach((cookieName) => {
+        expect(setCookieValues.filter(
+          (cookieValue) => cookieValue.startsWith(`${cookieName}=`)
+        )).toHaveLength(1);
+      });
+      expect(setCookieValues).toHaveLength(allowedCookieNames.length);
+    }
+
+    expect(hasDerivedChunkCap).toBe(true);
   });
 
-  it('returns local_only when remote termination cannot be observed', async () => {
-    mockSignOut.mockResolvedValue({ error: null });
-    const req = createMockReq();
-    const res = createMockRes();
-
-    await handler(req, res);
-
-    expect(res.statusCode).toBe(SIGNOUT_RESPONSE_FIXTURES.localOnly.httpStatus);
-    expect(res.json).toHaveBeenCalledWith(SIGNOUT_RESPONSE_FIXTURES.localOnly.body);
-  });
-
-  it('returns local_only after a sanitized Supabase failure while still issuing cleanup', async () => {
+  it('issues bounded auth and CSRF cleanup after a sanitized Supabase failure', async () => {
     mockSignOut.mockResolvedValue({ error: new Error('sanitized remote failure') });
     const req = createMockReq({
       cookies: { [AUTH_COOKIE_STORAGE_KEY]: null },
@@ -224,9 +204,8 @@ describe('/api/auth/signout CHUNK-0 contract', () => {
 
     await handler(req, res);
 
-    expect(res.statusCode).toBe(SIGNOUT_RESPONSE_FIXTURES.localOnly.httpStatus);
-    expect(res.json).toHaveBeenCalledWith(SIGNOUT_RESPONSE_FIXTURES.localOnly.body);
     expect(res.getHeader('Set-Cookie')).toBeDefined();
+    expect(mockClearCsrfCookie).toHaveBeenCalledTimes(1);
   });
 
   it('does not let limiter or Redis unavailability bypass accepted local cleanup', async () => {
@@ -242,11 +221,15 @@ describe('/api/auth/signout CHUNK-0 contract', () => {
     expect(res.getHeader('Set-Cookie')).toEqual(expect.arrayContaining([
       expect.stringContaining(`${AUTH_COOKIE_STORAGE_KEY}=`),
     ]));
-    expect(res.json).toHaveBeenCalledWith(SIGNOUT_RESPONSE_FIXTURES.localOnly.body);
+    expect(res.json).toHaveBeenCalledWith({
+      data: null,
+      error: null,
+      message: 'Signed out successfully',
+    });
   });
 
-  it('sets private no-store before accepted or rejected work can return', async () => {
-    const req = createMockReq({ method: 'GET' });
+  it('sets private no-store before accepted v1 work can return', async () => {
+    const req = createMockReq();
     const res = createMockRes();
 
     await handler(req, res);

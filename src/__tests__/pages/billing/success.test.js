@@ -128,6 +128,7 @@ describe('BillingSuccessPage', () => {
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123', email: 'billing@example.com' },
       loading: false,
+      authStatus: 'authenticated',
     });
     mockApiPost.mockReset();
   });
@@ -171,11 +172,44 @@ describe('BillingSuccessPage', () => {
     expect(mockApiPost).toHaveBeenCalledTimes(2);
   });
 
-  it('does not poll or redirect while session authority is unavailable', async () => {
+  it('does not poll or redirect while auth is loading', async () => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: true,
+      authStatus: 'loading',
+      canPerformUserWork: false,
+    });
+
+    await renderBillingSuccessPage();
+
+    expect(mockApiPost).not.toHaveBeenCalled();
+    expect(mockRouter.push).not.toHaveBeenCalledWith('/login');
+  });
+
+  it('redirects only confirmed anonymous auth to ordinary login', async () => {
     mockUseAuth.mockReturnValue({
       user: null,
       loading: false,
-      authStatus: 'unavailable',
+      authStatus: 'anonymous',
+      canPerformUserWork: false,
+    });
+
+    await renderBillingSuccessPage();
+
+    expect(mockApiPost).not.toHaveBeenCalled();
+    expect(mockRouter.push).toHaveBeenCalledWith('/login');
+  });
+
+  it.each([
+    'unavailable',
+    'signed_out_local',
+    'logout_unconfirmed',
+    'terminal_unauthenticated',
+  ])('does not poll or redirect while auth is %s', async (authStatus) => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: false,
+      authStatus,
       canPerformUserWork: false,
     });
 

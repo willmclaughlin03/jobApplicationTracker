@@ -252,6 +252,29 @@ describe('apiRequest — state-changing requests', () => {
         expect(opts.method).toBe('POST');
         expect(opts.body).toBe(body);
     });
+
+    it.each([
+        ['post', '/api/jobs', { company: 'Acme' }],
+        ['put', '/api/jobs/1', { company: 'Beta' }],
+        ['delete', '/api/jobs/1', { reason: 'cleanup' }],
+    ])('forwards caller options and AbortSignal through api.%s', async (
+        methodName,
+        endpoint,
+        body
+    ) => {
+        const controller = new AbortController();
+        global.fetch = jest.fn().mockResolvedValue(mockFetchOnce(200, {}));
+
+        await api[methodName](endpoint, body, {
+            signal: controller.signal,
+            headers: { 'x-work-epoch': '7' },
+        });
+
+        expect(global.fetch).toHaveBeenCalledWith(endpoint, expect.objectContaining({
+            signal: controller.signal,
+            headers: expect.objectContaining({ 'x-work-epoch': '7' }),
+        }));
+    });
 });
 
 // =========================================================================
@@ -512,6 +535,8 @@ describe('apiRequest - SERVICE_UNAVAILABLE retry', () => {
      */
     it('aborts an in-flight retry sleep without dispatching another request', async () => {
         const controller = new AbortController();
+        const addAbortListenerSpy = jest.spyOn(controller.signal, 'addEventListener');
+        const removeAbortListenerSpy = jest.spyOn(controller.signal, 'removeEventListener');
         global.fetch = jest.fn().mockResolvedValue(
             mockFetchOnce(503, { error: 'SERVICE_UNAVAILABLE' }, false)
         );
@@ -532,6 +557,20 @@ describe('apiRequest - SERVICE_UNAVAILABLE retry', () => {
         try {
             expect(global.fetch).toHaveBeenCalledTimes(1);
             expect(settled).toBe(true);
+            expect(jest.getTimerCount()).toBe(0);
+            await jest.advanceTimersByTimeAsync(10_000);
+            expect(global.fetch).toHaveBeenCalledTimes(1);
+            const usesOneShotListener = addAbortListenerSpy.mock.calls.some(
+                ([eventName, _listener, options]) => (
+                    eventName === 'abort' && options?.once === true
+                )
+            );
+            const removesListenerExplicitly = removeAbortListenerSpy.mock.calls.some(
+                ([eventName, listener]) => (
+                    eventName === 'abort' && typeof listener === 'function'
+                )
+            );
+            expect(usesOneShotListener || removesListenerExplicitly).toBe(true);
             await requestPromise;
         } finally {
             jest.clearAllTimers();
@@ -593,6 +632,34 @@ describe('apiRequest — CSRF retry', () => {
         const retryOpts = global.fetch.mock.calls[2][1];
         expect(retryOpts.headers['x-csrf-token']).toBe('fresh-token');
         expect(data).toEqual({ ok: true });
+    });
+
+    it('propagates one AbortSignal through the CSRF refresh and retry', async () => {
+        const controller = new AbortController();
+        setCsrfCookie('stale-token');
+        global.fetch = jest.fn()
+            .mockResolvedValueOnce(mockFetchOnce(403, { error: 'CSRF_VALIDATION_FAILED' }, false))
+            .mockImplementationOnce(async () => {
+                setCsrfCookie('fresh-token');
+                return mockFetchOnce(200, null);
+            })
+            .mockResolvedValueOnce(mockFetchOnce(200, { ok: true }));
+
+        await apiRequest('/api/jobs', {
+            method: 'POST',
+            body: '{}',
+            signal: controller.signal,
+        });
+
+        expect(global.fetch).toHaveBeenNthCalledWith(1, '/api/jobs', expect.objectContaining({
+            signal: controller.signal,
+        }));
+        expect(global.fetch).toHaveBeenNthCalledWith(2, '/api/auth/csrf', expect.objectContaining({
+            signal: controller.signal,
+        }));
+        expect(global.fetch).toHaveBeenNthCalledWith(3, '/api/jobs', expect.objectContaining({
+            signal: controller.signal,
+        }));
     });
 
     /**
