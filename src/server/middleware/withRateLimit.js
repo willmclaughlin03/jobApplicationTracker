@@ -460,6 +460,11 @@ async function limitFailedProtectedAuth(req, res) {
  * @param {string[]} [options.allowedMethods=null] - HTTP methods this route accepts (e.g. ['GET', 'POST']).
  *                                                   If omitted, all requests return 405 (fail-closed).
  * @param {boolean} [options.csrfProtect] - Override the default CSRF behavior for protected routes.
+ * @param {(req: import('next').NextApiRequest) => object | Promise<object>} [options.preRateLimitGuard]
+ *        Optional fail-closed guard that runs after method validation and
+ *        before identity, cookies, CSRF, skipRateLimitWhen, or Redis.
+ * @param {(req: import('next').NextApiRequest, res: import('next').NextApiResponse, result: object) => object | Promise<object>} [options.writePreRateLimitGuardResponse]
+ *        Route-specific response writer for a guard rejection.
  * @param {(req: import('next').NextApiRequest) => boolean | Promise<boolean>} [options.skipRateLimitWhen]
  *        Optional emergency predicate that runs after method/auth/CSRF checks
  *        and before Redis-backed quota checks.
@@ -472,6 +477,8 @@ export function withRateLimit(handler, options = {}){
         operationByMethod = null,
         allowedMethods = null,
         csrfProtect,
+        preRateLimitGuard,
+        writePreRateLimitGuardResponse,
         skipRateLimitWhen,
     } = options;
 
@@ -483,6 +490,7 @@ export function withRateLimit(handler, options = {}){
         // Attach a child logger with requestId for request-scoped correlation
         const requestId = attachRequestLogger(req);
         res.setHeader('x-request-id', requestId);
+        res.setHeader('Cache-Control', 'private, no-store');
         const startedAtMs = getRequestTimingNowMs();
         const sampled = shouldSampleRequestDuration();
         const operation = operationByMethod?.[req.method] ?? operationOverride ?? METHOD_TO_OPERATIONS[req.method] ?? null;
@@ -505,6 +513,40 @@ export function withRateLimit(handler, options = {}){
             // Safety net: allowed method with no operation mapping and no override
             if(!operation){
                 return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
+            }
+
+            if (typeof preRateLimitGuard === 'function') {
+                let guardResult;
+                try {
+                    guardResult = await preRateLimitGuard(req);
+                } catch {
+                    guardResult = {
+                        allowed: false,
+                        statusCode: 503,
+                        reason: 'guard_failure',
+                    };
+                }
+
+                if (guardResult?.allowed !== true) {
+                    if (typeof writePreRateLimitGuardResponse === 'function') {
+                        try {
+                            return await writePreRateLimitGuardResponse(req, res, guardResult);
+                        } catch {
+                            return sendError(
+                                res,
+                                503,
+                                'SERVICE_UNAVAILABLE',
+                                ERROR_MESSAGES.SERVICE_UNAVAILABLE
+                            );
+                        }
+                    }
+                    return sendError(
+                        res,
+                        503,
+                        'SERVICE_UNAVAILABLE',
+                        ERROR_MESSAGES.SERVICE_UNAVAILABLE
+                    );
+                }
             }
 
             try {
