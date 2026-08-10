@@ -14,6 +14,74 @@ Set these in **AWS Amplify Console → Environment Variables** for the Productio
 
 When both variables are present, the Pino logger ships structured JSON logs to Axiom via the `@axiomhq/pino` transport. When either is missing, logs go to JSON stdout (picked up by CloudWatch in Amplify SSR).
 
+## Temporary Session Ceiling Operations
+
+The CHUNK-1 application ceiling is pre-production protection for the combined
+`GET /api/auth/session` and future `GET /api/auth/v2/session` traffic. It allows
+400 requests per source IP in a rolling 60-second window on each server
+instance. The separate future WAF Block ceiling remains provisionally 1,000 per
+60 seconds/IP.
+
+- Operational and rollback owner: Will
+- Pre-production alert destination: `tracktheapp.support@gmail.com`
+- Remote gate status: open until CloudFront header overwrite, origin isolation,
+  WAF/application source agreement, and active enforcement are executed
+- Production limitation: state resets on restart and effective allowance can
+  reach `400 x active instance count`
+- Version-overlap limitation: v1/v2 share a map only inside one process. If
+  Amplify splits route bundles across compute processes, each process has its
+  own allowance until combined edge enforcement replaces this control.
+
+### Aggregate queries
+
+Use count-only `temporary_session_ceiling_summary` events. Do not add IP,
+cookie, token, session, digest, email, user, or raw configuration fields to a
+query or derived event.
+
+- **Traffic and rejection ratio:** filter
+  `event == "temporary_session_ceiling_summary"`; sum `totalChecks`,
+  `allowedChecks`, and `rejectedChecks`; calculate
+  `rejectedChecks / totalChecks` over the alert window.
+- **Source trust failures:** use the same event and sum
+  `sourceResolutionFailures`. Any post-deployment increase requires checking
+  the CloudFront origin request policy and direct-origin boundary.
+- **Capacity pressure:** sum `stateCapacityFailures` and track the maximum
+  `activeEntryCount`. Capacity failures mean 10,000 live address entries blocked
+  a new source.
+- **Internal failure:** sum `internalFailures`; any non-zero value requires
+  investigation.
+- **Version split:** sum `routeVersionTotals.v1`, `.v2`, and `.unknown`.
+  `unknown > 0` indicates an integration error.
+- **Sample context:** filter
+  `event == "temporary_session_ceiling_rejection_sample"`. This stream is
+  intentionally capped at one event per instance/reporting window and must not
+  be used as an exact rejection count.
+
+The aggregate for an active window is emitted when the next request arrives in
+a later window. Because cleanup and logging use no timers, an instance that
+stops before another request does not emit its final partial-window aggregate.
+Use platform/API status metrics for the exact session failure ratio when
+available; the sampled event is not a substitute.
+
+### Alert thresholds
+
+- Page when exact session-route failures are at least 1% for 10 minutes with at
+  least 100 requests, or after 10 consecutive session failures.
+- Roll back when exact session-route failures reach 5% for 5 minutes.
+- Investigate legitimate temporary-ceiling rejection above 0.1% for 15
+  minutes.
+- Fail controlled testing on any legitimate `429` or `503`.
+- Do not page or warn once per hostile request. Aggregate counts are the
+  authoritative ceiling signal.
+
+### Rollback order
+
+Before the CHUNK-2 no-cookie bypass exists, restore the previous application
+build. After the bypass exists, disable or roll back that bypass first, verify
+the Redis-backed session path is active again, and only then remove, revert, or
+retune the temporary ceiling. WAF Count mode does not satisfy the replacement
+gate; the application ceiling remains until WAF Block evidence passes.
+
 ## Billing Alert Destinations
 
 Before paid rollout, billing alerts must have two verified destinations:

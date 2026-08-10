@@ -16,6 +16,9 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-02
 
+- `2026-08-09` - `Auth correctness CHUNK-1 temporary session ceiling`: Added a bounded non-Redis 400-request/60-second/IP ceiling before v1 session authentication and rate-limit work, with strict local/CloudFront source policies, a 10,000-address state cap, legacy v1 responses, bounded telemetry, controlled-load coverage, and operational evidence.
+  - validation: All 141 focused tests pass; the full checkpoint has 1,462 passing assertions and 176 unchanged future-chunk failures, with zero failures introduced relative to CHUNK-0; zero-warning ESLint, the placeholder-only production build, privacy scans, and diff checks pass.
+  - residual: Remote GATE-1 remains open pending CloudFront overwrite, direct-origin, source-agreement, and route-process topology evidence; a future v2 route must share the same ceiling singleton or an equivalent combined edge control.
 - `2026-08-09` - `Auth correctness CHUNK-0 checkpoint hardening`: Restored isolated future v2 handler behavior tables and expanded the test-only contracts for exact logout acceptance and side effects, bounded cookie cleanup, terminal-state cleanup, seven-state consumers, draft quarantine, auth-capable cache paths, middleware cookie propagation, route encoding, and abort cleanup without changing production behavior.
   - validation: The fixture contract passes 37/37 and the executable route/cache inventory passes 26/26; the 25-suite checkpoint executes 478 assertions with 310 passing, 168 intentionally failing at mapped production gaps, zero runtime errors, and zero pending tests; changed-file ESLint and diff checks pass.
   - residual: Sanitized deployed Supabase tuple capture still requires the trusted pre-production process variables, `MAX_AUTH_COOKIE_CHUNKS` remains owned by CHUNK-2 installed-chunker evidence, and intentionally red tests must land with their later production fixes before merge.
