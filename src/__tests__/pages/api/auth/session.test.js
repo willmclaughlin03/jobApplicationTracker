@@ -18,8 +18,12 @@
  * - Never leaks tokens or full user object in response
  */
 
+let mockRateLimitOptions;
 jest.mock('../../../../server/middleware/withRateLimit.js', () => ({
-  withRateLimit: (handler) => handler,
+  withRateLimit: (handler, options) => {
+    mockRateLimitOptions = options;
+    return handler;
+  },
 }));
 
 const mockGetUser = jest.fn();
@@ -69,6 +73,65 @@ describe('/api/auth/session handler', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  /**
+   * The v1 route installs the response-neutral guard before CHUNK-2 creates
+   * the isolated v2 endpoint.
+   */
+  it('configures the shared temporary session ceiling guard', () => {
+    expect(mockRateLimitOptions).toEqual(expect.objectContaining({
+      allowedMethods: ['GET'],
+      requireAuth: false,
+      preRateLimitGuard: expect.any(Function),
+      writePreRateLimitGuardResponse: expect.any(Function),
+    }));
+  });
+
+  /**
+   * A ceiling 429 keeps the legacy v1 envelope and exposes a valid retry delay.
+   */
+  it('writes the legacy v1 rate-limit response for a ceiling rejection', () => {
+    const req = createMockReq();
+    const res = createMockRes();
+
+    mockRateLimitOptions.writePreRateLimitGuardResponse(req, res, {
+      allowed: false,
+      statusCode: 429,
+      reason: 'limit_exceeded',
+      retryAfterSeconds: 37,
+    });
+
+    expect(res.setHeader).toHaveBeenCalledWith('Retry-After', 37);
+    expect(res.status).toHaveBeenCalledWith(429);
+    expect(res.json).toHaveBeenCalledWith({
+      data: null,
+      error: 'RATE_LIMIT_EXCEEDED',
+      message: 'Rate limit exceeded. Please try again later.',
+    });
+  });
+
+  /**
+   * Missing, capacity, clock, and malformed guard outcomes all preserve the
+   * legacy v1 unavailable envelope without a speculative Retry-After.
+   */
+  it('writes the legacy v1 unavailable response for a ceiling failure', () => {
+    const req = createMockReq();
+    const res = createMockRes();
+
+    mockRateLimitOptions.writePreRateLimitGuardResponse(req, res, {
+      allowed: false,
+      statusCode: 503,
+      reason: 'source_missing_or_invalid',
+    });
+
+    expect(res.setHeader).not.toHaveBeenCalledWith('Retry-After', expect.anything());
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith({
+      data: null,
+      error: 'SERVICE_UNAVAILABLE',
+      message: 'Service temporarily unavailable. Please try again later.',
+    });
   });
 
   /**
