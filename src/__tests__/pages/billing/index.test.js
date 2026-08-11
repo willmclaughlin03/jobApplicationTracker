@@ -265,6 +265,7 @@ describe('BillingPage', () => {
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123', email: 'billing@example.com' },
       loading: false,
+      authStatus: 'authenticated',
       signOut,
     });
     mockApiGet.mockResolvedValue({
@@ -364,6 +365,7 @@ describe('BillingPage', () => {
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123', email: 'billing@example.com' },
       loading: false,
+      authStatus: 'authenticated',
       signOut,
     });
     mockApiGet.mockResolvedValue({
@@ -529,6 +531,7 @@ describe('BillingPage', () => {
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123', email: 'billing@example.com' },
       loading: false,
+      authStatus: 'authenticated',
       signOut,
     });
     mockApiPost.mockResolvedValue(buildActionError('UNAUTHORIZED', 401));
@@ -549,6 +552,7 @@ describe('BillingPage', () => {
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123', email: 'billing@example.com' },
       loading: false,
+      authStatus: 'authenticated',
       signOut,
     });
     mockApiPost.mockResolvedValue(buildActionError(null, 401));

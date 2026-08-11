@@ -65,9 +65,53 @@ function useDashboardWideLayout() {
   return isWide;
 }
 
+/**
+ * Gate private Dashboard work behind the current auth authority.
+ *
+ * Purpose: unavailable or transitional auth states must keep private hooks
+ * unmounted, while only confirmed anonymous sessions redirect to login.
+ *
+ * @returns {JSX.Element|null} The loading shell, authenticated Dashboard, or no private UI.
+ */
 export default function Dashboard() {
-  const { user, loading: authLoading, signOut } = useAuth();
+  const {
+    user,
+    loading: authLoading,
+    authStatus,
+    canPerformUserWork,
+    signOut,
+  } = useAuth();
   const router = useRouter();
+
+  if (authLoading) {
+    return <DashboardSkeleton />;
+  }
+
+  if (authStatus === 'anonymous') {
+    router.push('/login');
+    return null;
+  }
+
+  if (authStatus !== 'authenticated' || !canPerformUserWork || !user) {
+    return null;
+  }
+
+  return <PrivateDashboard user={user} signOut={signOut} router={router} />;
+}
+
+/**
+ * Render authenticated Dashboard data and interaction state.
+ *
+ * Purpose: isolating private hooks in this child prevents unavailable sessions
+ * from starting job work and resets private form state after auth recovery.
+ *
+ * @param {object} props - Authenticated Dashboard dependencies.
+ * @param {object} props.user - Confirmed authenticated user.
+ * @param {Function} props.signOut - Auth-context sign-out operation.
+ * @param {object} props.router - Next.js router used by Dashboard actions.
+ * @returns {JSX.Element} The authenticated Dashboard interface.
+ */
+function PrivateDashboard({ user, signOut, router }) {
   const isWideLayout = useDashboardWideLayout();
   const filtersTriggerRef = useRef(null);
   const addApplicationTriggerRef = useRef(null);
@@ -170,15 +214,6 @@ export default function Dashboard() {
       addApplicationTriggerRef.current?.focus();
     }
   }, [showForm, saving, hasCompetingFocusOwner]);
-
-  if (!authLoading && !user) {
-    router.push('/login');
-    return null;
-  }
-
-  if (authLoading) {
-    return <DashboardSkeleton />;
-  }
 
   /**
    * Toggle the Filters disclosure that belongs to the current responsive mode.

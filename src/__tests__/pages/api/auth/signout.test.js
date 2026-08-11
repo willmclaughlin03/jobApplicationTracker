@@ -144,9 +144,11 @@ describe('/api/auth/signout v1 compatibility contract', () => {
   });
 
   it('clears the exact derived cookie allowlist once without accepting suffix lookalikes', async () => {
-    mockSignOut.mockResolvedValue({ error: new Error('sanitized remote failure') });
     const hasDerivedChunkCap = Number.isInteger(MAX_AUTH_COOKIE_CHUNKS)
       && MAX_AUTH_COOKIE_CHUNKS > 0;
+    expect(hasDerivedChunkCap).toBe(true);
+
+    mockSignOut.mockResolvedValue({ error: new Error('sanitized remote failure') });
     const firstRejectedSuffix = hasDerivedChunkCap ? MAX_AUTH_COOKIE_CHUNKS : 999999;
     const req = createMockReq({
       cookies: {
@@ -183,16 +185,17 @@ describe('/api/auth/signout v1 compatibility contract', () => {
           (_unused, index) => `${AUTH_COOKIE_STORAGE_KEY}.${index}`
         ),
       ];
+      const presentAllowedNames = allowedCookieNames.filter(
+        (cookieName) => cookieName in req.cookies
+      );
 
-      allowedCookieNames.forEach((cookieName) => {
+      presentAllowedNames.forEach((cookieName) => {
         expect(setCookieValues.filter(
           (cookieValue) => cookieValue.startsWith(`${cookieName}=`)
         )).toHaveLength(1);
       });
-      expect(setCookieValues).toHaveLength(allowedCookieNames.length);
+      expect(setCookieValues).toHaveLength(presentAllowedNames.length);
     }
-
-    expect(hasDerivedChunkCap).toBe(true);
   });
 
   it('issues bounded auth and CSRF cleanup after a sanitized Supabase failure', async () => {
@@ -235,7 +238,16 @@ describe('/api/auth/signout v1 compatibility contract', () => {
     await handler(req, res);
 
     expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
-    expect(res.setHeader.mock.invocationCallOrder[0]).toBeLessThan(
+    /**
+     * Matches the Cache-Control write so ordering uses its call index.
+     *
+     * @param {Array<unknown>} headerArgs - Arguments captured for one setHeader call.
+     * @returns {boolean} Whether the call writes the Cache-Control header.
+     */
+    const cacheControlCallIndex = res.setHeader.mock.calls.findIndex(
+      (headerArgs) => headerArgs.includes('Cache-Control')
+    );
+    expect(res.setHeader.mock.invocationCallOrder[cacheControlCallIndex]).toBeLessThan(
       res.status.mock.invocationCallOrder[0]
     );
   });

@@ -9,8 +9,12 @@
 
 import { z } from 'zod';
 
+const supabaseProjectRef = new URL(
+  process.env.NEXT_PUBLIC_SUPABASE_URL
+).hostname.split('.')[0];
+
 export const AUTH_V2_VERSION = 2;
-export const AUTH_COOKIE_STORAGE_KEY = 'sb-apxfjggdcybjticrnbpk-auth-token';
+export const AUTH_COOKIE_STORAGE_KEY = `sb-${supabaseProjectRef}-auth-token`;
 export const SUPABASE_ENCODED_CHUNK_SIZE = 3180;
 export const MAX_AUTH_COOKIE_CHUNKS = null;
 export const LOGOUT_INTENT_HEADER = 'X-Logout-Intent';
@@ -663,8 +667,8 @@ export const AUTH_CAPABLE_CACHE_INVENTORY = Object.freeze([
 ]);
 
 export const safeUserSchema = z.object({
-  id: z.string().uuid(),
-  email: z.string().email().nullable(),
+  id: z.uuid(),
+  email: z.email().nullable(),
   role: z.enum(['user', 'admin']),
 }).strict();
 

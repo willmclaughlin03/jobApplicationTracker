@@ -13,7 +13,7 @@
  * - Returns 200 with user {id, email, role} when authenticated
  * - Returns 200 with {user: null} when not authenticated
  * - Returns 200 with {user: null} when getUser returns an error
- * - Sets Cache-Control: no-store header
+ * - Sets Cache-Control: private, no-store header
  * - Returns 503 when Supabase client throws
  * - Never leaks tokens or full user object in response
  */
@@ -39,7 +39,7 @@ jest.mock('../../../../shared/logger.js', () => ({
 }));
 
 const handler = require('../../../../pages/api/auth/session.js').default;
-const { AuthApiError } = require('@supabase/auth-js');
+const { AuthApiError } = require('@supabase/supabase-js');
 const { sessionResponseSchema } = require('../../../../testSupport/authV2ContractFixtures.js');
 
 describe('/api/auth/session handler', () => {
@@ -160,7 +160,7 @@ describe('/api/auth/session handler', () => {
   /**
    * Cache-Control must be no-store to prevent caching user data
    */
-  it('sets Cache-Control: no-store header', async () => {
+  it('sets Cache-Control: private, no-store header', async () => {
     mockGetUser.mockResolvedValue({ data: { user: mockUser }, error: null });
     const req = createMockReq();
     const res = createMockRes();

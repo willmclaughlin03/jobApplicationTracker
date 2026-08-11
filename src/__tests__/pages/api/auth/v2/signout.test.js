@@ -27,7 +27,11 @@ jest.mock('../../../../../server/middleware/withRateLimit.js', () => ({
   withRateLimit: jest.fn((handler, options) => {
     mockCapturedRateLimitOptions = options;
     return async (...args) => {
-      mockRateLimitWork();
+      const [req] = args;
+      const shouldSkipRateLimit = typeof options.skipRateLimitWhen === 'function'
+        && await options.skipRateLimitWhen(req);
+
+      if (!shouldSkipRateLimit) mockRateLimitWork(req);
       return handler(...args);
     };
   }),
@@ -185,10 +189,12 @@ if (!routeExists) {
         };
         if (contentType) headers['content-type'] = contentType;
         const response = createResponse();
+        const request = createRequest({ body, headers });
 
-        await handler(createRequest({ body, headers }), response);
+        await handler(request, response);
 
         expect(mockRateLimitWork).toHaveBeenCalledTimes(1);
+        expect(mockRateLimitWork).toHaveBeenCalledWith(request);
         expect(mockSignOut).toHaveBeenCalledTimes(1);
         expect(mockSignOut).toHaveBeenCalledWith({ scope: 'local' });
         expect(mockClearCsrfCookie).toHaveBeenCalledTimes(1);

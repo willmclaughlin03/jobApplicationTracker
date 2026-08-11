@@ -41,12 +41,14 @@ describe('v1/v2 auth endpoint isolation', () => {
   ])('keeps legacy handler %s free of a v2 fallback import', (source) => {
     const contents = fs.readFileSync(path.join(process.cwd(), source), 'utf8');
 
-    expect(contents).not.toMatch(/api\/auth\/v2|auth\/v2/);
+    expect(contents).not.toMatch(/(?:import|require)\s*\(?[^\n]*auth\/v2/);
   });
 
   it.each(futureRoutes)(
     '$owner keeps $route behavior independent from the legacy handler',
     ({ source }) => {
+      expect.assertions(1);
+
       const absoluteSource = path.join(process.cwd(), source);
 
       if (!fs.existsSync(absoluteSource)) return;

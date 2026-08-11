@@ -164,6 +164,7 @@ describe('Login', () => {
       user: null,
       loading: true,
       authStatus: 'loading',
+      canShowSignIn: false,
       signInWithOAuth: mockSignInWithOAuth,
     });
 
@@ -181,6 +182,7 @@ describe('Login', () => {
       user: { id: 'user-123' },
       loading: false,
       authStatus: 'authenticated',
+      canShowSignIn: false,
       signInWithOAuth: mockSignInWithOAuth,
     });
 
@@ -199,6 +201,7 @@ describe('Login', () => {
       user: null,
       loading: false,
       authStatus,
+      canShowSignIn: false,
       signInWithOAuth: mockSignInWithOAuth,
     });
 
@@ -213,6 +216,7 @@ describe('Login', () => {
       user: null,
       loading: false,
       authStatus: 'terminal_unauthenticated',
+      canShowSignIn: false,
       signInWithOAuth: mockSignInWithOAuth,
     });
 

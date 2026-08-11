@@ -175,8 +175,12 @@ describe('useJobFormModal draft quarantine contract', () => {
       company: `${exactDraft.company}💡`,
     };
 
-    expect(measureDraftBytes(exactDraft)).toBe(4096);
-    expect(measureDraftBytes(multibyteOverflow)).toBe(4100);
+    expect(measureDraftBytes(exactDraft)).toBe(
+      QUARANTINED_DRAFT_POLICY.maxUtf8Bytes
+    );
+    expect(measureDraftBytes(multibyteOverflow)).toBe(
+      QUARANTINED_DRAFT_POLICY.maxUtf8Bytes + 4
+    );
   });
 
   it('expires against the absolute quarantine timestamp without sliding renewal', () => {

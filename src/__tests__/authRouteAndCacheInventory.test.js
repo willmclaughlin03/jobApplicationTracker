@@ -102,6 +102,7 @@ describe('auth-capable cache inventory', () => {
       .map(toRepositoryPath);
     const inventoriedSources = new Set(currentCacheEntries.map(({ source }) => source));
 
+    expect(discoveredSources.length).toBeGreaterThan(0);
     discoveredSources.forEach((source) => {
       expect(inventoriedSources).toContain(source);
     });
@@ -116,8 +117,11 @@ describe('auth-capable cache inventory', () => {
 
       return /withRateLimit\s*\(/.test(contents) && /requireAuth\s*:\s*true/.test(contents);
     });
+    const expectedProtectedApiEntries = currentCacheEntries.filter(
+      ({ outcomes, source }) => source.startsWith('src/pages/api/') && outcomes.includes('auth')
+    );
 
-    expect(protectedApiEntries).toHaveLength(13);
+    expect(protectedApiEntries).toHaveLength(expectedProtectedApiEntries.length);
     protectedApiEntries.forEach(({ outcomes }) => {
       expect(outcomes).toEqual(expect.arrayContaining([
         'method',

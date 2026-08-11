@@ -32,6 +32,11 @@ const { AuthProvider, useAuth } = require('../AuthContext.js');
 let container;
 let root;
 let latestAuth;
+const originalVisibilityDescriptor = Object.getOwnPropertyDescriptor(
+  document,
+  'visibilityState'
+);
+const originalFetchDescriptor = Object.getOwnPropertyDescriptor(global, 'fetch');
 
 /**
  * Creates a manually controlled promise for request-order regression tests.
@@ -215,6 +220,19 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+
+  if (originalVisibilityDescriptor) {
+    Object.defineProperty(document, 'visibilityState', originalVisibilityDescriptor);
+  } else {
+    delete document.visibilityState;
+  }
+
+  if (originalFetchDescriptor) {
+    Object.defineProperty(global, 'fetch', originalFetchDescriptor);
+  } else {
+    delete global.fetch;
+  }
+
   jest.restoreAllMocks();
 });
 

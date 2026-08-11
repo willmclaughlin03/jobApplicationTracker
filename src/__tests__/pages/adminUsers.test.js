@@ -109,6 +109,25 @@ function cleanup() {
   root = null;
 }
 
+/**
+ * Builds the settled useAdminUsers result shared by both describe blocks.
+ *
+ * @returns {object} Stable admin-users hook contract with no loaded rows.
+ */
+function buildAdminUsersState() {
+  return {
+    users: [],
+    loading: false,
+    error: null,
+    page: 1,
+    setPage: jest.fn(),
+    hasMore: false,
+    deleting: null,
+    deleteUser: jest.fn(),
+    clearError: jest.fn(),
+  };
+}
+
 describe('/admin/users direct-request authorization', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -119,17 +138,7 @@ describe('/admin/users direct-request authorization', () => {
       authStatus: 'authenticated',
       signOut: jest.fn().mockResolvedValue({ status: 'complete' }),
     });
-    useAdminUsers.mockReturnValue({
-      users: [],
-      loading: false,
-      error: null,
-      page: 1,
-      setPage: jest.fn(),
-      hasMore: false,
-      deleting: null,
-      deleteUser: jest.fn(),
-      clearError: jest.fn(),
-    });
+    useAdminUsers.mockReturnValue(buildAdminUsersState());
   });
 
   afterEach(cleanup);
@@ -246,17 +255,7 @@ describe('/admin/users client auth outcomes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockLatestProfileProps = null;
-    useAdminUsers.mockReturnValue({
-      users: [],
-      loading: false,
-      error: null,
-      page: 1,
-      setPage: jest.fn(),
-      hasMore: false,
-      deleting: null,
-      deleteUser: jest.fn(),
-      clearError: jest.fn(),
-    });
+    useAdminUsers.mockReturnValue(buildAdminUsersState());
   });
 
   afterEach(cleanup);

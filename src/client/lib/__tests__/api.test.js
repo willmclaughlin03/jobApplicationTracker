@@ -272,6 +272,7 @@ describe('apiRequest — state-changing requests', () => {
 
         expect(global.fetch).toHaveBeenCalledWith(endpoint, expect.objectContaining({
             signal: controller.signal,
+            body: JSON.stringify(body),
             headers: expect.objectContaining({ 'x-work-epoch': '7' }),
         }));
     });

@@ -61,7 +61,10 @@ describe('createApiRouteClient', () => {
     createApiRouteClient(req, res);
 
     expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
-    expect(res.setHeader.mock.invocationCallOrder[0]).toBeLessThan(
+    const cacheControlIndex = res.setHeader.mock.calls.findIndex(
+      ([name]) => name === 'Cache-Control'
+    );
+    expect(res.setHeader.mock.invocationCallOrder[cacheControlIndex]).toBeLessThan(
       mockCreateServerClient.mock.invocationCallOrder[0]
     );
   });

@@ -79,7 +79,10 @@ describe('OAuth callback private response contract', () => {
 
     expect(result).toEqual({ redirect: { destination: '/', permanent: false } });
     expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
-    expect(res.setHeader.mock.invocationCallOrder[0]).toBeLessThan(
+    const cacheControlIndex = res.setHeader.mock.calls.findIndex(
+      ([name]) => name === 'Cache-Control'
+    );
+    expect(res.setHeader.mock.invocationCallOrder[cacheControlIndex]).toBeLessThan(
       mockCreateApiRouteClient.mock.invocationCallOrder[0]
     );
   });
@@ -89,8 +92,11 @@ describe('OAuth callback private response contract', () => {
     ['thrown provider error', () => mockExchangeCodeForSession.mockRejectedValue(new Error('sanitized provider failure'))],
   ])('sets private no-store on a %s redirect', async (_name, configureExchange) => {
     configureExchange();
-    const { res } = await runCallback({ code: 'approved-code-fixture' });
+    const { result, res } = await runCallback({ code: 'approved-code-fixture' });
 
+    expect(result).toEqual({
+      redirect: { destination: '/login?error=sign_in_failed', permanent: false },
+    });
     expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
   });
 });

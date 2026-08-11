@@ -249,6 +249,10 @@ describe('CHUNK-0 auth v2 contract fixtures', () => {
     const terminalTransitions = AUTH_STATE_TRANSITION_FIXTURES.filter(
       ({ to }) => to === 'terminal_unauthenticated'
     );
+    const transitionKeys = AUTH_STATE_TRANSITION_FIXTURES.map(
+      ({ event, from }) => `${event}|${from ?? '<missing>'}`
+    );
+    expect(new Set(transitionKeys).size).toBe(AUTH_STATE_TRANSITION_FIXTURES.length);
     expect(terminalTransitions).toHaveLength(4);
     terminalTransitions.forEach((transition) => {
       expect(transition.exposesOrdinarySignIn).toBe(false);
@@ -319,7 +323,7 @@ describe('CHUNK-0 auth v2 contract fixtures', () => {
   });
 
   it('freezes exact role normalization without trimming or case folding', () => {
-    expect(ROLE_NORMALIZATION_FIXTURES).toEqual([
+    expect(ROLE_NORMALIZATION_FIXTURES).toStrictEqual([
       { raw: undefined, result: 'user' },
       { raw: null, result: 'user' },
       { raw: 'user', result: 'user' },
@@ -334,7 +338,7 @@ describe('CHUNK-0 auth v2 contract fixtures', () => {
 
   it('keeps remote Supabase candidates disabled until deployed evidence exists', () => {
     expect(SESSION_ERROR_EVIDENCE).not.toHaveProperty('deployedCapture');
-    expect(SESSION_ERROR_EVIDENCE.locallyVerified).toEqual([{
+    expect(SESSION_ERROR_EVIDENCE.locallyVerified).toStrictEqual([{
       source: 'installed_sdk_source',
       exportedClass: 'AuthSessionMissingError',
       code: undefined,
@@ -347,7 +351,7 @@ describe('CHUNK-0 auth v2 contract fixtures', () => {
   });
 
   it('records only sanitized behavior from the installed Supabase sources', () => {
-    expect(INSTALLED_SUPABASE_EVIDENCE).toEqual({
+    expect(INSTALLED_SUPABASE_EVIDENCE).toStrictEqual({
       authJsVersion: '2.90.1',
       ssrVersion: '0.8.0',
       missingSession: {
@@ -409,6 +413,18 @@ describe('CHUNK-0 auth v2 contract fixtures', () => {
       '/403%2Fdetails',
     ]));
     expect(ROUTE_CLASSIFICATION_FIXTURES.rawRejected).toHaveLength(7);
+  });
+
+  /**
+   * Prevents the independently maintained route fixtures from silently drifting.
+   */
+  it('keeps the two public route sources in agreement', () => {
+    expect([...ROUTABLE_PAGE_POLICY_FIXTURES.public].sort()).toEqual(
+      [...ROUTE_CLASSIFICATION_FIXTURES.public].sort()
+    );
+    expect(ROUTE_CLASSIFICATION_FIXTURES.protected).toEqual(
+      expect.arrayContaining(ROUTABLE_PAGE_POLICY_FIXTURES.protected)
+    );
   });
 
   it('freezes all seven states and one reset strategy for every auth consumer', () => {

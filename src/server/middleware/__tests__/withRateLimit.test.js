@@ -1781,7 +1781,10 @@ describe('withRateLimit middleware', () => {
             await withRateLimit(jest.fn())(req, res);
 
             expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
-            expect(res.setHeader.mock.invocationCallOrder[0]).toBeLessThan(
+            const cacheControlIndex = res.setHeader.mock.calls.findIndex(
+                ([name]) => name === 'Cache-Control'
+            );
+            expect(res.setHeader.mock.invocationCallOrder[cacheControlIndex]).toBeLessThan(
                 res.status.mock.invocationCallOrder[0]
             );
         });
@@ -1813,7 +1816,10 @@ describe('withRateLimit middleware', () => {
             await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
-            expect(res.setHeader.mock.invocationCallOrder[0]).toBeLessThan(
+            const cacheControlIndex = res.setHeader.mock.calls.findIndex(
+                ([name]) => name === 'Cache-Control'
+            );
+            expect(res.setHeader.mock.invocationCallOrder[cacheControlIndex]).toBeLessThan(
                 handler.mock.invocationCallOrder[0]
             );
         });

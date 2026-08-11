@@ -167,7 +167,7 @@ describe('middleware route ordering', () => {
     ['redirect', { data: { user: null } }, false],
     ['next after authority exception', null, true],
   ])('sets private no-store and preserves the exact refresh cookie on final %s', async (
-    _label,
+    label,
     getUserResult,
     rejects
   ) => {
@@ -189,7 +189,7 @@ describe('middleware route ordering', () => {
 
     const response = await middleware(createMiddlewareRequest('/admin/users'));
 
-    expect(response.type).toBe(_label === 'redirect' ? 'redirect' : 'next');
+    expect(response.type).toBe(label === 'redirect' ? 'redirect' : 'next');
     expect(response.cookies.set).toHaveBeenCalledTimes(1);
     expect(response.cookies.set).toHaveBeenCalledWith(
       'auth-cookie-marker',
@@ -202,18 +202,6 @@ describe('middleware route ordering', () => {
         secure: false,
       }
     );
-    expect(response.headers.set).toHaveBeenCalledWith(
-      'Cache-Control',
-      'private, no-store'
-    );
-  });
-
-  it('sets private no-store on a protected authority exception', async () => {
-    mockGetUser.mockRejectedValue(new Error('sanitized authority failure'));
-    createServerClient.mockReturnValue({ auth: { getUser: mockGetUser } });
-
-    const response = await middleware(createMiddlewareRequest('/admin'));
-
     expect(response.headers.set).toHaveBeenCalledWith(
       'Cache-Control',
       'private, no-store'

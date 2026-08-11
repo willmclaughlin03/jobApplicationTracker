@@ -34,6 +34,9 @@ const {
   sessionHttpResponseSchema,
 } = require('../../../../../testSupport/authV2ContractFixtures.js');
 
+const unavailableRoleFixtures = ROLE_NORMALIZATION_FIXTURES.filter(
+  ({ result }) => result === 'unavailable'
+);
 const routeSource = 'src/pages/api/auth/v2/session.js';
 const routePath = path.join(process.cwd(), routeSource);
 const routeExists = fs.existsSync(routePath);
@@ -131,6 +134,17 @@ if (!routeExists) {
       jest.clearAllMocks();
     });
 
+    /**
+     * Verifies every derived classification dataset is populated before use.
+     *
+     * @returns {void}
+     */
+    it('has the evidence needed to drive the classification tables', () => {
+      expect(SESSION_ERROR_EVIDENCE.locallyVerified.length).toBeGreaterThan(0);
+      expect(unavailableRoleFixtures.length).toBeGreaterThan(0);
+      expect(SESSION_ERROR_EVIDENCE.deployedCandidates.length).toBeGreaterThan(0);
+    });
+
     it('uses an isolated public wrapper configuration without v1 fallback', () => {
       expect(mockCapturedRateLimitOptions).toEqual(expect.objectContaining({
         allowedMethods: ['GET'],
@@ -168,7 +182,7 @@ if (!routeExists) {
       });
     });
 
-    it.each(ROLE_NORMALIZATION_FIXTURES.filter(({ result }) => result === 'unavailable'))(
+    it.each(unavailableRoleFixtures)(
       'maps invalid role $raw to strict unavailable instead of authorizing it',
       async ({ raw }) => {
         mockGetUser.mockResolvedValue({

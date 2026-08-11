@@ -188,6 +188,8 @@ describe('ErrorPage', () => {
 
   it.each(PUBLIC_ERROR_STATUS_CODES)('omits every retry interface for status %s', (statusCode) => {
     const content = ERROR_PAGE_CONTENT[statusCode];
+
+    expect(content).toBeDefined();
     const el = render(React.createElement(ErrorPage, content));
 
     expect(Object.prototype.hasOwnProperty.call(content, 'showRetry')).toBe(false);

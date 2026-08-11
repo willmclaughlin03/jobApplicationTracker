@@ -133,6 +133,29 @@ describe('_app authMode contract', () => {
     expect(el.textContent).toContain('public status');
   });
 
+  /**
+   * Renders test content for non-allowlisted `_app` auth-mode markers.
+   *
+   * Exists to prove only exact `none` bypasses the connected AuthProvider.
+   *
+   * @returns {JSX.Element} Page content rendered through the app shell.
+   */
+  function NearMissPage() {
+    return React.createElement('main', null, 'near miss');
+  }
+
+  it.each(['None', 'public', 'optional', true])(
+    'still constructs AuthProvider for the non-allowlisted authMode %p',
+    (authMode) => {
+      NearMissPage.authMode = authMode;
+
+      const el = renderApp(NearMissPage);
+
+      expect(mockAuthProviderRender).toHaveBeenCalledTimes(1);
+      expect(el.querySelector('[data-testid=auth-provider]')).toBeTruthy();
+    }
+  );
+
   it('continues to construct AuthProvider for ordinary pages', () => {
     /** Renders an ordinary page that must remain inside the auth provider. */
     function ProtectedPage() {
