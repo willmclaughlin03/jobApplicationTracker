@@ -514,7 +514,7 @@ describe('Dashboard billing entry integration', () => {
     expect(element.querySelectorAll('.dashboard-root')).toHaveLength(1);
   });
 
-  it('redirects only confirmed anonymous auth to ordinary login', () => {
+  it('redirects only confirmed anonymous auth to ordinary login once across re-renders', () => {
     mockUseAuth.mockReturnValue({
       user: null,
       loading: false,
@@ -524,7 +524,9 @@ describe('Dashboard billing entry integration', () => {
     });
 
     const element = renderDashboard();
+    act(() => root.render(React.createElement(Dashboard)));
 
+    expect(mockRouter.push).toHaveBeenCalledTimes(1);
     expect(mockRouter.push).toHaveBeenCalledWith('/login');
     expect(element.querySelector('#applications-heading')).toBeNull();
   });

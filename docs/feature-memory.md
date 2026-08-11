@@ -14,6 +14,10 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-08-09
+
+- `2026-08-11` - `Anonymous Dashboard redirect effect`: Moved confirmed-anonymous login navigation out of Dashboard render into an auth-status effect and added a stable re-render regression proving only one login push.
+
 ### Week of 2026-08-02
 
 - `2026-08-09` - `Auth correctness CHUNK-0 expanded PR-objective checkpoint`: Restored isolated future v2 handler behavior tables and expanded the test-only contracts for exact logout acceptance and side effects, bounded cookie cleanup, terminal-state cleanup, seven-state consumers, draft quarantine, auth-capable cache paths, middleware cookie propagation, route encoding, and abort cleanup without changing production behavior.

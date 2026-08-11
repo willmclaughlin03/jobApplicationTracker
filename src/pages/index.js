@@ -83,12 +83,25 @@ export default function Dashboard() {
   } = useAuth();
   const router = useRouter();
 
+  /**
+   * Redirect confirmed anonymous sessions after rendering completes.
+   *
+   * Purpose: keep navigation out of the render phase and avoid repeating the
+   * login push while unrelated state changes re-render the anonymous page.
+   *
+   * @returns {void}
+   */
+  useEffect(() => {
+    if (authStatus === 'anonymous') {
+      router.push('/login');
+    }
+  }, [authStatus, router]);
+
   if (authLoading) {
     return <DashboardSkeleton />;
   }
 
   if (authStatus === 'anonymous') {
-    router.push('/login');
     return null;
   }
 
