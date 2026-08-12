@@ -604,6 +604,66 @@ describe('Dashboard billing entry integration', () => {
     expect(element.querySelector('[data-testid="job-form"]')).toBeNull();
   });
 
+  it('resets private drafts and cached jobs when the authenticated subject changes', () => {
+    const userAJob = {
+      id: 'user-a-job',
+      company: 'User A Company',
+      position: 'Engineer',
+    };
+    let authState = {
+      user: { id: 'user-a', email: 'user-a@example.com' },
+      loading: false,
+      authStatus: 'authenticated',
+      canPerformUserWork: true,
+      signOut: mockSignOut,
+    };
+
+    /**
+     * Model the instance-local job cache that must not survive a subject change.
+     *
+     * @param {string} userId - Current authenticated subject identifier.
+     * @returns {object} Settled jobs state seeded only for the first subject.
+     */
+    function useSubjectScopedJobsState(userId) {
+      const [cachedJobs] = React.useState(() => (
+        userId === 'user-a' ? [userAJob] : []
+      ));
+
+      return {
+        ...buildJobsState({
+          status: STORAGE_STATUSES.TERMINAL_FREE,
+          lockedCount: 0,
+        }),
+        jobs: cachedJobs,
+        allJobs: cachedJobs,
+        totalCount: cachedJobs.length,
+        totalJobs: cachedJobs.length,
+      };
+    }
+
+    mockUseAuth.mockImplementation(() => authState);
+    mockUseJobs.mockImplementation(useSubjectScopedJobsState);
+    mockUseJobFormModal.mockImplementation(useControlledJobFormState);
+    const element = renderDashboard();
+
+    click(findButtonByText(element, 'Add Application'));
+    expect(element.querySelector('[data-testid="job-form"]')).toBeTruthy();
+    expect(mockLatestJobTableProps.jobs).toEqual([userAJob]);
+
+    authState = {
+      user: { id: 'user-b', email: 'user-b@example.com' },
+      loading: false,
+      authStatus: 'authenticated',
+      canPerformUserWork: true,
+      signOut: mockSignOut,
+    };
+    act(() => root.render(React.createElement(Dashboard)));
+
+    expect(mockUseJobs.mock.calls.at(-1)[0]).toBe('user-b');
+    expect(element.querySelector('[data-testid="job-form"]')).toBeNull();
+    expect(element.textContent).toContain('No job applications yet.');
+  });
+
   it('renders Dismiss as a non-submitting button and clears the current error', () => {
     const jobsState = buildJobsState({
       status: STORAGE_STATUSES.TERMINAL_FREE,

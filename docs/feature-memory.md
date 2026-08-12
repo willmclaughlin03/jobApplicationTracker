@@ -16,6 +16,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-09
 
+- `2026-08-11` - `Authenticated Dashboard subject isolation`: Keyed the private Dashboard tree to the authenticated user id so direct account changes discard the prior subject's modal, filter, and cached job state, with A-to-B regression coverage for drafts and jobs.
 - `2026-08-11` - `Anonymous Dashboard redirect effect`: Moved confirmed-anonymous login navigation out of Dashboard render into an auth-status effect and added a stable re-render regression proving only one login push.
 
 ### Week of 2026-08-02

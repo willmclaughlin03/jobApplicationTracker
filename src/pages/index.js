@@ -109,7 +109,14 @@ export default function Dashboard() {
     return null;
   }
 
-  return <PrivateDashboard user={user} signOut={signOut} router={router} />;
+  return (
+    <PrivateDashboard
+      key={user.id}
+      user={user}
+      signOut={signOut}
+      router={router}
+    />
+  );
 }
 
 /**
