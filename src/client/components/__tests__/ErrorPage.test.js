@@ -12,10 +12,14 @@
 const React = require('react');
 const { createRoot } = require('react-dom/client');
 const { act } = require('react');
+const {
+  ERROR_STATUS_CODES: PUBLIC_ERROR_STATUS_CODES,
+} = require('../../../shared/constants/errorStatusCodes.js');
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const mockBack = jest.fn();
+const mockHeadChildren = jest.fn();
 
 jest.mock('next/router', () => ({
   useRouter: () => ({
@@ -41,6 +45,7 @@ jest.mock('next/head', () => {
    * @returns {JSX.Element} Fragment containing head children.
    */
   function MockHead({ children }) {
+    mockHeadChildren(children);
     return React.createElement(React.Fragment, null, children);
   }
 
@@ -105,6 +110,7 @@ function cleanup() {
   container = null;
   root = null;
   mockBack.mockClear();
+  mockHeadChildren.mockClear();
 }
 
 afterEach(cleanup);
@@ -146,7 +152,7 @@ describe('ErrorPage', () => {
     expect(el.textContent).toContain('Too many requests');
     expect(el.textContent).toContain('Please wait a moment');
     expect(el.textContent).toContain('Go to dashboard');
-    expect(el.textContent).toContain('Try again');
+    expect(el.textContent).not.toContain('Try again');
     expect(el.textContent).not.toContain('Redis');
     expect(el.textContent).not.toContain('Upstash');
   });
@@ -178,6 +184,35 @@ describe('ErrorPage', () => {
     const el = render(React.createElement(ErrorPage, ERROR_PAGE_CONTENT[404]));
 
     expect(findButtonByText(el, 'Try again')).toBeNull();
+  });
+
+  it.each(PUBLIC_ERROR_STATUS_CODES)('omits every retry interface for status %s', (statusCode) => {
+    const content = ERROR_PAGE_CONTENT[statusCode];
+
+    expect(content).toBeDefined();
+    const el = render(React.createElement(ErrorPage, content));
+
+    expect(Object.prototype.hasOwnProperty.call(content, 'showRetry')).toBe(false);
+    expect(findButtonByText(el, 'Try again')).toBeNull();
+  });
+
+  it('ignores a dormant showRetry prop so reload behavior cannot be re-enabled', () => {
+    const el = render(React.createElement(ErrorPage, {
+      ...ERROR_PAGE_CONTENT[500],
+      showRetry: true,
+    }));
+
+    expect(findButtonByText(el, 'Try again')).toBeNull();
+  });
+
+  it('renders the document title with exactly one React child', () => {
+    render(React.createElement(ErrorPage, ERROR_PAGE_CONTENT[503]));
+    const headChildren = mockHeadChildren.mock.calls.at(-1)[0];
+    const title = React.Children.toArray(headChildren).find((child) => child.type === 'title');
+
+    expect(title).toBeTruthy();
+    expect(React.Children.count(title.props.children)).toBe(1);
+    expect(title.props.children).toBe('503 - Track The App');
   });
 
   it('maps unknown status codes to the generic 500 content', () => {

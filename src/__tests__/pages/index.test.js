@@ -480,6 +480,8 @@ describe('Dashboard billing entry integration', () => {
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123', email: 'member@example.com' },
       loading: false,
+      authStatus: 'authenticated',
+      canPerformUserWork: true,
       signOut: mockSignOut,
     });
     mockUseJobs.mockReturnValue(buildJobsState({
@@ -498,6 +500,8 @@ describe('Dashboard billing entry integration', () => {
     mockUseAuth.mockReturnValue({
       user: null,
       loading: true,
+      authStatus: 'loading',
+      canPerformUserWork: false,
       signOut: mockSignOut,
     });
 
@@ -508,6 +512,156 @@ describe('Dashboard billing entry integration', () => {
       element.querySelector('.dashboard-root [data-testid=dashboard-skeleton-marker]')
     ).toBeTruthy();
     expect(element.querySelectorAll('.dashboard-root')).toHaveLength(1);
+  });
+
+  it('redirects only confirmed anonymous auth to ordinary login once across re-renders', () => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: false,
+      authStatus: 'anonymous',
+      canPerformUserWork: false,
+      signOut: mockSignOut,
+    });
+
+    const element = renderDashboard();
+    act(() => root.render(React.createElement(Dashboard)));
+
+    expect(mockRouter.push).toHaveBeenCalledTimes(1);
+    expect(mockRouter.push).toHaveBeenCalledWith('/login');
+    expect(element.querySelector('#applications-heading')).toBeNull();
+  });
+
+  it.each([
+    'unavailable',
+    'signed_out_local',
+    'logout_unconfirmed',
+    'terminal_unauthenticated',
+  ])('locks %s auth without redirecting to login or exposing private jobs', (authStatus) => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: false,
+      authStatus,
+      canPerformUserWork: false,
+      signOut: mockSignOut,
+    });
+
+    const element = renderDashboard();
+
+    expect(mockRouter.replace).not.toHaveBeenCalledWith('/login');
+    expect(mockRouter.push).not.toHaveBeenCalledWith('/login');
+    expect(element.querySelector('#applications-heading')).toBeNull();
+  });
+
+  it('does not start private data hooks while session authority is unavailable', () => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: false,
+      authStatus: 'unavailable',
+      canPerformUserWork: false,
+      signOut: mockSignOut,
+    });
+
+    renderDashboard();
+
+    expect(mockUseJobs).not.toHaveBeenCalled();
+    expect(mockUseJobFormModal).not.toHaveBeenCalled();
+  });
+
+  it('does not automatically replay an active draft after unavailable auth recovers', () => {
+    let authState = {
+      user: { id: 'user-123', email: null },
+      loading: false,
+      authStatus: 'authenticated',
+      canPerformUserWork: true,
+      signOut: mockSignOut,
+    };
+    mockUseAuth.mockImplementation(() => authState);
+    mockUseJobFormModal.mockImplementation(useControlledJobFormState);
+    const element = renderDashboard();
+
+    click(findButtonByText(element, 'Add Application'));
+    expect(element.querySelector('[data-testid="job-form"]')).toBeTruthy();
+
+    authState = {
+      user: null,
+      loading: false,
+      authStatus: 'unavailable',
+      canPerformUserWork: false,
+      signOut: mockSignOut,
+    };
+    act(() => root.render(React.createElement(Dashboard)));
+    expect(element.querySelector('[data-testid="job-form"]')).toBeNull();
+
+    authState = {
+      user: { id: 'user-123', email: null },
+      loading: false,
+      authStatus: 'authenticated',
+      canPerformUserWork: true,
+      signOut: mockSignOut,
+    };
+    act(() => root.render(React.createElement(Dashboard)));
+
+    expect(element.querySelector('[data-testid="job-form"]')).toBeNull();
+  });
+
+  it('resets private drafts and cached jobs when the authenticated subject changes', () => {
+    const userAJob = {
+      id: 'user-a-job',
+      company: 'User A Company',
+      position: 'Engineer',
+    };
+    let authState = {
+      user: { id: 'user-a', email: 'user-a@example.com' },
+      loading: false,
+      authStatus: 'authenticated',
+      canPerformUserWork: true,
+      signOut: mockSignOut,
+    };
+
+    /**
+     * Model the instance-local job cache that must not survive a subject change.
+     *
+     * @param {string} userId - Current authenticated subject identifier.
+     * @returns {object} Settled jobs state seeded only for the first subject.
+     */
+    function useSubjectScopedJobsState(userId) {
+      const [cachedJobs] = React.useState(() => (
+        userId === 'user-a' ? [userAJob] : []
+      ));
+
+      return {
+        ...buildJobsState({
+          status: STORAGE_STATUSES.TERMINAL_FREE,
+          lockedCount: 0,
+        }),
+        jobs: cachedJobs,
+        allJobs: cachedJobs,
+        totalCount: cachedJobs.length,
+        totalJobs: cachedJobs.length,
+      };
+    }
+
+    mockUseAuth.mockImplementation(() => authState);
+    mockUseJobs.mockImplementation(useSubjectScopedJobsState);
+    mockUseJobFormModal.mockImplementation(useControlledJobFormState);
+    const element = renderDashboard();
+
+    click(findButtonByText(element, 'Add Application'));
+    expect(element.querySelector('[data-testid="job-form"]')).toBeTruthy();
+    expect(mockLatestJobTableProps.jobs).toEqual([userAJob]);
+
+    authState = {
+      user: { id: 'user-b', email: 'user-b@example.com' },
+      loading: false,
+      authStatus: 'authenticated',
+      canPerformUserWork: true,
+      signOut: mockSignOut,
+    };
+    act(() => root.render(React.createElement(Dashboard)));
+
+    expect(mockUseJobs.mock.calls.at(-1)[0]).toBe('user-b');
+    expect(element.querySelector('[data-testid="job-form"]')).toBeNull();
+    expect(element.textContent).toContain('No job applications yet.');
   });
 
   it('renders Dismiss as a non-submitting button and clears the current error', () => {
@@ -775,17 +929,34 @@ describe('Dashboard billing entry integration', () => {
     expect(element.querySelector('[data-testid="upgrade-modal"]')).toBeNull();
   });
 
-  it('signs out and replaces login history for modal auth recovery', async () => {
+  it('contains modal authorization recovery without claiming confirmed anonymity', async () => {
+    mockSignOut.mockResolvedValue({ status: 'signed_out_local' });
     const element = renderDashboard();
 
     click(findButtonByText(element, 'Upgrade'));
     await clickAsync(findButtonByText(element, 'Modal unauthorized'));
 
     expect(mockSignOut).toHaveBeenCalledTimes(1);
-    expect(mockRouter.replace).toHaveBeenCalledTimes(1);
-    expect(mockRouter.replace).toHaveBeenCalledWith('/login');
     expect(mockRouter.push).not.toHaveBeenCalledWith('/login');
+    expect(mockRouter.replace).not.toHaveBeenCalledWith('/login');
     expect(mockLatestUpgradeModalProps.isOpen).toBe(false);
+  });
+
+  it('does not navigate to login when explicit sign-out remains unconfirmed', async () => {
+    mockSignOut.mockResolvedValue({
+      status: 'logout_unconfirmed',
+      requestPending: false,
+      retryAllowed: true,
+    });
+    renderDashboard();
+
+    await act(async () => {
+      await mockLatestProfileProps.onSignOut();
+    });
+
+    expect(mockSignOut).toHaveBeenCalledTimes(1);
+    expect(mockRouter.push).not.toHaveBeenCalledWith('/login');
+    expect(mockRouter.replace).not.toHaveBeenCalledWith('/login');
   });
 
   it('keeps toolbar, Filters, Activity, account, tooltip, and Add Application wired', () => {

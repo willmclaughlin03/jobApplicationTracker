@@ -1768,4 +1768,60 @@ describe('withRateLimit middleware', () => {
             );
         });
     });
+
+    describe('protected auth response cache isolation', () => {
+        /**
+         * Protected wrapper entry must become private before method rejection
+         * can bypass authentication and the wrapped handler.
+         */
+        it('sets private no-store on an early 405 response', async () => {
+            const req = createMockRequest('OPTIONS');
+            const res = createMockResponse();
+
+            await withRateLimit(jest.fn())(req, res);
+
+            expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
+            const cacheControlIndex = res.setHeader.mock.calls.findIndex(
+                ([name]) => name === 'Cache-Control'
+            );
+            expect(res.setHeader.mock.invocationCallOrder[cacheControlIndex]).toBeLessThan(
+                res.status.mock.invocationCallOrder[0]
+            );
+        });
+
+        /**
+         * Auth-authority failure can return before the handler but may already
+         * have refreshed cookies through the shared Supabase adapter.
+         */
+        it('sets private no-store on an early auth 503 response', async () => {
+            mockGetUserFromRequest.mockRejectedValue(new Error('sanitized auth failure'));
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+
+            await withRateLimit(jest.fn(), { allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
+        });
+
+        /**
+         * Successful protected requests retain the same private response
+         * contract because authentication may rotate their cookies.
+         */
+        it('sets private no-store before a successful protected handler', async () => {
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn((innerReq, innerRes) => innerRes.status(200).json({ data: true }));
+
+            await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
+
+            expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
+            const cacheControlIndex = res.setHeader.mock.calls.findIndex(
+                ([name]) => name === 'Cache-Control'
+            );
+            expect(res.setHeader.mock.invocationCallOrder[cacheControlIndex]).toBeLessThan(
+                handler.mock.invocationCallOrder[0]
+            );
+        });
+    });
 });

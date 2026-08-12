@@ -13,7 +13,7 @@
  * - Returns 200 with user {id, email, role} when authenticated
  * - Returns 200 with {user: null} when not authenticated
  * - Returns 200 with {user: null} when getUser returns an error
- * - Sets Cache-Control: no-store header
+ * - Sets Cache-Control: private, no-store header
  * - Returns 503 when Supabase client throws
  * - Never leaks tokens or full user object in response
  */
@@ -39,6 +39,8 @@ jest.mock('../../../../shared/logger.js', () => ({
 }));
 
 const handler = require('../../../../pages/api/auth/session.js').default;
+const { AuthApiError } = require('@supabase/supabase-js');
+const { sessionResponseSchema } = require('../../../../testSupport/authV2ContractFixtures.js');
 
 describe('/api/auth/session handler', () => {
   const noopLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
@@ -136,12 +138,13 @@ describe('/api/auth/session handler', () => {
   });
 
   /**
-   * Supabase returns an error (e.g. expired token, invalid JWT)
+   * V1 keeps its legacy anonymous envelope during the pre-production overlap;
+   * only the future v2 route may apply the strict error classification table.
    */
-  it('returns 200 with user: null when getUser returns an error', async () => {
+  it('preserves the legacy v1 body for an unapproved Supabase error', async () => {
     mockGetUser.mockResolvedValue({
       data: { user: null },
-      error: { message: 'invalid JWT' },
+      error: new AuthApiError('sanitized session failure', 400, 'bad_jwt'),
     });
     const req = createMockReq();
     const res = createMockRes();
@@ -149,22 +152,22 @@ describe('/api/auth/session handler', () => {
     await handler(req, res);
 
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { user: null } })
-    );
+    const responseBody = res.json.mock.calls[0][0];
+    expect(responseBody).toEqual(expect.objectContaining({ data: { user: null } }));
+    expect(sessionResponseSchema.safeParse(responseBody).success).toBe(false);
   });
 
   /**
    * Cache-Control must be no-store to prevent caching user data
    */
-  it('sets Cache-Control: no-store header', async () => {
+  it('sets Cache-Control: private, no-store header', async () => {
     mockGetUser.mockResolvedValue({ data: { user: mockUser }, error: null });
     const req = createMockReq();
     const res = createMockRes();
 
     await handler(req, res);
 
-    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
+    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
   });
 
   /**

@@ -14,8 +14,19 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-08-09
+
+- `2026-08-11` - `Authenticated Dashboard subject isolation`: Keyed the private Dashboard tree to the authenticated user id so direct account changes discard the prior subject's modal, filter, and cached job state, with A-to-B regression coverage for drafts and jobs.
+- `2026-08-11` - `Anonymous Dashboard redirect effect`: Moved confirmed-anonymous login navigation out of Dashboard render into an auth-status effect and added a stable re-render regression proving only one login push.
+
 ### Week of 2026-08-02
 
+- `2026-08-09` - `Auth correctness CHUNK-0 expanded PR-objective checkpoint`: Restored isolated future v2 handler behavior tables and expanded the test-only contracts for exact logout acceptance and side effects, bounded cookie cleanup, terminal-state cleanup, seven-state consumers, draft quarantine, auth-capable cache paths, middleware cookie propagation, route encoding, and abort cleanup without changing production behavior.
+  - validation: The fixture contract passes 37/37 and the executable route/cache inventory passes 26/26; the 25-suite checkpoint executes 478 assertions with 310 passing, 168 intentionally failing at mapped production gaps, zero runtime errors, and zero pending tests; changed-file ESLint and diff checks pass; see the [expanded PR-objective checkpoint evidence](https://github.com/willmclaughlin03/jobApplicationTracker/commit/a6fca63e44ef55ec0009abcdce1da0d2f4763f0c).
+  - residual: Sanitized deployed Supabase tuple capture still requires the trusted pre-production process variables, `MAX_AUTH_COOKIE_CHUNKS` remains owned by CHUNK-2 installed-chunker evidence, and intentionally red tests must land with their later production fixes before merge.
+- `2026-08-08` - `Auth correctness CHUNK-0 baseline checkpoint`: Added strict test-only v2 session and sign-out fixtures, the seven-state auth transition and draft-containment contracts, route/cache/evidence inventories, and focused red regressions with a review mapping; production behavior remains unchanged.
+  - validation: The fixture contract passes 25/25; the 18-suite checkpoint executes all 359 assertions with 248 passing, 111 expected mapped failures, and zero runtime-error suites; changed-file ESLint and diff checks pass; see the [baseline checkpoint evidence](https://github.com/willmclaughlin03/jobApplicationTracker/commit/69b0e1572cd3c3a606b60f2e78c5096a656d3b8c).
+  - residual: Deployed Supabase tuple evidence and an evidence-derived maximum auth-cookie chunk count remain blocked, and the intentionally red tests must land with their later production fixes before merge.
 - `2026-08-05` - `Login OAuth failure retry coverage`: Extended both returned-error and rejected-provider login tests to retry the restored Google action, proving the cleared pending latch permits a second OAuth call.
   - validation: 8 focused login tests, changed-file ESLint, and diff checks pass.
 - `2026-08-05` - `Login OAuth duplicate-click guard`: Added a synchronous in-flight latch so rapid Google sign-in clicks cannot start multiple OAuth handoffs before React commits the loading state, while failed initiations remain retryable.

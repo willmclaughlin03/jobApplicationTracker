@@ -20,6 +20,9 @@ const mockRouter = {
 };
 const mockUseAuth = jest.fn();
 const mockSignInWithOAuth = jest.fn();
+const {
+  TERMINAL_USER_BANNED_UI,
+} = require('../../testSupport/authV2ContractFixtures.js');
 
 jest.mock('next/router', () => ({
   useRouter: () => mockRouter,
@@ -122,6 +125,8 @@ describe('Login', () => {
     mockUseAuth.mockReturnValue({
       user: null,
       loading: false,
+      authStatus: 'anonymous',
+      canShowSignIn: true,
       signInWithOAuth: mockSignInWithOAuth,
     });
     mockSignInWithOAuth.mockResolvedValue({ error: null });
@@ -158,6 +163,8 @@ describe('Login', () => {
     mockUseAuth.mockReturnValue({
       user: null,
       loading: true,
+      authStatus: 'loading',
+      canShowSignIn: false,
       signInWithOAuth: mockSignInWithOAuth,
     });
 
@@ -174,6 +181,8 @@ describe('Login', () => {
     mockUseAuth.mockReturnValue({
       user: { id: 'user-123' },
       loading: false,
+      authStatus: 'authenticated',
+      canShowSignIn: false,
       signInWithOAuth: mockSignInWithOAuth,
     });
 
@@ -181,6 +190,45 @@ describe('Login', () => {
 
     expect(mockRouter.push).toHaveBeenCalledWith('/');
     expect(element.childElementCount).toBe(0);
+  });
+
+  it.each([
+    'unavailable',
+    'signed_out_local',
+    'logout_unconfirmed',
+  ])('does not expose sign-in controls while auth is %s', (authStatus) => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: false,
+      authStatus,
+      canShowSignIn: false,
+      signInWithOAuth: mockSignInWithOAuth,
+    });
+
+    const element = renderLogin();
+
+    expect(element.querySelector('button')).toBeNull();
+    expect(mockRouter.push).not.toHaveBeenCalledWith('/');
+  });
+
+  it('renders the approved terminal account copy with only the support action', () => {
+    mockUseAuth.mockReturnValue({
+      user: null,
+      loading: false,
+      authStatus: 'terminal_unauthenticated',
+      canShowSignIn: false,
+      signInWithOAuth: mockSignInWithOAuth,
+    });
+
+    const element = renderLogin();
+    const supportLink = Array.from(element.querySelectorAll('a')).find(
+      (link) => link.getAttribute('href') === TERMINAL_USER_BANNED_UI.recoveryHref
+    );
+
+    expect(element.textContent).toContain(TERMINAL_USER_BANNED_UI.title);
+    expect(element.textContent).toContain(TERMINAL_USER_BANNED_UI.copy);
+    expect(supportLink).toBeTruthy();
+    expect(element.querySelector('button')).toBeNull();
   });
 
   it('surfaces the OAuth callback failure through a safe alert', () => {
