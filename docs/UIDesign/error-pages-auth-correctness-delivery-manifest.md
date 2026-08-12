@@ -11,13 +11,14 @@
 
 This manifest is the compact control record for rebuilding error-page/auth work from current
 `staging`. The numbered chunks are workstreams and approval gates, not one-to-one pull requests.
-Every pull request targeting `staging` must remain independently safe and green at its head.
+Every successor pull request targeting `staging` must remain independently safe and green at its
+head. Quarantined historical PRs listed below are excluded from this invariant.
 
 ## Delivery invariants
 
 1. Start every successor branch from then-current `origin/staging`, never from a quarantined head.
-2. Keep each staging-target pull request green. Focused red tests land with the production behavior
-   that makes them green; red/green commits may remain visible inside a green final head.
+2. Keep each successor staging-target pull request green. Focused red tests land with the production
+   behavior that makes them green; red/green commits may remain visible inside a green final head.
 3. Merge a contract-only PR only when the contract is frozen, the head is green, production files
    are absent, and no intentional failure remains.
 4. Treat repository-local tests as local evidence. Deployment, Supabase, WAF, CloudFront, load, and
