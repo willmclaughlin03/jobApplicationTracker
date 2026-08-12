@@ -14,6 +14,12 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-08-09
+
+- `2026-08-12` - `Error/auth delivery recovery controls`: Added a compact delivery manifest while retaining the detailed governing source outside Git; the manifest quarantines superseded PRs #134/#135, assigns every historical commit and unresolved thread to a green successor, records the open gate ledger and `user_banned` discrepancy, orders CHUNK-6 after CHUNK-4, restricts optional stacking, and preserves the distinct 400 application versus 1,000/500 WAF ceilings.
+  - validation: the documentation link audit, repository lint, all 91 unit suites and 1,326 tests, and the placeholder-only production build pass. The subprocess-sensitive unit suite and Turbopack build completed outside the sandbox after sandboxed runs were denied local child-process creation.
+  - residual: no gate passed and no deployment, Supabase/WAF/CloudFront evidence, stack mutation, merge, or PR #134/#135 closure occurred; `GATE-0` remains unresolved.
+
 ### Week of 2026-08-02
 
 - `2026-08-05` - `Login OAuth failure retry coverage`: Extended both returned-error and rejected-provider login tests to retry the restored Google action, proving the cleared pending latch permits a second OAuth call.
