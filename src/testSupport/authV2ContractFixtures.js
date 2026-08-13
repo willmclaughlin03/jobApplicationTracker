@@ -12,7 +12,7 @@ import { z } from 'zod';
 export const AUTH_V2_VERSION = 2;
 export const AUTH_COOKIE_STORAGE_KEY = 'sb-apxfjggdcybjticrnbpk-auth-token';
 export const SUPABASE_ENCODED_CHUNK_SIZE = 3180;
-export const MAX_AUTH_COOKIE_CHUNKS = Object.freeze({
+export const MAX_AUTH_COOKIE_CHUNKS_EVIDENCE = Object.freeze({
   status: 'unresolved',
   value: null,
   owner: 'CHUNK-2',
@@ -577,6 +577,20 @@ export const AUTH_CONSUMER_STATE_MATRIX = Object.freeze([
     states: Object.freeze({
       loading: 'loading_shell',
       authenticated: 'authorized_private_work',
+      anonymous: 'login_redirect',
+      unavailable: 'unavailable_shell',
+      signed_out_local: 'signed_out_local_shell',
+      logout_unconfirmed: 'locked_logout_shell',
+      terminal_unauthenticated: 'terminal_account_shell',
+    }),
+  }),
+  Object.freeze({
+    id: 'billing_cancel',
+    source: 'src/pages/billing/cancel.js',
+    resetStrategy: 'provider_state_replaces_static_cancel_surface',
+    states: Object.freeze({
+      loading: 'loading_shell',
+      authenticated: 'authorized_cancel_surface',
       anonymous: 'login_redirect',
       unavailable: 'unavailable_shell',
       signed_out_local: 'signed_out_local_shell',

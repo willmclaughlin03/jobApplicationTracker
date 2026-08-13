@@ -19,7 +19,7 @@ import {
   LOGOUT_REQUEST_BODY_FIXTURES,
   LOGOUT_REJECTED_SIDE_EFFECTS,
   LOGOUT_SOURCE_DECISION_FIXTURES,
-  MAX_AUTH_COOKIE_CHUNKS,
+  MAX_AUTH_COOKIE_CHUNKS_EVIDENCE,
   PRIVATE_NO_STORE,
   QUARANTINED_DRAFT_CANONICAL_KEYS,
   QUARANTINED_DRAFT_POLICY,
@@ -374,13 +374,14 @@ describe('CHUNK-0 auth v2 contract fixtures', () => {
   it('freezes the exact cookie namespace while leaving its evidence-dependent cap unresolved', () => {
     expect(AUTH_COOKIE_STORAGE_KEY).toBe('sb-apxfjggdcybjticrnbpk-auth-token');
     expect(SUPABASE_ENCODED_CHUNK_SIZE).toBe(3180);
-    expect(MAX_AUTH_COOKIE_CHUNKS).toEqual({
+    expect(MAX_AUTH_COOKIE_CHUNKS_EVIDENCE).toEqual({
       status: 'unresolved',
       value: null,
       owner: 'CHUNK-2',
       evidenceRequired: 'installed_createChunks_largest_legitimate_deployed_session',
     });
-    expect(Number.isInteger(MAX_AUTH_COOKIE_CHUNKS)).toBe(false);
+    expect(MAX_AUTH_COOKIE_CHUNKS_EVIDENCE.status).toBe('unresolved');
+    expect(Number.isInteger(MAX_AUTH_COOKIE_CHUNKS_EVIDENCE.value)).toBe(false);
   });
 
   it('freezes the non-simple logout intent and source-proof decision table', () => {
@@ -436,8 +437,21 @@ describe('CHUNK-0 auth v2 contract fixtures', () => {
 
   it('freezes all seven states and one reset strategy for every auth consumer', () => {
     const expectedStates = Object.values(AUTH_STATUS).sort();
+    const coveredSources = new Set();
 
-    expect(AUTH_CONSUMER_STATE_MATRIX).toHaveLength(7);
+    for (const { source } of AUTH_CONSUMER_STATE_MATRIX) {
+      coveredSources.add(source);
+    }
+
+    expect(AUTH_CONSUMER_STATE_MATRIX).toHaveLength(8);
+    for (const route of ROUTABLE_PAGE_POLICY_FIXTURES.protected) {
+      const page = route === '/' ? 'index' : route.slice(1);
+
+      expect(
+        coveredSources.has(`src/pages/${page}.js`)
+        || coveredSources.has(`src/pages/${page}/index.js`)
+      ).toBe(true);
+    }
     AUTH_CONSUMER_STATE_MATRIX.forEach(({ resetStrategy, source, states }) => {
       expect(Object.keys(states).sort()).toEqual(expectedStates);
       expect(Object.values(states).every(Boolean)).toBe(true);
