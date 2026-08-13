@@ -78,13 +78,17 @@ Close #135 only after the rebuilt CHUNK-1 replacement PR exists. Preserve
 All five threads remain unresolved and not outdated on the quarantined PR. Their successor owners
 must address the substance on green heads; this manifest does not resolve the historical threads.
 
-| Thread | Historical location | Owner |
-| --- | --- | --- |
-| `PRRT_kwDOPzs7p86XsoDX` | `src/__tests__/middlewarePublicPaths.test.js:173` | CHUNK-6 |
-| `PRRT_kwDOPzs7p86XsoDb` | `src/__tests__/pages/adminUserDetail.test.js:46` | CHUNK-3 |
-| `PRRT_kwDOPzs7p86XsoEr` | `src/testSupport/__tests__/authV2EndpointIsolation.test.js:59` | Split between CHUNK-2 and CHUNK-4 |
-| `PRRT_kwDOPzs7p86XsoEv` | `src/testSupport/authV2ContractFixtures.js:19` | CHUNK-2 evidence-derived bound |
-| `PRRT_kwDOPzs7p86XsoEz` | `src/testSupport/authV2ContractFixtures.js:483` | Contract review for fixture integrity, then CHUNK-6 route ownership |
+Documentation check: every listed thread must have exactly one primary closer and exactly one
+closure-evidence reference. Supporting chunks belong in the dependency column and do not share
+closure ownership.
+
+| Thread | Closure evidence | Ownership disposition | Primary closer | Dependency |
+| --- | --- | --- | --- | --- |
+| `PRRT_kwDOPzs7p86XsoDX` | `src/__tests__/middlewarePublicPaths.test.js:173` | CHUNK-6 | `CHUNK-6` | None |
+| `PRRT_kwDOPzs7p86XsoDb` | `src/__tests__/pages/adminUserDetail.test.js:46` | CHUNK-3 | `CHUNK-3` | None |
+| `PRRT_kwDOPzs7p86XsoEr` | `src/testSupport/__tests__/authV2EndpointIsolation.test.js:59` | CHUNK-2 session isolation with CHUNK-4 sign-out isolation as a dependency | `CHUNK-2` | `CHUNK-4` sign-out isolation |
+| `PRRT_kwDOPzs7p86XsoEv` | `src/testSupport/authV2ContractFixtures.js:19` | CHUNK-2 evidence-derived bound | `CHUNK-2` | Evidence-derived bound |
+| `PRRT_kwDOPzs7p86XsoEz` | `src/testSupport/authV2ContractFixtures.js:483` | Contract review for fixture integrity, then CHUNK-6 route ownership | `Contract-review workstream` | `CHUNK-6` route ownership |
 
 ## Gate ledger
 
