@@ -6,6 +6,10 @@
 - Governing source: intentionally retained outside Git and excluded from this pull request
 - Publication branch: `docs/error-auth-delivery-recovery`
 - Fresh branch base: `origin/staging` at `c09209b69b4328b35b8c1cbcf551a07a5e16a30f`
+- Contract successor: `agent/gate0-auth-contract-review`, based on `origin/staging` at
+  `660e3133c8abcbe41927dac95a717beb89d1b61e`
+- Contract successor state: draft and unmerged while deployed tuples and the cookie bound remain
+  unresolved
 - Scope: documentation-only delivery recovery; no production behavior, gate, deployment, or external
   evidence state is changed by this manifest
 
@@ -25,7 +29,10 @@ head. Quarantined historical PRs listed below are excluded from this invariant.
    pre-production observations remain unexecuted until separately authorized and captured.
 5. Keep the temporary application ceiling at `400` combined v1/v2 session requests per source IP
    per 60 seconds. The separate provisional WAF ceilings remain `1,000` session and `500` sign-out
-   requests per source IP per 60 seconds.
+   requests per source IP per 60 seconds. The application ceiling is per process, resets on process
+   restart, and multiplies across a horizontal fleet. It is temporary defense in depth, not a
+   substitute for authoritative trusted-source and verified edge enforcement required by
+   `GATE-1`.
 
 ## Quarantined pull requests
 
@@ -90,7 +97,7 @@ must address the substance on green heads; this manifest does not resolve the hi
 
 | Gate | Status at publication | Required next evidence |
 | --- | --- | --- |
-| `GATE-0` | Unresolved | Authoritative public contracts and copy; sanitized endpoint-scoped Supabase tuples; cookie bound; route/cache inventory; retry-removal contract. |
+| `GATE-0` | Unresolved | Public contracts/copy, strict schemas, route/cache inventory, and retry-removal target are recorded in the draft successor. Sanitized endpoint-scoped deployed Supabase tuples and the evidence-derived cookie bound remain open. |
 | `GATE-1` | Not passed | Green replacement CHUNK-1 plus separately authorized deployed load/source/topology evidence. The donor's local checks are not remote evidence. |
 | `GATE-2` | Open / not executed | Green dark-v2 session successor and deployed-everywhere proof. |
 | `GATE-3` | Open / not executed | Green provider/consumer/dashboard successors and approved client-switch evidence. |
@@ -100,18 +107,17 @@ must address the substance on green heads; this manifest does not resolve the hi
 | `GATE-7` | Open / not executed | Green renderer successor plus production-like renderer evidence. |
 | `GATE-8` | Open / not executed | Integrated v2-only release and all separately authorized operational gates. |
 
-### `user_banned` contract discrepancy
+### `user_banned` contract decision
 
-The local untracked file `docs/UIDesign/error-pages-auth-correctness-chunk-0-review.md` claims that
-the public contract was approved as HTTP `403`, v2 terminal-unauthenticated code
-`ACCOUNT_ACCESS_RESTRICTED`, title `Account access unavailable`, explanatory Track The App copy,
-and only the existing support-mailbox action. That local assertion is not committed review evidence,
-and no authoritative GitHub approval establishes it. The retained local governing source continues
-to mark the exact public response, client state, copy, and recovery action unresolved. Recovery
-therefore keeps `GATE-0` open rather than inventing or claiming approval.
+The repository owner approved the public contract during the 2026-08-12 Phase 3 implementation
+authorization: HTTP `403`, v2 `terminal_unauthenticated`, code
+`ACCOUNT_ACCESS_RESTRICTED`, title `Account access unavailable`, the explanatory Track The App
+copy recorded in the contract review, only the existing support-mailbox action, and no ordinary
+sign-in controls.
 
-The sanitized deployed `user_banned` class/code/status tuple and activation evidence are also
-missing. That evidence requirement is independent of the public-contract approval discrepancy.
+The sanitized deployed `user_banned` class/code/status tuple and activation evidence remain
+missing. Public-contract approval does not activate an unevidenced server classifier, and
+`GATE-0` therefore remains open.
 
 ## Ordered delivery route
 
@@ -147,7 +153,7 @@ scheduled CHUNK-6 checkpoint and their own stated predecessors.
 
 ## Publication evidence boundary
 
-This PR may prove only documentation integrity, repository lint/tests/build, and its GitHub Actions
-check. It does not close a numbered gate, deploy an endpoint, capture Supabase tuples, exercise WAF
-or CloudFront, run remote load tests, change PR #134/#135, create a successor contract branch, or
-merge any pull request.
+The delivery-manifest PR and draft contract successor may prove only documentation/fixture
+integrity, repository lint/tests/build, and their GitHub Actions checks. They do not close a
+numbered gate, deploy an endpoint, capture Supabase tuples, exercise WAF or CloudFront, run remote
+load tests, change PR #134/#135, or merge any pull request.
