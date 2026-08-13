@@ -16,6 +16,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-09
 
+- `2026-08-13` - `GATE-0 auth contract review alignment`: Restricted the documented sign-out rejection pairs to the frozen `400`, `403`, and `405` fixture/schema statuses and made installed chunker evidence reuse the exported encoded-size constant without changing its asserted value.
 - `2026-08-13` - `GATE-0 auth fixture review coverage`: Reserved `MAX_AUTH_COOKIE_CHUNKS` for CHUNK-2's future deployed integer, kept unresolved cap evidence under an explicit evidence export, added the missing billing-cancel consumer state row, and derived protected-page-to-consumer coverage from the routable policy fixture.
   - validation: the focused fixture suite passes 38/38, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-12` - `Review-thread closure accountability`: Normalized the delivery manifest's unresolved-thread ledger so every thread has one primary closer and one closure-evidence reference, with supporting work recorded separately as a dependency; CHUNK-2 now owns endpoint-isolation closure and CHUNK-4 supplies the sign-out dependency.

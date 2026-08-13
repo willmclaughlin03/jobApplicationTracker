@@ -329,7 +329,7 @@ export const INSTALLED_SUPABASE_EVIDENCE = Object.freeze({
   }),
   chunker: Object.freeze({
     encoding: 'encodeURIComponent',
-    encodedCharacterLimit: 3180,
+    encodedCharacterLimit: SUPABASE_ENCODED_CHUNK_SIZE,
   }),
 });
 

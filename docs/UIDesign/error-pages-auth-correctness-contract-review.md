@@ -49,7 +49,7 @@ fields.
 - complete: HTTP `200`, local cleanup issued, and a typed remote result of `confirmed`,
   `already_invalid`, or `not_needed`
 - local-only: HTTP `200`, local cleanup issued, and typed remote result `unconfirmed`
-- rejected/unavailable: exact HTTP `400`, `403`, `405`, `413`, `415`, `429`, or `503`
+- rejected/unavailable: exact HTTP `400`, `403`, or `405`
   response pairs with matching headers and codes
 - legacy success/error envelopes and status/body mismatches are rejected
 
