@@ -12,6 +12,8 @@ import {
   AUTH_COOKIE_STORAGE_KEY,
   AUTH_STATE_TRANSITION_FIXTURES,
   AUTH_STATUS,
+  GOOGLE_SESSION_FIXTURE_V1,
+  GOOGLE_SESSION_FIXTURE_V1_COOKIE_EVIDENCE,
   INSTALLED_SUPABASE_EVIDENCE,
   LOGOUT_INTENT_HEADER,
   LOGOUT_INTENT_DECISION_FIXTURES,
@@ -37,6 +39,12 @@ import {
   signoutHttpResponseSchema,
   signoutResponseSchema,
 } from '../authV2ContractFixtures.js';
+
+import {
+  buildBoundedGoogleUserMetadata,
+  captureGoogleSessionFixtureEvidence,
+  utf8ByteLength,
+} from '../../../scripts/gate0-auth-evidence.js';
 
 describe('CHUNK-0 auth v2 contract fixtures', () => {
   it('accepts every exact session fixture and rejects each body on a wrong status', () => {
@@ -371,17 +379,70 @@ describe('CHUNK-0 auth v2 contract fixtures', () => {
     });
   });
 
-  it('freezes the exact cookie namespace while leaving its evidence-dependent cap unresolved', () => {
+  it('reproduces GOOGLE_SESSION_FIXTURE_V1 while leaving the formal cap unresolved', () => {
     expect(AUTH_COOKIE_STORAGE_KEY).toBe('sb-apxfjggdcybjticrnbpk-auth-token');
     expect(SUPABASE_ENCODED_CHUNK_SIZE).toBe(3180);
+    expect(GOOGLE_SESSION_FIXTURE_V1).toEqual(expect.objectContaining({
+      id: 'GOOGLE_SESSION_FIXTURE_V1',
+      provider: 'google',
+      identityCount: 1,
+      userMetadataMaxUtf8Bytes: 2560,
+      providerRefreshToken: 'omitted',
+      expectedMaxAuthCookieChunks: 6,
+      unsupportedDisposition: 'unavailable',
+    }));
+    expect(GOOGLE_SESSION_FIXTURE_V1.allowedUserMetadataFields).toEqual([
+      'avatar_url',
+      'email',
+      'email_verified',
+      'full_name',
+      'iss',
+      'name',
+      'phone_verified',
+      'picture',
+      'provider_id',
+      'sub',
+    ]);
+    expect(GOOGLE_SESSION_FIXTURE_V1_COOKIE_EVIDENCE).toEqual({
+      status: 'candidate_reproduced',
+      fixtureId: 'GOOGLE_SESSION_FIXTURE_V1',
+      initialLoginChunks: 6,
+      refreshedSessionChunks: 5,
+      candidateMaximumChunks: 6,
+      frozen: false,
+    });
+    expect(captureGoogleSessionFixtureEvidence()).toEqual({
+      fixtureId: 'GOOGLE_SESSION_FIXTURE_V1',
+      initialLoginChunks: 6,
+      refreshedSessionChunks: 5,
+      maximumChunks: 6,
+      expectedMaximumChunks: 6,
+      reproducedExpectedMaximum: true,
+    });
     expect(MAX_AUTH_COOKIE_CHUNKS_EVIDENCE).toEqual({
       status: 'unresolved',
       value: null,
       owner: 'CHUNK-2',
       evidenceRequired: 'installed_createChunks_largest_legitimate_deployed_session',
+      approvedFixtureId: 'GOOGLE_SESSION_FIXTURE_V1',
+      candidateValue: 6,
     });
     expect(MAX_AUTH_COOKIE_CHUNKS_EVIDENCE.status).toBe('unresolved');
     expect(Number.isInteger(MAX_AUTH_COOKIE_CHUNKS_EVIDENCE.value)).toBe(false);
+  });
+
+  it('bounds every current Google metadata field under the aggregate byte cap', () => {
+    const metadata = buildBoundedGoogleUserMetadata();
+
+    expect(Object.keys(metadata)).toEqual(GOOGLE_SESSION_FIXTURE_V1.allowedUserMetadataFields);
+    expect(utf8ByteLength(JSON.stringify(metadata))).toBe(2560);
+    expect(utf8ByteLength(metadata.name)).toBeLessThanOrEqual(512);
+    expect(utf8ByteLength(metadata.full_name)).toBeLessThanOrEqual(512);
+    expect(utf8ByteLength(metadata.email)).toBeLessThanOrEqual(254);
+    expect(utf8ByteLength(metadata.avatar_url)).toBeLessThanOrEqual(512);
+    expect(utf8ByteLength(metadata.picture)).toBeLessThanOrEqual(512);
+    expect(metadata.provider_id).toMatch(/^[\x21-\x7e]{255}$/);
+    expect(metadata.sub).toMatch(/^[\x21-\x7e]{255}$/);
   });
 
   it('freezes the non-simple logout intent and source-proof decision table', () => {
