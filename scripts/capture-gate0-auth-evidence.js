@@ -1,4 +1,6 @@
 const {
+  Gate0CleanupError,
+  Gate0ConfigurationError,
   captureGate0AuthEvidence,
   proveWrongProjectRefRefusal,
   validateGate0Environment,
@@ -96,14 +98,12 @@ async function runGate0EvidenceCli(
     writeOutput(JSON.stringify(evidence));
     return 0;
   } catch (error) {
-    const errorName = error?.constructor?.name;
-
-    if (errorName === 'Gate0CleanupError') {
+    if (error instanceof Gate0CleanupError) {
       writeError('Gate-0 disposable user cleanup failed; verify and remove synthetic users manually.');
       return 1;
     }
 
-    const safeMessage = errorName === 'Gate0ConfigurationError'
+    const safeMessage = error instanceof Gate0ConfigurationError
       ? error.message
       : 'Gate-0 auth evidence capture failed; inspect provider state without exposing errors.';
     writeError(safeMessage);

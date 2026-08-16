@@ -63,6 +63,8 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
 
+      # This refusal proof intentionally precedes npm ci and must remain dependency-free,
+      # using only Node.js built-ins so the pre-install proof remains valid.
       - name: Prove wrong Supabase project refusal
         env:
           GATE0_SUPABASE_URL: ${{ secrets.GATE0_SUPABASE_URL }}
