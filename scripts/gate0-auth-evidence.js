@@ -14,20 +14,42 @@ const FIXTURE_UNIX_SECONDS = 1_786_622_400;
 const FIXTURE_USER_ID = '00000000-0000-4000-8000-000000000001';
 const FIXTURE_IDENTITY_ID = '00000000-0000-4000-8000-000000000002';
 const FIXTURE_SESSION_ID = '00000000-0000-4000-8000-000000000003';
+const PREFLIGHT_NONEXISTENT_USER_ID = '00000000-0000-0000-0000-000000000000';
 
 const GATE0_ENV_NAMES = Object.freeze({
   url: 'GATE0_SUPABASE_URL',
-  anonKey: 'GATE0_SUPABASE_ANON_KEY',
-  serviceRoleKey: 'GATE0_SUPABASE_SERVICE_ROLE_KEY',
+  publishableKey: 'GATE0_SUPABASE_PUBLISHABLE_KEY',
+  secretKey: 'GATE0_SUPABASE_SECRET_KEY',
   managementToken: 'GATE0_SUPABASE_MANAGEMENT_TOKEN',
   projectRef: 'GATE0_SUPABASE_PROJECT_REF',
   destructiveOptIn: 'GATE0_AUTH_EVIDENCE_ALLOWED',
 });
 
 const FORBIDDEN_APPLICATION_ENV_NAMES = Object.freeze([
+  'GATE0_SUPABASE_ANON_KEY',
+  'GATE0_SUPABASE_SERVICE_ROLE_KEY',
   'NEXT_PUBLIC_SUPABASE_URL',
   'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+  'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
+  'SUPABASE_SECRET_KEY',
   'SUPABASE_SERVICE_ROLE_KEY',
+]);
+
+const GATE0_HOSTED_FAILURE_STAGES = Object.freeze([
+  'management_auth_config',
+  'publishable_auth_settings',
+  'secret_auth_admin',
+  'admin_create_user',
+  'password_sign_in',
+  'session_token_envelope',
+  'scenario_bad_jwt',
+  'scenario_session_expired',
+  'scenario_session_not_found',
+  'scenario_refresh_token_not_found',
+  'scenario_refresh_token_already_used',
+  'scenario_user_not_found',
+  'scenario_user_banned',
+  'evidence_contract',
 ]);
 
 const SESSION_ERROR_CANDIDATES = Object.freeze([
@@ -721,6 +743,52 @@ class Gate0ConfigurationError extends Error {}
 class Gate0CleanupError extends Error {}
 
 /**
+ * Represents one finite, sanitized hosted-capture failure stage.
+ *
+ * Purpose: operators can locate a failed provider boundary without retaining
+ * or printing provider messages, responses, identifiers, or credentials.
+ */
+class Gate0StageError extends Error {
+  /**
+   * Create an error from the audited stage allowlist.
+   *
+   * @param {string} stage safe hosted operation identifier
+   */
+  constructor(stage) {
+    super('Gate-0 hosted evidence stage failed.');
+
+    if (!GATE0_HOSTED_FAILURE_STAGES.includes(stage)) {
+      throw new Error('Gate-0 hosted evidence received an unknown failure stage.');
+    }
+
+    this.name = 'Gate0StageError';
+    this.stage = stage;
+  }
+}
+
+/**
+ * Execute one hosted operation behind the finite stage-error boundary.
+ *
+ * Purpose: raw provider exceptions never cross into the CLI, while cleanup
+ * failures and already-sanitized nested stages retain their stronger meaning.
+ *
+ * @param {string} stage safe hosted operation identifier
+ * @param {() => Promise<unknown>} callback hosted operation
+ * @returns {Promise<unknown>} callback result
+ */
+async function runHostedStage(stage, callback) {
+  try {
+    return await callback();
+  } catch (error) {
+    if (error instanceof Gate0CleanupError || error instanceof Gate0StageError) {
+      throw error;
+    }
+
+    throw new Gate0StageError(stage);
+  }
+}
+
+/**
  * Find required environment names that do not contain usable strings.
  *
  * Purpose: preflight reports names only and never prints configured values.
@@ -794,13 +862,13 @@ function assertGate0SupabaseTarget(candidateUrl, candidateProjectRef) {
  *
  * @param {NodeJS.ProcessEnv|Record<string, unknown>} env environment snapshot
  * @param {{ requireDestructiveOptIn?: boolean }} options preflight mode
- * @returns {{ url: string, anonKey: string, serviceRoleKey: string, managementToken: string }} trusted config
+ * @returns {{ url: string, publishableKey: string, secretKey: string, managementToken: string }} trusted config
  */
 function validateGate0Environment(env, { requireDestructiveOptIn = true } = {}) {
   const requiredNames = [
     GATE0_ENV_NAMES.url,
-    GATE0_ENV_NAMES.anonKey,
-    GATE0_ENV_NAMES.serviceRoleKey,
+    GATE0_ENV_NAMES.publishableKey,
+    GATE0_ENV_NAMES.secretKey,
     GATE0_ENV_NAMES.managementToken,
     GATE0_ENV_NAMES.projectRef,
   ];
@@ -841,10 +909,28 @@ function validateGate0Environment(env, { requireDestructiveOptIn = true } = {}) 
     env[GATE0_ENV_NAMES.projectRef].trim()
   );
 
+  const publishableKey = env[GATE0_ENV_NAMES.publishableKey].trim();
+  const secretKey = env[GATE0_ENV_NAMES.secretKey].trim();
+  const invalidKeyNames = [
+    !/^sb_publishable_\S+$/.test(publishableKey)
+      ? GATE0_ENV_NAMES.publishableKey
+      : null,
+    !/^sb_secret_\S+$/.test(secretKey)
+      ? GATE0_ENV_NAMES.secretKey
+      : null,
+  ].filter(Boolean);
+
+  if (invalidKeyNames.length > 0) {
+    throw new Gate0ConfigurationError(formatEnvironmentNameDiagnostic(
+      'Gate-0 evidence requires the deployed Supabase publishable/secret key family:',
+      invalidKeyNames
+    ));
+  }
+
   return {
     url: EXPECTED_SUPABASE_URL,
-    anonKey: env[GATE0_ENV_NAMES.anonKey].trim(),
-    serviceRoleKey: env[GATE0_ENV_NAMES.serviceRoleKey].trim(),
+    publishableKey,
+    secretKey,
     managementToken: env[GATE0_ENV_NAMES.managementToken].trim(),
   };
 }
@@ -927,7 +1013,7 @@ function loadInstalledSupabaseClients() {
  *
  * @param {Function} createClient installed Supabase client factory
  * @param {string} url exact pre-production origin
- * @param {string} key anon or service-role key
+ * @param {string} key publishable or secret key
  * @returns {ReturnType<Function>} isolated Supabase client
  */
 function createEphemeralClient(createClient, url, key) {
@@ -972,7 +1058,7 @@ function serializeSessionForSsr(session) {
  */
 async function getUserThroughSsr(config, createServerClient, session) {
   let cookieJar = serializeSessionForSsr(session);
-  const supabase = createServerClient(config.url, config.anonKey, {
+  const supabase = createServerClient(config.url, config.publishableKey, {
     cookies: {
       getAll: async () => cookieJar,
       setAll: async (cookies) => {
@@ -1048,40 +1134,48 @@ function unavailableObservation(candidate, operation) {
  *
  * @param {Record<string, string>} config trusted target configuration
  * @param {{ createClient: Function }} clients installed client factories
- * @param {ReturnType<Function>} admin service-role client
+ * @param {ReturnType<Function>} admin secret-key client
  * @returns {Promise<{ userId: string, session: Record<string, unknown> }>} transient identity state
  */
 async function createDisposableSession(config, clients, admin) {
   const credentials = createDisposableCredentials();
-  const created = await admin.auth.admin.createUser({
-    email: credentials.email,
-    password: credentials.password,
-    email_confirm: true,
-  });
+  const created = await runHostedStage('admin_create_user', async () => {
+    const result = await admin.auth.admin.createUser({
+      email: credentials.email,
+      password: credentials.password,
+      email_confirm: true,
+    });
 
-  if (created.error || typeof created.data?.user?.id !== 'string') {
-    throw new Error('Disposable Gate-0 user setup failed.');
-  }
+    if (result.error || typeof result.data?.user?.id !== 'string') {
+      throw new Error('Disposable Gate-0 user setup failed.');
+    }
+
+    return result;
+  });
 
   const userId = created.data.user.id;
 
   try {
-    const signInClient = createEphemeralClient(
-      clients.createClient,
-      config.url,
-      config.anonKey
-    );
-    const signedIn = await signInClient.auth.signInWithPassword(credentials);
+    const signedIn = await runHostedStage('password_sign_in', async () => {
+      const signInClient = createEphemeralClient(
+        clients.createClient,
+        config.url,
+        config.publishableKey
+      );
+      const result = await signInClient.auth.signInWithPassword(credentials);
 
-    if (signedIn.error || !signedIn.data?.session) {
-      throw new Error('Disposable Gate-0 session setup failed.');
-    }
+      if (result.error || !result.data?.session) {
+        throw new Error('Disposable Gate-0 session setup failed.');
+      }
+
+      return result;
+    });
 
     if (!isSupportedTokenEnvelope(
       signedIn.data.session.access_token,
       signedIn.data.session.refresh_token
     )) {
-      throw new Error('Hosted Supabase token format reopens GOOGLE_SESSION_FIXTURE_V1.');
+      throw new Gate0StageError('session_token_envelope');
     }
 
     return { userId, session: signedIn.data.session };
@@ -1101,7 +1195,7 @@ async function createDisposableSession(config, clients, admin) {
  * Purpose: broad deletion is impossible and a cleanup failure cannot be hidden
  * behind a successful or unavailable evidence record.
  *
- * @param {ReturnType<Function>} admin service-role client
+ * @param {ReturnType<Function>} admin secret-key client
  * @param {string|null} userId exact disposable user ID or null after deletion
  * @returns {Promise<void>}
  */
@@ -1124,7 +1218,7 @@ async function cleanupDisposableUser(admin, userId) {
  *
  * @param {Record<string, string>} config trusted target configuration
  * @param {ReturnType<typeof loadInstalledSupabaseClients>} clients installed clients
- * @param {ReturnType<Function>} admin service-role client
+ * @param {ReturnType<Function>} admin secret-key client
  * @param {(state: { userId: string, session: Record<string, unknown>, markDeleted: Function }) => Promise<Record<string, unknown>>} callback scenario body
  * @returns {Promise<Record<string, unknown>>} sanitized observation
  */
@@ -1185,7 +1279,7 @@ function expireSessionLocally(session) {
  *
  * @param {Record<string, string>} config trusted target configuration
  * @param {ReturnType<typeof loadInstalledSupabaseClients>} clients installed clients
- * @param {ReturnType<Function>} admin service-role client
+ * @param {ReturnType<Function>} admin secret-key client
  * @returns {Promise<Record<string, unknown>>} sanitized deployed tuple
  */
 async function captureBadJwt(config, clients, admin) {
@@ -1203,7 +1297,7 @@ async function captureBadJwt(config, clients, admin) {
  *
  * @param {Record<string, string>} config trusted target configuration
  * @param {ReturnType<typeof loadInstalledSupabaseClients>} clients installed clients
- * @param {ReturnType<Function>} admin service-role client
+ * @param {ReturnType<Function>} admin secret-key client
  * @returns {Promise<Record<string, unknown>>} sanitized deployed tuple
  */
 async function captureUserNotFound(config, clients, admin) {
@@ -1229,7 +1323,7 @@ async function captureUserNotFound(config, clients, admin) {
  *
  * @param {Record<string, string>} config trusted target configuration
  * @param {ReturnType<typeof loadInstalledSupabaseClients>} clients installed clients
- * @param {ReturnType<Function>} admin service-role client
+ * @param {ReturnType<Function>} admin secret-key client
  * @returns {Promise<Record<string, unknown>>} sanitized deployed tuple
  */
 async function captureSessionNotFound(config, clients, admin) {
@@ -1249,7 +1343,7 @@ async function captureSessionNotFound(config, clients, admin) {
  *
  * @param {Record<string, string>} config trusted target configuration
  * @param {ReturnType<typeof loadInstalledSupabaseClients>} clients installed clients
- * @param {ReturnType<Function>} admin service-role client
+ * @param {ReturnType<Function>} admin secret-key client
  * @returns {Promise<Record<string, unknown>>} sanitized deployed tuple
  */
 async function captureRefreshTokenNotFound(config, clients, admin) {
@@ -1281,42 +1375,119 @@ async function captureRefreshTokenNotFound(config, clients, admin) {
  * @returns {Promise<{ reuseIntervalSeconds: number|null, sessionExpirySeconds: number|null }>} sanitized policy
  */
 async function readHostedSessionPolicy(config) {
-  const response = await fetch(
-    `https://api.supabase.com/v1/projects/${EXPECTED_SUPABASE_PROJECT_REF}/config/auth`,
-    {
+  return runHostedStage('management_auth_config', async () => {
+    const response = await fetch(
+      `https://api.supabase.com/v1/projects/${EXPECTED_SUPABASE_PROJECT_REF}/config/auth`,
+      {
+        headers: {
+          authorization: `Bearer ${config.managementToken}`,
+        },
+        signal: AbortSignal.timeout(10_000),
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error('Hosted Auth configuration inspection failed.');
+    }
+
+    const settings = await response.json();
+    const reuseInterval = settings?.refresh_token_rotation_enabled === true
+      ? settings?.security_refresh_token_reuse_interval
+      : null;
+    const expiryCandidates = [
+      settings?.sessions_inactivity_timeout,
+      settings?.sessions_timebox,
+    ].filter((value) => Number.isInteger(value) && value > 0);
+    const sessionExpirySeconds = expiryCandidates.length > 0
+      ? Math.min(...expiryCandidates)
+      : null;
+
+    return {
+      reuseIntervalSeconds:
+        Number.isInteger(reuseInterval) && reuseInterval >= 0 && reuseInterval <= 30
+          ? reuseInterval
+          : null,
+      sessionExpirySeconds:
+        Number.isInteger(sessionExpirySeconds) && sessionExpirySeconds <= 30
+          ? sessionExpirySeconds
+          : null,
+    };
+  });
+}
+
+/**
+ * Verify the deployed publishable key at a read-only Auth endpoint.
+ *
+ * Purpose: a project/key mismatch fails before any disposable user mutation,
+ * while the response body remains unparsed and excluded from diagnostics.
+ *
+ * @param {Record<string, string>} config trusted target configuration
+ * @returns {Promise<void>}
+ */
+async function validateHostedPublishableKey(config) {
+  await runHostedStage('publishable_auth_settings', async () => {
+    const response = await fetch(`${config.url}/auth/v1/settings`, {
       headers: {
-        authorization: `Bearer ${config.managementToken}`,
+        apikey: config.publishableKey,
       },
       signal: AbortSignal.timeout(10_000),
+    });
+
+    if (!response.ok) {
+      throw new Error('Hosted Auth publishable-key inspection failed.');
     }
+
+    return undefined;
+  });
+}
+
+/**
+ * Verify all hosted credentials without mutating Auth or database state.
+ *
+ * Purpose: Management API access, publishable Auth access, and installed-SDK
+ * secret-key administration fail as distinct sanitized stages before capture.
+ *
+ * @param {Record<string, string>} config trusted target configuration
+ * @param {ReturnType<typeof loadInstalledSupabaseClients>} clients installed clients
+ * @returns {Promise<{ reuseIntervalSeconds: number|null, sessionExpirySeconds: number|null }>} hosted policy reused by capture
+ */
+async function inspectHostedGate0Credentials(config, clients) {
+  const sessionPolicy = await readHostedSessionPolicy(config);
+  await validateHostedPublishableKey(config);
+
+  const admin = createEphemeralClient(
+    clients.createClient,
+    config.url,
+    config.secretKey
   );
+  await runHostedStage('secret_auth_admin', async () => {
+    const inspected = await admin.auth.admin.getUserById(PREFLIGHT_NONEXISTENT_USER_ID);
+    const expectedNotFound = inspected.error?.code === 'user_not_found'
+      && inspected.error?.status === 404;
 
-  if (!response.ok) {
-    throw new Error('Hosted Auth configuration inspection failed.');
-  }
+    if (inspected.error && !expectedNotFound) {
+      throw new Error('Hosted Auth secret-key inspection failed.');
+    }
 
-  const settings = await response.json();
-  const reuseInterval = settings?.refresh_token_rotation_enabled === true
-    ? settings?.security_refresh_token_reuse_interval
-    : null;
-  const expiryCandidates = [
-    settings?.sessions_inactivity_timeout,
-    settings?.sessions_timebox,
-  ].filter((value) => Number.isInteger(value) && value > 0);
-  const sessionExpirySeconds = expiryCandidates.length > 0
-    ? Math.min(...expiryCandidates)
-    : null;
+    return undefined;
+  });
 
-  return {
-    reuseIntervalSeconds:
-      Number.isInteger(reuseInterval) && reuseInterval >= 0 && reuseInterval <= 30
-        ? reuseInterval
-        : null,
-    sessionExpirySeconds:
-      Number.isInteger(sessionExpirySeconds) && sessionExpirySeconds <= 30
-        ? sessionExpirySeconds
-        : null,
-  };
+  return sessionPolicy;
+}
+
+/**
+ * Run the read-only hosted credential preflight from a process environment.
+ *
+ * Purpose: the workflow can validate exact new-key compatibility separately
+ * from its explicitly authorized disposable-user mutation step.
+ *
+ * @param {NodeJS.ProcessEnv|Record<string, unknown>} env environment snapshot
+ * @returns {Promise<void>}
+ */
+async function preflightHostedGate0Credentials(env = process.env) {
+  const config = validateGate0Environment(env, { requireDestructiveOptIn: false });
+  const clients = loadInstalledSupabaseClients();
+  await inspectHostedGate0Credentials(config, clients);
 }
 
 /**
@@ -1339,7 +1510,7 @@ async function waitBeyondReuseInterval(intervalSeconds) {
  *
  * @param {Record<string, string>} config trusted target configuration
  * @param {ReturnType<typeof loadInstalledSupabaseClients>} clients installed clients
- * @param {ReturnType<Function>} admin service-role client
+ * @param {ReturnType<Function>} admin secret-key client
  * @param {number|null} sessionExpirySeconds verified hosted expiry boundary
  * @returns {Promise<Record<string, unknown>>} sanitized deployed tuple
  */
@@ -1360,7 +1531,7 @@ async function captureSessionExpired(config, clients, admin, sessionExpirySecond
  *
  * @param {Record<string, string>} config trusted target configuration
  * @param {ReturnType<typeof loadInstalledSupabaseClients>} clients installed clients
- * @param {ReturnType<Function>} admin service-role client
+ * @param {ReturnType<Function>} admin secret-key client
  * @param {number|null} reuseIntervalSeconds verified hosted interval
  * @returns {Promise<Record<string, unknown>>} sanitized deployed tuple
  */
@@ -1379,7 +1550,7 @@ async function captureRefreshTokenAlreadyUsed(
     const refreshClient = createEphemeralClient(
       clients.createClient,
       config.url,
-      config.anonKey
+      config.publishableKey
     );
     const rotated = await refreshClient.auth.refreshSession({
       refresh_token: oldRefreshToken,
@@ -1442,8 +1613,7 @@ async function captureHostedAuthVersion(config) {
   try {
     const response = await fetch(`${config.url}/auth/v1/health`, {
       headers: {
-        apikey: config.anonKey,
-        authorization: `Bearer ${config.anonKey}`,
+        apikey: config.publishableKey,
       },
       signal: AbortSignal.timeout(10_000),
     });
@@ -1470,32 +1640,54 @@ async function captureHostedAuthVersion(config) {
  *
  * @param {Record<string, string>} config trusted target configuration
  * @param {ReturnType<typeof loadInstalledSupabaseClients>} clients installed clients
+ * @param {{ reuseIntervalSeconds: number|null, sessionExpirySeconds: number|null }} sessionPolicy verified hosted policy
  * @returns {Promise<Record<string, unknown>[]>} complete ordered evidence partition
  */
-async function captureSessionErrorEvidence(config, clients) {
+async function captureSessionErrorEvidence(config, clients, sessionPolicy) {
   const admin = createEphemeralClient(
     clients.createClient,
     config.url,
-    config.serviceRoleKey
+    config.secretKey
   );
   const {
     reuseIntervalSeconds,
     sessionExpirySeconds,
-  } = await readHostedSessionPolicy(config);
+  } = sessionPolicy;
 
   return [
-    await captureBadJwt(config, clients, admin),
-    await captureSessionExpired(config, clients, admin, sessionExpirySeconds),
-    await captureSessionNotFound(config, clients, admin),
-    await captureRefreshTokenNotFound(config, clients, admin),
-    await captureRefreshTokenAlreadyUsed(
-      config,
-      clients,
-      admin,
-      reuseIntervalSeconds
+    await runHostedStage(
+      'scenario_bad_jwt',
+      () => captureBadJwt(config, clients, admin)
     ),
-    await captureUserNotFound(config, clients, admin),
-    await captureUserBanned(config, clients, admin),
+    await runHostedStage(
+      'scenario_session_expired',
+      () => captureSessionExpired(config, clients, admin, sessionExpirySeconds)
+    ),
+    await runHostedStage(
+      'scenario_session_not_found',
+      () => captureSessionNotFound(config, clients, admin)
+    ),
+    await runHostedStage(
+      'scenario_refresh_token_not_found',
+      () => captureRefreshTokenNotFound(config, clients, admin)
+    ),
+    await runHostedStage(
+      'scenario_refresh_token_already_used',
+      () => captureRefreshTokenAlreadyUsed(
+        config,
+        clients,
+        admin,
+        reuseIntervalSeconds
+      )
+    ),
+    await runHostedStage(
+      'scenario_user_not_found',
+      () => captureUserNotFound(config, clients, admin)
+    ),
+    await runHostedStage(
+      'scenario_user_banned',
+      () => captureUserBanned(config, clients, admin)
+    ),
   ];
 }
 
@@ -1621,6 +1813,7 @@ function assertSafeEvidence(evidence) {
 async function captureGate0AuthEvidence(env = process.env) {
   const config = validateGate0Environment(env);
   const clients = loadInstalledSupabaseClients();
+  const sessionPolicy = await inspectHostedGate0Credentials(config, clients);
   const evidence = {
     schemaVersion: GATE0_EVIDENCE_SCHEMA_VERSION,
     target: {
@@ -1629,10 +1822,12 @@ async function captureGate0AuthEvidence(env = process.env) {
     },
     dependencies: clients.versions,
     cookieEvidence: captureGoogleSessionFixtureEvidence(),
-    sessionErrors: await captureSessionErrorEvidence(config, clients),
+    sessionErrors: await captureSessionErrorEvidence(config, clients, sessionPolicy),
   };
 
-  assertSafeEvidence(evidence);
+  await runHostedStage('evidence_contract', async () => {
+    assertSafeEvidence(evidence);
+  });
   return evidence;
 }
 
@@ -1644,8 +1839,10 @@ module.exports = {
   FORBIDDEN_APPLICATION_ENV_NAMES,
   GATE0_ENV_NAMES,
   GATE0_EVIDENCE_SCHEMA_VERSION,
+  GATE0_HOSTED_FAILURE_STAGES,
   Gate0CleanupError,
   Gate0ConfigurationError,
+  Gate0StageError,
   GOOGLE_SESSION_FIXTURE_V1,
   GOOGLE_SESSION_FIXTURE_V1_INITIAL_LOGIN_CHUNKS,
   GOOGLE_SESSION_FIXTURE_V1_REFRESHED_SESSION_CHUNKS,
@@ -1660,7 +1857,10 @@ module.exports = {
   createDisposableCredentials,
   findMissingEnvironmentNames,
   formatEnvironmentNameDiagnostic,
+  inspectHostedGate0Credentials,
+  preflightHostedGate0Credentials,
   proveWrongProjectRefRefusal,
+  runHostedStage,
   sanitizeSdkObservation,
   assertGate0SupabaseTarget,
   assertSafeEvidence,

@@ -16,6 +16,10 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-16
 
+- `2026-08-16` - `GATE-0 exact admin-preflight contract`: Required the secret-key probe's missing-user result to match both the expected Auth error code and HTTP status, and strengthened every covered hosted-stage error assertion to inspect its fixed message and absent cause directly.
+  - validation: both focused Gate-0 suites pass 58/58, changed-file ESLint and Node syntax checks pass, and `git diff --check` passes.
+- `2026-08-16` - `GATE-0 new-key credential diagnostics`: Aligned the hosted evidence workflow with Supabase publishable and secret keys, added a read-only credential preflight, and mapped capture failures to a finite sanitized stage allowlist without changing the target project, disposable-user isolation, or retained evidence contract.
+  - validation: both focused Gate-0 suites pass 58/58, changed-file ESLint and Node syntax checks pass, workflow YAML parses, offline refusal and configuration probes exit successfully, `git diff --check` passes, and the approved fixture remains six initial-login chunks, five refreshed-session chunks, and a maximum of six.
 - `2026-08-16` - `GATE-0 main-promotion review follow-ups`: Centralized candidate cookie-chunk counts, made optional hosted-version capture tolerate transport and JSON failures, classified CLI diagnostics by exported error identity, and documented the dependency-free pre-install refusal boundary.
   - validation: both focused Gate-0 suites pass 54/54, changed-file ESLint and Node syntax checks pass, the dependency-free refusal proof exits successfully before dependency installation, and `git diff --check` passes.
 - `2026-08-16` - `GATE-0 dependency-console suppression assertion`: Moved the dependency-sink no-call assertion directly after the raw provider sentinel callback while retaining the console-method restoration checks.
