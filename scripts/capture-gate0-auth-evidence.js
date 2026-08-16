@@ -4,6 +4,17 @@ const {
   validateGate0Environment,
 } = require('./gate0-auth-evidence.js');
 
+const SUPPRESSED_CONSOLE_METHODS = Object.freeze([
+  'debug',
+  'dir',
+  'error',
+  'info',
+  'log',
+  'table',
+  'trace',
+  'warn',
+]);
+
 /**
  * Suppress dependency-owned console output during credentialed capture.
  *
@@ -14,23 +25,21 @@ const {
  * @returns {Promise<unknown>} callback result
  */
 async function withSuppressedDependencyConsole(callback) {
-  const originalConsole = {
-    error: console.error,
-    log: console.log,
-    warn: console.warn,
-  };
+  const originalConsole = new Map(
+    SUPPRESSED_CONSOLE_METHODS.map((method) => [method, console[method]])
+  );
   const discard = () => {};
 
-  console.error = discard;
-  console.log = discard;
-  console.warn = discard;
+  SUPPRESSED_CONSOLE_METHODS.forEach((method) => {
+    console[method] = discard;
+  });
 
   try {
     return await callback();
   } finally {
-    console.error = originalConsole.error;
-    console.log = originalConsole.log;
-    console.warn = originalConsole.warn;
+    originalConsole.forEach((original, method) => {
+      console[method] = original;
+    });
   }
 }
 
@@ -87,7 +96,14 @@ async function runGate0EvidenceCli(
     writeOutput(JSON.stringify(evidence));
     return 0;
   } catch (error) {
-    const safeMessage = error?.constructor?.name === 'Gate0ConfigurationError'
+    const errorName = error?.constructor?.name;
+
+    if (errorName === 'Gate0CleanupError') {
+      writeError('Gate-0 disposable user cleanup failed; verify and remove synthetic users manually.');
+      return 1;
+    }
+
+    const safeMessage = errorName === 'Gate0ConfigurationError'
       ? error.message
       : 'Gate-0 auth evidence capture failed; inspect provider state without exposing errors.';
     writeError(safeMessage);
@@ -96,9 +112,14 @@ async function runGate0EvidenceCli(
 }
 
 if (require.main === module) {
-  runGate0EvidenceCli().then((status) => {
-    process.exitCode = status;
-  });
+  runGate0EvidenceCli()
+    .then((status) => {
+      process.exitCode = status;
+    })
+    .catch(() => {
+      process.exitCode = 1;
+      writeCliError('Gate-0 auth evidence runner failed before returning a safe status.');
+    });
 }
 
 module.exports = {

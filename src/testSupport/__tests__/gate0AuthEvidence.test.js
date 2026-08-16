@@ -5,6 +5,7 @@ const {
   EXPECTED_SUPABASE_PROJECT_REF,
   EXPECTED_SUPABASE_URL,
   GATE0_ENV_NAMES,
+  Gate0CleanupError,
   GOOGLE_SESSION_FIXTURE_V1,
   SESSION_ERROR_CANDIDATES,
   assertSafeEvidence,
@@ -22,6 +23,8 @@ const {
   runGate0EvidenceCli,
   withSuppressedDependencyConsole,
 } = require('../../../scripts/capture-gate0-auth-evidence.js');
+
+const DISPOSABLE_USER_ID = '00000000-0000-4000-8000-000000000099';
 
 /**
  * Build a complete non-secret environment for offline preflight tests.
@@ -80,6 +83,52 @@ function buildSafeEvidence() {
   };
 }
 
+/**
+ * Build the target-scoped admin mock shared by disposable cleanup tests.
+ *
+ * Purpose: cleanup cases vary only the exact delete result while retaining one
+ * deterministic created user ID for invocation assertions.
+ *
+ * @param {{ deleteError?: unknown }} options mocked final deletion result
+ * @returns {Record<string, unknown>} Supabase admin client mock
+ */
+function buildAdminMock({ deleteError = null } = {}) {
+  return {
+    auth: {
+      admin: {
+        createUser: jest.fn().mockResolvedValue({
+          data: { user: { id: DISPOSABLE_USER_ID } },
+          error: null,
+        }),
+        deleteUser: jest.fn().mockResolvedValue({ error: deleteError }),
+      },
+    },
+  };
+}
+
+/**
+ * Build the isolated sign-in client mock shared by disposable cleanup tests.
+ *
+ * Purpose: each cleanup path starts from the same supported synthetic session
+ * and never contacts the hosted provider.
+ *
+ * @returns {Record<string, unknown>} installed-client factory mock
+ */
+function buildClientsMock() {
+  const supportedSession = buildGoogleSessionFixtures().refreshedSession;
+
+  return {
+    createClient: jest.fn(() => ({
+      auth: {
+        signInWithPassword: jest.fn().mockResolvedValue({
+          data: { session: supportedSession },
+          error: null,
+        }),
+      },
+    })),
+  };
+}
+
 describe('Gate-0 auth evidence harness', () => {
   it('keeps the evidence workflow manual, staging-only, isolated, and artifact-free', () => {
     const workflow = readFileSync(
@@ -112,6 +161,41 @@ describe('Gate-0 auth evidence harness', () => {
     });
   });
 
+  it('checks the SSR version before loading its private serializer layout', () => {
+    const supportedSession = buildGoogleSessionFixtures().refreshedSession;
+    const packagePath = require.resolve('@supabase/ssr/package.json');
+    const serializerPath = path.join(path.dirname(packagePath), 'dist', 'main', 'utils');
+    const loadPrivateSerializer = jest.fn(() => {
+      throw new Error('private-serializer-layout-loaded');
+    });
+
+    jest.doMock(packagePath, () => ({ version: '0.0.0-incompatible' }));
+    jest.doMock(serializerPath, loadPrivateSerializer);
+
+    try {
+      jest.isolateModules(() => {
+        const {
+          buildGoogleSessionFixtures: buildIsolatedGoogleSessionFixtures,
+          classifyGoogleSessionCredential: classifyIsolatedGoogleSessionCredential,
+        } = require('../../../scripts/gate0-auth-evidence.js');
+
+        expect(() => buildIsolatedGoogleSessionFixtures()).toThrow(
+          'Installed @supabase/ssr version reopens GOOGLE_SESSION_FIXTURE_V1.'
+        );
+        expect(classifyIsolatedGoogleSessionCredential(supportedSession)).toEqual({
+          supported: true,
+          disposition: 'supported',
+        });
+      });
+    } finally {
+      jest.dontMock(packagePath);
+      jest.dontMock(serializerPath);
+      jest.resetModules();
+    }
+
+    expect(loadPrivateSerializer).not.toHaveBeenCalled();
+  });
+
   it('enforces the exact versioned Google session shape and boundaries', () => {
     const metadata = buildBoundedGoogleUserMetadata();
     const { initialLogin, refreshedSession } = buildGoogleSessionFixtures();
@@ -132,6 +216,26 @@ describe('Gate-0 auth evidence harness', () => {
 
   it('classifies every oversized or structurally different credential as unavailable', () => {
     const { initialLogin, refreshedSession } = buildGoogleSessionFixtures();
+    const accessTokenSegments = refreshedSession.access_token.split('.');
+    const accessTokenHeader = JSON.parse(
+      Buffer.from(accessTokenSegments[0], 'base64url').toString('utf8')
+    );
+    const es256Session = {
+      ...structuredClone(refreshedSession),
+      access_token: [
+        Buffer.from(JSON.stringify({ ...accessTokenHeader, alg: 'ES256' }))
+          .toString('base64url'),
+        ...accessTokenSegments.slice(1),
+      ].join('.'),
+    };
+    const unsupportedAlgorithmSession = {
+      ...structuredClone(refreshedSession),
+      access_token: [
+        Buffer.from(JSON.stringify({ ...accessTokenHeader, alg: 'HS256' }))
+          .toString('base64url'),
+        ...accessTokenSegments.slice(1),
+      ].join('.'),
+    };
     const variants = [
       {
         ...structuredClone(initialLogin),
@@ -165,6 +269,7 @@ describe('Gate-0 auth evidence harness', () => {
         ...structuredClone(refreshedSession),
         access_token: 'not.a.supported-token-envelope',
       },
+      unsupportedAlgorithmSession,
     ];
 
     expect(classifyGoogleSessionCredential(initialLogin)).toEqual({
@@ -172,6 +277,10 @@ describe('Gate-0 auth evidence harness', () => {
       disposition: 'supported',
     });
     expect(classifyGoogleSessionCredential(refreshedSession)).toEqual({
+      supported: true,
+      disposition: 'supported',
+    });
+    expect(classifyGoogleSessionCredential(es256Session)).toEqual({
       supported: true,
       disposition: 'supported',
     });
@@ -185,7 +294,14 @@ describe('Gate-0 auth evidence harness', () => {
   });
 
   it('accepts only the exact restored pre-production target and staging ref', () => {
-    expect(validateGate0Environment(buildValidEnvironment())).toEqual({
+    expect(validateGate0Environment({
+      ...buildValidEnvironment(),
+      [GATE0_ENV_NAMES.url]: `  ${EXPECTED_SUPABASE_URL}  `,
+      [GATE0_ENV_NAMES.anonKey]: '  test-only-anon-key  ',
+      [GATE0_ENV_NAMES.serviceRoleKey]: '  test-only-service-role-key  ',
+      [GATE0_ENV_NAMES.managementToken]: '  test-only-management-token  ',
+      [GATE0_ENV_NAMES.projectRef]: `  ${EXPECTED_SUPABASE_PROJECT_REF}  `,
+    })).toEqual({
       url: EXPECTED_SUPABASE_URL,
       anonKey: 'test-only-anon-key',
       serviceRoleKey: 'test-only-service-role-key',
@@ -219,26 +335,38 @@ describe('Gate-0 auth evidence harness', () => {
       output,
       errorOutput
     );
-    const originalConsole = {
-      error: console.error,
-      log: console.log,
-      warn: console.warn,
-    };
+    const suppressedConsoleMethods = [
+      'debug',
+      'dir',
+      'error',
+      'info',
+      'log',
+      'table',
+      'trace',
+      'warn',
+    ];
+    const originalConsole = new Map(
+      suppressedConsoleMethods.map((method) => [method, console[method]])
+    );
     const dependencySink = jest.fn();
 
-    console.error = dependencySink;
-    console.log = dependencySink;
-    console.warn = dependencySink;
+    suppressedConsoleMethods.forEach((method) => {
+      console[method] = dependencySink;
+    });
     try {
       await withSuppressedDependencyConsole(async () => {
-        ['error', 'log', 'warn'].forEach((method) => {
+        suppressedConsoleMethods.forEach((method) => {
           console[method](`raw-provider-${method}-sentinel`);
         });
       });
+
+      suppressedConsoleMethods.forEach((method) => {
+        expect(console[method]).toBe(dependencySink);
+      });
     } finally {
-      console.error = originalConsole.error;
-      console.log = originalConsole.log;
-      console.warn = originalConsole.warn;
+      originalConsole.forEach((original, method) => {
+        console[method] = original;
+      });
     }
 
     expect(status).toBe(1);
@@ -247,6 +375,42 @@ describe('Gate-0 auth evidence harness', () => {
     expect(errorOutput.mock.calls[0][0]).toContain('GATE0_SUPABASE_URL');
     expect(errorOutput.mock.calls[0][0]).not.toContain('secret-sentinel');
     expect(dependencySink).not.toHaveBeenCalled();
+  });
+
+  it('reports cleanup failures safely and keeps provider errors generic', async () => {
+    const captureGate0AuthEvidence = jest.fn()
+      .mockRejectedValueOnce(new Gate0CleanupError('raw-cleanup-sentinel'))
+      .mockRejectedValueOnce(new Error('raw-provider-sentinel'));
+    const output = jest.fn();
+    const errorOutput = jest.fn();
+    let isolatedRunGate0EvidenceCli;
+
+    jest.doMock('../../../scripts/gate0-auth-evidence.js', () => ({
+      ...jest.requireActual('../../../scripts/gate0-auth-evidence.js'),
+      captureGate0AuthEvidence,
+    }));
+
+    try {
+      jest.isolateModules(() => {
+        ({ runGate0EvidenceCli: isolatedRunGate0EvidenceCli } = require(
+          '../../../scripts/capture-gate0-auth-evidence.js'
+        ));
+      });
+
+      await expect(isolatedRunGate0EvidenceCli([], {}, output, errorOutput)).resolves.toBe(1);
+      await expect(isolatedRunGate0EvidenceCli([], {}, output, errorOutput)).resolves.toBe(1);
+    } finally {
+      jest.dontMock('../../../scripts/gate0-auth-evidence.js');
+      jest.resetModules();
+    }
+
+    expect(output).not.toHaveBeenCalled();
+    expect(errorOutput.mock.calls).toEqual([
+      ['Gate-0 disposable user cleanup failed; verify and remove synthetic users manually.'],
+      ['Gate-0 auth evidence capture failed; inspect provider state without exposing errors.'],
+    ]);
+    expect(JSON.stringify(errorOutput.mock.calls)).not.toContain('raw-cleanup-sentinel');
+    expect(JSON.stringify(errorOutput.mock.calls)).not.toContain('raw-provider-sentinel');
   });
 
   it('retains only safe installed-SDK tuple fields', () => {
@@ -295,37 +459,48 @@ describe('Gate-0 auth evidence harness', () => {
   });
 
   it('deletes exactly one disposable user when a scenario fails', async () => {
-    const userId = '00000000-0000-4000-8000-000000000099';
-    const deleteUser = jest.fn().mockResolvedValue({ error: null });
-    const supportedSession = buildGoogleSessionFixtures().refreshedSession;
-    const admin = {
-      auth: {
-        admin: {
-          createUser: jest.fn().mockResolvedValue({ data: { user: { id: userId } }, error: null }),
-          deleteUser,
-        },
-      },
-    };
-    const clients = {
-      createClient: jest.fn(() => ({
-        auth: {
-          signInWithPassword: jest.fn().mockResolvedValue({
-            data: { session: supportedSession },
-            error: null,
-          }),
-        },
-      })),
-    };
+    const admin = buildAdminMock();
 
     await expect(withDisposableSession(
       { url: EXPECTED_SUPABASE_URL, anonKey: 'anon' },
-      clients,
+      buildClientsMock(),
       admin,
       async () => {
         throw new Error('scenario failed');
       }
     )).rejects.toThrow('scenario failed');
-    expect(deleteUser).toHaveBeenCalledTimes(1);
-    expect(deleteUser).toHaveBeenCalledWith(userId);
+    expect(admin.auth.admin.deleteUser).toHaveBeenCalledTimes(1);
+    expect(admin.auth.admin.deleteUser).toHaveBeenCalledWith(DISPOSABLE_USER_ID);
+  });
+
+  it('fails closed when disposable cleanup does not succeed', async () => {
+    const admin = buildAdminMock({ deleteError: { message: 'denied' } });
+    const cleanup = withDisposableSession(
+      { url: EXPECTED_SUPABASE_URL, anonKey: 'anon' },
+      buildClientsMock(),
+      admin,
+      async () => ({ candidate: 'bad_jwt', disposition: 'unavailable' })
+    );
+
+    await expect(cleanup).rejects.toBeInstanceOf(Gate0CleanupError);
+    await expect(cleanup).rejects.toThrow('Disposable Gate-0 user cleanup failed.');
+    expect(admin.auth.admin.deleteUser).toHaveBeenCalledTimes(1);
+    expect(admin.auth.admin.deleteUser).toHaveBeenCalledWith(DISPOSABLE_USER_ID);
+  });
+
+  it('skips final deletion after the scenario deletes its own user', async () => {
+    const admin = buildAdminMock();
+    const observation = { candidate: 'user_not_found' };
+
+    await expect(withDisposableSession(
+      { url: EXPECTED_SUPABASE_URL, anonKey: 'anon' },
+      buildClientsMock(),
+      admin,
+      async ({ markDeleted }) => {
+        markDeleted();
+        return observation;
+      }
+    )).resolves.toBe(observation);
+    expect(admin.auth.admin.deleteUser).not.toHaveBeenCalled();
   });
 });

@@ -51,6 +51,23 @@ const ALLOWED_USER_METADATA_FIELDS = Object.freeze([
   'sub',
 ]);
 
+const ALLOWED_USER_FIELDS = Object.freeze([
+  'app_metadata',
+  'aud',
+  'confirmed_at',
+  'created_at',
+  'email',
+  'email_confirmed_at',
+  'id',
+  'identities',
+  'is_anonymous',
+  'last_sign_in_at',
+  'phone',
+  'role',
+  'updated_at',
+  'user_metadata',
+]);
+
 const GOOGLE_SESSION_FIXTURE_V1 = Object.freeze({
   id: 'GOOGLE_SESSION_FIXTURE_V1',
   provider: 'google',
@@ -87,6 +104,7 @@ const GOOGLE_SESSION_FIXTURE_V1 = Object.freeze({
   ]),
   supabaseTokenEnvelope: Object.freeze({
     accessTokenAlgorithm: 'RS256',
+    allowedAccessTokenAlgorithms: Object.freeze(['ES256', 'RS256']),
     keyIdAsciiCharacters: 36,
     signatureBase64urlCharacters: 342,
     refreshTokenAsciiCharacters: 64,
@@ -250,16 +268,17 @@ function buildBoundedAppMetadata() {
  */
 function loadInstalledSsrSerializer() {
   const packagePath = require.resolve('@supabase/ssr/package.json');
-  const packageRoot = path.dirname(packagePath);
   const packageMetadata = require(packagePath);
-  const {
-    createChunks,
-    stringToBase64URL,
-  } = require(path.join(packageRoot, 'dist', 'main', 'utils'));
 
   if (packageMetadata.version !== GOOGLE_SESSION_FIXTURE_V1.serializer.version) {
     throw new Error('Installed @supabase/ssr version reopens GOOGLE_SESSION_FIXTURE_V1.');
   }
+
+  const packageRoot = path.dirname(packagePath);
+  const {
+    createChunks,
+    stringToBase64URL,
+  } = require(path.join(packageRoot, 'dist', 'main', 'utils'));
 
   return {
     createChunks,
@@ -542,7 +561,7 @@ function isSupportedTokenEnvelope(accessToken, refreshToken) {
   const header = decodeTokenHeader(segments[0]);
 
   return hasExactKeys(header, ['alg', 'kid', 'typ'])
-    && header.alg === envelope.accessTokenAlgorithm
+    && envelope.allowedAccessTokenAlgorithms.includes(header.alg)
     && header.typ === 'JWT'
     && isBoundedAscii(header.kid, envelope.keyIdAsciiCharacters)
     && /^[A-Za-z0-9_-]+$/.test(segments[1])
@@ -634,8 +653,7 @@ function classifyGoogleSessionCredential(session) {
   }
 
   const user = session.user;
-  const fixtureUserKeys = Object.keys(buildGoogleSessionFixtures().refreshedSession.user);
-  if (!hasExactKeys(user, fixtureUserKeys) || !Array.isArray(user.identities)) {
+  if (!hasExactKeys(user, ALLOWED_USER_FIELDS) || !Array.isArray(user.identities)) {
     return unavailable;
   }
 
@@ -817,15 +835,15 @@ function validateGate0Environment(env, { requireDestructiveOptIn = true } = {}) 
   }
 
   assertGate0SupabaseTarget(
-    env[GATE0_ENV_NAMES.url],
-    env[GATE0_ENV_NAMES.projectRef]
+    env[GATE0_ENV_NAMES.url].trim(),
+    env[GATE0_ENV_NAMES.projectRef].trim()
   );
 
   return {
-    url: env[GATE0_ENV_NAMES.url],
-    anonKey: env[GATE0_ENV_NAMES.anonKey],
-    serviceRoleKey: env[GATE0_ENV_NAMES.serviceRoleKey],
-    managementToken: env[GATE0_ENV_NAMES.managementToken],
+    url: EXPECTED_SUPABASE_URL,
+    anonKey: env[GATE0_ENV_NAMES.anonKey].trim(),
+    serviceRoleKey: env[GATE0_ENV_NAMES.serviceRoleKey].trim(),
+    managementToken: env[GATE0_ENV_NAMES.managementToken].trim(),
   };
 }
 
@@ -1616,6 +1634,7 @@ module.exports = {
   FORBIDDEN_APPLICATION_ENV_NAMES,
   GATE0_ENV_NAMES,
   GATE0_EVIDENCE_SCHEMA_VERSION,
+  Gate0CleanupError,
   GOOGLE_SESSION_FIXTURE_V1,
   SESSION_ERROR_CANDIDATES,
   buildBoundedGoogleUserMetadata,

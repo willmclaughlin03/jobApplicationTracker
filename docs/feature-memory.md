@@ -14,6 +14,11 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-08-16
+
+- `2026-08-16` - `GATE-0 evidence capture review hardening`: Expanded dependency-console suppression, added safe cleanup and terminal diagnostics, normalized trusted configuration, accepted the target project's ES256 session tokens while retaining the conservative RS256 size fixture, isolated classification from private serializer loading, and strengthened cleanup-path coverage.
+  - validation: the focused Gate-0 suite passes 14/14, changed-file ESLint and Node syntax checks pass, the forced terminal-rejection probe returns only its static diagnostic with exit code 1, and `git diff --check` passes.
+
 ### Week of 2026-08-09
 
 - `2026-08-13` - `GATE-0 pre-production auth evidence harness`: Added the approved versioned `GOOGLE_SESSION_FIXTURE_V1`, reproduced its maximum initial-login session at six installed SSR cookie chunks and refreshed session at five, enforced unavailable handling for expanded credentials, and added a manual staging-only workflow that captures only sanitized deployed SDK tuples through isolated disposable users.
