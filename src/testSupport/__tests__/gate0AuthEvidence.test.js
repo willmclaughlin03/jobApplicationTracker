@@ -267,11 +267,14 @@ describe('Gate-0 auth evidence harness', () => {
         status: 401,
         providerMessage: 'management-raw-sentinel',
       });
-      await expect(inspectHostedGate0Credentials(config, {
+      const managementFailure = inspectHostedGate0Credentials(config, {
         createClient: jest.fn(),
-      })).rejects.toMatchObject({
-        stage: 'management_auth_config',
       });
+      const managementError = await managementFailure.catch((error) => error);
+      expect(managementError).toBeInstanceOf(Gate0StageError);
+      expect(managementError).toMatchObject({ stage: 'management_auth_config' });
+      expect(managementError.message).toBe('Gate-0 hosted evidence stage failed.');
+      expect(managementError.cause).toBeUndefined();
 
       fetchSpy
         .mockResolvedValueOnce({
@@ -283,34 +286,53 @@ describe('Gate-0 auth evidence harness', () => {
           status: 401,
           providerMessage: 'publishable-raw-sentinel',
         });
-      await expect(inspectHostedGate0Credentials(config, {
+      const publishableFailure = inspectHostedGate0Credentials(config, {
         createClient: jest.fn(),
-      })).rejects.toMatchObject({
-        stage: 'publishable_auth_settings',
       });
+      const publishableError = await publishableFailure.catch((error) => error);
+      expect(publishableError).toBeInstanceOf(Gate0StageError);
+      expect(publishableError).toMatchObject({ stage: 'publishable_auth_settings' });
+      expect(publishableError.message).toBe('Gate-0 hosted evidence stage failed.');
+      expect(publishableError.cause).toBeUndefined();
 
-      fetchSpy
-        .mockResolvedValueOnce({
-          ok: true,
-          json: jest.fn().mockResolvedValue({}),
-        })
-        .mockResolvedValueOnce({ ok: true });
-      const secretFailure = inspectHostedGate0Credentials(config, {
-        createClient: jest.fn(() => ({
-          auth: {
-            admin: {
-              getUserById: jest.fn().mockResolvedValue({
-                data: null,
-                error: { message: 'secret-raw-sentinel', status: 401 },
-              }),
+      const mismatchedNotFoundErrors = [
+        {
+          code: 'unrelated_not_found',
+          message: 'secret-status-only-sentinel',
+          status: 404,
+        },
+        {
+          code: 'user_not_found',
+          message: 'secret-code-only-sentinel',
+          status: 401,
+        },
+      ];
+
+      for (const providerError of mismatchedNotFoundErrors) {
+        fetchSpy
+          .mockResolvedValueOnce({
+            ok: true,
+            json: jest.fn().mockResolvedValue({}),
+          })
+          .mockResolvedValueOnce({ ok: true });
+        const secretFailure = inspectHostedGate0Credentials(config, {
+          createClient: jest.fn(() => ({
+            auth: {
+              admin: {
+                getUserById: jest.fn().mockResolvedValue({
+                  data: null,
+                  error: providerError,
+                }),
+              },
             },
-          },
-        })),
-      });
-      const secretError = await secretFailure.catch((error) => error);
-      expect(secretError).toBeInstanceOf(Gate0StageError);
-      expect(secretError).toMatchObject({ stage: 'secret_auth_admin' });
-      expect(JSON.stringify(secretError)).not.toContain('secret-raw-sentinel');
+          })),
+        });
+        const secretError = await secretFailure.catch((error) => error);
+        expect(secretError).toBeInstanceOf(Gate0StageError);
+        expect(secretError).toMatchObject({ stage: 'secret_auth_admin' });
+        expect(secretError.message).toBe('Gate-0 hosted evidence stage failed.');
+        expect(secretError.cause).toBeUndefined();
+      }
 
       expect(GATE0_HOSTED_FAILURE_STAGES).toEqual(expect.arrayContaining([
         'management_auth_config',
@@ -696,8 +718,10 @@ describe('Gate-0 auth evidence harness', () => {
       callback
     ).catch((error) => error);
 
+    expect(createFailure).toBeInstanceOf(Gate0StageError);
     expect(createFailure).toMatchObject({ stage: 'admin_create_user' });
-    expect(JSON.stringify(createFailure)).not.toContain('create-user-raw-sentinel');
+    expect(createFailure.message).toBe('Gate-0 hosted evidence stage failed.');
+    expect(createFailure.cause).toBeUndefined();
     expect(createFailureAdmin.auth.admin.deleteUser).not.toHaveBeenCalled();
 
     const signInFailureAdmin = buildAdminMock();
@@ -710,8 +734,10 @@ describe('Gate-0 auth evidence harness', () => {
       callback
     ).catch((error) => error);
 
+    expect(signInFailure).toBeInstanceOf(Gate0StageError);
     expect(signInFailure).toMatchObject({ stage: 'password_sign_in' });
-    expect(JSON.stringify(signInFailure)).not.toContain('password-sign-in-raw-sentinel');
+    expect(signInFailure.message).toBe('Gate-0 hosted evidence stage failed.');
+    expect(signInFailure.cause).toBeUndefined();
     expect(signInFailureAdmin.auth.admin.deleteUser).toHaveBeenCalledWith(
       DISPOSABLE_USER_ID
     );
@@ -726,7 +752,10 @@ describe('Gate-0 auth evidence harness', () => {
       callback
     ).catch((error) => error);
 
+    expect(envelopeFailure).toBeInstanceOf(Gate0StageError);
     expect(envelopeFailure).toMatchObject({ stage: 'session_token_envelope' });
+    expect(envelopeFailure.message).toBe('Gate-0 hosted evidence stage failed.');
+    expect(envelopeFailure.cause).toBeUndefined();
     expect(envelopeFailureAdmin.auth.admin.deleteUser).toHaveBeenCalledWith(
       DISPOSABLE_USER_ID
     );
