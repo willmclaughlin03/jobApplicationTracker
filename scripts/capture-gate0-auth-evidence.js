@@ -1,7 +1,9 @@
 const {
   Gate0CleanupError,
   Gate0ConfigurationError,
+  Gate0StageError,
   captureGate0AuthEvidence,
+  preflightHostedGate0Credentials,
   proveWrongProjectRefRefusal,
   validateGate0Environment,
 } = require('./gate0-auth-evidence.js');
@@ -87,8 +89,17 @@ async function runGate0EvidenceCli(
       return 0;
     }
 
+    if (argv.length === 1 && argv[0] === '--hosted-credential-preflight') {
+      await withSuppressedDependencyConsole(
+        () => preflightHostedGate0Credentials(env)
+      );
+      return 0;
+    }
+
     if (argv.length !== 0) {
-      writeError('Gate-0 evidence runner accepts no arguments outside its two preflight modes.');
+      writeError(
+        'Gate-0 evidence runner accepts no arguments outside its three preflight modes.'
+      );
       return 1;
     }
 
@@ -100,6 +111,11 @@ async function runGate0EvidenceCli(
   } catch (error) {
     if (error instanceof Gate0CleanupError) {
       writeError('Gate-0 disposable user cleanup failed; verify and remove synthetic users manually.');
+      return 1;
+    }
+
+    if (error instanceof Gate0StageError) {
+      writeError(`Gate-0 auth evidence stage failed: ${error.stage}.`);
       return 1;
     }
 
