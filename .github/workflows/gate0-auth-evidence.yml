@@ -68,8 +68,8 @@ jobs:
       - name: Prove wrong Supabase project refusal
         env:
           GATE0_SUPABASE_URL: ${{ secrets.GATE0_SUPABASE_URL }}
-          GATE0_SUPABASE_ANON_KEY: ${{ secrets.GATE0_SUPABASE_ANON_KEY }}
-          GATE0_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.GATE0_SUPABASE_SERVICE_ROLE_KEY }}
+          GATE0_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.GATE0_SUPABASE_PUBLISHABLE_KEY }}
+          GATE0_SUPABASE_SECRET_KEY: ${{ secrets.GATE0_SUPABASE_SECRET_KEY }}
           GATE0_SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.GATE0_SUPABASE_MANAGEMENT_TOKEN }}
           GATE0_SUPABASE_PROJECT_REF: ${{ secrets.GATE0_SUPABASE_PROJECT_REF }}
         run: node scripts/capture-gate0-auth-evidence.js --prove-project-ref-refusal
@@ -89,18 +89,29 @@ jobs:
       - name: Validate dedicated Gate-0 evidence configuration
         env:
           GATE0_SUPABASE_URL: ${{ secrets.GATE0_SUPABASE_URL }}
-          GATE0_SUPABASE_ANON_KEY: ${{ secrets.GATE0_SUPABASE_ANON_KEY }}
-          GATE0_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.GATE0_SUPABASE_SERVICE_ROLE_KEY }}
+          GATE0_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.GATE0_SUPABASE_PUBLISHABLE_KEY }}
+          GATE0_SUPABASE_SECRET_KEY: ${{ secrets.GATE0_SUPABASE_SECRET_KEY }}
           GATE0_SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.GATE0_SUPABASE_MANAGEMENT_TOKEN }}
           GATE0_SUPABASE_PROJECT_REF: ${{ secrets.GATE0_SUPABASE_PROJECT_REF }}
           GATE0_AUTH_EVIDENCE_ALLOWED: 'true'
         run: node scripts/capture-gate0-auth-evidence.js --preflight-only
 
+      - name: Validate hosted Gate-0 credentials without mutations
+        env:
+          GATE0_SUPABASE_URL: ${{ secrets.GATE0_SUPABASE_URL }}
+          GATE0_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.GATE0_SUPABASE_PUBLISHABLE_KEY }}
+          GATE0_SUPABASE_SECRET_KEY: ${{ secrets.GATE0_SUPABASE_SECRET_KEY }}
+          GATE0_SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.GATE0_SUPABASE_MANAGEMENT_TOKEN }}
+          GATE0_SUPABASE_PROJECT_REF: ${{ secrets.GATE0_SUPABASE_PROJECT_REF }}
+        run: >-
+          node scripts/capture-gate0-auth-evidence.js
+          --hosted-credential-preflight
+
       - name: Capture sanitized Gate-0 auth evidence
         env:
           GATE0_SUPABASE_URL: ${{ secrets.GATE0_SUPABASE_URL }}
-          GATE0_SUPABASE_ANON_KEY: ${{ secrets.GATE0_SUPABASE_ANON_KEY }}
-          GATE0_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.GATE0_SUPABASE_SERVICE_ROLE_KEY }}
+          GATE0_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.GATE0_SUPABASE_PUBLISHABLE_KEY }}
+          GATE0_SUPABASE_SECRET_KEY: ${{ secrets.GATE0_SUPABASE_SECRET_KEY }}
           GATE0_SUPABASE_MANAGEMENT_TOKEN: ${{ secrets.GATE0_SUPABASE_MANAGEMENT_TOKEN }}
           GATE0_SUPABASE_PROJECT_REF: ${{ secrets.GATE0_SUPABASE_PROJECT_REF }}
           GATE0_AUTH_EVIDENCE_ALLOWED: 'true'

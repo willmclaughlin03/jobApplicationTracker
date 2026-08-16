@@ -5,7 +5,9 @@ const {
   EXPECTED_SUPABASE_PROJECT_REF,
   EXPECTED_SUPABASE_URL,
   GATE0_ENV_NAMES,
+  GATE0_HOSTED_FAILURE_STAGES,
   Gate0CleanupError,
+  Gate0StageError,
   GOOGLE_SESSION_FIXTURE_V1,
   SESSION_ERROR_CANDIDATES,
   assertSafeEvidence,
@@ -14,6 +16,7 @@ const {
   captureGoogleSessionFixtureEvidence,
   captureHostedAuthVersion,
   classifyGoogleSessionCredential,
+  inspectHostedGate0Credentials,
   proveWrongProjectRefRefusal,
   sanitizeSdkObservation,
   utf8ByteLength,
@@ -38,8 +41,8 @@ const DISPOSABLE_USER_ID = '00000000-0000-4000-8000-000000000099';
 function buildValidEnvironment() {
   return {
     [GATE0_ENV_NAMES.url]: EXPECTED_SUPABASE_URL,
-    [GATE0_ENV_NAMES.anonKey]: 'test-only-anon-key',
-    [GATE0_ENV_NAMES.serviceRoleKey]: 'test-only-service-role-key',
+    [GATE0_ENV_NAMES.publishableKey]: 'sb_publishable_test-only-key',
+    [GATE0_ENV_NAMES.secretKey]: 'sb_secret_test-only-key',
     [GATE0_ENV_NAMES.managementToken]: 'test-only-management-token',
     [GATE0_ENV_NAMES.projectRef]: EXPECTED_SUPABASE_PROJECT_REF,
     [GATE0_ENV_NAMES.destructiveOptIn]: 'true',
@@ -113,17 +116,20 @@ function buildAdminMock({ deleteError = null } = {}) {
  * Purpose: each cleanup path starts from the same supported synthetic session
  * and never contacts the hosted provider.
  *
+ * @param {{ signInError?: unknown, session?: Record<string, unknown> }} options sign-in result overrides
  * @returns {Record<string, unknown>} installed-client factory mock
  */
-function buildClientsMock() {
-  const supportedSession = buildGoogleSessionFixtures().refreshedSession;
+function buildClientsMock({
+  signInError = null,
+  session = buildGoogleSessionFixtures().refreshedSession,
+} = {}) {
 
   return {
     createClient: jest.fn(() => ({
       auth: {
         signInWithPassword: jest.fn().mockResolvedValue({
-          data: { session: supportedSession },
-          error: null,
+          data: { session: signInError ? null : session },
+          error: signInError,
         }),
       },
     })),
@@ -145,8 +151,16 @@ describe('Gate-0 auth evidence harness', () => {
     expect(workflow).toContain('cancel-in-progress: false');
     expect(workflow).toContain("GATE0_AUTH_EVIDENCE_ALLOWED: 'true'");
     expect(workflow).toContain('secrets.GATE0_SUPABASE_MANAGEMENT_TOKEN');
+    expect(workflow).toContain('secrets.GATE0_SUPABASE_PUBLISHABLE_KEY');
+    expect(workflow).toContain('secrets.GATE0_SUPABASE_SECRET_KEY');
+    expect(workflow).not.toContain('secrets.GATE0_SUPABASE_ANON_KEY');
+    expect(workflow).not.toContain('secrets.GATE0_SUPABASE_SERVICE_ROLE_KEY');
+    expect(workflow).toContain('--hosted-credential-preflight');
     expect(workflow).not.toContain('actions/upload-artifact');
     expect(workflow.indexOf('npm ci')).toBeLessThan(
+      workflow.indexOf('Capture sanitized Gate-0 auth evidence')
+    );
+    expect(workflow.indexOf('--hosted-credential-preflight')).toBeLessThan(
       workflow.indexOf('Capture sanitized Gate-0 auth evidence')
     );
   });
@@ -165,7 +179,7 @@ describe('Gate-0 auth evidence harness', () => {
   it('treats unavailable or malformed hosted Auth health as absent version evidence', async () => {
     const config = {
       url: EXPECTED_SUPABASE_URL,
-      anonKey: 'test-only-anon-key',
+      publishableKey: 'sb_publishable_test-only-key',
     };
     const fetchSpy = jest.spyOn(global, 'fetch');
 
@@ -195,6 +209,114 @@ describe('Gate-0 auth evidence harness', () => {
         json: jest.fn().mockResolvedValue({ version: 'v2.194.0' }),
       });
       await expect(captureHostedAuthVersion(config)).resolves.toBe('v2.194.0');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('validates each hosted new-key credential without enumerating existing users', async () => {
+    const config = validateGate0Environment(buildValidEnvironment());
+    const getUserById = jest.fn().mockResolvedValue({
+      data: { user: null },
+      error: {
+        code: 'user_not_found',
+        message: 'raw-not-found-sentinel',
+        status: 404,
+      },
+    });
+    const clients = {
+      createClient: jest.fn(() => ({ auth: { admin: { getUserById } } })),
+    };
+    const fetchSpy = jest.spyOn(global, 'fetch');
+
+    try {
+      fetchSpy
+        .mockResolvedValueOnce({
+          ok: true,
+          json: jest.fn().mockResolvedValue({
+            refresh_token_rotation_enabled: true,
+            security_refresh_token_reuse_interval: 10,
+            sessions_inactivity_timeout: 20,
+          }),
+        })
+        .mockResolvedValueOnce({ ok: true });
+
+      const policy = await inspectHostedGate0Credentials(config, clients);
+
+      expect(policy).toEqual({
+        reuseIntervalSeconds: 10,
+        sessionExpirySeconds: 20,
+      });
+      expect(JSON.stringify(policy)).not.toContain('raw-not-found-sentinel');
+      expect(getUserById).toHaveBeenCalledWith(
+        '00000000-0000-0000-0000-000000000000'
+      );
+      expect(fetchSpy.mock.calls[1][0]).toBe(`${EXPECTED_SUPABASE_URL}/auth/v1/settings`);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('maps hosted credential failures to finite stages without provider details', async () => {
+    const config = validateGate0Environment(buildValidEnvironment());
+    const fetchSpy = jest.spyOn(global, 'fetch');
+
+    try {
+      fetchSpy.mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        providerMessage: 'management-raw-sentinel',
+      });
+      await expect(inspectHostedGate0Credentials(config, {
+        createClient: jest.fn(),
+      })).rejects.toMatchObject({
+        stage: 'management_auth_config',
+      });
+
+      fetchSpy
+        .mockResolvedValueOnce({
+          ok: true,
+          json: jest.fn().mockResolvedValue({}),
+        })
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 401,
+          providerMessage: 'publishable-raw-sentinel',
+        });
+      await expect(inspectHostedGate0Credentials(config, {
+        createClient: jest.fn(),
+      })).rejects.toMatchObject({
+        stage: 'publishable_auth_settings',
+      });
+
+      fetchSpy
+        .mockResolvedValueOnce({
+          ok: true,
+          json: jest.fn().mockResolvedValue({}),
+        })
+        .mockResolvedValueOnce({ ok: true });
+      const secretFailure = inspectHostedGate0Credentials(config, {
+        createClient: jest.fn(() => ({
+          auth: {
+            admin: {
+              getUserById: jest.fn().mockResolvedValue({
+                data: null,
+                error: { message: 'secret-raw-sentinel', status: 401 },
+              }),
+            },
+          },
+        })),
+      });
+      const secretError = await secretFailure.catch((error) => error);
+      expect(secretError).toBeInstanceOf(Gate0StageError);
+      expect(secretError).toMatchObject({ stage: 'secret_auth_admin' });
+      expect(JSON.stringify(secretError)).not.toContain('secret-raw-sentinel');
+
+      expect(GATE0_HOSTED_FAILURE_STAGES).toEqual(expect.arrayContaining([
+        'management_auth_config',
+        'publishable_auth_settings',
+        'secret_auth_admin',
+      ]));
     } finally {
       fetchSpy.mockRestore();
     }
@@ -336,14 +458,14 @@ describe('Gate-0 auth evidence harness', () => {
     expect(validateGate0Environment({
       ...buildValidEnvironment(),
       [GATE0_ENV_NAMES.url]: `  ${EXPECTED_SUPABASE_URL}  `,
-      [GATE0_ENV_NAMES.anonKey]: '  test-only-anon-key  ',
-      [GATE0_ENV_NAMES.serviceRoleKey]: '  test-only-service-role-key  ',
+      [GATE0_ENV_NAMES.publishableKey]: '  sb_publishable_test-only-key  ',
+      [GATE0_ENV_NAMES.secretKey]: '  sb_secret_test-only-key  ',
       [GATE0_ENV_NAMES.managementToken]: '  test-only-management-token  ',
       [GATE0_ENV_NAMES.projectRef]: `  ${EXPECTED_SUPABASE_PROJECT_REF}  `,
     })).toEqual({
       url: EXPECTED_SUPABASE_URL,
-      anonKey: 'test-only-anon-key',
-      serviceRoleKey: 'test-only-service-role-key',
+      publishableKey: 'sb_publishable_test-only-key',
+      secretKey: 'sb_secret_test-only-key',
       managementToken: 'test-only-management-token',
     });
 
@@ -363,6 +485,18 @@ describe('Gate-0 auth evidence harness', () => {
       ...buildValidEnvironment(),
       NEXT_PUBLIC_SUPABASE_ANON_KEY: 'must-not-be-used',
     })).toThrow('NEXT_PUBLIC_SUPABASE_ANON_KEY');
+    expect(() => validateGate0Environment({
+      ...buildValidEnvironment(),
+      GATE0_SUPABASE_ANON_KEY: 'must-not-be-used',
+    })).toThrow('GATE0_SUPABASE_ANON_KEY');
+    expect(() => validateGate0Environment({
+      ...buildValidEnvironment(),
+      [GATE0_ENV_NAMES.secretKey]: 'legacy-service-role-jwt',
+    })).toThrow('GATE0_SUPABASE_SECRET_KEY');
+    expect(() => validateGate0Environment({
+      ...buildValidEnvironment(),
+      [GATE0_ENV_NAMES.publishableKey]: 'legacy-anon-jwt',
+    })).toThrow('GATE0_SUPABASE_PUBLISHABLE_KEY');
   });
 
   it('keeps CLI diagnostics names-only and suppresses dependency console output', async () => {
@@ -370,7 +504,7 @@ describe('Gate-0 auth evidence harness', () => {
     const errorOutput = jest.fn();
     const status = await runGate0EvidenceCli(
       ['--preflight-only'],
-      { [GATE0_ENV_NAMES.anonKey]: 'secret-sentinel' },
+      { [GATE0_ENV_NAMES.publishableKey]: 'secret-sentinel' },
       output,
       errorOutput
     );
@@ -416,7 +550,49 @@ describe('Gate-0 auth evidence harness', () => {
     expect(errorOutput.mock.calls[0][0]).not.toContain('secret-sentinel');
   });
 
-  it('reports cleanup failures safely and keeps provider errors generic', async () => {
+  it('runs hosted credential preflight with dependency console output suppressed', async () => {
+    const hostedPreflight = jest.fn(async () => {
+      console.error('hosted-preflight-raw-sentinel');
+    });
+    const output = jest.fn();
+    const errorOutput = jest.fn();
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+    let isolatedRunGate0EvidenceCli;
+
+    jest.doMock('../../../scripts/gate0-auth-evidence.js', () => {
+      const actualEvidence = jest.requireActual('../../../scripts/gate0-auth-evidence.js');
+      return {
+        ...actualEvidence,
+        preflightHostedGate0Credentials: hostedPreflight,
+      };
+    });
+
+    try {
+      jest.isolateModules(() => {
+        ({ runGate0EvidenceCli: isolatedRunGate0EvidenceCli } = require(
+          '../../../scripts/capture-gate0-auth-evidence.js'
+        ));
+      });
+
+      await expect(isolatedRunGate0EvidenceCli(
+        ['--hosted-credential-preflight'],
+        buildValidEnvironment(),
+        output,
+        errorOutput
+      )).resolves.toBe(0);
+    } finally {
+      jest.dontMock('../../../scripts/gate0-auth-evidence.js');
+      jest.resetModules();
+      consoleError.mockRestore();
+    }
+
+    expect(hostedPreflight).toHaveBeenCalledWith(buildValidEnvironment());
+    expect(output).not.toHaveBeenCalled();
+    expect(errorOutput).not.toHaveBeenCalled();
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it('reports cleanup and finite stage failures safely while keeping raw errors generic', async () => {
     const captureGate0AuthEvidence = jest.fn();
     const output = jest.fn();
     const errorOutput = jest.fn();
@@ -426,6 +602,7 @@ describe('Gate-0 auth evidence harness', () => {
       const actualEvidence = jest.requireActual('../../../scripts/gate0-auth-evidence.js');
       captureGate0AuthEvidence
         .mockRejectedValueOnce(new actualEvidence.Gate0CleanupError('raw-cleanup-sentinel'))
+        .mockRejectedValueOnce(new actualEvidence.Gate0StageError('secret_auth_admin'))
         .mockRejectedValueOnce(new Error('raw-provider-sentinel'));
 
       return { ...actualEvidence, captureGate0AuthEvidence };
@@ -440,6 +617,7 @@ describe('Gate-0 auth evidence harness', () => {
 
       await expect(isolatedRunGate0EvidenceCli([], {}, output, errorOutput)).resolves.toBe(1);
       await expect(isolatedRunGate0EvidenceCli([], {}, output, errorOutput)).resolves.toBe(1);
+      await expect(isolatedRunGate0EvidenceCli([], {}, output, errorOutput)).resolves.toBe(1);
     } finally {
       jest.dontMock('../../../scripts/gate0-auth-evidence.js');
       jest.resetModules();
@@ -448,6 +626,7 @@ describe('Gate-0 auth evidence harness', () => {
     expect(output).not.toHaveBeenCalled();
     expect(errorOutput.mock.calls).toEqual([
       ['Gate-0 disposable user cleanup failed; verify and remove synthetic users manually.'],
+      ['Gate-0 auth evidence stage failed: secret_auth_admin.'],
       ['Gate-0 auth evidence capture failed; inspect provider state without exposing errors.'],
     ]);
     expect(JSON.stringify(errorOutput.mock.calls)).not.toContain('raw-cleanup-sentinel');
@@ -499,11 +678,66 @@ describe('Gate-0 auth evidence harness', () => {
     })).toThrow('incomplete');
   });
 
+  it('classifies disposable setup stages and cleans every post-create failure', async () => {
+    const config = {
+      url: EXPECTED_SUPABASE_URL,
+      publishableKey: 'sb_publishable_test-only-key',
+    };
+    const callback = jest.fn();
+    const createFailureAdmin = buildAdminMock();
+    createFailureAdmin.auth.admin.createUser.mockResolvedValue({
+      data: { user: null },
+      error: { message: 'create-user-raw-sentinel' },
+    });
+    const createFailure = await withDisposableSession(
+      config,
+      buildClientsMock(),
+      createFailureAdmin,
+      callback
+    ).catch((error) => error);
+
+    expect(createFailure).toMatchObject({ stage: 'admin_create_user' });
+    expect(JSON.stringify(createFailure)).not.toContain('create-user-raw-sentinel');
+    expect(createFailureAdmin.auth.admin.deleteUser).not.toHaveBeenCalled();
+
+    const signInFailureAdmin = buildAdminMock();
+    const signInFailure = await withDisposableSession(
+      config,
+      buildClientsMock({
+        signInError: { message: 'password-sign-in-raw-sentinel' },
+      }),
+      signInFailureAdmin,
+      callback
+    ).catch((error) => error);
+
+    expect(signInFailure).toMatchObject({ stage: 'password_sign_in' });
+    expect(JSON.stringify(signInFailure)).not.toContain('password-sign-in-raw-sentinel');
+    expect(signInFailureAdmin.auth.admin.deleteUser).toHaveBeenCalledWith(
+      DISPOSABLE_USER_ID
+    );
+
+    const envelopeFailureAdmin = buildAdminMock();
+    const envelopeFailure = await withDisposableSession(
+      config,
+      buildClientsMock({
+        session: { access_token: 'unsupported', refresh_token: 'unsupported' },
+      }),
+      envelopeFailureAdmin,
+      callback
+    ).catch((error) => error);
+
+    expect(envelopeFailure).toMatchObject({ stage: 'session_token_envelope' });
+    expect(envelopeFailureAdmin.auth.admin.deleteUser).toHaveBeenCalledWith(
+      DISPOSABLE_USER_ID
+    );
+    expect(callback).not.toHaveBeenCalled();
+  });
+
   it('deletes exactly one disposable user when a scenario fails', async () => {
     const admin = buildAdminMock();
 
     await expect(withDisposableSession(
-      { url: EXPECTED_SUPABASE_URL, anonKey: 'anon' },
+      { url: EXPECTED_SUPABASE_URL, publishableKey: 'publishable' },
       buildClientsMock(),
       admin,
       async () => {
@@ -517,7 +751,7 @@ describe('Gate-0 auth evidence harness', () => {
   it('fails closed when disposable cleanup does not succeed', async () => {
     const admin = buildAdminMock({ deleteError: { message: 'denied' } });
     const cleanup = withDisposableSession(
-      { url: EXPECTED_SUPABASE_URL, anonKey: 'anon' },
+      { url: EXPECTED_SUPABASE_URL, publishableKey: 'publishable' },
       buildClientsMock(),
       admin,
       async () => ({ candidate: 'bad_jwt', disposition: 'unavailable' })
@@ -534,7 +768,7 @@ describe('Gate-0 auth evidence harness', () => {
     const observation = { candidate: 'user_not_found' };
 
     await expect(withDisposableSession(
-      { url: EXPECTED_SUPABASE_URL, anonKey: 'anon' },
+      { url: EXPECTED_SUPABASE_URL, publishableKey: 'publishable' },
       buildClientsMock(),
       admin,
       async ({ markDeleted }) => {
