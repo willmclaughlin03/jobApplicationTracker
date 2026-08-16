@@ -360,6 +360,7 @@ describe('Gate-0 auth evidence harness', () => {
         });
       });
 
+      expect(dependencySink).not.toHaveBeenCalled();
       suppressedConsoleMethods.forEach((method) => {
         expect(console[method]).toBe(dependencySink);
       });
@@ -374,7 +375,6 @@ describe('Gate-0 auth evidence harness', () => {
     expect(errorOutput).toHaveBeenCalledTimes(1);
     expect(errorOutput.mock.calls[0][0]).toContain('GATE0_SUPABASE_URL');
     expect(errorOutput.mock.calls[0][0]).not.toContain('secret-sentinel');
-    expect(dependencySink).not.toHaveBeenCalled();
   });
 
   it('reports cleanup failures safely and keeps provider errors generic', async () => {

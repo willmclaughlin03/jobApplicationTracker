@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-16
 
+- `2026-08-16` - `GATE-0 dependency-console suppression assertion`: Moved the dependency-sink no-call assertion directly after the raw provider sentinel callback while retaining the console-method restoration checks.
+  - validation: the focused Gate-0 suite passes 14/14 and `git diff --check` passes.
 - `2026-08-16` - `GATE-0 evidence capture review hardening`: Expanded dependency-console suppression, added safe cleanup and terminal diagnostics, normalized trusted configuration, accepted the target project's ES256 session tokens while retaining the conservative RS256 size fixture, isolated classification from private serializer loading, and strengthened cleanup-path coverage.
   - validation: the focused Gate-0 suite passes 14/14, changed-file ESLint and Node syntax checks pass, the forced terminal-rejection probe returns only its static diagnostic with exit code 1, and `git diff --check` passes.
 
