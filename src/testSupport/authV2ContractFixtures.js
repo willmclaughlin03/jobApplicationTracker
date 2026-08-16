@@ -8,6 +8,23 @@
  */
 
 import { z } from 'zod';
+import gate0AuthEvidence, {
+  GOOGLE_SESSION_FIXTURE_V1_INITIAL_LOGIN_CHUNKS,
+  GOOGLE_SESSION_FIXTURE_V1_REFRESHED_SESSION_CHUNKS,
+} from '../../scripts/gate0-auth-evidence.js';
+
+export const GOOGLE_SESSION_FIXTURE_V1 = gate0AuthEvidence.GOOGLE_SESSION_FIXTURE_V1;
+export const GOOGLE_SESSION_FIXTURE_V1_COOKIE_EVIDENCE = Object.freeze({
+  status: 'candidate_reproduced',
+  fixtureId: GOOGLE_SESSION_FIXTURE_V1.id,
+  initialLoginChunks: GOOGLE_SESSION_FIXTURE_V1_INITIAL_LOGIN_CHUNKS,
+  refreshedSessionChunks: GOOGLE_SESSION_FIXTURE_V1_REFRESHED_SESSION_CHUNKS,
+  candidateMaximumChunks: Math.max(
+    GOOGLE_SESSION_FIXTURE_V1_INITIAL_LOGIN_CHUNKS,
+    GOOGLE_SESSION_FIXTURE_V1_REFRESHED_SESSION_CHUNKS
+  ),
+  frozen: false,
+});
 
 export const AUTH_V2_VERSION = 2;
 export const AUTH_COOKIE_STORAGE_KEY = 'sb-apxfjggdcybjticrnbpk-auth-token';
@@ -17,6 +34,8 @@ export const MAX_AUTH_COOKIE_CHUNKS_EVIDENCE = Object.freeze({
   value: null,
   owner: 'CHUNK-2',
   evidenceRequired: 'installed_createChunks_largest_legitimate_deployed_session',
+  approvedFixtureId: GOOGLE_SESSION_FIXTURE_V1.id,
+  candidateValue: 6,
 });
 export const LOGOUT_INTENT_HEADER = 'X-Logout-Intent';
 export const LOGOUT_INTENT_VALUE = '1';

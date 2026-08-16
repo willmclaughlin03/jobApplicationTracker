@@ -14,8 +14,20 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-08-16
+
+- `2026-08-16` - `GATE-0 main-promotion review follow-ups`: Centralized candidate cookie-chunk counts, made optional hosted-version capture tolerate transport and JSON failures, classified CLI diagnostics by exported error identity, and documented the dependency-free pre-install refusal boundary.
+  - validation: both focused Gate-0 suites pass 54/54, changed-file ESLint and Node syntax checks pass, the dependency-free refusal proof exits successfully before dependency installation, and `git diff --check` passes.
+- `2026-08-16` - `GATE-0 dependency-console suppression assertion`: Moved the dependency-sink no-call assertion directly after the raw provider sentinel callback while retaining the console-method restoration checks.
+  - validation: the focused Gate-0 suite passes 14/14 and `git diff --check` passes.
+- `2026-08-16` - `GATE-0 evidence capture review hardening`: Expanded dependency-console suppression, added safe cleanup and terminal diagnostics, normalized trusted configuration, accepted the target project's ES256 session tokens while retaining the conservative RS256 size fixture, isolated classification from private serializer loading, and strengthened cleanup-path coverage.
+  - validation: the focused Gate-0 suite passes 14/14, changed-file ESLint and Node syntax checks pass, the forced terminal-rejection probe returns only its static diagnostic with exit code 1, and `git diff --check` passes.
+
 ### Week of 2026-08-09
 
+- `2026-08-13` - `GATE-0 pre-production auth evidence harness`: Added the approved versioned `GOOGLE_SESSION_FIXTURE_V1`, reproduced its maximum initial-login session at six installed SSR cookie chunks and refreshed session at five, enforced unavailable handling for expanded credentials, and added a manual staging-only workflow that captures only sanitized deployed SDK tuples through isolated disposable users.
+  - validation: both focused suites pass 49/49, repository lint passes with zero warnings, all 93 unit suites and 1,375 tests pass, the placeholder-only production build passes, and offline target-ref, workflow-parse, diff, and sensitive-output audits pass. The subprocess-sensitive unit suite and Turbopack build completed outside the sandbox after child-process creation was denied inside it.
+  - residual: `MAX_AUTH_COOKIE_CHUNKS_EVIDENCE.value` remains unresolved and `GATE-0` remains open until this infrastructure is merged, the dedicated GitHub Environment receives exact pre-production credentials plus a fine-grained `auth_config_read` token, one sanitized evidence run completes, and a separate owner-approved completion PR freezes the deployed results.
 - `2026-08-13` - `GATE-0 auth contract review alignment`: Restricted the documented sign-out rejection pairs to the frozen `400`, `403`, and `405` fixture/schema statuses and made installed chunker evidence reuse the exported encoded-size constant without changing its asserted value.
 - `2026-08-13` - `GATE-0 auth fixture review coverage`: Reserved `MAX_AUTH_COOKIE_CHUNKS` for CHUNK-2's future deployed integer, kept unresolved cap evidence under an explicit evidence export, added the missing billing-cancel consumer state row, and derived protected-page-to-consumer coverage from the routable policy fixture.
   - validation: the focused fixture suite passes 38/38, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
