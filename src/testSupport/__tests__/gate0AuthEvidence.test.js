@@ -12,6 +12,7 @@ const {
   buildBoundedGoogleUserMetadata,
   buildGoogleSessionFixtures,
   captureGoogleSessionFixtureEvidence,
+  captureHostedAuthVersion,
   classifyGoogleSessionCredential,
   proveWrongProjectRefRefusal,
   sanitizeSdkObservation,
@@ -159,6 +160,44 @@ describe('Gate-0 auth evidence harness', () => {
       expectedMaximumChunks: 6,
       reproducedExpectedMaximum: true,
     });
+  });
+
+  it('treats unavailable or malformed hosted Auth health as absent version evidence', async () => {
+    const config = {
+      url: EXPECTED_SUPABASE_URL,
+      anonKey: 'test-only-anon-key',
+    };
+    const fetchSpy = jest.spyOn(global, 'fetch');
+
+    try {
+      fetchSpy.mockRejectedValueOnce(new TypeError('synthetic transport failure'));
+      await expect(captureHostedAuthVersion(config)).resolves.toBeNull();
+
+      fetchSpy.mockResolvedValueOnce({
+        ok: true,
+        json: jest.fn().mockRejectedValue(new SyntaxError('synthetic invalid JSON')),
+      });
+      await expect(captureHostedAuthVersion(config)).resolves.toBeNull();
+
+      const nonOkJson = jest.fn();
+      fetchSpy.mockResolvedValueOnce({ ok: false, json: nonOkJson });
+      await expect(captureHostedAuthVersion(config)).resolves.toBeNull();
+      expect(nonOkJson).not.toHaveBeenCalled();
+
+      fetchSpy.mockResolvedValueOnce({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ version: 'latest' }),
+      });
+      await expect(captureHostedAuthVersion(config)).resolves.toBeNull();
+
+      fetchSpy.mockResolvedValueOnce({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ version: 'v2.194.0' }),
+      });
+      await expect(captureHostedAuthVersion(config)).resolves.toBe('v2.194.0');
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it('checks the SSR version before loading its private serializer layout', () => {
@@ -378,17 +417,19 @@ describe('Gate-0 auth evidence harness', () => {
   });
 
   it('reports cleanup failures safely and keeps provider errors generic', async () => {
-    const captureGate0AuthEvidence = jest.fn()
-      .mockRejectedValueOnce(new Gate0CleanupError('raw-cleanup-sentinel'))
-      .mockRejectedValueOnce(new Error('raw-provider-sentinel'));
+    const captureGate0AuthEvidence = jest.fn();
     const output = jest.fn();
     const errorOutput = jest.fn();
     let isolatedRunGate0EvidenceCli;
 
-    jest.doMock('../../../scripts/gate0-auth-evidence.js', () => ({
-      ...jest.requireActual('../../../scripts/gate0-auth-evidence.js'),
-      captureGate0AuthEvidence,
-    }));
+    jest.doMock('../../../scripts/gate0-auth-evidence.js', () => {
+      const actualEvidence = jest.requireActual('../../../scripts/gate0-auth-evidence.js');
+      captureGate0AuthEvidence
+        .mockRejectedValueOnce(new actualEvidence.Gate0CleanupError('raw-cleanup-sentinel'))
+        .mockRejectedValueOnce(new Error('raw-provider-sentinel'));
+
+      return { ...actualEvidence, captureGate0AuthEvidence };
+    });
 
     try {
       jest.isolateModules(() => {

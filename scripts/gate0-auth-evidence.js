@@ -5,6 +5,8 @@ const EXPECTED_SUPABASE_PROJECT_REF = 'apxfjggdcybjticrnbpk';
 const EXPECTED_SUPABASE_URL = `https://${EXPECTED_SUPABASE_PROJECT_REF}.supabase.co`;
 const AUTH_COOKIE_STORAGE_KEY = `sb-${EXPECTED_SUPABASE_PROJECT_REF}-auth-token`;
 const BASE64_COOKIE_PREFIX = 'base64-';
+const GOOGLE_SESSION_FIXTURE_V1_INITIAL_LOGIN_CHUNKS = 6;
+const GOOGLE_SESSION_FIXTURE_V1_REFRESHED_SESSION_CHUNKS = 5;
 const EXPECTED_MAX_AUTH_COOKIE_CHUNKS = 6;
 const GATE0_EVIDENCE_SCHEMA_VERSION = 1;
 const FIXTURE_TIMESTAMP = '2026-08-13T12:00:00.000Z';
@@ -1435,20 +1437,26 @@ async function captureUserBanned(config, clients, admin) {
  * @returns {Promise<string|null>} sanitized hosted Auth version
  */
 async function captureHostedAuthVersion(config) {
-  const response = await fetch(`${config.url}/auth/v1/health`, {
-    headers: {
-      apikey: config.anonKey,
-      authorization: `Bearer ${config.anonKey}`,
-    },
-    signal: AbortSignal.timeout(10_000),
-  });
+  let version;
 
-  if (!response.ok) {
+  try {
+    const response = await fetch(`${config.url}/auth/v1/health`, {
+      headers: {
+        apikey: config.anonKey,
+        authorization: `Bearer ${config.anonKey}`,
+      },
+      signal: AbortSignal.timeout(10_000),
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    ({ version } = await response.json());
+  } catch {
     return null;
   }
 
-  const health = await response.json();
-  const version = health?.version;
   return typeof version === 'string' && /^v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)
     ? version
     : null;
@@ -1546,8 +1554,10 @@ function assertSafeEvidence(evidence) {
     || JSON.stringify(evidence.dependencies)
       !== JSON.stringify(GOOGLE_SESSION_FIXTURE_V1.installedDependencies)
     || evidence.cookieEvidence.fixtureId !== GOOGLE_SESSION_FIXTURE_V1.id
-    || evidence.cookieEvidence.initialLoginChunks !== 6
-    || evidence.cookieEvidence.refreshedSessionChunks !== 5
+    || evidence.cookieEvidence.initialLoginChunks
+      !== GOOGLE_SESSION_FIXTURE_V1_INITIAL_LOGIN_CHUNKS
+    || evidence.cookieEvidence.refreshedSessionChunks
+      !== GOOGLE_SESSION_FIXTURE_V1_REFRESHED_SESSION_CHUNKS
     || evidence.cookieEvidence.maximumChunks !== EXPECTED_MAX_AUTH_COOKIE_CHUNKS
     || evidence.cookieEvidence.expectedMaximumChunks !== EXPECTED_MAX_AUTH_COOKIE_CHUNKS
     || evidence.cookieEvidence.reproducedExpectedMaximum !== true
@@ -1635,12 +1645,16 @@ module.exports = {
   GATE0_ENV_NAMES,
   GATE0_EVIDENCE_SCHEMA_VERSION,
   Gate0CleanupError,
+  Gate0ConfigurationError,
   GOOGLE_SESSION_FIXTURE_V1,
+  GOOGLE_SESSION_FIXTURE_V1_INITIAL_LOGIN_CHUNKS,
+  GOOGLE_SESSION_FIXTURE_V1_REFRESHED_SESSION_CHUNKS,
   SESSION_ERROR_CANDIDATES,
   buildBoundedGoogleUserMetadata,
   buildGoogleSessionFixtures,
   captureGate0AuthEvidence,
   captureGoogleSessionFixtureEvidence,
+  captureHostedAuthVersion,
   classifyGoogleSessionCredential,
   countSerializedSessionChunks,
   createDisposableCredentials,
