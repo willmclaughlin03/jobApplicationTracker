@@ -1463,7 +1463,7 @@ async function inspectHostedGate0Credentials(config, clients) {
   await runHostedStage('secret_auth_admin', async () => {
     const inspected = await admin.auth.admin.getUserById(PREFLIGHT_NONEXISTENT_USER_ID);
     const expectedNotFound = inspected.error?.code === 'user_not_found'
-      || inspected.error?.status === 404;
+      && inspected.error?.status === 404;
 
     if (inspected.error && !expectedNotFound) {
       throw new Error('Hosted Auth secret-key inspection failed.');
