@@ -1,8 +1,8 @@
 /**
  * Integrity tests for the CHUNK-0 v2 authentication contract fixtures.
  *
- * Purpose: Prove the approved public schemas are strict and that unresolved
- * deployment evidence is not silently promoted into an allowlist.
+ * Purpose: Prove the approved public schemas are strict and that hosted
+ * deployment evidence keeps unsupported candidates fail closed.
  * Connects to: src/testSupport/authV2ContractFixtures.js.
  */
 
@@ -21,6 +21,7 @@ import {
   LOGOUT_REQUEST_BODY_FIXTURES,
   LOGOUT_REJECTED_SIDE_EFFECTS,
   LOGOUT_SOURCE_DECISION_FIXTURES,
+  MAX_AUTH_COOKIE_CHUNKS,
   MAX_AUTH_COOKIE_CHUNKS_EVIDENCE,
   PRIVATE_NO_STORE,
   QUARANTINED_DRAFT_CANONICAL_KEYS,
@@ -345,8 +346,7 @@ describe('CHUNK-0 auth v2 contract fixtures', () => {
     ]);
   });
 
-  it('keeps remote Supabase candidates disabled until deployed evidence exists', () => {
-    expect(SESSION_ERROR_EVIDENCE).not.toHaveProperty('deployedCapture');
+  it('freezes only the exact deployed Supabase tuples supported by hosted evidence', () => {
     expect(SESSION_ERROR_EVIDENCE.locallyVerified).toStrictEqual([{
       source: 'installed_sdk_source',
       exportedClass: 'AuthSessionMissingError',
@@ -354,9 +354,58 @@ describe('CHUNK-0 auth v2 contract fixtures', () => {
       status: 400,
       disposition: 'anonymous',
     }]);
-    expect(SESSION_ERROR_EVIDENCE.deployedCandidates).toContain('session_not_found');
-    expect(SESSION_ERROR_EVIDENCE.deployedCandidates).toContain('user_banned');
-    expect(SESSION_ERROR_EVIDENCE.deployedAllowlist).toEqual([]);
+    expect(SESSION_ERROR_EVIDENCE.deployedCapture).toStrictEqual({
+      source: 'github_actions',
+      runId: 31981135663,
+      stagingCommit: 'f9b246ba69a44cfeb026ecc7e092fae0cbb17d9b',
+      capturedOn: '2026-08-17',
+      authServerVersion: 'v2.195.0',
+      supabaseJsVersion: '2.90.1',
+      authJsVersion: '2.90.1',
+      ssrVersion: '0.8.0',
+    });
+    expect(SESSION_ERROR_EVIDENCE.deployedAllowlist).toStrictEqual([
+      {
+        operation: 'getUser',
+        exportedClass: 'AuthApiError',
+        code: 'bad_jwt',
+        status: 403,
+        disposition: 'anonymous',
+      },
+      {
+        operation: 'getUser',
+        exportedClass: 'AuthApiError',
+        code: 'user_not_found',
+        status: 403,
+        disposition: 'anonymous',
+      },
+      {
+        operation: 'implicit_refresh',
+        exportedClass: 'AuthApiError',
+        code: 'user_banned',
+        status: 400,
+        disposition: 'terminal_unauthenticated',
+      },
+    ]);
+    expect(SESSION_ERROR_EVIDENCE.deployedUnavailable).toStrictEqual([
+      { candidate: 'session_expired', disposition: 'unavailable' },
+      { candidate: 'session_not_found', disposition: 'unavailable' },
+      { candidate: 'refresh_token_not_found', disposition: 'unavailable' },
+      { candidate: 'refresh_token_already_used', disposition: 'unavailable' },
+    ]);
+    expect([
+      ...SESSION_ERROR_EVIDENCE.deployedAllowlist.map(({ code }) => code),
+      ...SESSION_ERROR_EVIDENCE.deployedUnavailable.map(({ candidate }) => candidate),
+    ].sort()).toStrictEqual([...SESSION_ERROR_EVIDENCE.deployedCandidates].sort());
+    expect(
+      SESSION_ERROR_EVIDENCE.deployedUnavailable
+        .every(({ disposition }) => disposition === 'unavailable')
+    ).toBe(true);
+    expect(
+      SESSION_ERROR_EVIDENCE.deployedAllowlist
+        .filter(({ disposition }) => disposition === 'anonymous')
+        .map(({ code }) => code)
+    ).toStrictEqual(['bad_jwt', 'user_not_found']);
   });
 
   it('records only sanitized behavior from the installed Supabase sources', () => {
@@ -379,7 +428,7 @@ describe('CHUNK-0 auth v2 contract fixtures', () => {
     });
   });
 
-  it('reproduces GOOGLE_SESSION_FIXTURE_V1 while leaving the formal cap unresolved', () => {
+  it('freezes the hosted reproduction of GOOGLE_SESSION_FIXTURE_V1 at six chunks', () => {
     expect(AUTH_COOKIE_STORAGE_KEY).toBe('sb-apxfjggdcybjticrnbpk-auth-token');
     expect(SUPABASE_ENCODED_CHUNK_SIZE).toBe(3180);
     expect(GOOGLE_SESSION_FIXTURE_V1).toEqual(expect.objectContaining({
@@ -404,12 +453,12 @@ describe('CHUNK-0 auth v2 contract fixtures', () => {
       'sub',
     ]);
     expect(GOOGLE_SESSION_FIXTURE_V1_COOKIE_EVIDENCE).toEqual({
-      status: 'candidate_reproduced',
+      status: 'approved',
       fixtureId: 'GOOGLE_SESSION_FIXTURE_V1',
       initialLoginChunks: 6,
       refreshedSessionChunks: 5,
-      candidateMaximumChunks: 6,
-      frozen: false,
+      maximumChunks: 6,
+      frozen: true,
     });
     expect(captureGoogleSessionFixtureEvidence()).toEqual({
       fixtureId: 'GOOGLE_SESSION_FIXTURE_V1',
@@ -420,15 +469,21 @@ describe('CHUNK-0 auth v2 contract fixtures', () => {
       reproducedExpectedMaximum: true,
     });
     expect(MAX_AUTH_COOKIE_CHUNKS_EVIDENCE).toEqual({
-      status: 'unresolved',
-      value: null,
-      owner: 'CHUNK-2',
-      evidenceRequired: 'installed_createChunks_largest_legitimate_deployed_session',
+      status: 'approved',
+      value: 6,
+      implementationOwner: 'CHUNK-2',
       approvedFixtureId: 'GOOGLE_SESSION_FIXTURE_V1',
-      candidateValue: 6,
+      approvedBy: 'repository_owner',
+      approvedOn: '2026-08-17',
+      evidenceRunId: 31981135663,
+      evidenceCommit: 'f9b246ba69a44cfeb026ecc7e092fae0cbb17d9b',
     });
-    expect(MAX_AUTH_COOKIE_CHUNKS_EVIDENCE.status).toBe('unresolved');
-    expect(Number.isInteger(MAX_AUTH_COOKIE_CHUNKS_EVIDENCE.value)).toBe(false);
+    expect(MAX_AUTH_COOKIE_CHUNKS).toBe(6);
+    expect(Number.isInteger(MAX_AUTH_COOKIE_CHUNKS)).toBe(true);
+    expect(MAX_AUTH_COOKIE_CHUNKS).toBeGreaterThan(0);
+    expect(MAX_AUTH_COOKIE_CHUNKS_EVIDENCE.value).toBe(MAX_AUTH_COOKIE_CHUNKS);
+    expect(GOOGLE_SESSION_FIXTURE_V1_COOKIE_EVIDENCE.maximumChunks)
+      .toBe(MAX_AUTH_COOKIE_CHUNKS);
   });
 
   it('bounds every current Google metadata field under the aggregate byte cap', () => {

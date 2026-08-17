@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-16
 
+- `2026-08-17` - `GATE-0 hosted evidence closure`: Froze the owner-approved hosted Auth tuples and `MAX_AUTH_COOKIE_CHUNKS = 6` from the successful staging evidence run while preserving every unsupported candidate as unavailable.
+  - validation: successful hosted run `31981135663` captured the approved fixture and exact deployed tuples; both focused Gate-0 suites pass 58/58, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-16` - `GATE-0 exact admin-preflight contract`: Required the secret-key probe's missing-user result to match both the expected Auth error code and HTTP status, and strengthened every covered hosted-stage error assertion to inspect its fixed message and absent cause directly.
   - validation: both focused Gate-0 suites pass 58/58, changed-file ESLint and Node syntax checks pass, and `git diff --check` passes.
 - `2026-08-16` - `GATE-0 new-key credential diagnostics`: Aligned the hosted evidence workflow with Supabase publishable and secret keys, added a read-only credential preflight, and mapped capture failures to a finite sanitized stage allowlist without changing the target project, disposable-user isolation, or retained evidence contract.
