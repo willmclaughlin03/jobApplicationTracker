@@ -346,6 +346,10 @@ describe('CHUNK-0 auth v2 contract fixtures', () => {
     ]);
   });
 
+  /**
+   * Freezes the exact deployed Supabase tuples, depends on hosted evidence,
+   * and asserts unsupported candidates remain fail-closed.
+   */
   it('freezes only the exact deployed Supabase tuples supported by hosted evidence', () => {
     expect(SESSION_ERROR_EVIDENCE.locallyVerified).toStrictEqual([{
       source: 'installed_sdk_source',
