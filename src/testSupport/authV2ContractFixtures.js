@@ -14,28 +14,31 @@ import gate0AuthEvidence, {
 } from '../../scripts/gate0-auth-evidence.js';
 
 export const GOOGLE_SESSION_FIXTURE_V1 = gate0AuthEvidence.GOOGLE_SESSION_FIXTURE_V1;
+export const MAX_AUTH_COOKIE_CHUNKS = 6;
 export const GOOGLE_SESSION_FIXTURE_V1_COOKIE_EVIDENCE = Object.freeze({
-  status: 'candidate_reproduced',
+  status: 'approved',
   fixtureId: GOOGLE_SESSION_FIXTURE_V1.id,
   initialLoginChunks: GOOGLE_SESSION_FIXTURE_V1_INITIAL_LOGIN_CHUNKS,
   refreshedSessionChunks: GOOGLE_SESSION_FIXTURE_V1_REFRESHED_SESSION_CHUNKS,
-  candidateMaximumChunks: Math.max(
+  maximumChunks: Math.max(
     GOOGLE_SESSION_FIXTURE_V1_INITIAL_LOGIN_CHUNKS,
     GOOGLE_SESSION_FIXTURE_V1_REFRESHED_SESSION_CHUNKS
   ),
-  frozen: false,
+  frozen: true,
 });
 
 export const AUTH_V2_VERSION = 2;
 export const AUTH_COOKIE_STORAGE_KEY = 'sb-apxfjggdcybjticrnbpk-auth-token';
 export const SUPABASE_ENCODED_CHUNK_SIZE = 3180;
 export const MAX_AUTH_COOKIE_CHUNKS_EVIDENCE = Object.freeze({
-  status: 'unresolved',
-  value: null,
-  owner: 'CHUNK-2',
-  evidenceRequired: 'installed_createChunks_largest_legitimate_deployed_session',
+  status: 'approved',
+  value: MAX_AUTH_COOKIE_CHUNKS,
+  implementationOwner: 'CHUNK-2',
   approvedFixtureId: GOOGLE_SESSION_FIXTURE_V1.id,
-  candidateValue: 6,
+  approvedBy: 'repository_owner',
+  approvedOn: '2026-08-17',
+  evidenceRunId: 31981135663,
+  evidenceCommit: 'f9b246ba69a44cfeb026ecc7e092fae0cbb17d9b',
 });
 export const LOGOUT_INTENT_HEADER = 'X-Logout-Intent';
 export const LOGOUT_INTENT_VALUE = '1';
@@ -331,7 +334,57 @@ export const SESSION_ERROR_EVIDENCE = Object.freeze({
     'user_not_found',
     'user_banned',
   ]),
-  deployedAllowlist: Object.freeze([]),
+  deployedCapture: Object.freeze({
+    source: 'github_actions',
+    runId: 31981135663,
+    stagingCommit: 'f9b246ba69a44cfeb026ecc7e092fae0cbb17d9b',
+    capturedOn: '2026-08-17',
+    authServerVersion: 'v2.195.0',
+    supabaseJsVersion: '2.90.1',
+    authJsVersion: '2.90.1',
+    ssrVersion: '0.8.0',
+  }),
+  deployedAllowlist: Object.freeze([
+    Object.freeze({
+      operation: 'getUser',
+      exportedClass: 'AuthApiError',
+      code: 'bad_jwt',
+      status: 403,
+      disposition: AUTH_STATUS.ANONYMOUS,
+    }),
+    Object.freeze({
+      operation: 'getUser',
+      exportedClass: 'AuthApiError',
+      code: 'user_not_found',
+      status: 403,
+      disposition: AUTH_STATUS.ANONYMOUS,
+    }),
+    Object.freeze({
+      operation: 'implicit_refresh',
+      exportedClass: 'AuthApiError',
+      code: 'user_banned',
+      status: 400,
+      disposition: AUTH_STATUS.TERMINAL_UNAUTHENTICATED,
+    }),
+  ]),
+  deployedUnavailable: Object.freeze([
+    Object.freeze({
+      candidate: 'session_expired',
+      disposition: AUTH_STATUS.UNAVAILABLE,
+    }),
+    Object.freeze({
+      candidate: 'session_not_found',
+      disposition: AUTH_STATUS.UNAVAILABLE,
+    }),
+    Object.freeze({
+      candidate: 'refresh_token_not_found',
+      disposition: AUTH_STATUS.UNAVAILABLE,
+    }),
+    Object.freeze({
+      candidate: 'refresh_token_already_used',
+      disposition: AUTH_STATUS.UNAVAILABLE,
+    }),
+  ]),
 });
 
 export const INSTALLED_SUPABASE_EVIDENCE = Object.freeze({
