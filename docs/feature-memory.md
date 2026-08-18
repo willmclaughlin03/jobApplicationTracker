@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-16
 
+- `2026-08-17` - `GATE-0 evidence-capture status labeling`: Relabeled the historical Gate-0 review metadata as evidence-capture provenance and explicitly separated it from live pull-request and staging-to-main promotion status.
+  - validation: focused review confirms every historical field is capture-labeled and `git diff --check` passes.
 - `2026-08-17` - `GATE-0 evidence provenance clarification`: Separated hosted Auth server `v2.195.0` as deployed-capture evidence while retaining installed-source and deployed-capture provenance for the Supabase dependency versions and leaving the installed-source sign-out and chunker observations unchanged.
   - validation: the targeted fixture suite passes 39/39 and `git diff --check` passes.
 - `2026-08-17` - `GATE-0 hosted evidence closure`: Froze the owner-approved hosted Auth tuples and `MAX_AUTH_COOKIE_CHUNKS = 6` from the successful staging evidence run while preserving every unsupported candidate as unavailable. The exact-tuple test now documents its hosted-evidence dependency and fail-closed assertion.
