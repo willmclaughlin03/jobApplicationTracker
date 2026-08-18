@@ -110,18 +110,17 @@ The same hosted run captured these exact endpoint-scoped tuples:
 boundary. They remain unavailable and cannot be treated as anonymous. Documentation, messages,
 status alone, or a tuple observed on another Supabase operation cannot activate a classifier.
 
-Installed-source records also freeze:
+Provenance records also freeze:
 
-- `@supabase/auth-js` `2.90.1`
-- `@supabase/supabase-js` `2.90.1`
-- `@supabase/ssr` `0.8.0`
-- hosted Auth server `v2.195.0`
+- `@supabase/auth-js` `2.90.1` — installed-source and deployed-capture provenance
+- `@supabase/supabase-js` `2.90.1` — installed-source and deployed-capture provenance
+- `@supabase/ssr` `0.8.0` — installed-source and deployed-capture provenance
+- hosted Auth server `v2.195.0` — deployed-capture evidence
 - sign-out default scope `global`
 - SDK-suppressed sign-out statuses `401`, `403`, and `404`
 - SSR chunking via `encodeURIComponent` at `3,180` encoded characters
 
-The dependency versions are both installed-source and deployed-capture provenance. The sign-out and
-chunker behavior remain installed-source observations.
+The sign-out and chunker behavior remain installed-source observations.
 
 ## Route, cache, and renderer contracts
 
