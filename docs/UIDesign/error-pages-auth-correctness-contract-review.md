@@ -1,14 +1,17 @@
 # Error Pages and Authentication Correctness Contract Review
 
-## Status
+## Evidence-capture provenance
 
-- Review date: 2026-08-17
-- Branch: `agent/gate0-close-hosted-evidence`
-- Base: `origin/staging` at `f9b246ba69a44cfeb026ecc7e092fae0cbb17d9b`
-- Scope: freeze the approved sanitized hosted evidence, cookie cap, fixture-integrity tests, and PR
+The metadata below records the Gate-0 hosted evidence capture. It is not the current status of any
+pull request or staging-to-main promotion.
+
+- Evidence review date: 2026-08-17
+- Evidence branch: `agent/gate0-close-hosted-evidence`
+- Evidence base: `origin/staging` at `f9b246ba69a44cfeb026ecc7e092fae0cbb17d9b`
+- Evidence scope: freeze the approved sanitized hosted evidence, cookie cap, fixture-integrity tests, and PR
   documentation without changing production behavior
-- Merge state: draft and unmerged
-- Gate state: `GATE-0` evidence and owner approval are complete; repository closure takes effect
+- Evidence merge state at capture: draft and unmerged
+- Gate state at capture: `GATE-0` evidence and owner approval are complete; repository closure takes effect
   when this record is reviewed and merged
 
 This completion record retains the green contract material from the reviewed successor and freezes
