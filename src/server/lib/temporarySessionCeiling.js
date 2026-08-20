@@ -523,11 +523,9 @@ export function createTemporarySessionCeiling(options = {}) {
       throw new Error('temporary session ceiling crypto is unavailable');
     }
     hmacKey = Buffer.from(generatedKey);
-  } catch (error) {
+  } catch {
     unhealthy = true;
-    constructionFailureReason = error instanceof Error
-      ? error.message
-      : 'temporary session ceiling construction failed';
+    constructionFailureReason = 'hmac_key_initialization_failed';
   }
 
   /**

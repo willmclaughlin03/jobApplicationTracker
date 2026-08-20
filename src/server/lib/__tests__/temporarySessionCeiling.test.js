@@ -580,39 +580,44 @@ describe('temporarySessionCeiling', () => {
 
   it.each([
     ['random generation throws', {
-      randomBytes: () => { throw new Error('test random failure'); },
+      randomBytes: () => { throw new Error('injected-sensitive-random-provider-detail'); },
       createHmac: createNodeHmac,
-    }, 'test random failure'],
+    }, 'hmac_key_initialization_failed', 'injected-sensitive-random-provider-detail'],
     ['random key has wrong length', {
       randomBytes: () => Buffer.alloc(31),
       createHmac: createNodeHmac,
-    }, 'temporary session ceiling crypto is unavailable'],
+    }, 'hmac_key_initialization_failed', null],
     ['HMAC construction throws', {
       randomBytes: () => Buffer.from(FIXED_HMAC_KEY),
       createHmac: () => { throw new Error('test construction failure'); },
-    }, null],
+    }, null, 'test construction failure'],
     ['HMAC update throws', {
       randomBytes: () => Buffer.from(FIXED_HMAC_KEY),
       createHmac: () => ({
         update: () => { throw new Error('test update failure'); },
         digest: () => Buffer.alloc(32),
       }),
-    }, null],
+    }, null, 'test update failure'],
     ['HMAC digest throws', {
       randomBytes: () => Buffer.from(FIXED_HMAC_KEY),
       createHmac: () => ({
         update: () => undefined,
         digest: () => { throw new Error('test digest failure'); },
       }),
-    }, null],
+    }, null, 'test digest failure'],
     ['HMAC digest is malformed', {
       randomBytes: () => Buffer.from(FIXED_HMAC_KEY),
       createHmac: () => ({
         update: () => undefined,
         digest: () => Buffer.alloc(31),
       }),
-    }, null],
-  ])('latches fail-closed after %s', (_name, crypto, constructionFailureReason) => {
+    }, null, null],
+  ])('latches fail-closed after %s', (
+    _name,
+    crypto,
+    constructionFailureReason,
+    injectedErrorText
+  ) => {
     const logger = createLogger();
     const ceiling = createTemporarySessionCeiling({
       now: () => 17_000,
@@ -642,6 +647,9 @@ describe('temporarySessionCeiling', () => {
       },
       'Temporary session ceiling internal failure latched',
     ]]);
+    if (injectedErrorText !== null) {
+      expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(injectedErrorText);
+    }
   });
 
   it.each([
