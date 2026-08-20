@@ -68,12 +68,13 @@ function recordUnexpectedRejection(ceiling, request, rejections, label) {
 }
 
 /**
- * Verifies recursively that a public snapshot contains only count values.
+ * Verifies recursively that a public snapshot contains only counts and booleans.
  *
  * @param {unknown} value - Snapshot value or nested aggregate object.
  * @returns {void}
  */
-function expectCountOnly(value) {
+function expectCountOrBooleanOnly(value) {
+  if (typeof value === 'boolean') return;
   if (typeof value === 'number') {
     expect(Number.isSafeInteger(value)).toBe(true);
     expect(value).toBeGreaterThanOrEqual(0);
@@ -82,7 +83,7 @@ function expectCountOnly(value) {
 
   expect(value).not.toBeNull();
   expect(typeof value).toBe('object');
-  for (const nested of Object.values(value)) expectCountOnly(nested);
+  for (const nested of Object.values(value)) expectCountOrBooleanOnly(nested);
 }
 
 describe('temporarySessionCeiling controlled single-process load', () => {
@@ -185,13 +186,16 @@ describe('temporarySessionCeiling controlled single-process load', () => {
       sourceMode: 'local',
       crypto: createLoadCrypto(),
     });
+    const unexpected = [];
 
     for (let index = 0; index < TEMPORARY_SESSION_CEILING_MAX_ADDRESSES; index += 1) {
-      expect(ceiling.evaluate(
+      const result = ceiling.evaluate(
         createLoadRequest(addressForIndex(index), index),
         { routeVersion: 'v1' }
-      )).toEqual({ allowed: true });
+      );
+      if (result.allowed !== true) unexpected.push(`${index}:${result.statusCode}`);
     }
+    expect(unexpected).toEqual([]);
 
     expect(ceiling.evaluate(
       createLoadRequest(addressForIndex(TEMPORARY_SESSION_CEILING_MAX_ADDRESSES)),
@@ -245,7 +249,7 @@ describe('temporarySessionCeiling controlled single-process load', () => {
     const snapshot = ceiling.getSnapshot();
     expect(snapshot.activeEntryCount).toBe(1);
     expect(snapshot.activeEntryCount).toBeLessThanOrEqual(100);
-    expectCountOnly(snapshot);
+    expectCountOrBooleanOnly(snapshot);
     expect(JSON.stringify(snapshot)).not.toContain('10.');
   });
 });

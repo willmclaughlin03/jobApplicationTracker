@@ -137,6 +137,38 @@ describe('temporarySessionCeiling', () => {
     });
   });
 
+  it.each([
+    ['limit above the approved bound', { limit: TEMPORARY_SESSION_CEILING_LIMIT + 1 }],
+    [
+      'window above the approved bound',
+      { windowSeconds: TEMPORARY_SESSION_CEILING_WINDOW_SECONDS + 1 },
+    ],
+    [
+      'address capacity above the approved bound',
+      { maxAddresses: TEMPORARY_SESSION_CEILING_MAX_ADDRESSES + 1 },
+    ],
+    ['zero limit', { limit: 0 }],
+    ['fractional window', { windowSeconds: 1.5 }],
+    ['non-finite address capacity', { maxAddresses: Number.POSITIVE_INFINITY }],
+    ['negative telemetry window', { telemetryWindowSeconds: -1 }],
+  ])('rejects %s at construction', (_description, overrides) => {
+    expect(() => createTemporarySessionCeiling({
+      ...overrides,
+      now: () => 0,
+      sourceMode: 'local',
+      crypto: createTestCrypto(),
+    })).toThrow(TypeError);
+  });
+
+  it('rejects a non-callable test entry observer', () => {
+    expect(() => createTemporarySessionCeiling({
+      now: () => 0,
+      sourceMode: 'local',
+      crypto: createTestCrypto(),
+      testEntryObserver: 'not-callable',
+    })).toThrow(TypeError);
+  });
+
   it('allows requests 1-400 and rejects request 401 without incrementing', () => {
     let observedEntry;
     const ceiling = createTemporarySessionCeiling({
@@ -595,6 +627,7 @@ describe('temporarySessionCeiling', () => {
     });
     expect(ceiling.evaluate(request, { routeVersion: 'v1' }).statusCode).toBe(503);
     expect(ceiling.getSnapshot().activeEntryCount).toBe(0);
+    expect(ceiling.getSnapshot().unhealthy).toBe(true);
     expect(ceiling.getSnapshot().telemetry.internalFailures).toBe(2);
   });
 
@@ -619,18 +652,30 @@ describe('temporarySessionCeiling', () => {
 
   it('detects backward movement at millisecond resolution and stays unhealthy', () => {
     let nowMs = 18_000.75;
+    const logger = createLogger();
     const ceiling = createTemporarySessionCeiling({
       now: () => nowMs,
       sourceMode: 'local',
       crypto: createTestCrypto(),
     });
-    const request = createRequest('192.0.2.37');
+    const request = createRequest('192.0.2.37', { logger });
 
+    expect(ceiling.getSnapshot().unhealthy).toBe(false);
     expect(ceiling.evaluate(request, { routeVersion: 'v1' })).toEqual({ allowed: true });
     nowMs = 18_000.5;
     expect(ceiling.evaluate(request, { routeVersion: 'v1' }).statusCode).toBe(503);
+    expect(ceiling.getSnapshot().unhealthy).toBe(true);
+    expect(logger.warn).toHaveBeenCalledWith({
+      event: 'temporary_session_ceiling_internal_failure_latched',
+      outcome: 'unavailable',
+      reason: 'internal_failure',
+      routeVersion: 'v1',
+    }, 'Temporary session ceiling internal failure latched');
     nowMs = 19_000;
     expect(ceiling.evaluate(request, { routeVersion: 'v1' }).statusCode).toBe(503);
+    expect(logger.warn.mock.calls.filter(
+      ([fields]) => fields.event === 'temporary_session_ceiling_internal_failure_latched'
+    )).toHaveLength(1);
   });
 
   it('expires state safely after a large forward monotonic movement', () => {
@@ -649,6 +694,85 @@ describe('temporarySessionCeiling', () => {
       .toEqual({ allowed: true });
     expect(ceiling.getSnapshot().activeEntryCount).toBe(1);
     expect(ceiling.getSnapshot().telemetry.expiredEntryCleanupCount).toBe(1);
+  });
+
+  it('prunes shape-valid expired entries without scanning stale ring slots', () => {
+    let nowMs = 0;
+    let observedEntry;
+    const ceiling = createTemporarySessionCeiling({
+      now: () => nowMs,
+      sourceMode: 'local',
+      crypto: createTestCrypto(),
+      testEntryObserver: (entry) => {
+        observedEntry = entry;
+      },
+    });
+
+    expect(ceiling.evaluate(createRequest('192.0.2.42'), { routeVersion: 'v1' }))
+      .toEqual({ allowed: true });
+    observedEntry.labels[0] = 1;
+
+    nowMs = 61_000;
+    expect(ceiling.evaluate(createRequest('192.0.2.43'), { routeVersion: 'v1' }))
+      .toEqual({ allowed: true });
+    expect(ceiling.getSnapshot().activeEntryCount).toBe(1);
+    expect(ceiling.getSnapshot().telemetry.expiredEntryCleanupCount).toBe(1);
+  });
+
+  it.each([
+    ['negative', -1],
+    ['future', 62],
+    ['non-integer', 0.5],
+  ])('rejects an expired entry with a %s last-seen timestamp', (_description, invalidTimestamp) => {
+    let nowMs = 0;
+    let observedEntry;
+    const ceiling = createTemporarySessionCeiling({
+      now: () => nowMs,
+      sourceMode: 'local',
+      crypto: createTestCrypto(),
+      testEntryObserver: (entry) => {
+        observedEntry = entry;
+      },
+    });
+
+    expect(ceiling.evaluate(createRequest('192.0.2.44'), { routeVersion: 'v1' }))
+      .toEqual({ allowed: true });
+    observedEntry.lastSeenSecond = invalidTimestamp;
+
+    nowMs = 61_000;
+    expect(ceiling.evaluate(createRequest('192.0.2.45'), { routeVersion: 'v1' })).toEqual({
+      allowed: false,
+      statusCode: 503,
+      reason: 'internal_failure',
+    });
+    expect(ceiling.getSnapshot().activeEntryCount).toBe(1);
+    expect(ceiling.getSnapshot().telemetry.expiredEntryCleanupCount).toBe(0);
+  });
+
+  it('rejects an expired entry with a malformed counter shape', () => {
+    let nowMs = 0;
+    let observedEntry;
+    const ceiling = createTemporarySessionCeiling({
+      now: () => nowMs,
+      sourceMode: 'local',
+      crypto: createTestCrypto(),
+      testEntryObserver: (entry) => {
+        observedEntry = entry;
+      },
+    });
+
+    expect(ceiling.evaluate(createRequest('192.0.2.46'), { routeVersion: 'v1' }))
+      .toEqual({ allowed: true });
+    observedEntry.counts = new Uint16Array(1);
+
+    nowMs = 61_000;
+    expect(ceiling.evaluate(createRequest('192.0.2.47'), { routeVersion: 'v1' })).toEqual({
+      allowed: false,
+      statusCode: 503,
+      reason: 'internal_failure',
+    });
+    expect(ceiling.getSnapshot().activeEntryCount).toBe(1);
+    expect(ceiling.getSnapshot().telemetry.expiredEntryCleanupCount).toBe(0);
   });
 
   it('rejects an unseen source at capacity while preserving tracked enforcement', () => {
@@ -704,9 +828,10 @@ describe('temporarySessionCeiling', () => {
     });
 
     expect(ceiling.evaluate(createRequest('192.0.2.70'), { routeVersion: 'v1' }).allowed).toBe(true);
+    nowMs = 59_000;
     expect(ceiling.evaluate(createRequest('192.0.2.71'), { routeVersion: 'v1' }).allowed).toBe(true);
     expect(observer.mock.calls.every((call) => call.length === 1)).toBe(true);
-    observedEntries[1].labels[0] = 1;
+    observedEntries[1].labels[59] = 58;
 
     nowMs = 61_000;
     expect(ceiling.evaluate(createRequest('192.0.2.72'), { routeVersion: 'v1' })).toEqual({
@@ -827,6 +952,7 @@ describe('temporarySessionCeiling', () => {
     expect(ceiling.getSnapshot()).toEqual({
       activeEntryCount: 1,
       pruneScanCount: 2,
+      unhealthy: false,
       telemetry: {
         totalChecks: 1,
         allowedChecks: 0,
@@ -838,6 +964,39 @@ describe('temporarySessionCeiling', () => {
         routeVersionTotals: { v1: 1, v2: 0, unknown: 0 },
       },
     });
+  });
+
+  it('retries rejection sampling until a logger emits successfully', () => {
+    const throwingLogger = {
+      warn: jest.fn(() => { throw new Error('test warn failure'); }),
+    };
+    const validLogger = createLogger();
+    const ceiling = createTemporarySessionCeiling({
+      limit: 1,
+      now: () => 34_500,
+      sourceMode: 'local',
+      crypto: createTestCrypto(),
+    });
+
+    expect(ceiling.evaluate(createRequest('192.0.2.89'), { routeVersion: 'v1' }))
+      .toEqual({ allowed: true });
+    expect(ceiling.evaluate(createRequest('192.0.2.89'), { routeVersion: 'v1' }).statusCode)
+      .toBe(429);
+    expect(ceiling.evaluate(
+      createRequest('192.0.2.89', { logger: throwingLogger }),
+      { routeVersion: 'v1' }
+    ).statusCode).toBe(429);
+    expect(ceiling.evaluate(
+      createRequest('192.0.2.89', { logger: validLogger }),
+      { routeVersion: 'v1' }
+    ).statusCode).toBe(429);
+    expect(ceiling.evaluate(
+      createRequest('192.0.2.89', { logger: validLogger }),
+      { routeVersion: 'v1' }
+    ).statusCode).toBe(429);
+
+    expect(throwingLogger.warn).toHaveBeenCalledTimes(1);
+    expect(validLogger.warn).toHaveBeenCalledTimes(1);
   });
 
   it('swallows logger failures without changing enforcement', () => {
@@ -937,6 +1096,7 @@ describe('temporarySessionCeiling', () => {
       expect(Object.keys(ceiling.getSnapshot())).toEqual([
         'activeEntryCount',
         'pruneScanCount',
+        'unhealthy',
         'telemetry',
       ]);
     } finally {

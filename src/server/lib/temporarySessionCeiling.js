@@ -12,6 +12,7 @@ const HMAC_DOMAIN = 'temporary-session-ceiling:v1';
 const LOGICAL_ALLOWANCE = 'auth-session';
 const TELEMETRY_EVENT = 'temporary_session_ceiling_summary';
 const REJECTION_EVENT = 'temporary_session_ceiling_rejection_sample';
+const INTERNAL_FAILURE_LATCH_EVENT = 'temporary_session_ceiling_internal_failure_latched';
 const ROUTE_VERSIONS = new Set(['v1', 'v2']);
 const SOURCE_MODES = new Set(['local', 'deployed']);
 const OPAQUE_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -228,18 +229,18 @@ function createCounterEntry(slotCount) {
 }
 
 /**
- * Validates one stored entry and all of its time relationships.
+ * Validates the fixed-size entry shape and its last-seen timestamp.
  *
- * Why: corrupted state must be detected before a decision or cleanup mutation.
+ * Why: pruning can safely classify expired entries without scanning every ring
+ * slot, while malformed shapes and impossible timestamps still fail closed.
  *
  * @param {object} entry - Candidate ring entry.
  * @param {number} currentSecond - Current monotonic second.
  * @param {number} slotCount - Expected physical ring length.
- * @param {number} limit - Maximum valid total stored count.
  * @returns {void}
- * @throws {Error} When any state invariant is malformed.
+ * @throws {Error} When the entry metadata is malformed.
  */
-function validateCounterEntry(entry, currentSecond, slotCount, limit) {
+function validateCounterEntryShape(entry, currentSecond, slotCount) {
   if (!entry
     || !(entry.counts instanceof Uint16Array)
     || !(entry.labels instanceof Float64Array)
@@ -250,6 +251,22 @@ function validateCounterEntry(entry, currentSecond, slotCount, limit) {
     || entry.lastSeenSecond > currentSecond) {
     throw new Error('temporary session ceiling state is invalid');
   }
+}
+
+/**
+ * Validates one stored entry and all of its ring-slot relationships.
+ *
+ * Why: active state must be fully validated before an enforcement decision.
+ *
+ * @param {object} entry - Candidate ring entry.
+ * @param {number} currentSecond - Current monotonic second.
+ * @param {number} slotCount - Expected physical ring length.
+ * @param {number} limit - Maximum valid total stored count.
+ * @returns {void}
+ * @throws {Error} When any state invariant is malformed.
+ */
+function validateCounterEntry(entry, currentSecond, slotCount, limit) {
+  validateCounterEntryShape(entry, currentSecond, slotCount);
 
   const cutoffSecond = currentSecond - (slotCount - 1);
   let liveTotal = 0;
@@ -387,15 +404,17 @@ function createTelemetry(windowStartSecond) {
  * @param {'info'|'warn'} level - Bounded log level.
  * @param {object} fields - Identifier-free structured fields.
  * @param {string} message - Stable human-readable event message.
- * @returns {void}
+ * @returns {boolean} Whether the configured log method completed successfully.
  */
 function emitBoundedLog(requestLogger, level, fields, message) {
   try {
     const logMethod = requestLogger?.[level];
-    if (typeof logMethod !== 'function') return;
+    if (typeof logMethod !== 'function') return false;
     logMethod.call(requestLogger, fields, message);
+    return true;
   } catch {
     // Telemetry is observational and cannot change a completed safe decision.
+    return false;
   }
 }
 
@@ -579,14 +598,14 @@ export function createTemporarySessionCeiling(options = {}) {
    */
   function sampleRejection(requestLogger, details) {
     if (!telemetry || telemetry.rejectionSampled) return;
-    telemetry.rejectionSampled = true;
-    emitBoundedLog(requestLogger, 'warn', {
+    const emitted = emitBoundedLog(requestLogger, 'warn', {
       event: REJECTION_EVENT,
       outcome: details.outcome,
       reason: details.reason,
       routeVersion: details.routeVersion,
       retryAfterSeconds: details.retryAfterSeconds ?? null,
     }, 'Temporary session ceiling rejection sample');
+    if (emitted) telemetry.rejectionSampled = true;
   }
 
   /**
@@ -625,7 +644,15 @@ export function createTemporarySessionCeiling(options = {}) {
    * @returns {{allowed: false, statusCode: 503, reason: string}} Decision.
    */
   function latchInternalFailure(requestLogger, routeVersion) {
-    unhealthy = true;
+    if (!unhealthy) {
+      unhealthy = true;
+      emitBoundedLog(requestLogger, 'warn', {
+        event: INTERNAL_FAILURE_LATCH_EVENT,
+        outcome: 'unavailable',
+        reason: 'internal_failure',
+        routeVersion,
+      }, 'Temporary session ceiling internal failure latched');
+    }
     return rejectUnavailable(requestLogger, routeVersion, 'internal_failure', 'internal');
   }
 
@@ -648,10 +675,12 @@ export function createTemporarySessionCeiling(options = {}) {
       if (typeof stateKey !== 'string' || !OPAQUE_KEY_PATTERN.test(stateKey)) {
         throw new Error('temporary session ceiling state is invalid');
       }
-      validateCounterEntry(entry, currentSecond, slotCount, limit);
+      validateCounterEntryShape(entry, currentSecond, slotCount);
       if (currentSecond - entry.lastSeenSecond > windowSeconds) {
         expiredKeys.push(stateKey);
+        continue;
       }
+      validateCounterEntry(entry, currentSecond, slotCount, limit);
     }
 
     for (const stateKey of expiredKeys) entries.delete(stateKey);
@@ -795,17 +824,18 @@ export function createTemporarySessionCeiling(options = {}) {
   }
 
   /**
-   * Returns a count-only copy of bounded process-local state.
+   * Returns an identifier-free copy of bounded process-local state.
    *
    * Why: tests and later evidence need cardinality and aggregate behavior but
    * must never receive addresses, HMAC material, slot timestamps, or Map keys.
    *
-   * @returns {object} Identifier-free enforcement and telemetry counts.
+   * @returns {object} Identifier-free enforcement state and telemetry counts.
    */
   function getSnapshot() {
     return {
       activeEntryCount: entries.size,
       pruneScanCount,
+      unhealthy,
       telemetry: {
         totalChecks: telemetry.totalChecks,
         allowedChecks: telemetry.allowedChecks,
