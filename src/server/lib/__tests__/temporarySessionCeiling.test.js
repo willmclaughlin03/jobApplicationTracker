@@ -579,6 +579,39 @@ describe('temporarySessionCeiling', () => {
   });
 
   it.each([
+    ['clock', { now: 17_000 }],
+    ['random byte generator', { crypto: { randomBytes: 32 } }],
+    ['HMAC factory', { crypto: { createHmac: 'sha256' } }],
+  ])('latches a bounded initialization reason for a non-callable %s', (_name, overrides) => {
+    const logger = createLogger();
+    const randomBytesMock = jest.fn(() => Buffer.from(FIXED_HMAC_KEY));
+    const createHmacMock = jest.fn(createNodeHmac);
+    const crypto = {
+      randomBytes: randomBytesMock,
+      createHmac: createHmacMock,
+      ...overrides.crypto,
+    };
+    const ceiling = createTemporarySessionCeiling({
+      now: () => 16_500,
+      sourceMode: 'local',
+      ...overrides,
+      crypto,
+    });
+
+    expect(ceiling.evaluate(createRequest('192.0.2.34'), { routeVersion: 'v1', logger }))
+      .toEqual({ allowed: false, statusCode: 503, reason: 'internal_failure' });
+    expect(randomBytesMock).not.toHaveBeenCalled();
+    expect(createHmacMock).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith({
+      event: 'temporary_session_ceiling_internal_failure_latched',
+      outcome: 'unavailable',
+      reason: 'internal_failure',
+      routeVersion: 'v1',
+      constructionFailureReason: 'dependency_validation_failed',
+    }, 'Temporary session ceiling internal failure latched');
+  });
+
+  it.each([
     ['random generation throws', {
       randomBytes: () => { throw new Error('injected-sensitive-random-provider-detail'); },
       createHmac: createNodeHmac,

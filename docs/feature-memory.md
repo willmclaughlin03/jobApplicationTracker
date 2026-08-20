@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-16
 
+- `2026-08-20` - `Temporary session ceiling dependency diagnostics`: Classified non-callable clock and crypto seams with one fixed allowlisted dependency-validation reason before key generation, while reserving the HMAC-key initialization category for random-key generation failures.
+  - validation: the primitive unit suite passes 85/85, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-20` - `Temporary session ceiling cleanup and latch follow-ups`: Reduced each once-per-second cleanup pass to key, shape, and expiry classification; kept semantic ring validation on the addressed-entry path; and retained one fixed, bounded, non-sensitive factory-initialization category for exactly one internal-failure latch event.
   - validation: the primitive unit suite passes 82/82, the controlled single-process load suite passes 9/9, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-20` - `Temporary session ceiling review hardening`: Short-circuited expired-entry cleanup after lightweight shape and timestamp validation while retaining full live-entry validation and validate-before-delete behavior, added one-time identifier-free unhealthy transition telemetry plus snapshot health state, kept rejection sampling retryable until logging succeeds, expanded factory and lifecycle regressions, and replaced 10,000 per-item load assertions with one indexed aggregate check.

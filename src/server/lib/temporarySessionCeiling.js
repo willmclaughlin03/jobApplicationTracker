@@ -15,6 +15,10 @@ const REJECTION_EVENT = 'temporary_session_ceiling_rejection_sample';
 const INTERNAL_FAILURE_LATCH_EVENT = 'temporary_session_ceiling_internal_failure_latched';
 const ROUTE_VERSIONS = new Set(['v1', 'v2']);
 const SOURCE_MODES = new Set(['local', 'deployed']);
+const INITIALIZATION_FAILURE_REASONS = Object.freeze({
+  DEPENDENCY_VALIDATION: 'dependency_validation_failed',
+  HMAC_KEY: 'hmac_key_initialization_failed',
+});
 const OPAQUE_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_BOUNDED_COUNT = Number.MAX_SAFE_INTEGER;
 
@@ -512,20 +516,22 @@ export function createTemporarySessionCeiling(options = {}) {
   let pruneScanCount = 0;
   let telemetry = createTelemetry(null);
 
-  try {
-    if (typeof now !== 'function'
-      || typeof randomBytesFunction !== 'function'
-      || typeof createHmacFunction !== 'function') {
-      throw new Error('temporary session ceiling dependency is unavailable');
-    }
-    const generatedKey = randomBytesFunction(32);
-    if (!Buffer.isBuffer(generatedKey) || generatedKey.length !== 32) {
-      throw new Error('temporary session ceiling crypto is unavailable');
-    }
-    hmacKey = Buffer.from(generatedKey);
-  } catch {
+  if (typeof now !== 'function'
+    || typeof randomBytesFunction !== 'function'
+    || typeof createHmacFunction !== 'function') {
     unhealthy = true;
-    constructionFailureReason = 'hmac_key_initialization_failed';
+    constructionFailureReason = INITIALIZATION_FAILURE_REASONS.DEPENDENCY_VALIDATION;
+  } else {
+    try {
+      const generatedKey = randomBytesFunction(32);
+      if (!Buffer.isBuffer(generatedKey) || generatedKey.length !== 32) {
+        throw new Error('temporary session ceiling crypto is unavailable');
+      }
+      hmacKey = Buffer.from(generatedKey);
+    } catch {
+      unhealthy = true;
+      constructionFailureReason = INITIALIZATION_FAILURE_REASONS.HMAC_KEY;
+    }
   }
 
   /**
