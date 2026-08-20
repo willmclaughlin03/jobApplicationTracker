@@ -620,6 +620,49 @@ describe('temporarySessionCeiling', () => {
     }, 'Temporary session ceiling internal failure latched');
   });
 
+  /**
+   * Verifies construction diagnostics remain pending until a logger accepts the latch event.
+   */
+  it('retries construction latch logging until a logger emits successfully', () => {
+    const throwingLogger = {
+      warn: jest.fn(() => { throw new Error('test warn failure'); }),
+    };
+    const validLogger = createLogger();
+    const ceiling = createTemporarySessionCeiling({
+      now: () => 16_750,
+      sourceMode: 'local',
+      crypto: {
+        randomBytes: () => { throw new Error('test random failure'); },
+        createHmac: createNodeHmac,
+      },
+    });
+    const request = createRequest('192.0.2.34');
+
+    expect(ceiling.evaluate(request, { routeVersion: 'v1' }).statusCode).toBe(503);
+    expect(ceiling.evaluate(request, {
+      routeVersion: 'v1',
+      logger: throwingLogger,
+    }).statusCode).toBe(503);
+    expect(ceiling.evaluate(request, { routeVersion: 'v2', logger: validLogger }).statusCode)
+      .toBe(503);
+    expect(ceiling.evaluate(request, { routeVersion: 'v2', logger: validLogger }).statusCode)
+      .toBe(503);
+
+    expect(throwingLogger.warn).toHaveBeenCalledTimes(2);
+    expect(validLogger.warn.mock.calls.filter(
+      ([fields]) => fields.event === 'temporary_session_ceiling_internal_failure_latched'
+    )).toEqual([[
+      {
+        event: 'temporary_session_ceiling_internal_failure_latched',
+        outcome: 'unavailable',
+        reason: 'internal_failure',
+        routeVersion: 'v2',
+        constructionFailureReason: 'hmac_key_initialization_failed',
+      },
+      'Temporary session ceiling internal failure latched',
+    ]]);
+  });
+
   it.each([
     ['random generation throws', {
       randomBytes: () => { throw new Error('injected-sensitive-random-provider-detail'); },
