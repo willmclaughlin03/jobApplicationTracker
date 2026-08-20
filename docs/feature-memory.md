@@ -16,6 +16,11 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-16
 
+- `2026-08-20` - `Temporary session ceiling review hardening`: Short-circuited expired-entry cleanup after lightweight shape and timestamp validation while retaining full live-entry validation and validate-before-delete behavior, added one-time identifier-free unhealthy transition telemetry plus snapshot health state, kept rejection sampling retryable until logging succeeds, expanded factory and lifecycle regressions, and replaced 10,000 per-item load assertions with one indexed aggregate check.
+  - validation: the primitive unit suite passes 82/82, the controlled single-process load suite passes 9/9, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
+- `2026-08-20` - `Temporary session ceiling primitive`: Added the isolated process-local `auth-session` ceiling with a conservative 61-slot ring, strict local/deployed source parsing, process-random digest-only HMAC state keys, a 10,000-source cap without live eviction, atomic cleanup validation, fail-closed health latching, and identifier-free aggregate telemetry.
+  - validation: the primitive unit suite passes 68/68, the controlled single-process load suite passes 9/9, the frozen Gate-0 fixture suite passes 39/39, changed-file ESLint passes with zero warnings, and scope, whitespace, privacy, sensitive-data, background-work, and dependency-drift audits pass.
+  - residual: the primitive is not yet attached to the v1 route; deployed source trust, fleet-global enforcement, the existing Redis policy contradiction, deployment, and GATE-1 remain outside this change.
 - `2026-08-17` - `GATE-0 evidence-capture status labeling`: Relabeled the historical Gate-0 review metadata as evidence-capture provenance and explicitly separated it from live pull-request and staging-to-main promotion status.
   - validation: focused review confirms every historical field is capture-labeled and `git diff --check` passes.
 - `2026-08-17` - `GATE-0 evidence provenance clarification`: Separated hosted Auth server `v2.195.0` as deployed-capture evidence while retaining installed-source and deployed-capture provenance for the Supabase dependency versions and leaving the installed-source sign-out and chunker observations unchanged.
