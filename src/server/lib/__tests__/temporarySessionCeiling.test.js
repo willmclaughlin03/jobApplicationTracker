@@ -582,37 +582,38 @@ describe('temporarySessionCeiling', () => {
     ['random generation throws', {
       randomBytes: () => { throw new Error('test random failure'); },
       createHmac: createNodeHmac,
-    }],
+    }, 'test random failure'],
     ['random key has wrong length', {
       randomBytes: () => Buffer.alloc(31),
       createHmac: createNodeHmac,
-    }],
+    }, 'temporary session ceiling crypto is unavailable'],
     ['HMAC construction throws', {
       randomBytes: () => Buffer.from(FIXED_HMAC_KEY),
       createHmac: () => { throw new Error('test construction failure'); },
-    }],
+    }, null],
     ['HMAC update throws', {
       randomBytes: () => Buffer.from(FIXED_HMAC_KEY),
       createHmac: () => ({
         update: () => { throw new Error('test update failure'); },
         digest: () => Buffer.alloc(32),
       }),
-    }],
+    }, null],
     ['HMAC digest throws', {
       randomBytes: () => Buffer.from(FIXED_HMAC_KEY),
       createHmac: () => ({
         update: () => undefined,
         digest: () => { throw new Error('test digest failure'); },
       }),
-    }],
+    }, null],
     ['HMAC digest is malformed', {
       randomBytes: () => Buffer.from(FIXED_HMAC_KEY),
       createHmac: () => ({
         update: () => undefined,
         digest: () => Buffer.alloc(31),
       }),
-    }],
-  ])('latches fail-closed after %s', (_name, crypto) => {
+    }, null],
+  ])('latches fail-closed after %s', (_name, crypto, constructionFailureReason) => {
+    const logger = createLogger();
     const ceiling = createTemporarySessionCeiling({
       now: () => 17_000,
       sourceMode: 'local',
@@ -620,15 +621,27 @@ describe('temporarySessionCeiling', () => {
     });
     const request = createRequest('192.0.2.34');
 
-    expect(ceiling.evaluate(request, { routeVersion: 'v1' })).toEqual({
+    expect(ceiling.evaluate(request, { routeVersion: 'v1', logger })).toEqual({
       allowed: false,
       statusCode: 503,
       reason: 'internal_failure',
     });
-    expect(ceiling.evaluate(request, { routeVersion: 'v1' }).statusCode).toBe(503);
+    expect(ceiling.evaluate(request, { routeVersion: 'v1', logger }).statusCode).toBe(503);
     expect(ceiling.getSnapshot().activeEntryCount).toBe(0);
     expect(ceiling.getSnapshot().unhealthy).toBe(true);
     expect(ceiling.getSnapshot().telemetry.internalFailures).toBe(2);
+    expect(logger.warn.mock.calls.filter(
+      ([fields]) => fields.event === 'temporary_session_ceiling_internal_failure_latched'
+    )).toEqual([[
+      {
+        event: 'temporary_session_ceiling_internal_failure_latched',
+        outcome: 'unavailable',
+        reason: 'internal_failure',
+        routeVersion: 'v1',
+        ...(constructionFailureReason === null ? {} : { constructionFailureReason }),
+      },
+      'Temporary session ceiling internal failure latched',
+    ]]);
   });
 
   it.each([
@@ -814,7 +827,7 @@ describe('temporarySessionCeiling', () => {
     expect(ceiling.getSnapshot().pruneScanCount).toBe(2);
   });
 
-  it('deletes nothing when a later cleanup candidate is malformed', () => {
+  it('classifies expiry without validating unrelated ring contents', () => {
     let nowMs = 0;
     const observedEntries = [];
     const observer = jest.fn((entry) => {
@@ -834,14 +847,17 @@ describe('temporarySessionCeiling', () => {
     observedEntries[1].labels[59] = 58;
 
     nowMs = 61_000;
-    expect(ceiling.evaluate(createRequest('192.0.2.72'), { routeVersion: 'v1' })).toEqual({
+    expect(ceiling.evaluate(createRequest('192.0.2.72'), { routeVersion: 'v1' }))
+      .toEqual({ allowed: true });
+    expect(ceiling.getSnapshot().activeEntryCount).toBe(2);
+    expect(ceiling.getSnapshot().telemetry.expiredEntryCleanupCount).toBe(1);
+
+    expect(ceiling.evaluate(createRequest('192.0.2.71'), { routeVersion: 'v1' })).toEqual({
       allowed: false,
       statusCode: 503,
       reason: 'internal_failure',
     });
-    expect(ceiling.getSnapshot().activeEntryCount).toBe(2);
-    expect(ceiling.getSnapshot().telemetry.expiredEntryCleanupCount).toBe(0);
-    expect(ceiling.evaluate(createRequest('192.0.2.70'), { routeVersion: 'v1' }).statusCode)
+    expect(ceiling.evaluate(createRequest('192.0.2.72'), { routeVersion: 'v1' }).statusCode)
       .toBe(503);
   });
 

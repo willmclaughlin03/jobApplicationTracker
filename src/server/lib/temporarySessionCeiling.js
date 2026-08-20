@@ -506,6 +506,7 @@ export function createTemporarySessionCeiling(options = {}) {
   const entries = new Map();
   let hmacKey = null;
   let unhealthy = false;
+  let constructionFailureReason = null;
   let lastObservedMilliseconds = null;
   let lastPruneSecond = null;
   let pruneScanCount = 0;
@@ -522,8 +523,11 @@ export function createTemporarySessionCeiling(options = {}) {
       throw new Error('temporary session ceiling crypto is unavailable');
     }
     hmacKey = Buffer.from(generatedKey);
-  } catch {
+  } catch (error) {
     unhealthy = true;
+    constructionFailureReason = error instanceof Error
+      ? error.message
+      : 'temporary session ceiling construction failed';
   }
 
   /**
@@ -657,9 +661,10 @@ export function createTemporarySessionCeiling(options = {}) {
   }
 
   /**
-   * Validates all entries, then deletes proven-expired keys in a second pass.
+   * Validates entry shapes and classifies expiry before deleting keys.
    *
-   * Why: a malformed later entry must not permit partial cleanup mutation.
+   * Why: cleanup remains a bounded metadata scan, and a malformed later shape
+   * must not permit partial cleanup mutation.
    *
    * @param {number} currentSecond - Current monotonic second.
    * @returns {number} Number of expired entries deleted.
@@ -678,9 +683,7 @@ export function createTemporarySessionCeiling(options = {}) {
       validateCounterEntryShape(entry, currentSecond, slotCount);
       if (currentSecond - entry.lastSeenSecond > windowSeconds) {
         expiredKeys.push(stateKey);
-        continue;
       }
-      validateCounterEntry(entry, currentSecond, slotCount, limit);
     }
 
     for (const stateKey of expiredKeys) entries.delete(stateKey);
@@ -720,6 +723,16 @@ export function createTemporarySessionCeiling(options = {}) {
 
     if (unhealthy) {
       recordCheck(routeVersion);
+      if (constructionFailureReason !== null) {
+        emitBoundedLog(requestLogger, 'warn', {
+          event: INTERNAL_FAILURE_LATCH_EVENT,
+          outcome: 'unavailable',
+          reason: 'internal_failure',
+          routeVersion,
+          constructionFailureReason,
+        }, 'Temporary session ceiling internal failure latched');
+        constructionFailureReason = null;
+      }
       return rejectUnavailable(requestLogger, routeVersion, 'internal_failure', 'internal');
     }
 

@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-16
 
+- `2026-08-20` - `Temporary session ceiling cleanup and latch follow-ups`: Reduced each once-per-second cleanup pass to key, shape, and expiry classification; kept semantic ring validation on the addressed-entry path; and retained factory-time failure reasons for exactly one internal-failure latch event.
+  - validation: the primitive unit suite passes 82/82, the controlled single-process load suite passes 9/9, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-20` - `Temporary session ceiling review hardening`: Short-circuited expired-entry cleanup after lightweight shape and timestamp validation while retaining full live-entry validation and validate-before-delete behavior, added one-time identifier-free unhealthy transition telemetry plus snapshot health state, kept rejection sampling retryable until logging succeeds, expanded factory and lifecycle regressions, and replaced 10,000 per-item load assertions with one indexed aggregate check.
   - validation: the primitive unit suite passes 82/82, the controlled single-process load suite passes 9/9, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-20` - `Temporary session ceiling primitive`: Added the isolated process-local `auth-session` ceiling with a conservative 61-slot ring, strict local/deployed source parsing, process-random digest-only HMAC state keys, a 10,000-source cap without live eviction, atomic cleanup validation, fail-closed health latching, and identifier-free aggregate telemetry.
