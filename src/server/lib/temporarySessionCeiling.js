@@ -15,6 +15,10 @@ const REJECTION_EVENT = 'temporary_session_ceiling_rejection_sample';
 const INTERNAL_FAILURE_LATCH_EVENT = 'temporary_session_ceiling_internal_failure_latched';
 const ROUTE_VERSIONS = new Set(['v1', 'v2']);
 const SOURCE_MODES = new Set(['local', 'deployed']);
+const INITIALIZATION_FAILURE_REASONS = Object.freeze({
+  DEPENDENCY_VALIDATION: 'dependency_validation_failed',
+  HMAC_KEY: 'hmac_key_initialization_failed',
+});
 const OPAQUE_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const MAX_BOUNDED_COUNT = Number.MAX_SAFE_INTEGER;
 
@@ -506,24 +510,28 @@ export function createTemporarySessionCeiling(options = {}) {
   const entries = new Map();
   let hmacKey = null;
   let unhealthy = false;
+  let constructionFailureReason = null;
   let lastObservedMilliseconds = null;
   let lastPruneSecond = null;
   let pruneScanCount = 0;
   let telemetry = createTelemetry(null);
 
-  try {
-    if (typeof now !== 'function'
-      || typeof randomBytesFunction !== 'function'
-      || typeof createHmacFunction !== 'function') {
-      throw new Error('temporary session ceiling dependency is unavailable');
-    }
-    const generatedKey = randomBytesFunction(32);
-    if (!Buffer.isBuffer(generatedKey) || generatedKey.length !== 32) {
-      throw new Error('temporary session ceiling crypto is unavailable');
-    }
-    hmacKey = Buffer.from(generatedKey);
-  } catch {
+  if (typeof now !== 'function'
+    || typeof randomBytesFunction !== 'function'
+    || typeof createHmacFunction !== 'function') {
     unhealthy = true;
+    constructionFailureReason = INITIALIZATION_FAILURE_REASONS.DEPENDENCY_VALIDATION;
+  } else {
+    try {
+      const generatedKey = randomBytesFunction(32);
+      if (!Buffer.isBuffer(generatedKey) || generatedKey.length !== 32) {
+        throw new Error('temporary session ceiling crypto is unavailable');
+      }
+      hmacKey = Buffer.from(generatedKey);
+    } catch {
+      unhealthy = true;
+      constructionFailureReason = INITIALIZATION_FAILURE_REASONS.HMAC_KEY;
+    }
   }
 
   /**
@@ -657,9 +665,10 @@ export function createTemporarySessionCeiling(options = {}) {
   }
 
   /**
-   * Validates all entries, then deletes proven-expired keys in a second pass.
+   * Validates entry shapes and classifies expiry before deleting keys.
    *
-   * Why: a malformed later entry must not permit partial cleanup mutation.
+   * Why: cleanup remains a bounded metadata scan, and a malformed later shape
+   * must not permit partial cleanup mutation.
    *
    * @param {number} currentSecond - Current monotonic second.
    * @returns {number} Number of expired entries deleted.
@@ -678,9 +687,7 @@ export function createTemporarySessionCeiling(options = {}) {
       validateCounterEntryShape(entry, currentSecond, slotCount);
       if (currentSecond - entry.lastSeenSecond > windowSeconds) {
         expiredKeys.push(stateKey);
-        continue;
       }
-      validateCounterEntry(entry, currentSecond, slotCount, limit);
     }
 
     for (const stateKey of expiredKeys) entries.delete(stateKey);
@@ -720,6 +727,16 @@ export function createTemporarySessionCeiling(options = {}) {
 
     if (unhealthy) {
       recordCheck(routeVersion);
+      if (constructionFailureReason !== null) {
+        emitBoundedLog(requestLogger, 'warn', {
+          event: INTERNAL_FAILURE_LATCH_EVENT,
+          outcome: 'unavailable',
+          reason: 'internal_failure',
+          routeVersion,
+          constructionFailureReason,
+        }, 'Temporary session ceiling internal failure latched');
+        constructionFailureReason = null;
+      }
       return rejectUnavailable(requestLogger, routeVersion, 'internal_failure', 'internal');
     }
 
