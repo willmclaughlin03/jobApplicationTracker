@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-16
 
+- `2026-08-20` - `Temporary session ceiling regression documentation`: Documented the parameterized non-callable dependency regression callback, its fixture parameters, and its crypto-call and bounded-logger assertions without changing runtime behavior.
+  - validation: the primitive unit suite passes 85/85, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-20` - `Temporary session ceiling dependency diagnostics`: Classified non-callable clock and crypto seams with one fixed allowlisted dependency-validation reason before key generation, while reserving the HMAC-key initialization category for random-key generation failures.
   - validation: the primitive unit suite passes 85/85, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-20` - `Temporary session ceiling cleanup and latch follow-ups`: Reduced each once-per-second cleanup pass to key, shape, and expiry classification; kept semantic ring validation on the addressed-entry path; and retained one fixed, bounded, non-sensitive factory-initialization category for exactly one internal-failure latch event.

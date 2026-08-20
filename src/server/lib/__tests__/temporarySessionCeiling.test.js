@@ -578,6 +578,15 @@ describe('temporarySessionCeiling', () => {
     expect(createHmacMock.mock.calls[0][1]).toEqual(generatedKey);
   });
 
+  /**
+   * Proves non-callable factory dependencies fail closed before crypto work begins.
+   * `_name` labels each case and `overrides` supplies the invalid dependency;
+   * assertions require zero crypto calls and the bounded logger reason.
+   *
+   * @param {string} _name - Human-readable dependency label.
+   * @param {object} overrides - Factory options containing the invalid dependency.
+   * @returns {void}
+   */
   it.each([
     ['clock', { now: 17_000 }],
     ['random byte generator', { crypto: { randomBytes: 32 } }],
