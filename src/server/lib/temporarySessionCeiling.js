@@ -728,14 +728,14 @@ export function createTemporarySessionCeiling(options = {}) {
     if (unhealthy) {
       recordCheck(routeVersion);
       if (constructionFailureReason !== null) {
-        emitBoundedLog(requestLogger, 'warn', {
+        const emitted = emitBoundedLog(requestLogger, 'warn', {
           event: INTERNAL_FAILURE_LATCH_EVENT,
           outcome: 'unavailable',
           reason: 'internal_failure',
           routeVersion,
           constructionFailureReason,
         }, 'Temporary session ceiling internal failure latched');
-        constructionFailureReason = null;
+        if (emitted) constructionFailureReason = null;
       }
       return rejectUnavailable(requestLogger, routeVersion, 'internal_failure', 'internal');
     }
