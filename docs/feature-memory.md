@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-16
 
+- `2026-08-21` - `Temporary session ceiling response diagnostics`: Added a request-scoped structured warning with the validated ceiling decision reason and status before the v1 session route writes either its legacy 429 or retry-free 503 response, without recording the request source address.
+  - validation: the focused session and middleware suites pass 125/125, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-21` - `Temporary session integration follow-ups`: Kept the session route on the approved direct `withRateLimit` export while applying its private cache policy before every middleware exit, added fixed-category identifier-free diagnostics for fail-closed guard integration defects, and tightened route and middleware tests to assert only distinct decisions and middleware-owned ordering.
   - validation: the focused session, route-safety, and middleware suites pass 126/126, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-20` - `Temporary session ceiling v1 integration`: Added a strict opt-in pre-rate-limit guard boundary, attached the process-local ceiling to the actual v1 session route before identity and Redis work, and established a route-owned `private, no-store` cache wrapper while preserving legacy response envelopes and ordinary Redis enforcement.

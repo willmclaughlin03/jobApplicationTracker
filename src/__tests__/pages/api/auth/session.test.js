@@ -256,6 +256,13 @@ describe('/api/auth/session composed v1 route', () => {
 
     await sessionRoute(rejectedRequest, rejectedResponse);
 
+    const responseLogCallIndex = mockLog.warn.mock.calls.findIndex(
+      ([fields]) => fields?.event === 'temporary_session_ceiling_response'
+    );
+    const retryAfterHeaderCallIndex = rejectedResponse.setHeader.mock.calls.findIndex(
+      ([name]) => name === 'Retry-After'
+    );
+
     expect(rejectedResponse.statusCode).toBe(429);
     expect(rejectedResponse.body).toEqual({
       data: null,
@@ -265,6 +272,14 @@ describe('/api/auth/session composed v1 route', () => {
     expect(rejectedResponse.getHeader('Retry-After')).toEqual(expect.any(Number));
     expect(rejectedResponse.getHeader('Retry-After')).toBeGreaterThanOrEqual(1);
     expect(rejectedResponse.getHeader('Retry-After')).toBeLessThanOrEqual(60);
+    expect(mockLog.warn).toHaveBeenCalledWith({
+      event: 'temporary_session_ceiling_response',
+      reason: 'limit_exceeded',
+      statusCode: 429,
+    }, 'Temporary session ceiling rejected request');
+    expect(mockLog.warn.mock.invocationCallOrder[responseLogCallIndex]).toBeLessThan(
+      rejectedResponse.setHeader.mock.invocationCallOrder[retryAfterHeaderCallIndex]
+    );
     expectPrivateNoStore(firstResponse);
     expectPrivateNoStore(rejectedResponse);
     expectLegacyV1Body(rejectedResponse.body);
@@ -290,6 +305,10 @@ describe('/api/auth/session composed v1 route', () => {
 
     await sessionRoute(req, res);
 
+    const responseLogCallIndex = mockLog.warn.mock.calls.findIndex(
+      ([fields]) => fields?.event === 'temporary_session_ceiling_response'
+    );
+
     expect(res.statusCode).toBe(503);
     expect(res.body).toEqual({
       data: null,
@@ -297,6 +316,14 @@ describe('/api/auth/session composed v1 route', () => {
       message: 'Service temporarily unavailable. Please try again later.',
     });
     expect(res.getHeader('Retry-After')).toBeUndefined();
+    expect(mockLog.warn).toHaveBeenCalledWith({
+      event: 'temporary_session_ceiling_response',
+      reason: decision.reason,
+      statusCode: decision.statusCode,
+    }, 'Temporary session ceiling rejected request');
+    expect(mockLog.warn.mock.invocationCallOrder[responseLogCallIndex]).toBeLessThan(
+      res.removeHeader.mock.invocationCallOrder[0]
+    );
     expectPrivateNoStore(res);
     expectLegacyV1Body(res.body);
     expect(mockCheckRateLimit).not.toHaveBeenCalled();

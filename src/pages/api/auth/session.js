@@ -49,12 +49,18 @@ function evaluateTemporarySessionRequest(req) {
  * v2 envelope. Only the exact bounded exhaustion decision receives a retry
  * delay; every other result remains a retry-free legacy 503.
  *
- * @param {import('next').NextApiRequest} _req - Session request.
+ * @param {import('next').NextApiRequest} req - Session request with scoped logger.
  * @param {import('next').NextApiResponse} res - Session response.
  * @param {object} decision - Validated response-neutral ceiling decision.
  * @returns {object} Next.js response chain.
  */
-function writeTemporarySessionCeilingResponse(_req, res, decision) {
+function writeTemporarySessionCeilingResponse(req, res, decision) {
+  req.log.warn({
+    event: 'temporary_session_ceiling_response',
+    reason: decision.reason,
+    statusCode: decision.statusCode,
+  }, 'Temporary session ceiling rejected request');
+
   const retryAfterSeconds = decision?.retryAfterSeconds;
   if (decision?.statusCode === 429
     && decision?.reason === 'limit_exceeded'
