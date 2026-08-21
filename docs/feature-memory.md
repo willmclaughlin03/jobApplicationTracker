@@ -16,6 +16,9 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-16
 
+- `2026-08-21` - `Temporary session ceiling invariant correction and evidence`: Restored complete candidate validation before cleanup deletion, removed the attacker-amplifiable route-level warning, added logger-failure and corruption regressions, and documented local latency, memory, privacy, monitoring, Redis, topology, and open Gate-1 evidence. This supersedes the earlier response-diagnostics entry and the reduced cleanup-scan description without rewriting their historical record.
+  - validation: the five focused suites pass 261/261, changed-file and repository ESLint pass with zero warnings, all 95 unit suites and 1,523 tests pass, the placeholder production build passes, and corrected-factory 10,000-entry p99 remains below the self-imposed 25 ms active and 50 ms mass-expiration stop-and-report thresholds.
+  - residual: deployed source trust, actual runtime/fleet behavior, alert configuration, rollback ownership, the 15/hour and 30/day Redis contradiction, deployment, and `GATE-1` remain unresolved or unexecuted.
 - `2026-08-21` - `Temporary session ceiling response diagnostics`: Added a request-scoped structured warning with the validated ceiling decision reason and status before the v1 session route writes either its legacy 429 or retry-free 503 response, without recording the request source address.
   - validation: the focused session and middleware suites pass 125/125, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-21` - `Temporary session integration follow-ups`: Kept the session route on the approved direct `withRateLimit` export while applying its private cache policy before every middleware exit, added fixed-category identifier-free diagnostics for fail-closed guard integration defects, and tightened route and middleware tests to assert only distinct decisions and middleware-owned ordering.
