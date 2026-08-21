@@ -16,6 +16,9 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-16
 
+- `2026-08-20` - `Temporary session ceiling v1 integration`: Added a strict opt-in pre-rate-limit guard boundary, attached the process-local ceiling to the actual v1 session route before identity and Redis work, and established a route-owned `private, no-store` cache wrapper while preserving legacy response envelopes and ordinary Redis enforcement.
+  - validation: the five cumulative Chunk 1/2 suites pass 260/260, changed-file ESLint passes across all seven files with zero warnings, and diff, scope, ordering, cache, dependency-drift, privacy, and sensitive-data audits pass.
+  - residual: deployed source trust and fleet behavior remain unverified, the existing public `AUTH` Redis policy still conflicts with the 50-session exercise, and deployment plus `GATE-1` remain unexecuted.
 - `2026-08-20` - `Temporary session ceiling latch log retention`: Retained the bounded construction-failure diagnostic until the internal-failure latch event logs successfully, allowing a later request with a usable logger to emit the process-instance failure.
   - validation: the primitive unit suite passes 86/86, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-20` - `Temporary session ceiling regression documentation`: Documented the parameterized non-callable dependency regression callback, its fixture parameters, and its crypto-call and bounded-logger assertions without changing runtime behavior.
