@@ -24,6 +24,8 @@ const REQUEST_DURATION_EVENT = 'api_request_duration';
 const REQUEST_DURATION_LOG_ALL_VALUES = new Set(['1', 'true', 'yes', 'on']);
 const REQUEST_DURATION_PRODUCTION_SAMPLE_RATE = 0.01;
 const SLOW_REQUEST_DURATION_MS = 1000;
+const MAX_PRE_RATE_LIMIT_GUARD_REASON_LENGTH = 64;
+const PRE_RATE_LIMIT_GUARD_REASON_PATTERN = /^[a-z0-9_]+$/;
 
 /**
  * Returns the current monotonic-enough timestamp for request duration logs.
@@ -137,6 +139,155 @@ function logRequestDuration(req, res, { requestId, startedAtMs, operation, rateL
         },
         'API request duration'
     );
+}
+
+/**
+ * Validates the response-neutral decision returned by a pre-rate-limit guard.
+ *
+ * Purpose: keep route-specific guards behind one strict boundary so malformed
+ * results cannot bypass identity, authentication, Redis, or handler work.
+ *
+ * @param {unknown} decision - Candidate guard result.
+ * @returns {boolean} True when the decision is a supported allow or rejection.
+ */
+function isValidPreRateLimitGuardDecision(decision) {
+    if (!decision || typeof decision !== 'object' || Array.isArray(decision)) {
+        return false;
+    }
+
+    if (decision.allowed === true) {
+        return true;
+    }
+
+    const reasonIsBounded = typeof decision.reason === 'string'
+        && decision.reason.length >= 1
+        && decision.reason.length <= MAX_PRE_RATE_LIMIT_GUARD_REASON_LENGTH
+        && PRE_RATE_LIMIT_GUARD_REASON_PATTERN.test(decision.reason);
+    if (decision.allowed !== false
+        || !reasonIsBounded
+        || ![429, 503].includes(decision.statusCode)) {
+        return false;
+    }
+
+    if (decision.statusCode === 429) {
+        return Number.isSafeInteger(decision.retryAfterSeconds)
+            && decision.retryAfterSeconds > 0;
+    }
+
+    return true;
+}
+
+/**
+ * Reports whether a guard response has begun or already finished.
+ *
+ * Purpose: failed route writers must not trigger a second JSON response after
+ * headers or body bytes have been committed.
+ *
+ * @param {import('next').NextApiResponse} res - Next.js response object.
+ * @returns {boolean} True when the response cannot be safely replaced.
+ */
+function hasPreRateLimitGuardResponseStarted(res) {
+    return res?.headersSent === true || res?.writableEnded === true || res?.finished === true;
+}
+
+/**
+ * Closes a failed guard boundary with the legacy unavailable contract.
+ *
+ * Purpose: guard, decision, configuration, and writer failures all remain
+ * fail-closed. A partially started response is ended instead of being written
+ * twice; a replaceable response has speculative retry metadata removed.
+ *
+ * @param {import('next').NextApiResponse} res - Next.js response object.
+ * @returns {object|undefined} Next.js response chain when a JSON response is possible.
+ */
+function failClosedPreRateLimitGuard(res) {
+    if (hasPreRateLimitGuardResponseStarted(res)) {
+        if (res?.writableEnded !== true && typeof res?.end === 'function') {
+            try {
+                res.end();
+            } catch {
+                // The response is already committed; no safe replacement remains.
+            }
+        }
+        return undefined;
+    }
+
+    try {
+        if (typeof res?.removeHeader === 'function') {
+            res.removeHeader('Retry-After');
+        }
+        return sendError(
+            res,
+            503,
+            'SERVICE_UNAVAILABLE',
+            ERROR_MESSAGES.SERVICE_UNAVAILABLE
+        );
+    } catch {
+        if (typeof res?.end === 'function') {
+            try {
+                res.end();
+            } catch {
+                // Nothing else can be written safely when the response API fails.
+            }
+        }
+        return undefined;
+    }
+}
+
+/**
+ * Runs an optional route-owned guard and response writer before rate limiting.
+ *
+ * Purpose: centralize the fail-closed integration seam while preserving the
+ * existing middleware pipeline byte-for-byte when neither option is present.
+ * The returned handled flag prevents any rejected or malformed guard path from
+ * reaching identity, auth, cookie, CSRF, skip, Redis, or handler work.
+ *
+ * @param {import('next').NextApiRequest} req - Next.js request object.
+ * @param {import('next').NextApiResponse} res - Next.js response object.
+ * @param {Function|undefined} preRateLimitGuard - Route guard callback.
+ * @param {Function|undefined} writePreRateLimitGuardResponse - Route response writer.
+ * @returns {Promise<{handled: boolean, response?: object}>} Guard pipeline outcome.
+ */
+async function runPreRateLimitGuard(
+    req,
+    res,
+    preRateLimitGuard,
+    writePreRateLimitGuardResponse
+) {
+    const guardIsConfigured = preRateLimitGuard !== undefined
+        || writePreRateLimitGuardResponse !== undefined;
+    if (!guardIsConfigured) {
+        return { handled: false };
+    }
+
+    if (typeof preRateLimitGuard !== 'function'
+        || typeof writePreRateLimitGuardResponse !== 'function') {
+        return { handled: true, response: failClosedPreRateLimitGuard(res) };
+    }
+
+    let decision;
+    try {
+        decision = await preRateLimitGuard(req);
+        if (!isValidPreRateLimitGuardDecision(decision)) {
+            return { handled: true, response: failClosedPreRateLimitGuard(res) };
+        }
+    } catch {
+        return { handled: true, response: failClosedPreRateLimitGuard(res) };
+    }
+
+    if (decision.allowed === true) {
+        return { handled: false };
+    }
+
+    try {
+        const response = await writePreRateLimitGuardResponse(req, res, decision);
+        if (!hasPreRateLimitGuardResponseStarted(res)) {
+            return { handled: true, response: failClosedPreRateLimitGuard(res) };
+        }
+        return { handled: true, response };
+    } catch {
+        return { handled: true, response: failClosedPreRateLimitGuard(res) };
+    }
 }
 
 /**
@@ -460,6 +611,11 @@ async function limitFailedProtectedAuth(req, res) {
  * @param {string[]} [options.allowedMethods=null] - HTTP methods this route accepts (e.g. ['GET', 'POST']).
  *                                                   If omitted, all requests return 405 (fail-closed).
  * @param {boolean} [options.csrfProtect] - Override the default CSRF behavior for protected routes.
+ * @param {(req: import('next').NextApiRequest) => object | Promise<object>} [options.preRateLimitGuard]
+ *        Optional guard that runs after method and operation validation and
+ *        before identity, auth, cookies, CSRF, skip logic, or Redis.
+ * @param {(req: import('next').NextApiRequest, res: import('next').NextApiResponse, decision: object) => object | Promise<object>} [options.writePreRateLimitGuardResponse]
+ *        Required route-specific response writer when a guard is configured.
  * @param {(req: import('next').NextApiRequest) => boolean | Promise<boolean>} [options.skipRateLimitWhen]
  *        Optional emergency predicate that runs after method/auth/CSRF checks
  *        and before Redis-backed quota checks.
@@ -472,6 +628,8 @@ export function withRateLimit(handler, options = {}){
         operationByMethod = null,
         allowedMethods = null,
         csrfProtect,
+        preRateLimitGuard,
+        writePreRateLimitGuardResponse,
         skipRateLimitWhen,
     } = options;
 
@@ -505,6 +663,16 @@ export function withRateLimit(handler, options = {}){
             // Safety net: allowed method with no operation mapping and no override
             if(!operation){
                 return sendError(res, 405, 'METHOD_NOT_ALLOWED', ERROR_MESSAGES.METHOD_NOT_ALLOWED);
+            }
+
+            const guardOutcome = await runPreRateLimitGuard(
+                req,
+                res,
+                preRateLimitGuard,
+                writePreRateLimitGuardResponse
+            );
+            if (guardOutcome.handled) {
+                return guardOutcome.response;
             }
 
             try {

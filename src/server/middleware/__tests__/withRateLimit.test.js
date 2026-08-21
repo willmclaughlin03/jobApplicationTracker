@@ -29,10 +29,11 @@ jest.mock('../../lib/rateLimit.js', () => ({
     checkRateLimit: mockCheckRateLimit,
 }));
 
+const mockValidateCsrfToken = jest.fn().mockReturnValue(true);
 // Stub out csrf.js so the module-level CSRF_SECRET check doesn't throw.
 // CSRF behaviour is tested separately in withRateLimit.csrf.test.js.
 jest.mock('../../lib/csrf.js', () => ({
-    validateCsrfToken: jest.fn().mockReturnValue(true),
+    validateCsrfToken: mockValidateCsrfToken,
 }));
 
 const mockLog = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
@@ -75,6 +76,7 @@ describe('withRateLimit middleware', () => {
             headersSent: false,
             json: jest.fn().mockReturnThis(),
             setHeader: jest.fn(),
+            removeHeader: jest.fn(),
             end: jest.fn().mockReturnThis(),
         };
         res.status = jest.fn((statusCode) => {
@@ -108,6 +110,7 @@ describe('withRateLimit middleware', () => {
             reset: Date.now() + 3600000,
             window: 'hourly',
         });
+        mockValidateCsrfToken.mockReturnValue(true);
     });
 
     afterEach(() => {
@@ -1766,6 +1769,375 @@ describe('withRateLimit middleware', () => {
                 'free',
                 'auth'
             );
+        });
+    });
+
+    describe('pre-rate-limit guard boundary', () => {
+        /**
+         * Method and operation validation must finish before an opt-in guard.
+         */
+        it.each([
+            ['OPTIONS', ['GET'], 'auth'],
+            ['POST', ['GET'], 'auth'],
+            ['CUSTOM', ['CUSTOM'], null],
+        ])('does not invoke the guard for invalid method/operation case %s', async (
+            method,
+            allowedMethods,
+            operation
+        ) => {
+            const preRateLimitGuard = jest.fn(() => ({ allowed: true }));
+            const req = createMockRequest(method);
+            const res = createMockResponse();
+
+            await withRateLimit(jest.fn(), {
+                requireAuth: false,
+                allowedMethods,
+                operation,
+                preRateLimitGuard,
+                writePreRateLimitGuardResponse: jest.fn(),
+            })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(405);
+            expect(preRateLimitGuard).not.toHaveBeenCalled();
+            expect(mockGetUserFromRequest).not.toHaveBeenCalled();
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Public identity, skip logic, Redis, and the handler must follow the guard.
+         */
+        it('runs an allowed guard before the public-route pipeline', async () => {
+            const order = [];
+            const req = { method: 'GET', headers: {}, socket: {} };
+            Object.defineProperty(req.socket, 'remoteAddress', {
+                get: () => {
+                    order.push('identity');
+                    return '192.0.2.100';
+                },
+            });
+            const res = createMockResponse();
+            const preRateLimitGuard = jest.fn(() => {
+                order.push('guard');
+                return { allowed: true };
+            });
+            const skipRateLimitWhen = jest.fn(() => {
+                order.push('skip');
+                return false;
+            });
+            mockCheckRateLimit.mockImplementation(async () => {
+                order.push('redis');
+                return { success: true };
+            });
+            const handler = jest.fn(() => {
+                order.push('handler');
+            });
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                operation: 'auth',
+                preRateLimitGuard,
+                writePreRateLimitGuardResponse: jest.fn(),
+                skipRateLimitWhen,
+            })(req, res);
+
+            expect(order).toEqual(['guard', 'identity', 'skip', 'redis', 'handler']);
+        });
+
+        /**
+         * Protected auth, cookie access, CSRF, Redis, and handler work must also
+         * occur strictly after an allowed guard.
+         */
+        it('runs an allowed guard before the protected-route pipeline', async () => {
+            const order = [];
+            const req = createMockRequest('POST');
+            Object.defineProperty(req, 'cookies', {
+                get: () => {
+                    order.push('cookies');
+                    return {};
+                },
+            });
+            const res = createMockResponse();
+            const preRateLimitGuard = jest.fn(() => {
+                order.push('guard');
+                return { allowed: true };
+            });
+            mockGetUserFromRequest.mockImplementation(async (request) => {
+                order.push('auth');
+                void request.cookies;
+                return { user: mockUser, error: null, supabaseClient: {} };
+            });
+            mockValidateCsrfToken.mockImplementation(() => {
+                order.push('csrf');
+                return true;
+            });
+            mockCheckRateLimit.mockImplementation(async () => {
+                order.push('redis');
+                return { success: true };
+            });
+            const handler = jest.fn(() => {
+                order.push('handler');
+            });
+
+            await withRateLimit(handler, {
+                allowedMethods: ['POST'],
+                operation: 'auth',
+                preRateLimitGuard,
+                writePreRateLimitGuardResponse: jest.fn(),
+            })(req, res);
+
+            expect(order).toEqual(['guard', 'auth', 'cookies', 'csrf', 'redis', 'handler']);
+        });
+
+        /**
+         * Valid 429 and 503 rejections must be written without downstream work.
+         */
+        it.each([
+            [{ allowed: false, statusCode: 429, reason: 'limit_exceeded', retryAfterSeconds: 12 }, 429],
+            [{ allowed: false, statusCode: 503, reason: 'source_unavailable' }, 503],
+        ])('short-circuits a valid guard rejection with status %s', async (decision, statusCode) => {
+            const identityRead = jest.fn(() => '192.0.2.101');
+            const req = { method: 'GET', headers: {}, socket: {} };
+            Object.defineProperty(req.socket, 'remoteAddress', { get: identityRead });
+            const res = createMockResponse();
+            const handler = jest.fn();
+            const skipRateLimitWhen = jest.fn();
+            const writer = jest.fn((_request, response) => {
+                response.status(statusCode).json({ error: 'guard rejection' });
+                response.headersSent = true;
+                return response;
+            });
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                operation: 'auth',
+                preRateLimitGuard: () => decision,
+                writePreRateLimitGuardResponse: writer,
+                skipRateLimitWhen,
+            })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(statusCode);
+            expect(identityRead).not.toHaveBeenCalled();
+            expect(mockGetUserFromRequest).not.toHaveBeenCalled();
+            expect(mockValidateCsrfToken).not.toHaveBeenCalled();
+            expect(skipRateLimitWhen).not.toHaveBeenCalled();
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Synchronous and asynchronous guard exceptions must use the legacy 503.
+         */
+        it.each([
+            ['throws', () => { throw new Error('guard failure'); }],
+            ['rejects', () => Promise.reject(new Error('guard rejection'))],
+        ])('fails closed when the guard %s', async (_description, preRateLimitGuard) => {
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                operation: 'auth',
+                preRateLimitGuard,
+                writePreRateLimitGuardResponse: jest.fn(),
+            })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(res.json).toHaveBeenCalledWith({
+                data: null,
+                error: 'SERVICE_UNAVAILABLE',
+                message: 'Service temporarily unavailable. Please try again later.',
+            });
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Missing and malformed decisions cannot be delegated to a route writer.
+         */
+        it.each([
+            null,
+            undefined,
+            {},
+            [],
+            { allowed: false, statusCode: 503 },
+            { allowed: false, statusCode: 400, reason: 'invalid_status' },
+            { allowed: false, statusCode: 503, reason: 'INVALID REASON' },
+            { allowed: false, statusCode: 503, reason: 'a'.repeat(65) },
+            { allowed: false, statusCode: 429, reason: 'limit_exceeded' },
+            { allowed: false, statusCode: 429, reason: 'limit_exceeded', retryAfterSeconds: 0 },
+            {
+                allowed: false,
+                statusCode: 429,
+                reason: 'limit_exceeded',
+                retryAfterSeconds: Number.MAX_SAFE_INTEGER + 1,
+            },
+        ])('fails closed for malformed guard decision %#', async (decision) => {
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+            const writer = jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                operation: 'auth',
+                preRateLimitGuard: () => decision,
+                writePreRateLimitGuardResponse: writer,
+            })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(writer).not.toHaveBeenCalled();
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Supplying only one callable boundary option is a fail-closed configuration error.
+         */
+        it.each([
+            [{ preRateLimitGuard: () => ({ allowed: true }) }],
+            [{ writePreRateLimitGuardResponse: jest.fn() }],
+            [{ preRateLimitGuard: true, writePreRateLimitGuardResponse: jest.fn() }],
+            [{ preRateLimitGuard: jest.fn(), writePreRateLimitGuardResponse: true }],
+        ])('fails closed for incomplete guard configuration %#', async (guardOptions) => {
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                operation: 'auth',
+                ...guardOptions,
+            })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Writer exceptions, rejections, and silent completion must become a
+         * clean retry-free 503 while the response remains replaceable.
+         */
+        it.each([
+            ['throws', () => { throw new Error('writer failure'); }],
+            ['rejects', () => Promise.reject(new Error('writer rejection'))],
+            ['returns without writing', () => undefined],
+        ])('fails closed when the response writer %s', async (_description, writer) => {
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+            res.setHeader('Retry-After', 60);
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                operation: 'auth',
+                preRateLimitGuard: () => ({
+                    allowed: false,
+                    statusCode: 503,
+                    reason: 'source_unavailable',
+                }),
+                writePreRateLimitGuardResponse: writer,
+            })(req, res);
+
+            expect(res.removeHeader).toHaveBeenCalledWith('Retry-After');
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
+         * A writer that fails after committing headers may only close the stream.
+         */
+        it('ends a partially started response instead of writing a second envelope', async () => {
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                operation: 'auth',
+                preRateLimitGuard: () => ({
+                    allowed: false,
+                    statusCode: 503,
+                    reason: 'source_unavailable',
+                }),
+                writePreRateLimitGuardResponse: (_request, response) => {
+                    response.headersSent = true;
+                    throw new Error('partial writer failure');
+                },
+            })(req, res);
+
+            expect(res.end).toHaveBeenCalledTimes(1);
+            expect(res.status).not.toHaveBeenCalled();
+            expect(res.json).not.toHaveBeenCalled();
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        /**
+         * Guard-owned fields cannot impersonate the middleware Redis-skip sentinel.
+         */
+        it('ignores forged skip metadata on an allowed guard decision', async () => {
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                operation: 'auth',
+                preRateLimitGuard: () => ({ allowed: true, skipped: true }),
+                writePreRateLimitGuardResponse: jest.fn(),
+            })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledTimes(1);
+            expect(handler).toHaveBeenCalledTimes(1);
+        });
+
+        /**
+         * The generic seam may await an allowed guard without changing downstream behavior.
+         */
+        it('continues after an asynchronous allowed guard', async () => {
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                operation: 'auth',
+                preRateLimitGuard: async () => ({ allowed: true }),
+                writePreRateLimitGuardResponse: jest.fn(),
+            })(req, res);
+
+            expect(mockCheckRateLimit).toHaveBeenCalledTimes(1);
+            expect(handler).toHaveBeenCalledTimes(1);
+        });
+
+        /**
+         * Routes that do not opt in retain their original headers and pipeline.
+         */
+        it('does not add a global Cache-Control header for unrelated routes', async () => {
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+            })(req, res);
+
+            expect(res.setHeader).not.toHaveBeenCalledWith('Cache-Control', expect.anything());
+            expect(mockCheckRateLimit).toHaveBeenCalledTimes(1);
+            expect(handler).toHaveBeenCalledTimes(1);
         });
     });
 });
