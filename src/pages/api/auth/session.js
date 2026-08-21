@@ -97,28 +97,11 @@ async function handler(req, res) {
   }
 }
 
-const rateLimitedSessionHandler = withRateLimit(handler, {
+export default withRateLimit(handler, {
   requireAuth: false,
   operation: OPERATIONS.AUTH,
   allowedMethods: ['GET'],
+  cacheControl: 'private, no-store',
   preRateLimitGuard: evaluateTemporarySessionRequest,
   writePreRateLimitGuardResponse: writeTemporarySessionCeilingResponse,
 });
-
-/**
- * Applies the v1-owned private cache boundary before middleware execution.
- *
- * Purpose: method, guard, Redis, Supabase, and handler outcomes can all return
- * early, so the session route must establish its cache policy outside every
- * one of those response paths without changing unrelated middleware users.
- *
- * @param {import('next').NextApiRequest} req - Session request.
- * @param {import('next').NextApiResponse} res - Session response.
- * @returns {Promise<object|undefined>} Composed middleware response.
- */
-function sessionRoute(req, res) {
-  res.setHeader('Cache-Control', 'private, no-store');
-  return rateLimitedSessionHandler(req, res);
-}
-
-export default sessionRoute;

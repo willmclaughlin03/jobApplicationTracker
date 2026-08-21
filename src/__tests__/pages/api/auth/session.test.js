@@ -275,15 +275,13 @@ describe('/api/auth/session composed v1 route', () => {
   });
 
   /**
-   * Every bounded ceiling infrastructure failure maps to one retry-free legacy 503.
+   * Every validated unavailable reason maps to one retry-free legacy 503.
    */
   it.each([
-    ['source', { allowed: false, statusCode: 503, reason: 'source_unavailable' }],
-    ['clock', { allowed: false, statusCode: 503, reason: 'internal_failure' }],
-    ['crypto', { allowed: false, statusCode: 503, reason: 'internal_failure' }],
-    ['capacity', { allowed: false, statusCode: 503, reason: 'state_capacity' }],
-    ['state', { allowed: false, statusCode: 503, reason: 'internal_failure' }],
-  ])('maps a %s failure to the legacy unavailable response', async (_name, decision) => {
+    ['source_unavailable', { allowed: false, statusCode: 503, reason: 'source_unavailable' }],
+    ['internal_failure', { allowed: false, statusCode: 503, reason: 'internal_failure' }],
+    ['state_capacity', { allowed: false, statusCode: 503, reason: 'state_capacity' }],
+  ])('maps the %s reason to the legacy unavailable response', async (_reason, decision) => {
     ceilingEvaluateSpy.mockReturnValue(decision);
     const req = createMockRequest();
     const cookieRead = jest.fn(() => ({}));

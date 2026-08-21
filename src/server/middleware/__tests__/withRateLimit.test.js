@@ -1845,26 +1845,19 @@ describe('withRateLimit middleware', () => {
         });
 
         /**
-         * Protected auth, cookie access, CSRF, Redis, and handler work must also
-         * occur strictly after an allowed guard.
+         * Protected auth, CSRF, Redis, and handler work must also occur strictly
+         * after an allowed guard.
          */
         it('runs an allowed guard before the protected-route pipeline', async () => {
             const order = [];
             const req = createMockRequest('POST');
-            Object.defineProperty(req, 'cookies', {
-                get: () => {
-                    order.push('cookies');
-                    return {};
-                },
-            });
             const res = createMockResponse();
             const preRateLimitGuard = jest.fn(() => {
                 order.push('guard');
                 return { allowed: true };
             });
-            mockGetUserFromRequest.mockImplementation(async (request) => {
+            mockGetUserFromRequest.mockImplementation(async () => {
                 order.push('auth');
-                void request.cookies;
                 return { user: mockUser, error: null, supabaseClient: {} };
             });
             mockValidateCsrfToken.mockImplementation(() => {
@@ -1886,7 +1879,7 @@ describe('withRateLimit middleware', () => {
                 writePreRateLimitGuardResponse: jest.fn(),
             })(req, res);
 
-            expect(order).toEqual(['guard', 'auth', 'cookies', 'csrf', 'redis', 'handler']);
+            expect(order).toEqual(['guard', 'auth', 'csrf', 'redis', 'handler']);
         });
 
         /**
@@ -1951,6 +1944,10 @@ describe('withRateLimit middleware', () => {
                 error: 'SERVICE_UNAVAILABLE',
                 message: 'Service temporarily unavailable. Please try again later.',
             });
+            expect(mockLog.error).toHaveBeenCalledWith({
+                event: 'pre_rate_limit_guard_failure',
+                reason: 'guard_error',
+            }, 'Pre-rate-limit guard failed closed');
             expect(mockCheckRateLimit).not.toHaveBeenCalled();
             expect(handler).not.toHaveBeenCalled();
         });
@@ -1990,6 +1987,10 @@ describe('withRateLimit middleware', () => {
             })(req, res);
 
             expect(res.status).toHaveBeenCalledWith(503);
+            expect(mockLog.error).toHaveBeenCalledWith({
+                event: 'pre_rate_limit_guard_failure',
+                reason: 'invalid_decision',
+            }, 'Pre-rate-limit guard failed closed');
             expect(writer).not.toHaveBeenCalled();
             expect(mockCheckRateLimit).not.toHaveBeenCalled();
             expect(handler).not.toHaveBeenCalled();
@@ -2016,6 +2017,10 @@ describe('withRateLimit middleware', () => {
             })(req, res);
 
             expect(res.status).toHaveBeenCalledWith(503);
+            expect(mockLog.error).toHaveBeenCalledWith({
+                event: 'pre_rate_limit_guard_failure',
+                reason: 'invalid_configuration',
+            }, 'Pre-rate-limit guard failed closed');
             expect(mockCheckRateLimit).not.toHaveBeenCalled();
             expect(handler).not.toHaveBeenCalled();
         });
@@ -2025,10 +2030,14 @@ describe('withRateLimit middleware', () => {
          * clean retry-free 503 while the response remains replaceable.
          */
         it.each([
-            ['throws', () => { throw new Error('writer failure'); }],
-            ['rejects', () => Promise.reject(new Error('writer rejection'))],
-            ['returns without writing', () => undefined],
-        ])('fails closed when the response writer %s', async (_description, writer) => {
+            ['throws', () => { throw new Error('writer failure'); }, 'writer_error'],
+            ['rejects', () => Promise.reject(new Error('writer rejection')), 'writer_error'],
+            ['returns without writing', () => undefined, 'writer_incomplete'],
+        ])('fails closed when the response writer %s', async (
+            _description,
+            writer,
+            failureReason
+        ) => {
             const req = createMockRequest('GET');
             const res = createMockResponse();
             const handler = jest.fn();
@@ -2048,6 +2057,10 @@ describe('withRateLimit middleware', () => {
 
             expect(res.removeHeader).toHaveBeenCalledWith('Retry-After');
             expect(res.status).toHaveBeenCalledWith(503);
+            expect(mockLog.error).toHaveBeenCalledWith({
+                event: 'pre_rate_limit_guard_failure',
+                reason: failureReason,
+            }, 'Pre-rate-limit guard failed closed');
             expect(mockCheckRateLimit).not.toHaveBeenCalled();
             expect(handler).not.toHaveBeenCalled();
         });
@@ -2076,6 +2089,10 @@ describe('withRateLimit middleware', () => {
             })(req, res);
 
             expect(res.end).toHaveBeenCalledTimes(1);
+            expect(mockLog.error).toHaveBeenCalledWith({
+                event: 'pre_rate_limit_guard_failure',
+                reason: 'writer_error',
+            }, 'Pre-rate-limit guard failed closed');
             expect(res.status).not.toHaveBeenCalled();
             expect(res.json).not.toHaveBeenCalled();
             expect(mockCheckRateLimit).not.toHaveBeenCalled();
@@ -2120,6 +2137,29 @@ describe('withRateLimit middleware', () => {
 
             expect(mockCheckRateLimit).toHaveBeenCalledTimes(1);
             expect(handler).toHaveBeenCalledTimes(1);
+        });
+
+        /**
+         * Route-owned cache policy must cover middleware responses as well as handlers.
+         */
+        it('applies an opted-in Cache-Control header before middleware work', async () => {
+            const req = createMockRequest('POST');
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                cacheControl: 'private, no-store',
+            })(req, res);
+
+            expect(res.setHeader.mock.calls[0]).toEqual([
+                'Cache-Control',
+                'private, no-store',
+            ]);
+            expect(res.statusCode).toBe(405);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
         });
 
         /**
