@@ -802,27 +802,49 @@ describe('temporarySessionCeiling', () => {
     expect(ceiling.getSnapshot().telemetry.expiredEntryCleanupCount).toBe(1);
   });
 
-  it('prunes shape-valid expired entries without scanning stale ring slots', () => {
+  it('deletes nothing when an expired entry has malformed ring contents', () => {
     let nowMs = 0;
-    let observedEntry;
+    const logger = createLogger();
+    const observedEntries = [];
     const ceiling = createTemporarySessionCeiling({
       now: () => nowMs,
       sourceMode: 'local',
       crypto: createTestCrypto(),
       testEntryObserver: (entry) => {
-        observedEntry = entry;
+        observedEntries.push(entry);
       },
     });
 
     expect(ceiling.evaluate(createRequest('192.0.2.42'), { routeVersion: 'v1' }))
       .toEqual({ allowed: true });
-    observedEntry.labels[0] = 1;
-
-    nowMs = 61_000;
     expect(ceiling.evaluate(createRequest('192.0.2.43'), { routeVersion: 'v1' }))
       .toEqual({ allowed: true });
-    expect(ceiling.getSnapshot().activeEntryCount).toBe(1);
-    expect(ceiling.getSnapshot().telemetry.expiredEntryCleanupCount).toBe(1);
+    observedEntries[1].labels[0] = 1;
+
+    nowMs = 61_000;
+    expect(ceiling.evaluate(
+      createRequest('192.0.2.44', { logger }),
+      { routeVersion: 'v1' }
+    )).toEqual({
+      allowed: false,
+      statusCode: 503,
+      reason: 'internal_failure',
+    });
+    expect(ceiling.getSnapshot().activeEntryCount).toBe(2);
+    expect(ceiling.getSnapshot().telemetry.expiredEntryCleanupCount).toBe(0);
+    expect(ceiling.getSnapshot().pruneScanCount).toBe(1);
+
+    expect(ceiling.evaluate(
+      createRequest('192.0.2.45', { logger }),
+      { routeVersion: 'v2' }
+    ).statusCode).toBe(503);
+    expect(ceiling.getSnapshot().pruneScanCount).toBe(1);
+    expect(logger.warn.mock.calls.filter(
+      ([fields]) => fields.event === 'temporary_session_ceiling_internal_failure_latched'
+    )).toHaveLength(1);
+    expect(logger.warn.mock.calls.filter(
+      ([fields]) => fields.event === 'temporary_session_ceiling_rejection_sample'
+    )).toHaveLength(1);
   });
 
   it.each([
@@ -920,8 +942,9 @@ describe('temporarySessionCeiling', () => {
     expect(ceiling.getSnapshot().pruneScanCount).toBe(2);
   });
 
-  it('classifies expiry without validating unrelated ring contents', () => {
+  it('deletes nothing when an unrelated active entry has malformed ring contents', () => {
     let nowMs = 0;
+    const logger = createLogger();
     const observedEntries = [];
     const observer = jest.fn((entry) => {
       observedEntries.push(entry);
@@ -940,18 +963,30 @@ describe('temporarySessionCeiling', () => {
     observedEntries[1].labels[59] = 58;
 
     nowMs = 61_000;
-    expect(ceiling.evaluate(createRequest('192.0.2.72'), { routeVersion: 'v1' }))
-      .toEqual({ allowed: true });
-    expect(ceiling.getSnapshot().activeEntryCount).toBe(2);
-    expect(ceiling.getSnapshot().telemetry.expiredEntryCleanupCount).toBe(1);
-
-    expect(ceiling.evaluate(createRequest('192.0.2.71'), { routeVersion: 'v1' })).toEqual({
+    expect(ceiling.evaluate(
+      createRequest('192.0.2.72', { logger }),
+      { routeVersion: 'v1' }
+    )).toEqual({
       allowed: false,
       statusCode: 503,
       reason: 'internal_failure',
     });
-    expect(ceiling.evaluate(createRequest('192.0.2.72'), { routeVersion: 'v1' }).statusCode)
-      .toBe(503);
+    expect(ceiling.getSnapshot().activeEntryCount).toBe(2);
+    expect(ceiling.getSnapshot().telemetry.expiredEntryCleanupCount).toBe(0);
+    expect(ceiling.getSnapshot().pruneScanCount).toBe(2);
+
+    expect(ceiling.evaluate(createRequest('192.0.2.71', { logger }), { routeVersion: 'v1' })).toEqual({
+      allowed: false,
+      statusCode: 503,
+      reason: 'internal_failure',
+    });
+    expect(ceiling.getSnapshot().pruneScanCount).toBe(2);
+    expect(logger.warn.mock.calls.filter(
+      ([fields]) => fields.event === 'temporary_session_ceiling_internal_failure_latched'
+    )).toHaveLength(1);
+    expect(logger.warn.mock.calls.filter(
+      ([fields]) => fields.event === 'temporary_session_ceiling_rejection_sample'
+    )).toHaveLength(1);
   });
 
   it('latches unhealthy when the currently addressed entry is malformed', () => {
