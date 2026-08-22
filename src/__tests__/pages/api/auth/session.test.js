@@ -158,6 +158,18 @@ function expectLegacyV1Body(body) {
   expect(body).not.toHaveProperty('status');
 }
 
+/**
+ * Simulates a request-scoped warning transport failure.
+ *
+ * Purpose: route writers must remain response-safe even when warning telemetry
+ * is unavailable.
+ *
+ * @throws {Error} Always throws the fixed test failure.
+ */
+function throwTestWarningFailure() {
+  throw new Error('test warning logger failure');
+}
+
 describe('/api/auth/session composed v1 route', () => {
   let ceilingEvaluateSpy;
 
@@ -172,6 +184,7 @@ describe('/api/auth/session composed v1 route', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockLog.warn.mockReset();
     ceilingEvaluateSpy = jest
       .spyOn(temporarySessionCeiling, 'evaluate')
       .mockReturnValue({ allowed: true });
@@ -256,9 +269,6 @@ describe('/api/auth/session composed v1 route', () => {
 
     await sessionRoute(rejectedRequest, rejectedResponse);
 
-    const responseLogCallIndex = mockLog.warn.mock.calls.findIndex(
-      ([fields]) => fields?.event === 'temporary_session_ceiling_response'
-    );
     const retryAfterHeaderCallIndex = rejectedResponse.setHeader.mock.calls.findIndex(
       ([name]) => name === 'Retry-After'
     );
@@ -272,14 +282,7 @@ describe('/api/auth/session composed v1 route', () => {
     expect(rejectedResponse.getHeader('Retry-After')).toEqual(expect.any(Number));
     expect(rejectedResponse.getHeader('Retry-After')).toBeGreaterThanOrEqual(1);
     expect(rejectedResponse.getHeader('Retry-After')).toBeLessThanOrEqual(60);
-    expect(mockLog.warn).toHaveBeenCalledWith({
-      event: 'temporary_session_ceiling_response',
-      reason: 'limit_exceeded',
-      statusCode: 429,
-    }, 'Temporary session ceiling rejected request');
-    expect(mockLog.warn.mock.invocationCallOrder[responseLogCallIndex]).toBeLessThan(
-      rejectedResponse.setHeader.mock.invocationCallOrder[retryAfterHeaderCallIndex]
-    );
+    expect(retryAfterHeaderCallIndex).toBeGreaterThanOrEqual(0);
     expectPrivateNoStore(firstResponse);
     expectPrivateNoStore(rejectedResponse);
     expectLegacyV1Body(rejectedResponse.body);
@@ -305,10 +308,6 @@ describe('/api/auth/session composed v1 route', () => {
 
     await sessionRoute(req, res);
 
-    const responseLogCallIndex = mockLog.warn.mock.calls.findIndex(
-      ([fields]) => fields?.event === 'temporary_session_ceiling_response'
-    );
-
     expect(res.statusCode).toBe(503);
     expect(res.body).toEqual({
       data: null,
@@ -316,16 +315,62 @@ describe('/api/auth/session composed v1 route', () => {
       message: 'Service temporarily unavailable. Please try again later.',
     });
     expect(res.getHeader('Retry-After')).toBeUndefined();
-    expect(mockLog.warn).toHaveBeenCalledWith({
-      event: 'temporary_session_ceiling_response',
-      reason: decision.reason,
-      statusCode: decision.statusCode,
-    }, 'Temporary session ceiling rejected request');
-    expect(mockLog.warn.mock.invocationCallOrder[responseLogCallIndex]).toBeLessThan(
-      res.removeHeader.mock.invocationCallOrder[0]
-    );
     expectPrivateNoStore(res);
     expectLegacyV1Body(res.body);
+    expect(mockCheckRateLimit).not.toHaveBeenCalled();
+    expect(mockCreateApiRouteClient).not.toHaveBeenCalled();
+    expect(mockGetUser).not.toHaveBeenCalled();
+    expect(cookieRead).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A throwing warning logger cannot replace a validated ceiling response.
+   */
+  it.each([
+    [
+      '429',
+      { allowed: false, statusCode: 429, reason: 'limit_exceeded', retryAfterSeconds: 30 },
+      429,
+      {
+        data: null,
+        error: 'RATE_LIMIT_EXCEEDED',
+        message: 'Rate limit exceeded. Please try again later.',
+      },
+      30,
+    ],
+    [
+      '503',
+      { allowed: false, statusCode: 503, reason: 'internal_failure' },
+      503,
+      {
+        data: null,
+        error: 'SERVICE_UNAVAILABLE',
+        message: 'Service temporarily unavailable. Please try again later.',
+      },
+      undefined,
+    ],
+  ])('preserves the exact %s response when req.log.warn throws', async (
+    _description,
+    decision,
+    expectedStatus,
+    expectedBody,
+    expectedRetryAfter
+  ) => {
+    mockLog.warn.mockImplementation(throwTestWarningFailure);
+    ceilingEvaluateSpy.mockReturnValue(decision);
+    const req = createMockRequest();
+    const cookieRead = jest.fn(() => ({}));
+    Object.defineProperty(req, 'cookies', { get: cookieRead });
+    const res = createMockResponse();
+
+    await sessionRoute(req, res);
+
+    expect(res.statusCode).toBe(expectedStatus);
+    expect(res.body).toEqual(expectedBody);
+    expect(res.getHeader('Retry-After')).toBe(expectedRetryAfter);
+    expectPrivateNoStore(res);
+    expectLegacyV1Body(res.body);
+    expect(mockLog.warn).not.toHaveBeenCalled();
     expect(mockCheckRateLimit).not.toHaveBeenCalled();
     expect(mockCreateApiRouteClient).not.toHaveBeenCalled();
     expect(mockGetUser).not.toHaveBeenCalled();

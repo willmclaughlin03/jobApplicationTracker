@@ -235,8 +235,8 @@ function createCounterEntry(slotCount) {
 /**
  * Validates the fixed-size entry shape and its last-seen timestamp.
  *
- * Why: pruning can safely classify expired entries without scanning every ring
- * slot, while malformed shapes and impossible timestamps still fail closed.
+ * Why: callers need a shared structural boundary before inspecting ring slots,
+ * while malformed arrays and impossible timestamps must fail closed.
  *
  * @param {object} entry - Candidate ring entry.
  * @param {number} currentSecond - Current monotonic second.
@@ -665,10 +665,10 @@ export function createTemporarySessionCeiling(options = {}) {
   }
 
   /**
-   * Validates entry shapes and classifies expiry before deleting keys.
+   * Fully validates entries and classifies expiry before deleting keys.
    *
-   * Why: cleanup remains a bounded metadata scan, and a malformed later shape
-   * must not permit partial cleanup mutation.
+   * Why: no candidate may be deleted until every stored ring, count, label, and
+   * time relationship passes the governing state invariant.
    *
    * @param {number} currentSecond - Current monotonic second.
    * @returns {number} Number of expired entries deleted.
@@ -684,7 +684,7 @@ export function createTemporarySessionCeiling(options = {}) {
       if (typeof stateKey !== 'string' || !OPAQUE_KEY_PATTERN.test(stateKey)) {
         throw new Error('temporary session ceiling state is invalid');
       }
-      validateCounterEntryShape(entry, currentSecond, slotCount);
+      validateCounterEntry(entry, currentSecond, slotCount, limit);
       if (currentSecond - entry.lastSeenSecond > windowSeconds) {
         expiredKeys.push(stateKey);
       }
