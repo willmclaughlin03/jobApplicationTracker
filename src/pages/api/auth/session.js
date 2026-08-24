@@ -7,7 +7,7 @@
  *
  * Connects to:
  * - createApiRouteClient for cookie-based session management
- * - withRateLimit middleware with the shared ceiling and generic AUTH quota
+ * - withRateLimit middleware with the shared coarse-source ceiling
  *
  * Security:
  * - Returns only safe user fields (id, email, application role) — never tokens
@@ -39,6 +39,18 @@ async function evaluateTemporarySessionRequest(req) {
     routeVersion: 'v1',
     logger: req.log,
   });
+}
+
+/**
+ * Skips the legacy generic AUTH quota after the shared ceiling allows.
+ *
+ * Why: the decision is route-owned and request-independent; headers, cookies,
+ * query, body, environment, feature flags, and caller input cannot select it.
+ *
+ * @returns {true} unconditional session-only legacy quota skip
+ */
+function skipLegacySessionRateLimit() {
+  return true;
 }
 
 /**
@@ -103,4 +115,5 @@ export default withRateLimit(handler, {
   cacheControl: 'private, no-store',
   preRateLimitGuard: evaluateTemporarySessionRequest,
   writePreRateLimitGuardResponse: writeTemporarySessionCeilingResponse,
+  skipRateLimitWhen: skipLegacySessionRateLimit,
 });

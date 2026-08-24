@@ -108,56 +108,59 @@ This endpoint is rate-limited at **60 requests/hour per IP** (`OPERATIONS.HEALTH
 3. **Notify:** Slack channel or email
 4. **Note:** `/api/health` 429s are logged at `debug`, not `warn`, to avoid noisy ingest from aggressive uptime polling. This alert is for non-health rate-limit exhaustion.
 
-### Temporary Session Ceiling (Proposed, Not Configured)
+### Shared Temporary Session Ceiling (Transition, Not Yet Alert-Configured)
 
-The temporary session ceiling emits only bounded, identifier-free, process-local events. No monitor,
-threshold, alert destination, or owner in this section has been configured or approved.
+`GET /api/auth/session` now consumes one route-specific shared Redis allowance before cookies,
+Supabase, or handler work. The policy is 400 allowed requests across the conservative inclusive
+61-second representation (61 physical second buckets); request 401 receives the legacy `429` with an
+integer `Retry-After` from 1 through 60. Allowed session responses intentionally omit
+`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, and `X-RateLimit-Window` because the
+legacy generic `AUTH` quota is skipped only after the shared guard allows. Every response remains
+`Cache-Control: private, no-store`.
 
-Supported events:
+Missing or ambiguous trusted source identity, HMAC/schema failure, secret uncertainty, invalid Redis
+state, transport uncertainty, malformed Lua results, or deadline expiry returns the existing
+sanitized retry-free `503` and performs no cookie, Supabase, or handler work. Redis uses a 1,500 ms
+command timeout inside a 3,000 ms complete-limiter deadline. The two Secrets Manager reads share one
+1,000 ms abort deadline including SDK retries. Their immutable pair has a hard 60-second TTL,
+per-instance single-flight refresh, a five-second failure cooldown, atomic replacement, and no
+expired fallback.
 
-- `temporary_session_ceiling_summary` is a request-driven aggregate containing
-  `reportingWindowSeconds`, `totalChecks`, `allowedChecks`, `rejectedChecks`,
-  `sourceResolutionFailures`, `stateCapacityFailures`, `internalFailures`,
-  `expiredEntryCleanupCount`, `activeEntryCount`, and bounded `routeVersionTotals` for `v1`, `v2`,
-  and `unknown`.
-- `temporary_session_ceiling_rejection_sample` is limited to one successful sample per retained
-  reporting window. It contains only fixed `outcome`, `reason`, and `routeVersion` labels plus a null
-  or integer `retryAfterSeconds` from 1 through 60.
-- `temporary_session_ceiling_internal_failure_latched` records the fixed unhealthy transition or a
-  bounded factory-construction category. It contains no exception or provider text.
+`temporary_session_ceiling_summary` is request-driven and contains only bounded build/module-boot
+attribution plus fixed-shape aggregate maps: total decisions; secret refresh start/success/failure and
+cooldown counts; Redis client, `EVALSHA`, exact-`NOSCRIPT` fallback, and uncertainty counts; script
+allow/rate-limit/invalid-state/result counts; fixed failure reasons; and fixed duration buckets. It
+never contains source addresses, address HMACs, Redis keys, key IDs/material, cookies, tokens,
+session IDs, secret contents/version IDs/resource identifiers, request/environment/provider payloads,
+or arbitrary error fields. Per-rejection warnings are intentionally unsupported because they are
+attacker-amplifiable.
 
-The former `temporary_session_ceiling_response` warning is not supported and must not be queried or
-restored. Emitting one warning for every rejected request is attacker-amplifiable and can make route
-behavior depend on logger health.
+Initial alert thresholds are approved as query guidance but are not configured until an owner,
+destination, retention policy, and escalation path are recorded:
 
-Proposed initial thresholds, all unconfigured:
+1. Investigate any `secretRefreshFailed`, `redisUnavailable`, `scriptInvalidState`,
+   `scriptResultInvalid`, or `deadlineExceeded` count above zero in a completed summary.
+2. Treat any sustained `unavailable` result, or any source failure after deployed source trust has
+   been proven, as a release/rollback decision point.
+3. Review rate limiting when at least 100 decisions occur and `rateLimited / total >= 0.05` for three
+   consecutive completed summaries.
+4. Investigate any exact-`NOSCRIPT` fallback burst above one per observed module boot; no timeout,
+   lost response, malformed result, or transport error may be retried.
+5. Establish storage, command, bandwidth, and expiration alerts only after deployed capacity evidence
+   confirms the required 2× headroom.
 
-1. Treat any `temporary_session_ceiling_internal_failure_latched` event as an immediate
-   investigation and release/rollback decision point.
-2. Investigate any summary with `internalFailures > 0` or `stateCapacityFailures > 0`.
-3. Investigate `activeEntryCount >= 8000` in two consecutive emitted summaries; treat 10,000 plus
-   any capacity failure as saturation.
-4. After deployed source trust is proven, investigate any `sourceResolutionFailures > 0`; before
-   activation, source failures are expected to remain a deployment blocker rather than an alert
-   success condition.
-5. Review sustained rate limiting when at least 100 checks occur in a summary and derived
-   rate-limit rejections reach 5% for three consecutive emitted windows. Derive the count from
-   `rejectedChecks` after subtracting source, capacity, and internal failures, and confirm the sampled
-   reason before classifying it.
-6. Establish a deployed cleanup-latency threshold only after the actual runtime benchmark. The local
-   25 ms active-scan p99 and 50 ms mass-expiration p99 values are stop-and-report test guardrails, not
-   repository or production SLOs.
+The application ceiling is not a substitute for WAF. The scoped WAF rule remains the coarse outer
+approximation and must be in Block mode for an approved key-rotation window. Normal operation writes
+only the active generation. The sole temporary exception is the documented adjacent-generation
+bridge; after verified convergence, wait at least 62 uninterrupted seconds before removing the
+previous generation. A third generation, rollback, mismatched key metadata, or premature bridge
+removal fails closed.
 
-Summary rotation requires a later healthy request to cross the reporting boundary. An unhealthy
-instance takes a fast fail-closed path and does not resume ordinary summary rotation. Do not alert on
-summary absence as if it were a heartbeat, and do not infer fleet health from one process's event.
-Correlate only aggregate event counts with separately verified deployment-instance inventory after
-that inventory exists.
-
-Never add raw/canonical source addresses, address digests, HMAC keys, cookies, tokens, session IDs,
-request bodies, environment values, provider errors, or attacker-controlled labels to these queries
-or alerts. Monitoring ownership, destinations, retention, provider configuration, deployment IDs,
-and rollback contacts remain open owner decisions.
+Full request-duration logging and observed module boots do not prove provider-complete fleet
+coverage. A summary is emitted only when a later request crosses its reporting boundary, so summary
+absence is not a heartbeat. Correlate aggregate events with separately verified immutable deployment
+completion and provider inventory; destinations, ownership, retention, WAF/provider configuration,
+and rollback contacts remain unresolved until explicitly configured.
 
 ### Billing Unsupported Status
 

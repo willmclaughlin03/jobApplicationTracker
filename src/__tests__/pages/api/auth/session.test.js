@@ -2,8 +2,8 @@
  * Integration tests for the composed GET /api/auth/session v1 route.
  *
  * Purpose: exercise the real default export, real withRateLimit middleware,
- * route-owned cache wrapper, shared-ceiling boundary, ordinary Redis path,
- * and legacy handler contracts without introducing future v2 behavior.
+ * route-owned cache wrapper, shared-ceiling boundary, session-only generic
+ * AUTH skip, and legacy handler contracts without future v2 behavior.
  *
  * Connects to: src/pages/api/auth/session.js
  */
@@ -146,6 +146,23 @@ function expectPrivateNoStore(res) {
 }
 
 /**
+ * Verifies the intentional absence of all legacy generic Redis quota headers.
+ *
+ * @param {object} res completed response double
+ * @returns {void}
+ */
+function expectLegacyRateLimitHeadersAbsent(res) {
+  for (const name of [
+    'X-RateLimit-Limit',
+    'X-RateLimit-Remaining',
+    'X-RateLimit-Reset',
+    'X-RateLimit-Window',
+  ]) {
+    expect(res.getHeader(name)).toBeUndefined();
+  }
+}
+
+/**
  * Verifies that a response remains outside the frozen future-v2 envelope.
  *
  * @param {object} body - Legacy response body.
@@ -227,7 +244,7 @@ describe('/api/auth/session composed v1 route', () => {
   /**
    * The route supplies the bounded v1 label and attached request logger.
    */
-  it('attaches the v1 ceiling before ordinary Redis and Supabase work', async () => {
+  it('attaches the v1 ceiling before the session-only skip and Supabase work', async () => {
     const req = createMockRequest();
     const res = createMockResponse();
 
@@ -237,13 +254,12 @@ describe('/api/auth/session composed v1 route', () => {
       routeVersion: 'v1',
       logger: mockLog,
     });
+    expect(mockCheckRateLimit).not.toHaveBeenCalled();
     expect(ceilingEvaluateSpy.mock.invocationCallOrder[0]).toBeLessThan(
-      mockCheckRateLimit.mock.invocationCallOrder[0]
-    );
-    expect(mockCheckRateLimit.mock.invocationCallOrder[0]).toBeLessThan(
       mockCreateApiRouteClient.mock.invocationCallOrder[0]
     );
     expectPrivateNoStore(res);
+    expectLegacyRateLimitHeadersAbsent(res);
   });
 
   /**
@@ -279,6 +295,7 @@ describe('/api/auth/session composed v1 route', () => {
     expect(retryAfterHeaderCallIndex).toBeGreaterThanOrEqual(0);
     expectPrivateNoStore(rejectedResponse);
     expectLegacyV1Body(rejectedResponse.body);
+    expectLegacyRateLimitHeadersAbsent(rejectedResponse);
     expect(mockCheckRateLimit).not.toHaveBeenCalled();
     expect(mockCreateApiRouteClient).not.toHaveBeenCalled();
     expect(mockGetUser).not.toHaveBeenCalled();
@@ -394,70 +411,19 @@ describe('/api/auth/session composed v1 route', () => {
   });
 
   /**
-   * A ceiling allow proceeds into the existing public AUTH Redis check.
+   * A ceiling allow skips the legacy public AUTH Redis check.
    */
-  it('preserves ordinary Redis enforcement after a ceiling allow', async () => {
+  it('skips generic AUTH and omits all four legacy quota headers after an allow', async () => {
     const req = createMockRequest('GET', '203.0.113.10');
     const res = createMockResponse();
 
     await sessionRoute(req, res);
 
-    expect(mockCheckRateLimit).toHaveBeenCalledWith('ip:203.0.113.10', 'free', 'auth');
+    expect(mockCheckRateLimit).not.toHaveBeenCalled();
     expect(mockCreateApiRouteClient).toHaveBeenCalledWith(req, res);
     expect(res.statusCode).toBe(200);
     expectPrivateNoStore(res);
-  });
-
-  /**
-   * Existing Redis exhaustion keeps its current headers, copy, and short circuit.
-   */
-  it('preserves the ordinary Redis 429 response', async () => {
-    jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
-    mockCheckRateLimit.mockResolvedValue({
-      success: false,
-      limit: 15,
-      remaining: 0,
-      reset: 1_030_000,
-      window: 'hourly',
-    });
-    const req = createMockRequest();
-    const res = createMockResponse();
-
-    await sessionRoute(req, res);
-
-    expect(res.statusCode).toBe(429);
-    expect(res.body).toEqual({
-      data: null,
-      error: 'RATE_LIMIT_EXCEEDED',
-      message: 'Rate limit exceeded. Try again in 30 seconds.',
-    });
-    expect(res.getHeader('Retry-After')).toBe(30);
-    expect(res.getHeader('X-RateLimit-Limit')).toBe(15);
-    expectPrivateNoStore(res);
-    expectLegacyV1Body(res.body);
-    expect(mockCreateApiRouteClient).not.toHaveBeenCalled();
-  });
-
-  /**
-   * Existing Redis unavailability remains a legacy retry-free 503.
-   */
-  it('preserves the ordinary Redis unavailable response', async () => {
-    mockCheckRateLimit.mockResolvedValue({ success: false, unavailable: true });
-    const req = createMockRequest();
-    const res = createMockResponse();
-
-    await sessionRoute(req, res);
-
-    expect(res.statusCode).toBe(503);
-    expect(res.body).toEqual({
-      data: null,
-      error: 'SERVICE_UNAVAILABLE',
-      message: 'Service temporarily unavailable. Please try again later.',
-    });
-    expect(res.getHeader('Retry-After')).toBeUndefined();
-    expectPrivateNoStore(res);
-    expectLegacyV1Body(res.body);
-    expect(mockCreateApiRouteClient).not.toHaveBeenCalled();
+    expectLegacyRateLimitHeadersAbsent(res);
   });
 
   /**
@@ -491,6 +457,7 @@ describe('/api/auth/session composed v1 route', () => {
       message: 'Success',
     });
     expectPrivateNoStore(res);
+    expectLegacyRateLimitHeadersAbsent(res);
     expectLegacyV1Body(res.body);
     const serialized = JSON.stringify(res.body);
     expect(serialized).not.toContain('app_metadata');
@@ -519,6 +486,7 @@ describe('/api/auth/session composed v1 route', () => {
       message: 'Success',
     });
     expectPrivateNoStore(res);
+    expectLegacyRateLimitHeadersAbsent(res);
     expectLegacyV1Body(res.body);
   });
 
@@ -541,6 +509,7 @@ describe('/api/auth/session composed v1 route', () => {
     });
     expect(mockLog.error).toHaveBeenCalledWith({ err: handlerError }, 'Session check failed');
     expectPrivateNoStore(res);
+    expectLegacyRateLimitHeadersAbsent(res);
     expectLegacyV1Body(res.body);
   });
 });
