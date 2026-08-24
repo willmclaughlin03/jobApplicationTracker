@@ -334,6 +334,30 @@ describe('/api/auth/session composed v1 route', () => {
   });
 
   /**
+   * An asynchronous ceiling failure must fail closed before downstream work.
+   */
+  it('maps a rejected ceiling evaluation to the retry-free legacy 503', async () => {
+    ceilingEvaluateSpy.mockRejectedValue(new Error('shared ceiling unavailable'));
+    const req = createMockRequest();
+    const res = createMockResponse();
+
+    await sessionRoute(req, res);
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toEqual({
+      data: null,
+      error: 'SERVICE_UNAVAILABLE',
+      message: 'Service temporarily unavailable. Please try again later.',
+    });
+    expect(res.getHeader('Retry-After')).toBeUndefined();
+    expectPrivateNoStore(res);
+    expectLegacyV1Body(res.body);
+    expect(mockCheckRateLimit).not.toHaveBeenCalled();
+    expect(mockCreateApiRouteClient).not.toHaveBeenCalled();
+    expect(mockGetUser).not.toHaveBeenCalled();
+  });
+
+  /**
    * A throwing warning logger cannot replace a validated ceiling response.
    */
   it.each([

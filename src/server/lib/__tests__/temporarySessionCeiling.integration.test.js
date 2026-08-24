@@ -1,4 +1,10 @@
+import RedisMock from 'ioredis-mock';
 import { createTemporarySessionCeiling } from '../temporarySessionCeiling.js';
+import {
+  TEMPORARY_SESSION_REDIS_SCRIPT,
+  TEMPORARY_SESSION_REDIS_SCRIPT_SHA,
+  TEMPORARY_SESSION_REDIS_SLOT_COUNT,
+} from '../temporarySessionRedisScript.js';
 
 const RUNTIME_PAIR = Object.freeze({
   hmac: Object.freeze({ active: Object.freeze({ generation: 1, keyId: 'gate1-key-1', key: 'unused' }) }),
@@ -6,102 +12,170 @@ const RUNTIME_PAIR = Object.freeze({
   cacheIdentity: Object.freeze({}),
 });
 
+let redisHarnessSequence = 0;
+
 /**
- * Creates an in-memory atomic Redis-script contract harness.
+ * Builds the deterministic Redis key used by the injected identity seam.
  *
- * Why: local CI can exercise concurrency, collision, TTL, and rejection-write
- * invariants without external credentials or skipped tests.
+ * @param {number[]} sourceBytes synthetic source bytes
+ * @returns {string} test-only Redis key
+ */
+function createSyntheticRedisKey(sourceBytes) {
+  return `synthetic-key-${Buffer.from(sourceBytes).toString('hex')}`;
+}
+
+/**
+ * Creates an isolated in-memory Redis adapter that executes the production Lua.
  *
- * @returns {object} Redis-compatible commands and identifier-free controls
+ * Why: local CI must exercise the exact deployed state validation and bucket
+ * algorithm without external credentials or skipped tests.
+ *
+ * @returns {object} Upstash-compatible commands and bounded state controls
  */
 function createAtomicRedisHarness() {
+  redisHarnessSequence += 1;
+  const client = new RedisMock({
+    host: 'temporary-session-integration',
+    port: 6379 + redisHarnessSequence,
+  });
   let currentSecond = 0;
-  const states = new Map();
-  let writeCount = 0;
+  let scriptLoaded = false;
+
+  client.defineCommand('runTemporarySessionCeilingScript', {
+    numberOfKeys: 1,
+    lua: TEMPORARY_SESSION_REDIS_SCRIPT,
+  });
 
   /**
-   * Removes one key when its Redis TTL boundary has elapsed.
+   * Verifies the production executor passed the fixed one-key/zero-argument contract.
    *
-   * @param {string} key internal synthetic key
-   * @returns {object|null} live state
+   * @param {string[]} keys exact key list
+   * @param {unknown[]} args exact argument list
+   * @returns {void}
    */
-  function readLiveState(key) {
-    const state = states.get(key);
-    if (state && currentSecond >= state.expiresAt) {
-      states.delete(key);
-      return null;
-    }
-    return state ?? null;
+  function expectFixedInvocation(keys, args) {
+    expect(keys).toHaveLength(1);
+    expect(args).toEqual([]);
   }
 
   /**
-   * Applies the frozen 61-bucket algorithm as one synchronous Redis operation.
+   * Executes the production Lua command against the isolated Redis emulator.
    *
    * @param {string[]} keys exact one-key list
-   * @returns {number[]} versioned Lua-compatible tuple
+   * @param {unknown[]} args exact empty argument list
+   * @returns {Promise<number[]>} versioned Lua-compatible tuple
    */
-  function evaluate(keys) {
-    if (!Array.isArray(keys) || keys.length !== 1) return [1, 2, 0];
-    const key = keys[0];
-    let state = readLiveState(key);
-    if (!state) {
-      state = {
-        labels: Array(61).fill(-1),
-        counts: Array(61).fill(0),
-        expiresAt: -1,
-      };
-    }
+  async function executeProductionScript(keys, args) {
+    expectFixedInvocation(keys, args);
+    return client.runTemporarySessionCeilingScript(keys[0]);
+  }
 
-    let total = 0;
-    let oldest = null;
-    for (let index = 0; index < 61; index += 1) {
-      const label = state.labels[index];
-      const count = state.counts[index];
-      if (!Number.isInteger(label)
-        || !Number.isInteger(count)
-        || label < -1
-        || label > currentSecond
-        || count < 0
-        || count > 400
-        || (count === 0 && label !== -1)
-        || (count > 0 && (label < 0 || label % 61 !== index))) {
-        return [1, 2, 0];
-      }
-      if (count > 0 && label >= currentSecond - 60) {
-        total += count;
-        if (total > 400) return [1, 2, 0];
-        if (oldest === null || label < oldest) oldest = label;
-      }
+  /**
+   * Seeds a complete production-shaped hash for corruption and boundary tests.
+   *
+   * @param {string} key synthetic Redis key
+   * @param {object} [options] version, TTL, and per-slot overrides
+   * @returns {Promise<void>} completion after state is stored
+   */
+  async function seedHashState(key, options = {}) {
+    const version = options.version ?? '1';
+    const ttlSeconds = options.ttlSeconds;
+    const slots = options.slots ?? {};
+    const fields = ['v', version];
+    for (let index = 0; index < TEMPORARY_SESSION_REDIS_SLOT_COUNT; index += 1) {
+      const [label, count] = slots[index] ?? [-1, 0];
+      fields.push(`l${index}`, String(label), `c${index}`, String(count));
     }
+    await client.hset(key, ...fields);
+    if (ttlSeconds !== undefined) await client.expire(key, ttlSeconds);
+  }
 
-    if (total >= 400) {
-      return [1, 1, Math.min(60, Math.max(1, (oldest ?? currentSecond) + 61 - currentSecond))];
-    }
+  /**
+   * Stores an intentionally wrong Redis value type at the limiter key.
+   *
+   * @param {string} key synthetic Redis key
+   * @returns {Promise<string>} Redis acknowledgement
+   */
+  function seedStringState(key) {
+    return client.set(key, 'wrong-type');
+  }
 
-    const index = currentSecond % 61;
-    if (state.labels[index] !== currentSecond) {
-      state.labels[index] = currentSecond;
-      state.counts[index] = 0;
-    }
-    state.counts[index] += 1;
-    state.expiresAt = currentSecond + 61;
-    states.set(key, state);
-    writeCount += 1;
-    return [1, 0, 0];
+  /**
+   * Stores selected raw hash fields for malformed-shape tests.
+   *
+   * @param {string} key synthetic Redis key
+   * @param {object} fields raw field/value pairs
+   * @returns {Promise<number>} number of fields added
+   */
+  function seedHashFields(key, fields) {
+    const entries = Object.entries(fields).flatMap(([field, value]) => [field, String(value)]);
+    return client.hset(key, ...entries);
+  }
+
+  /**
+   * Applies a test TTL without changing the stored Redis value.
+   *
+   * @param {string} key synthetic Redis key
+   * @param {number} seconds expiration interval
+   * @returns {Promise<number>} Redis expiry result
+   */
+  function setExpiry(key, seconds) {
+    return client.expire(key, seconds);
+  }
+
+  /**
+   * Advances the Redis wall clock used by TIME and TTL.
+   *
+   * @param {number} value whole epoch second
+   * @returns {void}
+   */
+  function setSecond(value) {
+    currentSecond = value;
+    jest.setSystemTime(value * 1_000);
+  }
+
+  /**
+   * Reads identifier-free key, stored-count, and expiration evidence.
+   *
+   * @returns {Promise<object>} bounded Redis state summary
+   */
+  async function getSnapshot() {
+    const keys = await client.keys('synthetic-key-*');
+    const countFields = Array.from(
+      { length: TEMPORARY_SESSION_REDIS_SLOT_COUNT },
+      (_unused, index) => `c${index}`
+    );
+    const storedCounts = await Promise.all(keys.map(async (key) => {
+      if (await client.type(key) !== 'hash') return 0;
+      const counts = await client.hmget(key, ...countFields);
+      return counts.reduce((total, count) => total + Number(count ?? 0), 0);
+    }));
+    const ttl = keys.length === 1 ? await client.ttl(keys[0]) : null;
+    return {
+      activeKeyCount: keys.length,
+      writeCount: storedCounts.reduce((total, count) => total + count, 0),
+      expiresAt: Number.isInteger(ttl) && ttl >= 0 ? currentSecond + ttl : null,
+    };
   }
 
   return {
-    evalsha: jest.fn(async (_sha, keys) => evaluate(keys)),
-    eval: jest.fn(async (_script, keys) => evaluate(keys)),
-    setSecond(value) { currentSecond = value; },
-    getSnapshot() {
-      for (const key of [...states.keys()]) readLiveState(key);
-      return {
-        activeKeyCount: states.size,
-        writeCount,
-        expiresAt: states.size === 1 ? [...states.values()][0].expiresAt : null,
-      };
-    },
+    evalsha: jest.fn(async (sha, keys, args) => {
+      expect(sha).toBe(TEMPORARY_SESSION_REDIS_SCRIPT_SHA);
+      expectFixedInvocation(keys, args);
+      if (!scriptLoaded) throw new Error('NOSCRIPT No matching script.');
+      return executeProductionScript(keys, args);
+    }),
+    eval: jest.fn(async (script, keys, args) => {
+      expect(script).toBe(TEMPORARY_SESSION_REDIS_SCRIPT);
+      scriptLoaded = true;
+      return executeProductionScript(keys, args);
+    }),
+    setSecond,
+    getSnapshot,
+    seedStringState,
+    seedHashState,
+    seedHashFields,
+    setExpiry,
   };
 }
 
@@ -134,6 +208,15 @@ function createIntegratedCeiling(redis, now) {
 }
 
 describe('temporarySessionCeiling atomic integration', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    jest.setSystemTime(0);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('allows requests 1-400 and rejects concurrent request 401 exactly', async () => {
     const redis = createAtomicRedisHarness();
     const ceiling = createIntegratedCeiling(redis, () => 0);
@@ -148,7 +231,7 @@ describe('temporarySessionCeiling atomic integration', () => {
       reason: 'limit_exceeded',
       retryAfterSeconds: 60,
     }]);
-    expect(redis.getSnapshot()).toEqual({ activeKeyCount: 1, writeCount: 400, expiresAt: 61 });
+    expect(await redis.getSnapshot()).toEqual({ activeKeyCount: 1, writeCount: 400, expiresAt: 61 });
   });
 
   it('does not write or extend TTL for a rejected request', async () => {
@@ -157,12 +240,12 @@ describe('temporarySessionCeiling atomic integration', () => {
     for (let index = 0; index < 400; index += 1) {
       await ceiling.evaluate({ sourceBytes: [192, 0, 2, 91] }, { routeVersion: 'v1' });
     }
-    const before = redis.getSnapshot();
+    const before = await redis.getSnapshot();
     await expect(ceiling.evaluate(
       { sourceBytes: [192, 0, 2, 91] },
       { routeVersion: 'v1' }
     )).resolves.toMatchObject({ statusCode: 429 });
-    expect(redis.getSnapshot()).toEqual(before);
+    expect(await redis.getSnapshot()).toEqual(before);
   });
 
   it('keeps the oldest boundary in a distinct physical slot and expires cleanly', async () => {
@@ -186,11 +269,11 @@ describe('temporarySessionCeiling atomic integration', () => {
       { sourceBytes: [192, 0, 2, 92] },
       { routeVersion: 'v1' }
     )).resolves.toEqual({ allowed: true });
-    expect(redis.getSnapshot().activeKeyCount).toBe(1);
+    expect((await redis.getSnapshot()).activeKeyCount).toBe(1);
 
     redis.setSecond(122);
     milliseconds = 122_000;
-    expect(redis.getSnapshot().activeKeyCount).toBe(0);
+    expect((await redis.getSnapshot()).activeKeyCount).toBe(0);
   });
 
   it('bounds sparse-source cardinality to one expiring key per source', async () => {
@@ -200,6 +283,103 @@ describe('temporarySessionCeiling atomic integration', () => {
       { sourceBytes: [192, 0, 2, index + 1] },
       { routeVersion: index % 2 === 0 ? 'v1' : 'v2' }
     )));
-    expect(redis.getSnapshot()).toEqual({ activeKeyCount: 100, writeCount: 100, expiresAt: null });
+    expect(await redis.getSnapshot()).toEqual({ activeKeyCount: 100, writeCount: 100, expiresAt: null });
+  });
+
+  it('rejects a non-hash limiter key without replacing it', async () => {
+    const sourceBytes = [192, 0, 2, 93];
+    const redis = createAtomicRedisHarness();
+    const ceiling = createIntegratedCeiling(redis, () => 0);
+    await redis.seedStringState(createSyntheticRedisKey(sourceBytes));
+
+    await expect(ceiling.evaluate(
+      { sourceBytes },
+      { routeVersion: 'v1' }
+    )).resolves.toEqual({
+      allowed: false,
+      statusCode: 503,
+      reason: 'script_state_invalid',
+    });
+    expect(await redis.getSnapshot()).toEqual({ activeKeyCount: 1, writeCount: 0, expiresAt: null });
+  });
+
+  it('rejects malformed hash shape and version before writing', async () => {
+    const shapeSource = [192, 0, 2, 94];
+    const versionSource = [192, 0, 2, 95];
+    const redis = createAtomicRedisHarness();
+    const ceiling = createIntegratedCeiling(redis, () => 0);
+    const shapeKey = createSyntheticRedisKey(shapeSource);
+    const versionKey = createSyntheticRedisKey(versionSource);
+    await redis.seedHashFields(shapeKey, { v: '1', l0: '-1', c0: '0' });
+    await redis.setExpiry(shapeKey, 61);
+    await redis.seedHashState(versionKey, { version: '2', ttlSeconds: 61 });
+
+    await expect(ceiling.evaluate(
+      { sourceBytes: shapeSource },
+      { routeVersion: 'v1' }
+    )).resolves.toMatchObject({ statusCode: 503, reason: 'script_state_invalid' });
+    await expect(ceiling.evaluate(
+      { sourceBytes: versionSource },
+      { routeVersion: 'v2' }
+    )).resolves.toMatchObject({ statusCode: 503, reason: 'script_state_invalid' });
+    expect((await redis.getSnapshot()).writeCount).toBe(0);
+  });
+
+  it('rejects missing and oversized TTLs on production-shaped hashes', async () => {
+    const missingTtlSource = [192, 0, 2, 96];
+    const oversizedTtlSource = [192, 0, 2, 97];
+    const redis = createAtomicRedisHarness();
+    const ceiling = createIntegratedCeiling(redis, () => 0);
+    await redis.seedHashState(createSyntheticRedisKey(missingTtlSource));
+    await redis.seedHashState(createSyntheticRedisKey(oversizedTtlSource), { ttlSeconds: 62 });
+
+    await expect(ceiling.evaluate(
+      { sourceBytes: missingTtlSource },
+      { routeVersion: 'v1' }
+    )).resolves.toMatchObject({ statusCode: 503, reason: 'script_state_invalid' });
+    await expect(ceiling.evaluate(
+      { sourceBytes: oversizedTtlSource },
+      { routeVersion: 'v1' }
+    )).resolves.toMatchObject({ statusCode: 503, reason: 'script_state_invalid' });
+    expect((await redis.getSnapshot()).writeCount).toBe(0);
+  });
+
+  it('rejects non-canonical numeric hash values', async () => {
+    const sourceBytes = [192, 0, 2, 98];
+    const redis = createAtomicRedisHarness();
+    const ceiling = createIntegratedCeiling(redis, () => 0);
+    const key = createSyntheticRedisKey(sourceBytes);
+    await redis.seedHashState(key, { ttlSeconds: 61 });
+    await redis.seedHashFields(key, { l0: '00', c0: '1' });
+
+    await expect(ceiling.evaluate(
+      { sourceBytes },
+      { routeVersion: 'v1' }
+    )).resolves.toMatchObject({ statusCode: 503, reason: 'script_state_invalid' });
+    expect((await redis.getSnapshot()).writeCount).toBe(1);
+  });
+
+  it('rejects a stored total over 400 even when most counts are outside the window', async () => {
+    const sourceBytes = [192, 0, 2, 99];
+    const redis = createAtomicRedisHarness();
+    redis.setSecond(61);
+    const ceiling = createIntegratedCeiling(redis, () => 0);
+    await redis.seedHashState(createSyntheticRedisKey(sourceBytes), {
+      ttlSeconds: 61,
+      slots: {
+        0: [0, 400],
+        1: [1, 1],
+      },
+    });
+
+    await expect(ceiling.evaluate(
+      { sourceBytes },
+      { routeVersion: 'v1' }
+    )).resolves.toEqual({
+      allowed: false,
+      statusCode: 503,
+      reason: 'script_state_invalid',
+    });
+    expect((await redis.getSnapshot()).writeCount).toBe(401);
   });
 });
