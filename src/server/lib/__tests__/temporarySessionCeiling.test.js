@@ -105,6 +105,48 @@ describe('temporarySessionCeiling facade', () => {
     });
   });
 
+  /**
+   * Telemetry failures remain observational for every public decision shape.
+   *
+   * Why: injected or runtime telemetry faults must not replace an allow, bounded
+   * 429, or fail-closed 503 result with a rejected request promise.
+   */
+  it.each([
+    [
+      'allowed',
+      {},
+      { allowed: true },
+    ],
+    [
+      'rate limited',
+      { executeScript: jest.fn(async () => ({ status: 'rate_limited', retryAfterSeconds: 17 })) },
+      {
+        allowed: false,
+        statusCode: 429,
+        reason: 'limit_exceeded',
+        retryAfterSeconds: 17,
+      },
+    ],
+    [
+      'unavailable',
+      { resolveSource: jest.fn(() => null) },
+      { allowed: false, statusCode: 503, reason: 'source_unavailable' },
+    ],
+  ])('preserves the %s decision when every telemetry hook throws', async (_label, overrides, expected) => {
+    const telemetryError = new Error('synthetic telemetry failure');
+    const telemetry = {
+      record: jest.fn(() => { throw telemetryError; }),
+      finish: jest.fn(() => { throw telemetryError; }),
+      maybeRotate: jest.fn(() => { throw telemetryError; }),
+      getSnapshot: jest.fn(() => ({ total: 0 })),
+    };
+    const fixture = createFixture({ ...overrides, telemetry });
+
+    await expect(fixture.ceiling.evaluate({}, { routeVersion: 'v1' })).resolves.toEqual(expected);
+    expect(telemetry.maybeRotate).toHaveBeenCalledTimes(1);
+    expect(telemetry.finish).toHaveBeenCalledTimes(1);
+  });
+
   it('maps invalid stored state and malformed results to sanitized 503 decisions', async () => {
     const invalidState = createFixture({
       executeScript: jest.fn(async () => ({ status: 'invalid_state' })),
@@ -172,6 +214,29 @@ describe('temporarySessionCeiling facade', () => {
       reason: 'deadline_exceeded',
     });
     expect(fixture.deriveIdentity).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The post-client deadline decision uses one monotonic clock observation.
+   *
+   * Why: the failure reason and telemetry event must describe the same deadline
+   * state rather than being selected from separate injected clock reads.
+   */
+  it('evaluates the deadline once after acquiring the Redis client', async () => {
+    const now = jest.fn()
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(TEMPORARY_SESSION_CEILING_DEADLINE_MS)
+      .mockReturnValue(TEMPORARY_SESSION_CEILING_DEADLINE_MS);
+    const fixture = createFixture({ now });
+
+    await expect(fixture.ceiling.evaluate({}, { routeVersion: 'v1' })).resolves.toEqual({
+      allowed: false,
+      statusCode: 503,
+      reason: 'deadline_exceeded',
+    });
+    expect(now).toHaveBeenCalledTimes(4);
+    expect(fixture.executeScript).not.toHaveBeenCalled();
   });
 
   it('rejects unknown route labels before all limiter dependencies', async () => {

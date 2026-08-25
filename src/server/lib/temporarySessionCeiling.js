@@ -27,6 +27,20 @@ export const TEMPORARY_SESSION_CEILING_DEADLINE_MS = 3_000;
 const ROUTE_VERSIONS = new Set(['v1', 'v2']);
 
 /**
+ * Invokes one telemetry operation without allowing observability to alter enforcement.
+ *
+ * @param {Function} operation telemetry callback with bounded arguments
+ * @returns {void}
+ */
+function invokeTelemetrySafely(operation) {
+  try {
+    operation();
+  } catch {
+    // Observability cannot alter a safe limiter decision.
+  }
+}
+
+/**
  * Reads the monotonic clock used by the complete limiter deadline.
  *
  * @returns {number} process-relative milliseconds
@@ -44,11 +58,7 @@ function readMonotonicMilliseconds() {
  * @returns {void}
  */
 function recordTelemetry(telemetry, event, reason) {
-  try {
-    telemetry.record(event, reason);
-  } catch {
-    // Observability cannot alter a safe limiter decision.
-  }
+  invokeTelemetrySafely(() => telemetry.record(event, reason));
 }
 
 /**
@@ -109,7 +119,7 @@ export function createTemporarySessionCeiling(options = {}) {
    */
   function unavailable(reason, startedAt) {
     const duration = Math.max(0, now() - startedAt);
-    telemetry.finish('unavailable', reason, duration);
+    invokeTelemetrySafely(() => telemetry.finish('unavailable', reason, duration));
     return { allowed: false, statusCode: 503, reason };
   }
 
@@ -164,7 +174,7 @@ export function createTemporarySessionCeiling(options = {}) {
       requestLogger = undefined;
       routeVersion = undefined;
     }
-    telemetry.maybeRotate(requestLogger);
+    invokeTelemetrySafely(() => telemetry.maybeRotate(requestLogger));
 
     if (!ROUTE_VERSIONS.has(routeVersion)) {
       return unavailable(TEMPORARY_SESSION_FAILURE_REASONS.INTERNAL_FAILURE, startedAt);
@@ -219,13 +229,14 @@ export function createTemporarySessionCeiling(options = {}) {
     } catch {
       redis = null;
     }
-    if (!redis || deadlineExpired(deadlineAt)) {
-      const reason = deadlineExpired(deadlineAt)
+    const redisDeadlineExpired = deadlineExpired(deadlineAt);
+    if (!redis || redisDeadlineExpired) {
+      const reason = redisDeadlineExpired
         ? TEMPORARY_SESSION_FAILURE_REASONS.DEADLINE_EXCEEDED
         : TEMPORARY_SESSION_FAILURE_REASONS.REDIS_UNAVAILABLE;
       recordTelemetry(
         telemetry,
-        reason === TEMPORARY_SESSION_FAILURE_REASONS.DEADLINE_EXCEEDED
+        redisDeadlineExpired
           ? TEMPORARY_SESSION_TELEMETRY_EVENTS.DEADLINE_EXCEEDED
           : TEMPORARY_SESSION_TELEMETRY_EVENTS.REDIS_UNAVAILABLE,
         reason
@@ -255,7 +266,9 @@ export function createTemporarySessionCeiling(options = {}) {
 
     if (result?.status === 'allowed') {
       recordTelemetry(telemetry, TEMPORARY_SESSION_TELEMETRY_EVENTS.SCRIPT_ALLOWED);
-      telemetry.finish('allowed', undefined, Math.max(0, now() - startedAt));
+      invokeTelemetrySafely(
+        () => telemetry.finish('allowed', undefined, Math.max(0, now() - startedAt))
+      );
       return { allowed: true };
     }
     if (result?.status === 'rate_limited'
@@ -263,10 +276,12 @@ export function createTemporarySessionCeiling(options = {}) {
       && result.retryAfterSeconds >= 1
       && result.retryAfterSeconds <= TEMPORARY_SESSION_CEILING_WINDOW_SECONDS) {
       recordTelemetry(telemetry, TEMPORARY_SESSION_TELEMETRY_EVENTS.SCRIPT_RATE_LIMITED);
-      telemetry.finish(
-        'rate_limited',
-        TEMPORARY_SESSION_FAILURE_REASONS.LIMIT_EXCEEDED,
-        Math.max(0, now() - startedAt)
+      invokeTelemetrySafely(
+        () => telemetry.finish(
+          'rate_limited',
+          TEMPORARY_SESSION_FAILURE_REASONS.LIMIT_EXCEEDED,
+          Math.max(0, now() - startedAt)
+        )
       );
       return {
         allowed: false,

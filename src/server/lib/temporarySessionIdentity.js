@@ -96,7 +96,10 @@ function validateKeyMetadata(keyEntry) {
  */
 export function buildTemporarySessionHmacFrame(source, keyEntry) {
   validateKeyMetadata(keyEntry);
-  const expectedAddressLength = source?.family === 4 ? 4 : source?.family === 6 ? 16 : 0;
+  if (source?.family !== 4 && source?.family !== 6) {
+    throw new Error('temporary session identity source is invalid');
+  }
+  const expectedAddressLength = source.family === 4 ? 4 : 16;
   if (!Buffer.isBuffer(source?.addressBytes) || source.addressBytes.length !== expectedAddressLength) {
     throw new Error('temporary session identity source is invalid');
   }

@@ -4,6 +4,7 @@ export const TEMPORARY_SESSION_REDIS_LIMIT = 400;
 export const TEMPORARY_SESSION_REDIS_WINDOW_SECONDS = 60;
 export const TEMPORARY_SESSION_REDIS_SLOT_COUNT = 61;
 export const TEMPORARY_SESSION_REDIS_TTL_SECONDS = 61;
+const TEMPORARY_SESSION_REDIS_HASH_FIELD_COUNT = 1 + (2 * TEMPORARY_SESSION_REDIS_SLOT_COUNT);
 
 export const TEMPORARY_SESSION_REDIS_SCRIPT = `
 local result_version = 1
@@ -27,7 +28,7 @@ if key_type ~= 'none' and key_type ~= 'hash' then
 end
 
 local fields = {'v'}
-for index = 0, 60 do
+for index = 0, ${TEMPORARY_SESSION_REDIS_SLOT_COUNT - 1} do
   table.insert(fields, 'l' .. index)
   table.insert(fields, 'c' .. index)
 end
@@ -42,15 +43,15 @@ local exists = key_type == 'hash'
 if exists then
   local field_count = redis.call('HLEN', key)
   local ttl = redis.call('TTL', key)
-  if field_count ~= 123 or ttl < 0 or ttl > 61 then
+  if field_count ~= ${TEMPORARY_SESSION_REDIS_HASH_FIELD_COUNT} or ttl < 0 or ttl > ${TEMPORARY_SESSION_REDIS_TTL_SECONDS} then
     return invalid_state
   end
   local values = redis.call('HMGET', key, unpack(fields))
-  if #values ~= 123 or values[1] ~= '1' then
+  if #values ~= ${TEMPORARY_SESSION_REDIS_HASH_FIELD_COUNT} or values[1] ~= '1' then
     return invalid_state
   end
 
-  for index = 0, 60 do
+  for index = 0, ${TEMPORARY_SESSION_REDIS_SLOT_COUNT - 1} do
     local label_raw = values[(index * 2) + 2]
     local count_raw = values[(index * 2) + 3]
     local label = tonumber(label_raw)
@@ -59,21 +60,21 @@ if exists then
       or label % 1 ~= 0 or count % 1 ~= 0
       or tostring(label) ~= label_raw or tostring(count) ~= count_raw
       or label < -1 or label > now
-      or count < 0 or count > 400
+      or count < 0 or count > ${TEMPORARY_SESSION_REDIS_LIMIT}
       or (count == 0 and label ~= -1)
-      or (count > 0 and (label < 0 or label % 61 ~= index)) then
+      or (count > 0 and (label < 0 or label % ${TEMPORARY_SESSION_REDIS_SLOT_COUNT} ~= index)) then
       return invalid_state
     end
 
     labels[index] = label
     counts[index] = count
     stored_total = stored_total + count
-    if stored_total > 400 then
+    if stored_total > ${TEMPORARY_SESSION_REDIS_LIMIT} then
       return invalid_state
     end
-    if count > 0 and label >= now - 60 then
+    if count > 0 and label >= now - ${TEMPORARY_SESSION_REDIS_WINDOW_SECONDS} then
       total = total + count
-      if total > 400 then
+      if total > ${TEMPORARY_SESSION_REDIS_LIMIT} then
         return invalid_state
       end
       if not oldest or label < oldest then
@@ -82,20 +83,20 @@ if exists then
     end
   end
 else
-  for index = 0, 60 do
+  for index = 0, ${TEMPORARY_SESSION_REDIS_SLOT_COUNT - 1} do
     labels[index] = -1
     counts[index] = 0
   end
 end
 
-if total >= 400 then
-  local retry_seconds = (oldest or now) + 61 - now
+if total >= ${TEMPORARY_SESSION_REDIS_LIMIT} then
+  local retry_seconds = (oldest or now) + ${TEMPORARY_SESSION_REDIS_SLOT_COUNT} - now
   if retry_seconds < 1 then retry_seconds = 1 end
-  if retry_seconds > 60 then retry_seconds = 60 end
+  if retry_seconds > ${TEMPORARY_SESSION_REDIS_WINDOW_SECONDS} then retry_seconds = ${TEMPORARY_SESSION_REDIS_WINDOW_SECONDS} end
   return {result_version, 1, retry_seconds}
 end
 
-local current_index = now % 61
+local current_index = now % ${TEMPORARY_SESSION_REDIS_SLOT_COUNT}
 if labels[current_index] ~= now then
   labels[current_index] = now
   counts[current_index] = 0
@@ -103,14 +104,14 @@ end
 counts[current_index] = counts[current_index] + 1
 
 local write_arguments = {key, 'v', '1'}
-for index = 0, 60 do
+for index = 0, ${TEMPORARY_SESSION_REDIS_SLOT_COUNT - 1} do
   table.insert(write_arguments, 'l' .. index)
   table.insert(write_arguments, tostring(labels[index]))
   table.insert(write_arguments, 'c' .. index)
   table.insert(write_arguments, tostring(counts[index]))
 end
 redis.call('HSET', unpack(write_arguments))
-redis.call('EXPIRE', key, 61)
+redis.call('EXPIRE', key, ${TEMPORARY_SESSION_REDIS_TTL_SECONDS})
 return {result_version, 0, 0}
 `.trim();
 
@@ -198,7 +199,9 @@ export function parseTemporarySessionRedisResult(result) {
   }
   if (result[0] !== 1) throw createScriptUnavailableError();
   if (result[1] === 0 && result[2] === 0) return { status: 'allowed' };
-  if (result[1] === 1 && result[2] >= 1 && result[2] <= 60) {
+  if (result[1] === 1
+    && result[2] >= 1
+    && result[2] <= TEMPORARY_SESSION_REDIS_WINDOW_SECONDS) {
     return { status: 'rate_limited', retryAfterSeconds: result[2] };
   }
   if (result[1] === 2 && result[2] === 0) return { status: 'invalid_state' };

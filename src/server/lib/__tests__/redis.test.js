@@ -70,30 +70,56 @@ describe('redis.js', () => {
     });
 
     /**
-     * A validated runtime pair pins and rotates the Redis client by pair identity.
+     * Alternating immutable credential identities reuse their retained clients.
+     *
+     * Why: the temporary-session ceiling and generic rate limiter can alternate
+     * identities even when both credential paths remain active in one process.
      */
-    it('reuses one client per immutable runtime pair and swaps after refresh', async () => {
+    it('reuses clients when runtime-pair and generic-local callers alternate', async () => {
+        process.env.NODE_ENV = 'test';
+        process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE = 'local';
         const redis = require('../redis.js');
-        const firstPair = Object.freeze({
+        const runtimePair = Object.freeze({
             redis: Object.freeze({
-                url: 'https://first-synthetic.upstash.io',
-                token: 'synthetic-token-one',
-            }),
-            cacheIdentity: Object.freeze({}),
-        });
-        const secondPair = Object.freeze({
-            redis: Object.freeze({
-                url: 'https://second-synthetic.upstash.io',
-                token: 'synthetic-token-two',
+                url: process.env.UPSTASH_REDIS_REST_URL,
+                token: process.env.UPSTASH_REDIS_REST_TOKEN,
             }),
             cacheIdentity: Object.freeze({}),
         });
 
-        const first = await redis.getRedisClient(firstPair);
-        expect(await redis.getRedisClient(firstPair)).toBe(first);
-        const second = await redis.getRedisClient(secondPair);
-        expect(second).not.toBe(first);
+        const runtimeClient = await redis.getRedisClient(runtimePair);
+        const genericClient = await redis.getRedisClient();
+
+        expect(genericClient).not.toBe(runtimeClient);
+        expect(await redis.getRedisClient(runtimePair)).toBe(runtimeClient);
+        expect(await redis.getRedisClient()).toBe(genericClient);
         expect(mockRedisConstructor).toHaveBeenCalledTimes(2);
+    });
+
+    /**
+     * The identity cache evicts the least-recently-used client at its fixed cap.
+     *
+     * Why: credential refreshes must not allow retired Redis clients to grow
+     * without bound over the lifetime of a server process.
+     */
+    it('bounds retained Redis clients and evicts the least-recently-used identity', async () => {
+        const redis = require('../redis.js');
+        const pairs = ['first', 'second', 'third'].map((name) => Object.freeze({
+            redis: Object.freeze({
+                url: `https://${name}-synthetic.upstash.io`,
+                token: `synthetic-token-${name}`,
+            }),
+            cacheIdentity: Object.freeze({}),
+        }));
+
+        const first = await redis.getRedisClient(pairs[0]);
+        const second = await redis.getRedisClient(pairs[1]);
+        expect(await redis.getRedisClient(pairs[0])).toBe(first);
+        await redis.getRedisClient(pairs[2]);
+
+        expect(await redis.getRedisClient(pairs[0])).toBe(first);
+        expect(await redis.getRedisClient(pairs[1])).not.toBe(second);
+        expect(mockRedisConstructor).toHaveBeenCalledTimes(4);
     });
 
     /**
