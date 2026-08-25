@@ -1874,10 +1874,15 @@ describe('withRateLimit middleware', () => {
          * Skip exceptions and non-boolean results remain sanitized and fail closed.
          */
         it.each([
-            ['exception', () => { throw new Error('synthetic skip failure'); }],
-            ['null', () => null],
-            ['truthy string', () => 'true'],
-        ])('returns 503 before public identity for a malformed %s skip', async (_label, skip) => {
+            ['exception', () => { throw new Error('synthetic skip failure'); }, 'callback_error', 'synthetic skip failure'],
+            ['null', () => null, 'result_not_boolean', null],
+            ['truthy string', () => 'true', 'result_not_boolean', null],
+        ])('returns 503 before public identity for a malformed %s skip', async (
+            _label,
+            skip,
+            expectedCause,
+            expectedErrorMessage
+        ) => {
             const identityRead = jest.fn(() => '192.0.2.102');
             const req = { method: 'GET', headers: {}, socket: {} };
             Object.defineProperty(req.socket, 'remoteAddress', { get: identityRead });
@@ -1896,6 +1901,57 @@ describe('withRateLimit middleware', () => {
             expect(res.status).toHaveBeenCalledWith(503);
             expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('synthetic skip failure');
             expect(identityRead).not.toHaveBeenCalled();
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+            const [skipLogContext] = mockLog.error.mock.calls.find(
+                ([context]) => context.event === 'rate_limit_skip_invalid'
+            );
+            expect(skipLogContext).toEqual(expect.objectContaining({ cause: expectedCause }));
+            if (expectedErrorMessage) {
+                expect(skipLogContext.err).toEqual(expect.objectContaining({
+                    message: expectedErrorMessage,
+                }));
+            } else {
+                expect(skipLogContext).not.toHaveProperty('err');
+            }
+        });
+
+        /**
+         * Protected malformed skips fail closed after authenticated CSRF validation.
+         */
+        it('returns a sanitized 503 for a throwing protected-route skip', async () => {
+            const req = createMockRequest('POST');
+            const res = createMockResponse();
+            const handler = jest.fn();
+            const skipError = new Error('protected synthetic skip failure');
+            const skipRateLimitWhen = jest.fn(() => {
+                throw skipError;
+            });
+
+            await withRateLimit(handler, {
+                requireAuth: true,
+                allowedMethods: ['POST'],
+                operation: 'auth',
+                preRateLimitGuard: () => ({ allowed: true }),
+                writePreRateLimitGuardResponse: jest.fn(),
+                skipRateLimitWhen,
+            })(req, res);
+
+            expect(mockGetUserFromRequest).toHaveBeenCalledWith(req, res);
+            expect(mockValidateCsrfToken).toHaveBeenCalledWith(req, mockUser.id);
+            expect(skipRateLimitWhen).toHaveBeenCalledWith(req);
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain(
+                'protected synthetic skip failure'
+            );
+            expect(mockLog.error).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    event: 'rate_limit_skip_invalid',
+                    cause: 'callback_error',
+                    err: skipError,
+                }),
+                'Rate limit skip evaluation failed'
+            );
             expect(mockCheckRateLimit).not.toHaveBeenCalled();
             expect(handler).not.toHaveBeenCalled();
         });

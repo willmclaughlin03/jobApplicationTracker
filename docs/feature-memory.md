@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-23
 
+- `2026-08-24` - `Temporary session ceiling review follow-ups`: Added direct unit execution of the production Redis Lua at its limit, slot-reuse, retry, and invalid-total boundaries; exposed identifier-free per-key expiry evidence in the atomic integration harness; and retained bounded public/protected skip-failure causes plus caught errors in internal request logs without changing sanitized client responses.
+  - validation: the focused Redis-script, atomic integration, and middleware suites pass 147/147, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-24` - `Temporary session ceiling review coverage`: Added an async guard-rejection regression for the v1 route and replaced the integration suite's duplicated bucket evaluator with direct execution of the production Redis Lua, including invalid type, hash shape/version, TTL, canonical-value, and stored-total cases.
   - validation: the focused session, Redis-script, and atomic integration suites pass 49/49, changed-file ESLint passes with zero warnings, the test dependency tree is valid, and `git diff --check` passes.
 - `2026-08-23` - `Fleet-shared temporary session ceiling`: Replaced the process-local v1 session ceiling with a Redis-backed, server-time, 61-slot atomic limit of 400 requests per canonical source over the preceding 60 seconds; added strict deployed-source parsing, HMAC identity rotation through AWS Secrets Manager, bounded telemetry and deadlines, and a session-only bypass of the legacy generic AUTH quota after the shared guard succeeds.

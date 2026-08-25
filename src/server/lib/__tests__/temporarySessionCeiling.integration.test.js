@@ -150,11 +150,14 @@ function createAtomicRedisHarness() {
       const counts = await client.hmget(key, ...countFields);
       return counts.reduce((total, count) => total + Number(count ?? 0), 0);
     }));
-    const ttl = keys.length === 1 ? await client.ttl(keys[0]) : null;
+    const ttls = await Promise.all(keys.map((key) => client.ttl(key)));
+    const expiryTimes = ttls.map((ttl) => (
+      Number.isInteger(ttl) && ttl >= 0 ? currentSecond + ttl : null
+    ));
     return {
       activeKeyCount: keys.length,
       writeCount: storedCounts.reduce((total, count) => total + count, 0),
-      expiresAt: Number.isInteger(ttl) && ttl >= 0 ? currentSecond + ttl : null,
+      expiryTimes,
     };
   }
 
@@ -231,7 +234,11 @@ describe('temporarySessionCeiling atomic integration', () => {
       reason: 'limit_exceeded',
       retryAfterSeconds: 60,
     }]);
-    expect(await redis.getSnapshot()).toEqual({ activeKeyCount: 1, writeCount: 400, expiresAt: 61 });
+    expect(await redis.getSnapshot()).toEqual({
+      activeKeyCount: 1,
+      writeCount: 400,
+      expiryTimes: [61],
+    });
   });
 
   it('does not write or extend TTL for a rejected request', async () => {
@@ -269,11 +276,15 @@ describe('temporarySessionCeiling atomic integration', () => {
       { sourceBytes: [192, 0, 2, 92] },
       { routeVersion: 'v1' }
     )).resolves.toEqual({ allowed: true });
-    expect((await redis.getSnapshot()).activeKeyCount).toBe(1);
+    const activeSnapshot = await redis.getSnapshot();
+    expect(activeSnapshot.activeKeyCount).toBe(1);
+    expect(activeSnapshot.expiryTimes).toEqual([122]);
 
     redis.setSecond(122);
     milliseconds = 122_000;
-    expect((await redis.getSnapshot()).activeKeyCount).toBe(0);
+    const expiredSnapshot = await redis.getSnapshot();
+    expect(expiredSnapshot.activeKeyCount).toBe(0);
+    expect(expiredSnapshot.expiryTimes).toEqual([]);
   });
 
   it('bounds sparse-source cardinality to one expiring key per source', async () => {
@@ -283,7 +294,11 @@ describe('temporarySessionCeiling atomic integration', () => {
       { sourceBytes: [192, 0, 2, index + 1] },
       { routeVersion: index % 2 === 0 ? 'v1' : 'v2' }
     )));
-    expect(await redis.getSnapshot()).toEqual({ activeKeyCount: 100, writeCount: 100, expiresAt: null });
+    expect(await redis.getSnapshot()).toEqual({
+      activeKeyCount: 100,
+      writeCount: 100,
+      expiryTimes: Array(100).fill(61),
+    });
   });
 
   it('rejects a non-hash limiter key without replacing it', async () => {
@@ -300,7 +315,11 @@ describe('temporarySessionCeiling atomic integration', () => {
       statusCode: 503,
       reason: 'script_state_invalid',
     });
-    expect(await redis.getSnapshot()).toEqual({ activeKeyCount: 1, writeCount: 0, expiresAt: null });
+    expect(await redis.getSnapshot()).toEqual({
+      activeKeyCount: 1,
+      writeCount: 0,
+      expiryTimes: [null],
+    });
   });
 
   it('rejects malformed hash shape and version before writing', async () => {

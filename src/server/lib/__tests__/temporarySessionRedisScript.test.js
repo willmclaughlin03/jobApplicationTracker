@@ -1,3 +1,4 @@
+import RedisMock from 'ioredis-mock';
 import {
   executeTemporarySessionRedisScript,
   isTemporarySessionNoscriptError,
@@ -6,6 +7,43 @@ import {
   TEMPORARY_SESSION_REDIS_SCRIPT_SHA,
   TEMPORARY_SESSION_REDIS_SLOT_COUNT,
 } from '../temporarySessionRedisScript.js';
+
+let redisHarnessSequence = 0;
+
+/**
+ * Creates an isolated in-memory Redis command that executes the production Lua.
+ *
+ * Why: unit coverage should verify the script's behavior, not only its source shape.
+ *
+ * @returns {object} Redis mock with the production script registered as a command
+ */
+function createRedisScriptHarness() {
+  redisHarnessSequence += 1;
+  const redis = new RedisMock({
+    host: 'temporary-session-script-unit',
+    port: 7_000 + redisHarnessSequence,
+  });
+  redis.defineCommand('runTemporarySessionScript', {
+    numberOfKeys: 1,
+    lua: TEMPORARY_SESSION_REDIS_SCRIPT,
+  });
+  return redis;
+}
+
+/**
+ * Builds the complete versioned hash shape accepted by the production Lua.
+ *
+ * @param {object} slots per-index label and count overrides
+ * @returns {string[]} flattened Redis hash field/value arguments
+ */
+function createStoredHashFields(slots = {}) {
+  const fields = ['v', '1'];
+  for (let index = 0; index < TEMPORARY_SESSION_REDIS_SLOT_COUNT; index += 1) {
+    const [label, count] = slots[index] ?? [-1, 0];
+    fields.push(`l${index}`, String(label), `c${index}`, String(count));
+  }
+  return fields;
+}
 
 describe('temporarySessionRedisScript', () => {
   afterEach(() => {
@@ -24,6 +62,46 @@ describe('temporarySessionRedisScript', () => {
     expect(TEMPORARY_SESSION_REDIS_SCRIPT).toContain("redis.call('EXPIRE', key, 61)");
     expect(TEMPORARY_SESSION_REDIS_SCRIPT).toContain('if total >= 400 then');
     expect(TEMPORARY_SESSION_REDIS_SCRIPT_SHA).toMatch(/^[a-f0-9]{40}$/);
+  });
+
+  it('allows below 400 and limits at 400 with the bounded retry', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(0);
+    const redis = createRedisScriptHarness();
+    await redis.hset('synthetic-key', ...createStoredHashFields({ 0: [0, 399] }));
+    await redis.expire('synthetic-key', 61);
+
+    await expect(redis.runTemporarySessionScript('synthetic-key')).resolves.toEqual([1, 0, 0]);
+    await expect(redis.runTemporarySessionScript('synthetic-key')).resolves.toEqual([1, 1, 60]);
+    await expect(redis.hget('synthetic-key', 'c0')).resolves.toBe('400');
+  });
+
+  it('reuses the expired physical slot at now plus 61', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(0);
+    const redis = createRedisScriptHarness();
+
+    await redis.runTemporarySessionScript('synthetic-key');
+    jest.setSystemTime(60_000);
+    await redis.runTemporarySessionScript('synthetic-key');
+    jest.setSystemTime(61_000);
+    await expect(redis.runTemporarySessionScript('synthetic-key')).resolves.toEqual([1, 0, 0]);
+    await expect(redis.hmget('synthetic-key', 'l0', 'c0', 'l60', 'c60')).resolves.toEqual([
+      '61', '1', '60', '1',
+    ]);
+  });
+
+  it('rejects a stored total over 400 even when most counts have expired', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(61_000);
+    const redis = createRedisScriptHarness();
+    await redis.hset('synthetic-key', ...createStoredHashFields({
+      0: [0, 400],
+      1: [1, 1],
+    }));
+    await redis.expire('synthetic-key', 61);
+
+    await expect(redis.runTemporarySessionScript('synthetic-key')).resolves.toEqual([1, 2, 0]);
   });
 
   it.each([

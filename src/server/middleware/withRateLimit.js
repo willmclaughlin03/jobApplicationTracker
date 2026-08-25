@@ -342,19 +342,21 @@ async function runPreRateLimitGuard(
  *
  * @param {Function|undefined} skipRateLimitWhen route-owned skip callback
  * @param {import('next').NextApiRequest} req request supplied to existing callbacks
- * @returns {Promise<{valid: boolean, skipped: boolean}>} bounded skip decision
+ * @returns {Promise<{valid: boolean, skipped: boolean, cause?: string, err?: unknown}>} bounded skip decision
  */
 async function evaluateRateLimitSkip(skipRateLimitWhen, req) {
     if (skipRateLimitWhen === undefined) return { valid: true, skipped: false };
-    if (typeof skipRateLimitWhen !== 'function') return { valid: false, skipped: false };
+    if (typeof skipRateLimitWhen !== 'function') {
+        return { valid: false, skipped: false, cause: 'callback_not_function' };
+    }
 
     try {
         const result = await skipRateLimitWhen(req);
         return typeof result === 'boolean'
             ? { valid: true, skipped: result }
-            : { valid: false, skipped: false };
-    } catch {
-        return { valid: false, skipped: false };
+            : { valid: false, skipped: false, cause: 'result_not_boolean' };
+    } catch (err) {
+        return { valid: false, skipped: false, cause: 'callback_error', err };
     }
 }
 
@@ -805,7 +807,13 @@ export function withRateLimit(handler, options = {}){
                     const publicSkip = await evaluateRateLimitSkip(skipRateLimitWhen, req);
                     if (!publicSkip.valid) {
                         req.log.error(
-                            { event: 'rate_limit_skip_invalid', method: req.method, operation },
+                            {
+                                event: 'rate_limit_skip_invalid',
+                                method: req.method,
+                                operation,
+                                cause: publicSkip.cause,
+                                ...(publicSkip.err === undefined ? {} : { err: publicSkip.err }),
+                            },
                             'Rate limit skip evaluation failed'
                         );
                         return sendError(
@@ -844,7 +852,13 @@ export function withRateLimit(handler, options = {}){
                     const protectedSkip = await evaluateRateLimitSkip(skipRateLimitWhen, req);
                     if (!protectedSkip.valid) {
                         req.log.error(
-                            { event: 'rate_limit_skip_invalid', method: req.method, operation },
+                            {
+                                event: 'rate_limit_skip_invalid',
+                                method: req.method,
+                                operation,
+                                cause: protectedSkip.cause,
+                                ...(protectedSkip.err === undefined ? {} : { err: protectedSkip.err }),
+                            },
                             'Rate limit skip evaluation failed'
                         );
                         return sendError(
