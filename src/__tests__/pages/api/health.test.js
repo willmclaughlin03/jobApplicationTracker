@@ -54,7 +54,7 @@ function createMockRes() {
 beforeEach(() => {
   jest.clearAllMocks();
   mockMaybeSingle.mockResolvedValue({ error: null });
-  mockGetRedisClient.mockReturnValue({ ping: jest.fn().mockResolvedValue('PONG') });
+  mockGetRedisClient.mockResolvedValue({ ping: jest.fn().mockResolvedValue('PONG') });
 });
 
 describe('/api/health', () => {
@@ -86,7 +86,7 @@ describe('/api/health', () => {
   it('clears timeout guards after failed early settlement', async () => {
     jest.useFakeTimers();
     try {
-      mockGetRedisClient.mockReturnValue({
+      mockGetRedisClient.mockResolvedValue({
         ping: jest.fn().mockRejectedValue(new Error('ECONNRESET')),
       });
       mockMaybeSingle.mockRejectedValue(new Error('connection refused'));
@@ -131,7 +131,7 @@ describe('/api/health', () => {
   });
 
   it('returns 503 with status degraded when Redis is down', async () => {
-    mockGetRedisClient.mockReturnValue(null);
+    mockGetRedisClient.mockResolvedValue(null);
     const req = { method: 'GET', headers: {} };
     const res = createMockRes();
 
@@ -164,7 +164,7 @@ describe('/api/health', () => {
   });
 
   it('returns 503 with status degraded when both services are down', async () => {
-    mockGetRedisClient.mockReturnValue(null);
+    mockGetRedisClient.mockResolvedValue(null);
     mockMaybeSingle.mockResolvedValue({ error: { message: 'connection refused' } });
     const req = { method: 'GET', headers: {} };
     const res = createMockRes();
@@ -213,7 +213,7 @@ describe('/api/health', () => {
    * cold start, then transient network blip causes ping() to throw.
    */
   it('returns 503 degraded when Redis ping() throws', async () => {
-    mockGetRedisClient.mockReturnValue({
+    mockGetRedisClient.mockResolvedValue({
       ping: jest.fn().mockRejectedValue(new Error('ECONNRESET')),
     });
     const req = { method: 'GET', headers: {} };
@@ -236,7 +236,7 @@ describe('/api/health', () => {
    * Edge case: Unexpected payload must be treated as unhealthy.
    */
   it('returns 503 degraded when Redis ping() returns non-PONG', async () => {
-    mockGetRedisClient.mockReturnValue({
+    mockGetRedisClient.mockResolvedValue({
       ping: jest.fn().mockResolvedValue('NOT_PONG'),
     });
     const req = { method: 'GET', headers: {} };
@@ -259,7 +259,7 @@ describe('/api/health', () => {
   it('returns 503 degraded when Redis ping exceeds the health check timeout', async () => {
     jest.useFakeTimers();
     try {
-      mockGetRedisClient.mockReturnValue({
+      mockGetRedisClient.mockResolvedValue({
         ping: jest.fn(() => new Promise(() => { /* never resolves */ })),
       });
       const req = { method: 'GET', headers: {} };

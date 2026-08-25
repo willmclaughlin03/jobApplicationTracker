@@ -37,11 +37,11 @@ function isLimiterTimeoutResult(result) {
  * @param {string} tier
  * @param {string} operation
  * @param {'hourly' | 'daily'} windowType
+ * @param {import('@upstash/redis').Redis} redis request-pinned client
  * @returns {Ratelimit | null}
  */
-function getOrCreateLimiter(tier, operation, windowType){
+function getOrCreateLimiter(tier, operation, windowType, redis){
     const key = `${tier}:${operation}:${windowType}`
-    const redis = getRedisClient()
 
     // if redis client changed, cached limiter holds a stale connection, so rebuild
     const cached = limiterCache.get(key)
@@ -106,7 +106,7 @@ export async function checkRateLimit(identifier, tier, operation){
         return { success: false, unavailable: true }
     }
 
-    const redis = getRedisClient()
+    const redis = await getRedisClient()
 
     if (!redis) {
         logRedisDownOnce({ reason: 'no_client' });
@@ -115,8 +115,9 @@ export async function checkRateLimit(identifier, tier, operation){
     }
 
     try{
-        const hourlyLimiter = getOrCreateLimiter(tier, operation, 'hourly');
-        const dailyLimiter = getOrCreateLimiter(tier, operation, 'daily');
+        // Pin both windows to one immutable client identity for this request.
+        const hourlyLimiter = getOrCreateLimiter(tier, operation, 'hourly', redis);
+        const dailyLimiter = getOrCreateLimiter(tier, operation, 'daily', redis);
 
         if (!hourlyLimiter && !dailyLimiter){
             setLastCallStatus(true);

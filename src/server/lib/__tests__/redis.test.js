@@ -49,10 +49,10 @@ describe('redis.js', () => {
      * be bounded at the Redis HTTP client layer where aborts throw and preserve
      * the app's fail-closed rate-limit contract.
      */
-    it('configures a per-request timeout signal for Upstash Redis HTTP calls', () => {
+    it('configures a per-request timeout signal for Upstash Redis HTTP calls', async () => {
         const redis = require('../redis.js');
 
-        const client = redis.getRedisClient();
+        const client = await redis.getRedisClient();
 
         expect(client).not.toBeNull();
         expect(mockRedisConstructor).toHaveBeenCalledWith(
@@ -67,5 +67,46 @@ describe('redis.js', () => {
         const signal = signalFactory();
         expect(signal).toBeInstanceOf(AbortSignal);
         expect(signal.aborted).toBe(false);
+    });
+
+    /**
+     * A validated runtime pair pins and rotates the Redis client by pair identity.
+     */
+    it('reuses one client per immutable runtime pair and swaps after refresh', async () => {
+        const redis = require('../redis.js');
+        const firstPair = Object.freeze({
+            redis: Object.freeze({
+                url: 'https://first-synthetic.upstash.io',
+                token: 'synthetic-token-one',
+            }),
+            cacheIdentity: Object.freeze({}),
+        });
+        const secondPair = Object.freeze({
+            redis: Object.freeze({
+                url: 'https://second-synthetic.upstash.io',
+                token: 'synthetic-token-two',
+            }),
+            cacheIdentity: Object.freeze({}),
+        });
+
+        const first = await redis.getRedisClient(firstPair);
+        expect(await redis.getRedisClient(firstPair)).toBe(first);
+        const second = await redis.getRedisClient(secondPair);
+        expect(second).not.toBe(first);
+        expect(mockRedisConstructor).toHaveBeenCalledTimes(2);
+    });
+
+    /**
+     * Deployed Secrets Manager mode may not fall back to explicit environment credentials.
+     */
+    it('does not use environment credentials after deployed secret acquisition fails', async () => {
+        process.env.NODE_ENV = 'production';
+        process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE = 'aws-secrets-manager';
+        delete process.env.TEMPORARY_SESSION_CEILING_HMAC_SECRET_ID;
+        delete process.env.TEMPORARY_SESSION_CEILING_REDIS_SECRET_ID;
+        const redis = require('../redis.js');
+
+        await expect(redis.getRedisClient()).resolves.toBeNull();
+        expect(mockRedisConstructor).not.toHaveBeenCalled();
     });
 });

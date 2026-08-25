@@ -63,15 +63,15 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
     // ===================================================================
 
     describe('getRedisClient()', () => {
-        it('initializes and returns a client with real credentials', () => {
-            const client = redis.getRedisClient();
+        it('initializes and returns a client with real credentials', async () => {
+            const client = await redis.getRedisClient();
             expect(client).not.toBeNull();
             expect(typeof client.ping).toBe('function');
         });
 
-        it('returns the same instance on subsequent calls (singleton)', () => {
-            const first = redis.getRedisClient();
-            const second = redis.getRedisClient();
+        it('returns the same instance on subsequent calls (singleton)', async () => {
+            const first = await redis.getRedisClient();
+            const second = await redis.getRedisClient();
             expect(first).toBe(second);
         });
     });
@@ -81,20 +81,20 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
     // ===================================================================
 
     describe('resetRedisClient()', () => {
-        it('clears state and allows re-initialization', () => {
-            const first = redis.getRedisClient();
+        it('clears state and allows re-initialization', async () => {
+            const first = await redis.getRedisClient();
             expect(first).not.toBeNull();
 
             redis.resetRedisClient();
 
-            const second = redis.getRedisClient();
+            const second = await redis.getRedisClient();
             expect(second).not.toBeNull();
             // New instance — different reference
             expect(second).not.toBe(first);
         });
 
-        it('resets getRedisStatus() to clean state', () => {
-            redis.getRedisClient();
+        it('resets getRedisStatus() to clean state', async () => {
+            await redis.getRedisClient();
             redis.resetRedisClient();
 
             const status = redis.getRedisStatus();
@@ -204,8 +204,8 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
     // ===================================================================
 
     describe('getRedisStatus()', () => {
-        it('returns correct shape and types after initialization', () => {
-            redis.getRedisClient();
+        it('returns correct shape and types after initialization', async () => {
+            await redis.getRedisClient();
             redis.setLastCallStatus(true);
 
             const status = redis.getRedisStatus();
@@ -232,7 +232,7 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
     // ===================================================================
 
     describe('URL validation', () => {
-        it('rejects HTTP URLs (HTTPS required)', () => {
+        it('rejects HTTP URLs (HTTPS required)', async () => {
             jest.resetModules();
             jest.clearAllMocks();
 
@@ -241,7 +241,7 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
 
             const freshRedis = require('../redis.js');
             const freshLogger = require('../../../shared/logger.js').logger;
-            const client = freshRedis.getRedisClient();
+            const client = await freshRedis.getRedisClient();
             expect(client).toBeNull();
 
             expect(freshLogger.error).toHaveBeenCalledWith(
@@ -253,7 +253,7 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
             freshRedis.resetRedisClient();
         });
 
-        it('non-Upstash HTTPS domain warns but still initializes', () => {
+        it('non-Upstash HTTPS domain warns but still initializes', async () => {
             jest.resetModules();
             jest.clearAllMocks();
 
@@ -262,7 +262,7 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
 
             const freshRedis = require('../redis.js');
             const freshLogger = require('../../../shared/logger.js').logger;
-            const client = freshRedis.getRedisClient();
+            const client = await freshRedis.getRedisClient();
 
             // Client should still initialize (warn, not reject)
             expect(client).not.toBeNull();
@@ -275,7 +275,7 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
             freshRedis.resetRedisClient();
         });
 
-        it('rejects garbage URL strings', () => {
+        it('rejects garbage URL strings', async () => {
             jest.resetModules();
             jest.clearAllMocks();
 
@@ -284,7 +284,7 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
 
             const freshRedis = require('../redis.js');
             const freshLogger = require('../../../shared/logger.js').logger;
-            const client = freshRedis.getRedisClient();
+            const client = await freshRedis.getRedisClient();
             expect(client).toBeNull();
 
             expect(freshLogger.error).toHaveBeenCalledWith(
@@ -296,7 +296,7 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
             freshRedis.resetRedisClient();
         });
 
-        it('rejects missing token', () => {
+        it('rejects missing token', async () => {
             jest.resetModules();
             jest.clearAllMocks();
 
@@ -305,7 +305,7 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
 
             const freshRedis = require('../redis.js');
             const freshLogger = require('../../../shared/logger.js').logger;
-            const client = freshRedis.getRedisClient();
+            const client = await freshRedis.getRedisClient();
             expect(client).toBeNull();
 
             expect(freshLogger.warn).toHaveBeenCalledWith(
@@ -317,7 +317,7 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
             freshRedis.resetRedisClient();
         });
 
-        it('rejects empty URL', () => {
+        it('rejects empty URL', async () => {
             jest.resetModules();
             jest.clearAllMocks();
 
@@ -325,7 +325,7 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
             process.env.UPSTASH_REDIS_REST_URL = '';
 
             const freshRedis = require('../redis.js');
-            const client = freshRedis.getRedisClient();
+            const client = await freshRedis.getRedisClient();
             expect(client).toBeNull();
 
             process.env.UPSTASH_REDIS_REST_URL = originalUrl;
@@ -339,7 +339,7 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
 
     describe('malicious input resilience', () => {
         it('handles SQL-injection-style keys without crashing', async () => {
-            const client = redis.getRedisClient();
+            const client = await redis.getRedisClient();
             expect(client).not.toBeNull();
 
             // Redis treats the payload as opaque while the prefix owns cleanup.
@@ -354,7 +354,7 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
         });
 
         it('handles keys with null bytes', async () => {
-            const client = redis.getRedisClient();
+            const client = await redis.getRedisClient();
             const nullKey = buildRedisTestKey(
                 redisTestRunId,
                 'null-bytes',
@@ -370,7 +370,7 @@ describeIntegration('redis.js — integration (real Upstash)', () => {
         });
 
         it('handles unicode keys', async () => {
-            const client = redis.getRedisClient();
+            const client = await redis.getRedisClient();
             const unicodeKey = buildRedisTestKey(
                 redisTestRunId,
                 'unicode',

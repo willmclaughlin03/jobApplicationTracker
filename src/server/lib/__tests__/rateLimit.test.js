@@ -527,6 +527,20 @@ describe('checkRateLimit', () => {
         });
 
         /**
+         * One request pins daily and hourly limiters to one Redis generation.
+         */
+        it('should acquire Redis once for both limiter windows', async () => {
+            const redis = require('../redis');
+            await freshCheckRateLimit('user:abc', 'free', 'auth');
+
+            expect(redis.getRedisClient).toHaveBeenCalledTimes(1);
+            expect(freshRatelimit).toHaveBeenCalledTimes(2);
+            expect(freshRatelimit.mock.calls[0][0].redis).toBe(
+                freshRatelimit.mock.calls[1][0].redis
+            );
+        });
+
+        /**
          * Test: Redis client reference changes → limiter is rebuilt
          */
         it('should rebuild limiter when Redis client reference changes', async () => {

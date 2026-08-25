@@ -7,12 +7,12 @@
  *
  * Connects to:
  * - createApiRouteClient for cookie-based session management
- * - withRateLimit middleware with IP-based rate limiting
+ * - withRateLimit middleware with the shared coarse-source ceiling
  *
  * Security:
  * - Returns only safe user fields (id, email, application role) — never tokens
  * - Sets Cache-Control: private, no-store before middleware or handler work
- * - Rate-limited to prevent abuse
+ * - Shared atomic ceiling runs before cookies, Supabase, or handler work
  */
 import { createApiRouteClient } from '../../../server/lib/supabaseApiRoute.js';
 import { sendSuccess, sendError } from '../../../shared/response.js';
@@ -28,18 +28,29 @@ import { OPERATIONS } from '../../../shared/constants/tiers.js';
 /**
  * Evaluates the v1 route against the shared temporary session allowance.
  *
- * Purpose: consume the process-local v1/future-v2 allowance before identity,
- * cookies, Redis, Supabase, or handler work while preserving a synchronous
- * count/check/increment decision inside the ceiling primitive.
+ * Purpose: consume the Redis-backed v1/future-v2 allowance before legacy
+ * identity, cookies, Supabase, or handler work.
  *
  * @param {import('next').NextApiRequest} req - Session request with scoped logger.
- * @returns {object} Response-neutral allow, bounded 429, or fail-closed 503 decision.
+ * @returns {Promise<object>} Response-neutral allow, bounded 429, or fail-closed 503 decision.
  */
-function evaluateTemporarySessionRequest(req) {
+async function evaluateTemporarySessionRequest(req) {
   return temporarySessionCeiling.evaluate(req, {
     routeVersion: 'v1',
     logger: req.log,
   });
+}
+
+/**
+ * Skips the legacy generic AUTH quota after the shared ceiling allows.
+ *
+ * Why: the decision is route-owned and request-independent; headers, cookies,
+ * query, body, environment, feature flags, and caller input cannot select it.
+ *
+ * @returns {true} unconditional session-only legacy quota skip
+ */
+function skipLegacySessionRateLimit() {
+  return true;
 }
 
 /**
@@ -104,4 +115,5 @@ export default withRateLimit(handler, {
   cacheControl: 'private, no-store',
   preRateLimitGuard: evaluateTemporarySessionRequest,
   writePreRateLimitGuardResponse: writeTemporarySessionCeilingResponse,
+  skipRateLimitWhen: skipLegacySessionRateLimit,
 });
