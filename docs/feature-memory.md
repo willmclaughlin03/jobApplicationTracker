@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-23
 
+- `2026-08-26` - `Redis credential validation diagnostics`: Added bounded reason-code logging for missing, non-string, empty, and over-2,048-character Redis tokens without recording token material, while keeping URL validation diagnostics unchanged.
+  - validation: the focused Redis suite passes 9/9, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-26` - `Temporary session Redis window and skip handling hardening`: Normalized validated Redis ring slots outside the active 61-second window before stored-total enforcement and persistence, retained the per-slot and active-window limit of 400, and centralized invalid public/protected rate-limit skip logging plus fail-closed responses.
   - validation: the seven temporary-session unit suites and middleware suite pass 201/201, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-24` - `Temporary session ceiling identity and policy hardening`: Retained a bounded set of Redis clients across alternating credential identities, isolated all decision-path telemetry failures, reused one post-client deadline observation, restricted framed sources to numeric IPv4/IPv6 families, and derived Lua enforcement plus retry parsing from the exported Redis policy constants.

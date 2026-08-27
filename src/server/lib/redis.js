@@ -8,6 +8,7 @@ import {
 
 const REDIS_REQUEST_TIMEOUT_MS = 1_500;
 const REDIS_CLIENT_CACHE_LIMIT = 2;
+const REDIS_TOKEN_MAX_LENGTH = 2_048;
 
 let redisClient = null;
 const redisClientsByIdentity = new Map();
@@ -139,19 +140,33 @@ function readRuntimePairCredentials(runtimePair) {
  */
 function createRedisClient(credentials, requireUpstash) {
   const urlValidation = validateRedisUrl(credentials?.url, requireUpstash);
-  if (!urlValidation.valid
-    || typeof credentials?.token !== 'string'
-    || credentials.token.length === 0
-    || credentials.token.length > 2_048) {
-    if (!urlValidation.valid) {
-      logger.error({ validationError: urlValidation.error }, 'Invalid Redis URL configuration');
-    }
+  if (!urlValidation.valid) {
+    logger.error({ validationError: urlValidation.error }, 'Invalid Redis URL configuration');
+    return null;
+  }
+
+  const token = credentials?.token;
+  let tokenValidationError = null;
+  if (token === undefined || token === null) {
+    tokenValidationError = 'token_missing';
+  } else if (typeof token !== 'string') {
+    tokenValidationError = 'token_not_string';
+  } else if (token.length === 0) {
+    tokenValidationError = 'token_empty';
+  } else if (token.length > REDIS_TOKEN_MAX_LENGTH) {
+    tokenValidationError = 'token_too_long';
+  }
+  if (tokenValidationError) {
+    logger.error(
+      { validationError: tokenValidationError },
+      'Invalid Redis token configuration'
+    );
     return null;
   }
   try {
     return new Redis({
       url: credentials.url,
-      token: credentials.token,
+      token,
       signal: createRedisRequestSignal,
     });
   } catch {
