@@ -85,4 +85,20 @@ describe('temporarySessionIdentity', () => {
       createHmacFunction: () => ({ update: () => {}, digest: () => Buffer.alloc(2) }),
     })).toThrow('temporary session identity is unavailable');
   });
+
+  /**
+   * Only numeric IPv4 and IPv6 families may enter the identity frame.
+   *
+   * Why: an empty buffer must not make a missing, unknown, or wrong-type family
+   * appear valid through a zero-length fallback.
+   */
+  it.each([
+    ['missing', { addressBytes: Buffer.alloc(0) }],
+    ['unknown', { family: 5, addressBytes: Buffer.alloc(0) }],
+    ['wrong-type', { family: '4', addressBytes: Buffer.alloc(4) }],
+  ])('rejects a %s source family before address-length validation', (_label, source) => {
+    expect(() => buildTemporarySessionHmacFrame(source, ACTIVE_ENTRY)).toThrow(
+      'temporary session identity source is invalid'
+    );
+  });
 });

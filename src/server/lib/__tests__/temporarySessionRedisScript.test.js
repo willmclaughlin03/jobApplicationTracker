@@ -3,9 +3,12 @@ import {
   executeTemporarySessionRedisScript,
   isTemporarySessionNoscriptError,
   parseTemporarySessionRedisResult,
+  TEMPORARY_SESSION_REDIS_LIMIT,
   TEMPORARY_SESSION_REDIS_SCRIPT,
   TEMPORARY_SESSION_REDIS_SCRIPT_SHA,
   TEMPORARY_SESSION_REDIS_SLOT_COUNT,
+  TEMPORARY_SESSION_REDIS_TTL_SECONDS,
+  TEMPORARY_SESSION_REDIS_WINDOW_SECONDS,
 } from '../temporarySessionRedisScript.js';
 
 let redisHarnessSequence = 0;
@@ -50,8 +53,9 @@ describe('temporarySessionRedisScript', () => {
     jest.useRealTimers();
   });
 
-  it('freezes one-key Redis TIME and 61-slot persistence semantics', () => {
-    expect(TEMPORARY_SESSION_REDIS_SLOT_COUNT).toBe(61);
+  it('freezes one-key Redis TIME and constant-derived persistence semantics', () => {
+    const hashFieldCount = 1 + (2 * TEMPORARY_SESSION_REDIS_SLOT_COUNT);
+    expect(TEMPORARY_SESSION_REDIS_SLOT_COUNT).toBe(TEMPORARY_SESSION_REDIS_WINDOW_SECONDS + 1);
     expect(TEMPORARY_SESSION_REDIS_SCRIPT).toContain("local key = KEYS[1]");
     expect(TEMPORARY_SESSION_REDIS_SCRIPT.match(/KEYS\[1\]/g)).toHaveLength(1);
     expect(TEMPORARY_SESSION_REDIS_SCRIPT).not.toContain('KEYS[2]');
@@ -59,54 +63,111 @@ describe('temporarySessionRedisScript', () => {
     expect(TEMPORARY_SESSION_REDIS_SCRIPT).toContain("redis.call('HLEN', key)");
     expect(TEMPORARY_SESSION_REDIS_SCRIPT).toContain("redis.call('TTL', key)");
     expect(TEMPORARY_SESSION_REDIS_SCRIPT).toContain("redis.call('HSET', unpack(write_arguments))");
-    expect(TEMPORARY_SESSION_REDIS_SCRIPT).toContain("redis.call('EXPIRE', key, 61)");
-    expect(TEMPORARY_SESSION_REDIS_SCRIPT).toContain('if total >= 400 then');
+    expect(TEMPORARY_SESSION_REDIS_SCRIPT).toContain(
+      `for index = 0, ${TEMPORARY_SESSION_REDIS_SLOT_COUNT - 1} do`
+    );
+    expect(TEMPORARY_SESSION_REDIS_SCRIPT).toContain(`field_count ~= ${hashFieldCount}`);
+    expect(TEMPORARY_SESSION_REDIS_SCRIPT).toContain(`#values ~= ${hashFieldCount}`);
+    expect(TEMPORARY_SESSION_REDIS_SCRIPT).toContain(
+      `redis.call('EXPIRE', key, ${TEMPORARY_SESSION_REDIS_TTL_SECONDS})`
+    );
+    expect(TEMPORARY_SESSION_REDIS_SCRIPT).toContain(
+      `if total >= ${TEMPORARY_SESSION_REDIS_LIMIT} then`
+    );
+    expect(TEMPORARY_SESSION_REDIS_SCRIPT).toContain(
+      `label >= now - ${TEMPORARY_SESSION_REDIS_WINDOW_SECONDS}`
+    );
     expect(TEMPORARY_SESSION_REDIS_SCRIPT_SHA).toMatch(/^[a-f0-9]{40}$/);
   });
 
-  it('allows below 400 and limits at 400 with the bounded retry', async () => {
+  it('allows below the configured limit and then returns the bounded retry', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(0);
     const redis = createRedisScriptHarness();
-    await redis.hset('synthetic-key', ...createStoredHashFields({ 0: [0, 399] }));
-    await redis.expire('synthetic-key', 61);
+    await redis.hset('synthetic-key', ...createStoredHashFields({
+      0: [0, TEMPORARY_SESSION_REDIS_LIMIT - 1],
+    }));
+    await redis.expire('synthetic-key', TEMPORARY_SESSION_REDIS_TTL_SECONDS);
 
     await expect(redis.runTemporarySessionScript('synthetic-key')).resolves.toEqual([1, 0, 0]);
-    await expect(redis.runTemporarySessionScript('synthetic-key')).resolves.toEqual([1, 1, 60]);
-    await expect(redis.hget('synthetic-key', 'c0')).resolves.toBe('400');
+    await expect(redis.runTemporarySessionScript('synthetic-key')).resolves.toEqual([
+      1, 1, TEMPORARY_SESSION_REDIS_WINDOW_SECONDS,
+    ]);
+    await expect(redis.hget('synthetic-key', 'c0')).resolves.toBe(String(TEMPORARY_SESSION_REDIS_LIMIT));
   });
 
-  it('reuses the expired physical slot at now plus 61', async () => {
+  it('reuses the expired physical slot after one complete slot cycle', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(0);
     const redis = createRedisScriptHarness();
 
     await redis.runTemporarySessionScript('synthetic-key');
-    jest.setSystemTime(60_000);
+    jest.setSystemTime(TEMPORARY_SESSION_REDIS_WINDOW_SECONDS * 1_000);
     await redis.runTemporarySessionScript('synthetic-key');
-    jest.setSystemTime(61_000);
+    jest.setSystemTime(TEMPORARY_SESSION_REDIS_SLOT_COUNT * 1_000);
     await expect(redis.runTemporarySessionScript('synthetic-key')).resolves.toEqual([1, 0, 0]);
-    await expect(redis.hmget('synthetic-key', 'l0', 'c0', 'l60', 'c60')).resolves.toEqual([
-      '61', '1', '60', '1',
+    await expect(redis.hmget(
+      'synthetic-key',
+      'l0',
+      'c0',
+      `l${TEMPORARY_SESSION_REDIS_WINDOW_SECONDS}`,
+      `c${TEMPORARY_SESSION_REDIS_WINDOW_SECONDS}`
+    )).resolves.toEqual([
+      String(TEMPORARY_SESSION_REDIS_SLOT_COUNT),
+      '1',
+      String(TEMPORARY_SESSION_REDIS_WINDOW_SECONDS),
+      '1',
     ]);
   });
 
-  it('rejects a stored total over 400 even when most counts have expired', async () => {
+  it('clears stale residue before validating and persisting the active-window total', async () => {
     jest.useFakeTimers();
-    jest.setSystemTime(61_000);
+    jest.setSystemTime((TEMPORARY_SESSION_REDIS_SLOT_COUNT + 1) * 1_000);
     const redis = createRedisScriptHarness();
     await redis.hset('synthetic-key', ...createStoredHashFields({
-      0: [0, 400],
-      1: [1, 1],
+      0: [0, TEMPORARY_SESSION_REDIS_LIMIT],
+      2: [2, 1],
     }));
-    await redis.expire('synthetic-key', 61);
+    await redis.expire('synthetic-key', TEMPORARY_SESSION_REDIS_TTL_SECONDS);
+
+    await expect(redis.runTemporarySessionScript('synthetic-key')).resolves.toEqual([1, 0, 0]);
+    await expect(redis.hmget(
+      'synthetic-key',
+      'l0',
+      'c0',
+      'l1',
+      'c1',
+      'l2',
+      'c2'
+    )).resolves.toEqual([
+      '-1',
+      '0',
+      String(TEMPORARY_SESSION_REDIS_SLOT_COUNT + 1),
+      '1',
+      '2',
+      '1',
+    ]);
+  });
+
+  it('rejects an active-window total over the configured limit', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime((TEMPORARY_SESSION_REDIS_SLOT_COUNT + 1) * 1_000);
+    const redis = createRedisScriptHarness();
+    await redis.hset('synthetic-key', ...createStoredHashFields({
+      2: [2, TEMPORARY_SESSION_REDIS_LIMIT],
+      3: [3, 1],
+    }));
+    await redis.expire('synthetic-key', TEMPORARY_SESSION_REDIS_TTL_SECONDS);
 
     await expect(redis.runTemporarySessionScript('synthetic-key')).resolves.toEqual([1, 2, 0]);
   });
 
   it.each([
     [[1, 0, 0], { status: 'allowed' }],
-    [[1, 1, 60], { status: 'rate_limited', retryAfterSeconds: 60 }],
+    [
+      [1, 1, TEMPORARY_SESSION_REDIS_WINDOW_SECONDS],
+      { status: 'rate_limited', retryAfterSeconds: TEMPORARY_SESSION_REDIS_WINDOW_SECONDS },
+    ],
     [[1, 2, 0], { status: 'invalid_state' }],
   ])('accepts only an exact versioned tuple', (raw, expected) => {
     expect(parseTemporarySessionRedisResult(raw)).toEqual(expected);
@@ -120,7 +181,7 @@ describe('temporarySessionRedisScript', () => {
     [2, 0, 0],
     [1, 0, 1],
     [1, 1, 0],
-    [1, 1, 61],
+    [1, 1, TEMPORARY_SESSION_REDIS_WINDOW_SECONDS + 1],
     [1, 2, 1],
     [1, 3, 0],
   ])('rejects every malformed or unbounded result shape', (raw) => {

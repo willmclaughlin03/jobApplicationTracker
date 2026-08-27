@@ -361,6 +361,41 @@ async function evaluateRateLimitSkip(skipRateLimitWhen, req) {
 }
 
 /**
+ * Applies one bounded skip decision or fails closed with 503.
+ *
+ * Purpose: public and protected routes must report an invalid skip callback
+ * identically. Returns the fail-closed response when the decision is invalid.
+ *
+ * @param {object} decision bounded result from evaluateRateLimitSkip
+ * @param {import('next').NextApiRequest} req request with scoped logger
+ * @param {import('next').NextApiResponse} res response
+ * @param {string|null} operation resolved operation label
+ * @returns {{handled: boolean, response?: unknown}} bounded outcome
+ */
+function applyRateLimitSkipDecision(decision, req, res, operation) {
+    if (decision.valid) return { handled: false };
+    req.log.error(
+        {
+            event: 'rate_limit_skip_invalid',
+            method: req.method,
+            operation,
+            cause: decision.cause,
+            ...(decision.err === undefined ? {} : { err: decision.err }),
+        },
+        'Rate limit skip evaluation failed'
+    );
+    return {
+        handled: true,
+        response: sendError(
+            res,
+            503,
+            'SERVICE_UNAVAILABLE',
+            ERROR_MESSAGES.SERVICE_UNAVAILABLE
+        ),
+    };
+}
+
+/**
  * Normalizes a header expected to have a single string value.
  *
  * Returns null for arrays so malformed/repeated trusted headers fail closed
@@ -805,23 +840,14 @@ export function withRateLimit(handler, options = {}){
                 }else{
                     // PUBLIC ROUTE: route-owned skip runs before legacy identity/Redis.
                     const publicSkip = await evaluateRateLimitSkip(skipRateLimitWhen, req);
-                    if (!publicSkip.valid) {
-                        req.log.error(
-                            {
-                                event: 'rate_limit_skip_invalid',
-                                method: req.method,
-                                operation,
-                                cause: publicSkip.cause,
-                                ...(publicSkip.err === undefined ? {} : { err: publicSkip.err }),
-                            },
-                            'Rate limit skip evaluation failed'
-                        );
-                        return sendError(
-                            res,
-                            503,
-                            'SERVICE_UNAVAILABLE',
-                            ERROR_MESSAGES.SERVICE_UNAVAILABLE
-                        );
+                    const publicSkipOutcome = applyRateLimitSkipDecision(
+                        publicSkip,
+                        req,
+                        res,
+                        operation
+                    );
+                    if (publicSkipOutcome.handled) {
+                        return publicSkipOutcome.response;
                     }
                     if (publicSkip.skipped) {
                         rateLimitResult = { success: true, skipped: true };
@@ -850,23 +876,14 @@ export function withRateLimit(handler, options = {}){
 
                 if (requireAuth) {
                     const protectedSkip = await evaluateRateLimitSkip(skipRateLimitWhen, req);
-                    if (!protectedSkip.valid) {
-                        req.log.error(
-                            {
-                                event: 'rate_limit_skip_invalid',
-                                method: req.method,
-                                operation,
-                                cause: protectedSkip.cause,
-                                ...(protectedSkip.err === undefined ? {} : { err: protectedSkip.err }),
-                            },
-                            'Rate limit skip evaluation failed'
-                        );
-                        return sendError(
-                            res,
-                            503,
-                            'SERVICE_UNAVAILABLE',
-                            ERROR_MESSAGES.SERVICE_UNAVAILABLE
-                        );
+                    const protectedSkipOutcome = applyRateLimitSkipDecision(
+                        protectedSkip,
+                        req,
+                        res,
+                        operation
+                    );
+                    if (protectedSkipOutcome.handled) {
+                        return protectedSkipOutcome.response;
                     }
                     if (protectedSkip.skipped) {
                         rateLimitResult = { success: true, skipped: true };

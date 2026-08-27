@@ -7,9 +7,10 @@ import {
 } from './temporarySessionSecrets.js';
 
 const REDIS_REQUEST_TIMEOUT_MS = 1_500;
+const REDIS_CLIENT_CACHE_LIMIT = 2;
 
 let redisClient = null;
-let redisCredentialIdentity = null;
+const redisClientsByIdentity = new Map();
 let initializationAttempted = false;
 let redisDownLogged = false;
 let lastCallSucceeded = null;
@@ -163,11 +164,12 @@ function createRedisClient(credentials, requireUpstash) {
 }
 
 /**
- * Gets or atomically replaces the shared Redis client.
+ * Gets or creates a Redis client retained by credential identity.
  *
  * Purpose: a caller may pin client construction to the exact runtime pair used
  * for HMAC identity. Generic consumers acquire the same pair in deployed mode.
- * A successful credential refresh swaps the client by immutable pair identity.
+ * A bounded LRU cache prevents alternating credential paths from reconstructing
+ * clients while limiting retention after credential refreshes.
  *
  * @param {Readonly<object>|undefined} runtimePair optional validated runtime pair
  * @returns {Promise<Redis|null>} Redis client or null when unavailable
@@ -178,12 +180,22 @@ export async function getRedisClient(runtimePair) {
     ? await resolveGenericCredentials()
     : readRuntimePairCredentials(runtimePair);
   if (!resolved) return null;
-  if (redisClient && redisCredentialIdentity === resolved.identity) return redisClient;
+  const cachedClient = redisClientsByIdentity.get(resolved.identity);
+  if (cachedClient) {
+    redisClientsByIdentity.delete(resolved.identity);
+    redisClientsByIdentity.set(resolved.identity, cachedClient);
+    redisClient = cachedClient;
+    return cachedClient;
+  }
 
   const nextClient = createRedisClient(resolved.credentials, resolved.requireUpstash);
   if (!nextClient) return null;
+  redisClientsByIdentity.set(resolved.identity, nextClient);
+  if (redisClientsByIdentity.size > REDIS_CLIENT_CACHE_LIMIT) {
+    const oldestIdentity = redisClientsByIdentity.keys().next().value;
+    redisClientsByIdentity.delete(oldestIdentity);
+  }
   redisClient = nextClient;
-  redisCredentialIdentity = resolved.identity;
   logger.debug('Upstash Redis client initialized');
   return redisClient;
 }
@@ -236,7 +248,7 @@ export function getRedisStatus() {
  */
 export function resetRedisClient() {
   redisClient = null;
-  redisCredentialIdentity = null;
+  redisClientsByIdentity.clear();
   initializationAttempted = false;
   redisDownLogged = false;
   lastCallSucceeded = null;
