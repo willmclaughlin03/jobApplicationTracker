@@ -70,6 +70,61 @@ describe('redis.js', () => {
     });
 
     /**
+     * Invalid Redis tokens fail with a fixed validation reason.
+     *
+     * Why: credential diagnostics must distinguish bounded token failures
+     * without placing any part of the secret token into application logs.
+     */
+    it.each([
+        ['missing', undefined, 'token_missing'],
+        ['non-string', { secret: 'non-string-secret' }, 'token_not_string'],
+        ['empty', '', 'token_empty'],
+        ['oversized', `oversized-secret-${'x'.repeat(2_048)}`, 'token_too_long'],
+    ])('rejects a %s Redis token without logging its value', async (_caseName, token, validationError) => {
+        const redis = require('../redis.js');
+        const runtimePair = Object.freeze({
+            redis: Object.freeze({
+                url: process.env.UPSTASH_REDIS_REST_URL,
+                token,
+            }),
+            cacheIdentity: Object.freeze({}),
+        });
+
+        await expect(redis.getRedisClient(runtimePair)).resolves.toBeNull();
+        expect(mockRedisConstructor).not.toHaveBeenCalled();
+        expect(mockLogger.error).toHaveBeenCalledWith(
+            { validationError },
+            'Invalid Redis token configuration'
+        );
+        expect(JSON.stringify(mockLogger.error.mock.calls)).not.toContain('secret');
+    });
+
+    /**
+     * Invalid URLs retain the existing validation log when the token is invalid too.
+     *
+     * Why: token validation must not replace the established URL diagnostic or
+     * expose token-derived data when both credential fields fail validation.
+     */
+    it('preserves Redis URL validation logging ahead of token validation', async () => {
+        const redis = require('../redis.js');
+        const runtimePair = Object.freeze({
+            redis: Object.freeze({
+                url: 'http://example.upstash.io',
+                token: { secret: 'non-string-secret' },
+            }),
+            cacheIdentity: Object.freeze({}),
+        });
+
+        await expect(redis.getRedisClient(runtimePair)).resolves.toBeNull();
+        expect(mockRedisConstructor).not.toHaveBeenCalled();
+        expect(mockLogger.error).toHaveBeenCalledWith(
+            { validationError: 'Redis URL must be HTTPS' },
+            'Invalid Redis URL configuration'
+        );
+        expect(JSON.stringify(mockLogger.error.mock.calls)).not.toContain('secret');
+    });
+
+    /**
      * Alternating immutable credential identities reuse their retained clients.
      *
      * Why: the temporary-session ceiling and generic rate limiter can alternate
