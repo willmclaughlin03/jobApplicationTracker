@@ -66,6 +66,10 @@ if exists then
       return invalid_state
     end
 
+    if count > 0 and label < now - ${TEMPORARY_SESSION_REDIS_WINDOW_SECONDS} then
+      label = -1
+      count = 0
+    end
     labels[index] = label
     counts[index] = count
     stored_total = stored_total + count

@@ -120,13 +120,42 @@ describe('temporarySessionRedisScript', () => {
     ]);
   });
 
-  it('rejects a stored total over the limit even when most counts have expired', async () => {
+  it('clears stale residue before validating and persisting the active-window total', async () => {
     jest.useFakeTimers();
-    jest.setSystemTime(TEMPORARY_SESSION_REDIS_SLOT_COUNT * 1_000);
+    jest.setSystemTime((TEMPORARY_SESSION_REDIS_SLOT_COUNT + 1) * 1_000);
     const redis = createRedisScriptHarness();
     await redis.hset('synthetic-key', ...createStoredHashFields({
       0: [0, TEMPORARY_SESSION_REDIS_LIMIT],
-      1: [1, 1],
+      2: [2, 1],
+    }));
+    await redis.expire('synthetic-key', TEMPORARY_SESSION_REDIS_TTL_SECONDS);
+
+    await expect(redis.runTemporarySessionScript('synthetic-key')).resolves.toEqual([1, 0, 0]);
+    await expect(redis.hmget(
+      'synthetic-key',
+      'l0',
+      'c0',
+      'l1',
+      'c1',
+      'l2',
+      'c2'
+    )).resolves.toEqual([
+      '-1',
+      '0',
+      String(TEMPORARY_SESSION_REDIS_SLOT_COUNT + 1),
+      '1',
+      '2',
+      '1',
+    ]);
+  });
+
+  it('rejects an active-window total over the configured limit', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime((TEMPORARY_SESSION_REDIS_SLOT_COUNT + 1) * 1_000);
+    const redis = createRedisScriptHarness();
+    await redis.hset('synthetic-key', ...createStoredHashFields({
+      2: [2, TEMPORARY_SESSION_REDIS_LIMIT],
+      3: [3, 1],
     }));
     await redis.expire('synthetic-key', TEMPORARY_SESSION_REDIS_TTL_SECONDS);
 
