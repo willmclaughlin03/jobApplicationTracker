@@ -1841,14 +1841,126 @@ describe('withRateLimit middleware', () => {
                 skipRateLimitWhen,
             })(req, res);
 
-            expect(order).toEqual(['guard', 'identity', 'skip', 'redis', 'handler']);
+            expect(order).toEqual(['guard', 'skip', 'identity', 'redis', 'handler']);
+        });
+
+        /**
+         * An exact public skip bypasses every legacy identity and Redis read.
+         */
+        it('bypasses public identity and generic Redis only for exact true', async () => {
+            const identityRead = jest.fn(() => {
+                throw new Error('identity must not be read');
+            });
+            const req = { method: 'GET', headers: {}, socket: {} };
+            Object.defineProperty(req.socket, 'remoteAddress', { get: identityRead });
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                operation: 'auth',
+                preRateLimitGuard: () => ({ allowed: true }),
+                writePreRateLimitGuardResponse: jest.fn(),
+                skipRateLimitWhen: () => true,
+            })(req, res);
+
+            expect(identityRead).not.toHaveBeenCalled();
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).toHaveBeenCalledWith(req, res);
+        });
+
+        /**
+         * Skip exceptions and non-boolean results remain sanitized and fail closed.
+         */
+        it.each([
+            ['exception', () => { throw new Error('synthetic skip failure'); }, 'callback_error', 'synthetic skip failure'],
+            ['null', () => null, 'result_not_boolean', null],
+            ['truthy string', () => 'true', 'result_not_boolean', null],
+        ])('returns 503 before public identity for a malformed %s skip', async (
+            _label,
+            skip,
+            expectedCause,
+            expectedErrorMessage
+        ) => {
+            const identityRead = jest.fn(() => '192.0.2.102');
+            const req = { method: 'GET', headers: {}, socket: {} };
+            Object.defineProperty(req.socket, 'remoteAddress', { get: identityRead });
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                operation: 'auth',
+                preRateLimitGuard: () => ({ allowed: true }),
+                writePreRateLimitGuardResponse: jest.fn(),
+                skipRateLimitWhen: skip,
+            })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('synthetic skip failure');
+            expect(identityRead).not.toHaveBeenCalled();
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+            const [skipLogContext] = mockLog.error.mock.calls.find(
+                ([context]) => context.event === 'rate_limit_skip_invalid'
+            );
+            expect(skipLogContext).toEqual(expect.objectContaining({ cause: expectedCause }));
+            if (expectedErrorMessage) {
+                expect(skipLogContext.err).toEqual(expect.objectContaining({
+                    message: expectedErrorMessage,
+                }));
+            } else {
+                expect(skipLogContext).not.toHaveProperty('err');
+            }
+        });
+
+        /**
+         * Protected malformed skips fail closed after authenticated CSRF validation.
+         */
+        it('returns a sanitized 503 for a throwing protected-route skip', async () => {
+            const req = createMockRequest('POST');
+            const res = createMockResponse();
+            const handler = jest.fn();
+            const skipError = new Error('protected synthetic skip failure');
+            const skipRateLimitWhen = jest.fn(() => {
+                throw skipError;
+            });
+
+            await withRateLimit(handler, {
+                requireAuth: true,
+                allowedMethods: ['POST'],
+                operation: 'auth',
+                preRateLimitGuard: () => ({ allowed: true }),
+                writePreRateLimitGuardResponse: jest.fn(),
+                skipRateLimitWhen,
+            })(req, res);
+
+            expect(mockGetUserFromRequest).toHaveBeenCalledWith(req, res);
+            expect(mockValidateCsrfToken).toHaveBeenCalledWith(req, mockUser.id);
+            expect(skipRateLimitWhen).toHaveBeenCalledWith(req);
+            expect(res.status).toHaveBeenCalledWith(503);
+            expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain(
+                'protected synthetic skip failure'
+            );
+            expect(mockLog.error).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    event: 'rate_limit_skip_invalid',
+                    cause: 'callback_error',
+                    err: skipError,
+                }),
+                'Rate limit skip evaluation failed'
+            );
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
         });
 
         /**
          * Protected auth, CSRF, Redis, and handler work must also occur strictly
          * after an allowed guard.
          */
-        it('runs an allowed guard before the protected-route pipeline', async () => {
+        it('runs a billing-style protected skip after auth and CSRF', async () => {
             const order = [];
             const req = createMockRequest('POST');
             const res = createMockResponse();
@@ -1868,6 +1980,10 @@ describe('withRateLimit middleware', () => {
                 order.push('redis');
                 return { success: true };
             });
+            const skipRateLimitWhen = jest.fn(() => {
+                order.push('skip');
+                return true;
+            });
             const handler = jest.fn(() => {
                 order.push('handler');
             });
@@ -1877,9 +1993,11 @@ describe('withRateLimit middleware', () => {
                 operation: 'auth',
                 preRateLimitGuard,
                 writePreRateLimitGuardResponse: jest.fn(),
+                skipRateLimitWhen,
             })(req, res);
 
-            expect(order).toEqual(['guard', 'auth', 'csrf', 'redis', 'handler']);
+            expect(order).toEqual(['guard', 'auth', 'csrf', 'skip', 'handler']);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
         });
 
         /**

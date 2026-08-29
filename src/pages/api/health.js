@@ -50,7 +50,7 @@ async function handler(req, res) {
   const [redisResult, supabaseResult] = await Promise.allSettled([
     withTimeout(
       (async () => {
-        const client = getRedisClient();
+        const client = await getRedisClient();
         if (!client) return false;
         return (await client.ping()) === 'PONG';
       })(),

@@ -260,7 +260,7 @@ describeIntegration('rateLimit.js — integration (real Upstash)', () => {
 
             // Reset and re-initialize — new Redis client reference
             redis.resetRedisClient();
-            redis.getRedisClient();
+            await redis.getRedisClient();
 
             // Should still work — limiter cache detects stale reference and rebuilds
             const second = await checkRateLimit(id, 'free', 'read');

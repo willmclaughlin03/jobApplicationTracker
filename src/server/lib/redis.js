@@ -1,215 +1,272 @@
 import { Redis } from '@upstash/redis';
 import { logger } from '../../shared/logger.js';
+import {
+  getTemporarySessionRuntimePair,
+  resolveTemporarySessionSecretMode,
+  TEMPORARY_SESSION_SECRET_MODES,
+} from './temporarySessionSecrets.js';
 
 const REDIS_REQUEST_TIMEOUT_MS = 1_500;
-
-/**
- * Upstash Redis client singleton
- *
- * Provides lazy-initialized Redis REST client.
- * No persistent connection — each call is an independent HTTPS request,
- * so transient Upstash outages recover automatically on the next call.
- *
- * Used by rateLimit.js and tierService.js
- */
+const REDIS_CLIENT_CACHE_LIMIT = 2;
+const REDIS_TOKEN_MAX_LENGTH = 2_048;
 
 let redisClient = null;
+const redisClientsByIdentity = new Map();
 let initializationAttempted = false;
-let initializationInProgress = false;
-
-// One-time logging flag: logs once per outage window.
-// Cleared by setLastCallStatus(true) so the next distinct outage gets its own log.
 let redisDownLogged = false;
-
-// Last rate-limit call outcome — fed by rateLimit.js via setLastCallStatus().
-// null means "no calls yet" (cold start), not "unknown health."
 let lastCallSucceeded = null;
 let lastCallTime = null;
-
+let localCredentialSnapshot = null;
 
 /**
- * Builds a fresh abort signal for each Upstash Redis REST request.
+ * Builds a fresh abort signal for every Upstash REST command.
  *
- * Purpose: bound Redis-backed rate-limit latency at the HTTP client layer so
- * slow Redis calls throw and flow through the app's fail-closed middleware path.
+ * Why: all generic and shared Redis consumers retain the existing 1,500 ms
+ * HTTP client timeout rather than relying on a fail-open library default.
  *
- * @returns {AbortSignal} Request-scoped timeout signal
+ * @returns {AbortSignal} request-scoped timeout signal
  */
 function createRedisRequestSignal() {
-    return AbortSignal.timeout(REDIS_REQUEST_TIMEOUT_MS);
+  return AbortSignal.timeout(REDIS_REQUEST_TIMEOUT_MS);
 }
 
-
 /**
- * Validates the Redis REST URL
+ * Validates an HTTPS Upstash origin without logging URL components.
  *
- * Ensures the URL is properly formatted with HTTPS
- *
- * @param {string} url - URL to validate
- * @returns {{ valid: boolean, error?: string }} Validation result
+ * @param {unknown} value candidate Redis URL
+ * @param {boolean} requireUpstash whether deployed credentials require Upstash
+ * @returns {{valid: boolean, error?: string}} bounded validation result
  */
-function validateRedisUrl(url) {
-    if (!url || typeof url !== 'string') {
-        return { valid: false, error: 'URL required' };
+function validateRedisUrl(value, requireUpstash) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 2_048) {
+    return { valid: false, error: 'Invalid URL format' };
+  }
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    if (parsed.protocol !== 'https:') return { valid: false, error: 'Redis URL must be HTTPS' };
+    const isUpstash = host.endsWith('.upstash.io') || host.endsWith('.upstash.com');
+    if (requireUpstash && (!isUpstash
+      || parsed.username !== ''
+      || parsed.password !== ''
+      || parsed.port !== ''
+      || parsed.pathname !== '/'
+      || parsed.search !== ''
+      || parsed.hash !== '')) {
+      return { valid: false, error: 'Redis URL configuration is invalid' };
     }
-
-    try {
-        const parsedUrl = new URL(url);
-
-        // Require HTTPS
-        if (parsedUrl.protocol !== 'https:') {
-            return {
-                valid: false,
-                error: 'Redis URL must be HTTPS'
-            };
-        }
-
-        // Warn if not Upstash domain
-        const allowedDomains = ['upstash.io', 'upstash.com'];
-        const hostname = parsedUrl.hostname;
-        const isAllowedDomain = allowedDomains.some(
-            domain => hostname === domain || hostname.endsWith('.' + domain)
-        );
-
-        if (!isAllowedDomain) {
-            logger.warn({ hostname, allowedDomains }, 'Redis URL domain not in allowed list');
-        }
-
-        return { valid: true };
-    } catch (error) {
-        return { valid: false, error: 'Invalid URL format' };
+    if (!requireUpstash && !isUpstash) {
+      logger.warn({ hostname: host }, 'Redis URL domain not in allowed list');
     }
+    return { valid: true };
+  } catch {
+    return { valid: false, error: 'Invalid URL format' };
+  }
 }
 
-
 /**
- * Gets or creates Redis client instance (singleton pattern)
+ * Creates a stable local/test credential snapshot from explicit environment values.
  *
- * Purpose: Provides lazy initialization of Redis connection
- * Connects to: Upstash Redis via REST API
+ * Why: local generic integrations may retain explicit credentials while the
+ * deployed path is forbidden from falling back after Secrets Manager failure.
  *
- * @returns {Redis|null} Redis client or null if not configured/failed
+ * @returns {Readonly<object>|null} local credentials and private cache identity
  */
-export function getRedisClient() {
-    // Return existing client if available
-    if (redisClient) {
-        return redisClient;
-    }
-
-    // Return null if already attempted and failed
-    if (initializationAttempted) {
-        return null;
-    }
-
-    // Prevent race condition during concurrent initialization
-    if (initializationInProgress) {
-        return null;
-    }
-
-    initializationInProgress = true;
-    initializationAttempted = true;
-
-    const url = process.env.UPSTASH_REDIS_REST_URL;
-    const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-
-    if (!url || !token) {
-        logger.warn({ hasUrl: !!url, hasToken: !!token }, 'Upstash Redis not configured - rate limiting unavailable');
-        initializationInProgress = false;
-        return null;
-    }
-
-    // Validate URL security
-    const urlValidation = validateRedisUrl(url);
-    if (!urlValidation.valid) {
-        logger.error({ validationError: urlValidation.error }, 'Invalid Redis URL configuration');
-        initializationInProgress = false;
-        return null;
-    }
-
-    try {
-        redisClient = new Redis({
-            url,
-            token,
-            signal: createRedisRequestSignal
-        });
-
-        logger.debug('Upstash Redis client initialized');
-
-        initializationInProgress = false;
-        return redisClient;
-    } catch (error) {
-        logger.error({ err: error }, 'Failed to initialize Redis client');
-        initializationInProgress = false;
-        return null;
-    }
+function getLocalCredentialSnapshot() {
+  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+  if (typeof url !== 'string' || url.length === 0 || typeof token !== 'string' || token.length === 0) {
+    logger.warn({ hasUrl: Boolean(url), hasToken: Boolean(token) }, 'Upstash Redis not configured - rate limiting unavailable');
+    return null;
+  }
+  if (localCredentialSnapshot?.url === url && localCredentialSnapshot?.token === token) {
+    return localCredentialSnapshot;
+  }
+  localCredentialSnapshot = Object.freeze({
+    url,
+    token,
+    cacheIdentity: Object.freeze({}),
+  });
+  return localCredentialSnapshot;
 }
 
+/**
+ * Resolves credentials for a generic Redis consumer.
+ *
+ * Why: AWS mode shares the validated atomic runtime pair; local/test mode may
+ * use explicit environment credentials and production never falls back.
+ *
+ * @returns {Promise<{credentials: object, identity: object}|null>} credential snapshot
+ */
+async function resolveGenericCredentials() {
+  const mode = resolveTemporarySessionSecretMode();
+  if (mode === TEMPORARY_SESSION_SECRET_MODES.AWS_SECRETS_MANAGER) {
+    try {
+      const runtimePair = await getTemporarySessionRuntimePair();
+      return { credentials: runtimePair.redis, identity: runtimePair.cacheIdentity, requireUpstash: true };
+    } catch {
+      return null;
+    }
+  }
+  if (mode !== TEMPORARY_SESSION_SECRET_MODES.LOCAL) return null;
+  const local = getLocalCredentialSnapshot();
+  return local
+    ? { credentials: local, identity: local.cacheIdentity, requireUpstash: false }
+    : null;
+}
 
 /**
- * Logs a Redis-down error exactly once per outage window.
+ * Validates a caller-supplied immutable runtime pair.
  *
- * Subsequent calls are silenced until setLastCallStatus(true) clears the flag,
- * so each distinct outage produces one log entry — not one per request.
+ * @param {unknown} runtimePair candidate HMAC/Redis snapshot
+ * @returns {{credentials: object, identity: object}|null} safe Redis view
+ */
+function readRuntimePairCredentials(runtimePair) {
+  if (!runtimePair
+    || !runtimePair.redis
+    || typeof runtimePair.cacheIdentity !== 'object'
+    || runtimePair.cacheIdentity === null) {
+    return null;
+  }
+  return { credentials: runtimePair.redis, identity: runtimePair.cacheIdentity, requireUpstash: true };
+}
+
+/**
+ * Constructs one Upstash client from a validated credential snapshot.
  *
- * @param {Object} context - Additional structured context (e.g. { reason: 'no_client' })
+ * @param {object} credentials URL/token pair
+ * @param {boolean} requireUpstash whether deployed origin rules apply
+ * @returns {Redis|null} configured client
+ */
+function createRedisClient(credentials, requireUpstash) {
+  const urlValidation = validateRedisUrl(credentials?.url, requireUpstash);
+  if (!urlValidation.valid) {
+    logger.error({ validationError: urlValidation.error }, 'Invalid Redis URL configuration');
+    return null;
+  }
+
+  const token = credentials?.token;
+  let tokenValidationError = null;
+  if (token === undefined || token === null) {
+    tokenValidationError = 'token_missing';
+  } else if (typeof token !== 'string') {
+    tokenValidationError = 'token_not_string';
+  } else if (token.length === 0) {
+    tokenValidationError = 'token_empty';
+  } else if (token.length > REDIS_TOKEN_MAX_LENGTH) {
+    tokenValidationError = 'token_too_long';
+  }
+  if (tokenValidationError) {
+    logger.error(
+      { validationError: tokenValidationError },
+      'Invalid Redis token configuration'
+    );
+    return null;
+  }
+  try {
+    return new Redis({
+      url: credentials.url,
+      token,
+      signal: createRedisRequestSignal,
+    });
+  } catch {
+    logger.error(
+      { reason: 'client_initialization_failed' },
+      'Failed to initialize Redis client'
+    );
+    return null;
+  }
+}
+
+/**
+ * Gets or creates a Redis client retained by credential identity.
+ *
+ * Purpose: a caller may pin client construction to the exact runtime pair used
+ * for HMAC identity. Generic consumers acquire the same pair in deployed mode.
+ * A bounded LRU cache prevents alternating credential paths from reconstructing
+ * clients while limiting retention after credential refreshes.
+ *
+ * @param {Readonly<object>|undefined} runtimePair optional validated runtime pair
+ * @returns {Promise<Redis|null>} Redis client or null when unavailable
+ */
+export async function getRedisClient(runtimePair) {
+  initializationAttempted = true;
+  const resolved = runtimePair === undefined
+    ? await resolveGenericCredentials()
+    : readRuntimePairCredentials(runtimePair);
+  if (!resolved) return null;
+  const cachedClient = redisClientsByIdentity.get(resolved.identity);
+  if (cachedClient) {
+    redisClientsByIdentity.delete(resolved.identity);
+    redisClientsByIdentity.set(resolved.identity, cachedClient);
+    redisClient = cachedClient;
+    return cachedClient;
+  }
+
+  const nextClient = createRedisClient(resolved.credentials, resolved.requireUpstash);
+  if (!nextClient) return null;
+  redisClientsByIdentity.set(resolved.identity, nextClient);
+  if (redisClientsByIdentity.size > REDIS_CLIENT_CACHE_LIMIT) {
+    const oldestIdentity = redisClientsByIdentity.keys().next().value;
+    redisClientsByIdentity.delete(oldestIdentity);
+  }
+  redisClient = nextClient;
+  logger.debug('Upstash Redis client initialized');
+  return redisClient;
+}
+
+/**
+ * Logs Redis unavailability exactly once per outage window.
+ *
+ * @param {object} context bounded structured context
+ * @returns {void}
  */
 export function logRedisDownOnce(context = {}) {
-    if (redisDownLogged) {
-        return;
-    }
-    redisDownLogged = true;
-    logger.error(context, 'Redis is unavailable — requests will be denied (fail-closed)');
+  if (redisDownLogged) return;
+  redisDownLogged = true;
+  logger.error(context, 'Redis is unavailable — requests will be denied (fail-closed)');
 }
 
-
 /**
- * Records the outcome of the most recent rate-limit call.
+ * Records the most recent generic rate-limit call outcome.
  *
- * Called by rateLimit.js after each checkRateLimit() attempt.
- * When success is true and a previous outage was logged, implicitly
- * clears the one-time-log flag so the next outage gets its own entry.
- *
- * @param {boolean} success - Whether the rate-limit call succeeded
+ * @param {boolean} success whether Redis produced a trusted limiter result
+ * @returns {void}
  */
 export function setLastCallStatus(success) {
-    lastCallSucceeded = success;
-    lastCallTime = new Date().toISOString();
-
-    if (success && redisDownLogged) {
-        redisDownLogged = false;
-        logger.info('Redis connectivity restored');
-    }
+  lastCallSucceeded = success;
+  lastCallTime = new Date().toISOString();
+  if (success && redisDownLogged) {
+    redisDownLogged = false;
+    logger.info('Redis connectivity restored');
+  }
 }
 
-
 /**
- * Get current Redis status info
+ * Returns bounded Redis status without credential or provider details.
  *
- * lastCallSucceeded/lastCallTime are derived from actual rate-limit traffic,
- * not background pings. null means "no calls yet" (cold start), not "unknown."
- *
- * @returns {Object} Status information
+ * @returns {object} current client and last-call status
  */
 export function getRedisStatus() {
-    return {
-        initialized: initializationAttempted,
-        connected: redisClient !== null,
-        lastCallSucceeded,
-        lastCallTime,
-    };
+  return {
+    initialized: initializationAttempted,
+    connected: redisClient !== null,
+    lastCallSucceeded,
+    lastCallTime,
+  };
 }
 
-
 /**
- * Resets the Redis client and all state (useful for testing)
+ * Clears Redis client and health state for isolated tests.
  *
- * Purpose: Allows re-initialization after failure or for testing
+ * @returns {void}
  */
 export function resetRedisClient() {
-    redisClient = null;
-    initializationAttempted = false;
-    initializationInProgress = false;
-    redisDownLogged = false;
-    lastCallSucceeded = null;
-    lastCallTime = null;
+  redisClient = null;
+  redisClientsByIdentity.clear();
+  initializationAttempted = false;
+  redisDownLogged = false;
+  lastCallSucceeded = null;
+  lastCallTime = null;
+  localCredentialSnapshot = null;
 }

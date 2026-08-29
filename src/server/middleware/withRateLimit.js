@@ -334,6 +334,68 @@ async function runPreRateLimitGuard(
 }
 
 /**
+ * Evaluates an optional rate-limit skip as an exact boolean decision.
+ *
+ * Purpose: public routes may skip before legacy identity extraction, while
+ * protected routes retain auth and CSRF ordering. Callback exceptions and
+ * malformed results become one bounded invalid result without exposing errors.
+ *
+ * @param {Function|undefined} skipRateLimitWhen route-owned skip callback
+ * @param {import('next').NextApiRequest} req request supplied to existing callbacks
+ * @returns {Promise<{valid: boolean, skipped: boolean, cause?: string, err?: unknown}>} bounded skip decision
+ */
+async function evaluateRateLimitSkip(skipRateLimitWhen, req) {
+    if (skipRateLimitWhen === undefined) return { valid: true, skipped: false };
+    if (typeof skipRateLimitWhen !== 'function') {
+        return { valid: false, skipped: false, cause: 'callback_not_function' };
+    }
+
+    try {
+        const result = await skipRateLimitWhen(req);
+        return typeof result === 'boolean'
+            ? { valid: true, skipped: result }
+            : { valid: false, skipped: false, cause: 'result_not_boolean' };
+    } catch (err) {
+        return { valid: false, skipped: false, cause: 'callback_error', err };
+    }
+}
+
+/**
+ * Applies one bounded skip decision or fails closed with 503.
+ *
+ * Purpose: public and protected routes must report an invalid skip callback
+ * identically. Returns the fail-closed response when the decision is invalid.
+ *
+ * @param {object} decision bounded result from evaluateRateLimitSkip
+ * @param {import('next').NextApiRequest} req request with scoped logger
+ * @param {import('next').NextApiResponse} res response
+ * @param {string|null} operation resolved operation label
+ * @returns {{handled: boolean, response?: unknown}} bounded outcome
+ */
+function applyRateLimitSkipDecision(decision, req, res, operation) {
+    if (decision.valid) return { handled: false };
+    req.log.error(
+        {
+            event: 'rate_limit_skip_invalid',
+            method: req.method,
+            operation,
+            cause: decision.cause,
+            ...(decision.err === undefined ? {} : { err: decision.err }),
+        },
+        'Rate limit skip evaluation failed'
+    );
+    return {
+        handled: true,
+        response: sendError(
+            res,
+            503,
+            'SERVICE_UNAVAILABLE',
+            ERROR_MESSAGES.SERVICE_UNAVAILABLE
+        ),
+    };
+}
+
+/**
  * Normalizes a header expected to have a single string value.
  *
  * Returns null for arrays so malformed/repeated trusted headers fail closed
@@ -662,8 +724,8 @@ async function limitFailedProtectedAuth(req, res) {
  * @param {(req: import('next').NextApiRequest, res: import('next').NextApiResponse, decision: object) => object | Promise<object>} [options.writePreRateLimitGuardResponse]
  *        Required route-specific response writer when a guard is configured.
  * @param {(req: import('next').NextApiRequest) => boolean | Promise<boolean>} [options.skipRateLimitWhen]
- *        Optional emergency predicate that runs after method/auth/CSRF checks
- *        and before Redis-backed quota checks.
+ *        Optional route predicate. Public routes evaluate it before legacy
+ *        identity; protected routes retain auth, CSRF, identity, then skip.
  * @returns {Function} Wrapped handler with rate limiting applied
  */
 export function withRateLimit(handler, options = {}){
@@ -776,15 +838,29 @@ export function withRateLimit(handler, options = {}){
                         );
                     }
                 }else{
-                    // PUBLIC ROUTE: IP-based rate limiting, no auth needed
-                    identifier = extractIpIdentifier(req);
-                    if(!identifier){
-                        return sendError(
-                            res,
-                            403,
-                            'UNIDENTIFIABLE_CLIENT',
-                            'Unable to identify client. Please try again.'
-                        );
+                    // PUBLIC ROUTE: route-owned skip runs before legacy identity/Redis.
+                    const publicSkip = await evaluateRateLimitSkip(skipRateLimitWhen, req);
+                    const publicSkipOutcome = applyRateLimitSkipDecision(
+                        publicSkip,
+                        req,
+                        res,
+                        operation
+                    );
+                    if (publicSkipOutcome.handled) {
+                        return publicSkipOutcome.response;
+                    }
+                    if (publicSkip.skipped) {
+                        rateLimitResult = { success: true, skipped: true };
+                    } else {
+                        identifier = extractIpIdentifier(req);
+                        if(!identifier){
+                            return sendError(
+                                res,
+                                403,
+                                'UNIDENTIFIABLE_CLIENT',
+                                'Unable to identify client. Please try again.'
+                            );
+                        }
                     }
                 }
 
@@ -798,8 +874,20 @@ export function withRateLimit(handler, options = {}){
                     }
                 }
 
-                if (typeof skipRateLimitWhen === 'function' && await skipRateLimitWhen(req)) {
-                    rateLimitResult = { success: true, skipped: true };
+                if (requireAuth) {
+                    const protectedSkip = await evaluateRateLimitSkip(skipRateLimitWhen, req);
+                    const protectedSkipOutcome = applyRateLimitSkipDecision(
+                        protectedSkip,
+                        req,
+                        res,
+                        operation
+                    );
+                    if (protectedSkipOutcome.handled) {
+                        return protectedSkipOutcome.response;
+                    }
+                    if (protectedSkip.skipped) {
+                        rateLimitResult = { success: true, skipped: true };
+                    }
                 }
 
                 if (!rateLimitResult?.skipped) {

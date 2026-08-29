@@ -49,10 +49,10 @@ describe('redis.js', () => {
      * be bounded at the Redis HTTP client layer where aborts throw and preserve
      * the app's fail-closed rate-limit contract.
      */
-    it('configures a per-request timeout signal for Upstash Redis HTTP calls', () => {
+    it('configures a per-request timeout signal for Upstash Redis HTTP calls', async () => {
         const redis = require('../redis.js');
 
-        const client = redis.getRedisClient();
+        const client = await redis.getRedisClient();
 
         expect(client).not.toBeNull();
         expect(mockRedisConstructor).toHaveBeenCalledWith(
@@ -67,5 +67,127 @@ describe('redis.js', () => {
         const signal = signalFactory();
         expect(signal).toBeInstanceOf(AbortSignal);
         expect(signal.aborted).toBe(false);
+    });
+
+    /**
+     * Invalid Redis tokens fail with a fixed validation reason.
+     *
+     * Why: credential diagnostics must distinguish bounded token failures
+     * without placing any part of the secret token into application logs.
+     */
+    it.each([
+        ['missing', undefined, 'token_missing'],
+        ['non-string', { secret: 'non-string-secret' }, 'token_not_string'],
+        ['empty', '', 'token_empty'],
+        ['oversized', `oversized-secret-${'x'.repeat(2_048)}`, 'token_too_long'],
+    ])('rejects a %s Redis token without logging its value', async (_caseName, token, validationError) => {
+        const redis = require('../redis.js');
+        const runtimePair = Object.freeze({
+            redis: Object.freeze({
+                url: process.env.UPSTASH_REDIS_REST_URL,
+                token,
+            }),
+            cacheIdentity: Object.freeze({}),
+        });
+
+        await expect(redis.getRedisClient(runtimePair)).resolves.toBeNull();
+        expect(mockRedisConstructor).not.toHaveBeenCalled();
+        expect(mockLogger.error).toHaveBeenCalledWith(
+            { validationError },
+            'Invalid Redis token configuration'
+        );
+        expect(JSON.stringify(mockLogger.error.mock.calls)).not.toContain('secret');
+    });
+
+    /**
+     * Invalid URLs retain the existing validation log when the token is invalid too.
+     *
+     * Why: token validation must not replace the established URL diagnostic or
+     * expose token-derived data when both credential fields fail validation.
+     */
+    it('preserves Redis URL validation logging ahead of token validation', async () => {
+        const redis = require('../redis.js');
+        const runtimePair = Object.freeze({
+            redis: Object.freeze({
+                url: 'http://example.upstash.io',
+                token: { secret: 'non-string-secret' },
+            }),
+            cacheIdentity: Object.freeze({}),
+        });
+
+        await expect(redis.getRedisClient(runtimePair)).resolves.toBeNull();
+        expect(mockRedisConstructor).not.toHaveBeenCalled();
+        expect(mockLogger.error).toHaveBeenCalledWith(
+            { validationError: 'Redis URL must be HTTPS' },
+            'Invalid Redis URL configuration'
+        );
+        expect(JSON.stringify(mockLogger.error.mock.calls)).not.toContain('secret');
+    });
+
+    /**
+     * Alternating immutable credential identities reuse their retained clients.
+     *
+     * Why: the temporary-session ceiling and generic rate limiter can alternate
+     * identities even when both credential paths remain active in one process.
+     */
+    it('reuses clients when runtime-pair and generic-local callers alternate', async () => {
+        process.env.NODE_ENV = 'test';
+        process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE = 'local';
+        const redis = require('../redis.js');
+        const runtimePair = Object.freeze({
+            redis: Object.freeze({
+                url: process.env.UPSTASH_REDIS_REST_URL,
+                token: process.env.UPSTASH_REDIS_REST_TOKEN,
+            }),
+            cacheIdentity: Object.freeze({}),
+        });
+
+        const runtimeClient = await redis.getRedisClient(runtimePair);
+        const genericClient = await redis.getRedisClient();
+
+        expect(genericClient).not.toBe(runtimeClient);
+        expect(await redis.getRedisClient(runtimePair)).toBe(runtimeClient);
+        expect(await redis.getRedisClient()).toBe(genericClient);
+        expect(mockRedisConstructor).toHaveBeenCalledTimes(2);
+    });
+
+    /**
+     * The identity cache evicts the least-recently-used client at its fixed cap.
+     *
+     * Why: credential refreshes must not allow retired Redis clients to grow
+     * without bound over the lifetime of a server process.
+     */
+    it('bounds retained Redis clients and evicts the least-recently-used identity', async () => {
+        const redis = require('../redis.js');
+        const pairs = ['first', 'second', 'third'].map((name) => Object.freeze({
+            redis: Object.freeze({
+                url: `https://${name}-synthetic.upstash.io`,
+                token: `synthetic-token-${name}`,
+            }),
+            cacheIdentity: Object.freeze({}),
+        }));
+
+        const first = await redis.getRedisClient(pairs[0]);
+        const second = await redis.getRedisClient(pairs[1]);
+        expect(await redis.getRedisClient(pairs[0])).toBe(first);
+        await redis.getRedisClient(pairs[2]);
+
+        expect(await redis.getRedisClient(pairs[0])).toBe(first);
+        expect(await redis.getRedisClient(pairs[1])).not.toBe(second);
+        expect(mockRedisConstructor).toHaveBeenCalledTimes(4);
+    });
+
+    /**
+     * Deployed Secrets Manager mode may not fall back to explicit environment credentials.
+     */
+    it('does not use environment credentials after deployed secret acquisition fails', async () => {
+        process.env.NODE_ENV = 'production';
+        process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE = 'aws-secrets-manager';
+        delete process.env.TEMPORARY_SESSION_CEILING_HMAC_SECRET_ID;
+        delete process.env.TEMPORARY_SESSION_CEILING_REDIS_SECRET_ID;
+        const redis = require('../redis.js');
+
+        await expect(redis.getRedisClient()).resolves.toBeNull();
+        expect(mockRedisConstructor).not.toHaveBeenCalled();
     });
 });
