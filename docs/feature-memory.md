@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-23
 
+- `2026-08-29` - `Temporary session integration stale-window alignment`: Aligned the atomic integration coverage with the production Lua contract that normalizes expired buckets before validating and persisting the active-window total; production behavior is unchanged.
+  - validation: the atomic integration suite passes 9/9, the 15-suite Gate 1 matrix passes 311/311, repository lint passes with zero warnings, all 101 CI suites and 1,530 tests pass, the placeholder-only production build passes, and `git diff --check` passes.
 - `2026-08-26` - `Redis credential validation diagnostics`: Added bounded reason-code logging for missing, non-string, empty, and over-2,048-character Redis tokens without recording token material, while keeping URL validation diagnostics unchanged.
   - validation: the focused Redis suite passes 9/9, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-26` - `Temporary session Redis window and skip handling hardening`: Normalized validated Redis ring slots outside the active 61-second window before stored-total enforcement and persistence, retained the per-slot and active-window limit of 400, and centralized invalid public/protected rate-limit skip logging plus fail-closed responses.
