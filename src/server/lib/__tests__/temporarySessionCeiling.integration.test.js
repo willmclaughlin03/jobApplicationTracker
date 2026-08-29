@@ -378,7 +378,7 @@ describe('temporarySessionCeiling atomic integration', () => {
     expect((await redis.getSnapshot()).writeCount).toBe(1);
   });
 
-  it('rejects a stored total over 400 even when most counts are outside the window', async () => {
+  it('clears stale counts before validating the active-window total', async () => {
     const sourceBytes = [192, 0, 2, 99];
     const redis = createAtomicRedisHarness();
     redis.setSecond(61);
@@ -394,11 +394,7 @@ describe('temporarySessionCeiling atomic integration', () => {
     await expect(ceiling.evaluate(
       { sourceBytes },
       { routeVersion: 'v1' }
-    )).resolves.toEqual({
-      allowed: false,
-      statusCode: 503,
-      reason: 'script_state_invalid',
-    });
-    expect((await redis.getSnapshot()).writeCount).toBe(401);
+    )).resolves.toEqual({ allowed: true });
+    expect((await redis.getSnapshot()).writeCount).toBe(2);
   });
 });
