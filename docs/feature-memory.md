@@ -14,6 +14,12 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-08-30
+
+- `2026-08-30` - `Next.js 16.3.3 fallback security baseline`: Pinned Next.js and its ESLint config to `16.3.3`, aligned Next's PostCSS override to `8.5.23`, and moved the Sharp override to `0.35.4` with runtime libheif `1.23.2`, while retaining React 18 and Node 22 on an isolated staging-based fallback branch.
+  - validation: a clean install and exact dependency-tree checks pass, repository lint passes with zero warnings, all 101 CI suites and 1,530 tests pass, 20 external integration suites are inventoried without credentialed execution, the placeholder-only production build emits all 36 expected Pages Router entries plus Edge middleware, and local production smokes pass for protected login redirect, every custom error status, security headers, and valid Sharp PNG optimization with cache `MISS` then `HIT`.
+  - residual: public-registry audits report the same DOMPurify and nanoid production findings plus brace-expansion and js-yaml development findings already locked on the staging base; remediating those unchanged dependencies is a separate scope, and this fallback branch is not merged or deployed.
+
 ### Week of 2026-08-23
 
 - `2026-08-29` - `Temporary session integration stale-window alignment`: Aligned the atomic integration coverage with the production Lua contract that normalizes expired buckets before validating and persisting the active-window total; production behavior is unchanged.
