@@ -14,6 +14,11 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-08-30
+
+- `2026-08-31` - `CHUNK-0E production auth foundations`: Added browser-safe v2 auth constants and strict response schemas plus server-only SafeUser normalization, request-scoped Supabase operation tracking, exact endpoint-aware error classification, ambiguity-rejecting request-intent policies, and bounded provider-error formatting without changing current v1 behavior or adding v2 routes.
+  - validation: the nine focused CHUNK-0E suites pass 124/124, repository lint passes with zero warnings, all 109 CI suites and 1,615 tests pass, the non-secret-canary production build passes, the 20 credentialed integration suites remain inventory-only, and boundary, sensitive-data, scope, and `git diff --check` audits pass.
+
 ### Week of 2026-08-23
 
 - `2026-08-29` - `Temporary session integration stale-window alignment`: Aligned the atomic integration coverage with the production Lua contract that normalizes expired buckets before validating and persisting the active-window total; production behavior is unchanged.
