@@ -20,6 +20,32 @@ function createIntentRequest(name, normalizedValue = '1', rawValue = '1') {
 }
 
 describe('auth request intent policies', () => {
+  it('accepts the documented Node-style request contract', () => {
+    const headers = Object.create(null);
+    headers['x-app-request'] = '1';
+    const request = {
+      headers,
+      rawHeaders: ['Host', 'example.test', 'X-App-Request', '1'],
+    };
+
+    expect(evaluateAppRequestPolicy(request)).toStrictEqual({
+      accepted: true,
+      reason: AUTH_REQUEST_POLICY_REASONS.ACCEPTED,
+    });
+  });
+
+  it('rejects Web Headers objects outside the Node-style request contract', () => {
+    const request = {
+      headers: new Headers({ 'X-App-Request': '1' }),
+      rawHeaders: ['X-App-Request', '1'],
+    };
+
+    expect(evaluateAppRequestPolicy(request)).toStrictEqual({
+      accepted: false,
+      reason: AUTH_REQUEST_POLICY_REASONS.MALFORMED,
+    });
+  });
+
   it.each([
     ['application request', evaluateAppRequestPolicy, 'X-App-Request'],
     ['logout intent', evaluateLogoutIntentPolicy, 'X-Logout-Intent'],

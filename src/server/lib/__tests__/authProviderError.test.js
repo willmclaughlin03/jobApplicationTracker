@@ -1,4 +1,3 @@
-import pino from 'pino';
 import {
   AUTH_PROVIDER_LOG_EVENTS,
   AUTH_PROVIDER_LOG_ROUTES,
@@ -42,7 +41,7 @@ describe('formatAuthProviderError', () => {
     expect(formatAuthProviderError(input)).toStrictEqual(expected);
   });
 
-  it('excludes every prohibited provider field when serialized through Pino', () => {
+  it('passes only approved bounded metadata to the logger', () => {
     const sentinels = Object.freeze({
       message: 'message-private-sentinel',
       stack: 'stack-private-sentinel',
@@ -59,9 +58,7 @@ describe('formatAuthProviderError', () => {
       refreshToken: 'refresh-token-private-sentinel',
       metadata: 'metadata-private-sentinel',
     });
-    const writes = [];
-    const destination = { write: (chunk) => writes.push(String(chunk)) };
-    const log = pino({ base: null, timestamp: false }, destination);
+    const log = { error: jest.fn() };
     const error = {
       name: 'AuthApiError',
       status: 403,
@@ -89,8 +86,18 @@ describe('formatAuthProviderError', () => {
     });
     log.error(formatted, 'Authentication provider request failed');
 
-    const serialized = writes.join('');
-    expect(Object.keys(formatted)).toStrictEqual(['route', 'event', 'name', 'status', 'code']);
+    expect(log.error).toHaveBeenCalledTimes(1);
+    const [loggedFields, loggedMessage] = log.error.mock.calls[0];
+    expect(loggedFields).toStrictEqual({
+      route: 'v2_session',
+      event: 'session_lookup_failed',
+      name: 'AuthApiError',
+      status: 403,
+      code: 'user_not_found',
+    });
+    expect(loggedMessage).toBe('Authentication provider request failed');
+
+    const serialized = JSON.stringify(loggedFields);
     Object.values(sentinels).forEach((sentinel) => {
       expect(serialized).not.toContain(sentinel);
     });

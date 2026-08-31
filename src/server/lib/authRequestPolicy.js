@@ -1,8 +1,10 @@
 /**
  * Exact request-intent policies for future v2 authentication routes.
  *
- * Purpose: Reject ambiguous custom headers using both Node's normalized and
- * raw header views before a route performs any provider or mutation work.
+ * Purpose: Reject ambiguous custom headers on Node-style requests using both
+ * normalized plain-object headers and alternating-string rawHeaders before a
+ * route performs any provider or mutation work. Web/Next Headers candidates
+ * must be adapted to this contract before evaluation.
  * Connects to: X-App-Request and X-Logout-Intent shared contract constants.
  */
 
@@ -44,6 +46,10 @@ function createPolicyDecision(accepted, reason) {
  */
 function inspectNormalizedHeader(headers, expectedName) {
   if (typeof headers !== 'object' || headers === null || Array.isArray(headers)) {
+    return { kind: AUTH_REQUEST_POLICY_REASONS.MALFORMED };
+  }
+  const prototype = Object.getPrototypeOf(headers);
+  if (prototype !== Object.prototype && prototype !== null) {
     return { kind: AUTH_REQUEST_POLICY_REASONS.MALFORMED };
   }
 
@@ -91,7 +97,8 @@ function inspectRawHeader(rawHeaders, expectedName) {
  * Evaluates one exact intent header across normalized and raw representations.
  * Only a single identical string value in both views is accepted.
  *
- * @param {unknown} request Node/Next request candidate
+ * @param {unknown} request Node-style request with plain-object headers and
+ * alternating-string rawHeaders; Web/Next Headers must be adapted first
  * @param {string} expectedName exact contract header name
  * @param {string} expectedValue exact contract header value
  * @returns {{accepted: boolean, reason: string}} bounded policy decision
@@ -136,7 +143,7 @@ function evaluateIntentHeader(request, expectedName, expectedValue) {
 /**
  * Evaluates the exact application-request intent required by v2 session work.
  *
- * @param {unknown} request Node/Next request candidate
+ * @param {unknown} request Node-style request matching evaluateIntentHeader
  * @returns {{accepted: boolean, reason: string}} bounded policy decision
  */
 export function evaluateAppRequestPolicy(request) {
@@ -147,7 +154,7 @@ export function evaluateAppRequestPolicy(request) {
  * Evaluates only the exact logout-intent header; later logout work separately
  * owns method, body, same-origin proof, and cleanup ordering.
  *
- * @param {unknown} request Node/Next request candidate
+ * @param {unknown} request Node-style request matching evaluateIntentHeader
  * @returns {{accepted: boolean, reason: string}} bounded policy decision
  */
 export function evaluateLogoutIntentPolicy(request) {
