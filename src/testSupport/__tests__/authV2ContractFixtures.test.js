@@ -7,6 +7,9 @@
  */
 
 import {
+  APP_REQUEST_DECISION_FIXTURES,
+  APP_REQUEST_HEADER,
+  APP_REQUEST_VALUE,
   AUTH_CAPABLE_CACHE_INVENTORY,
   AUTH_CONSUMER_STATE_MATRIX,
   AUTH_COOKIE_STORAGE_KEY,
@@ -521,6 +524,12 @@ describe('CHUNK-0 auth v2 contract fixtures', () => {
       authCookieMutations: 0,
       csrfMutations: 0,
     });
+  });
+
+  it('freezes the exact application-request intent decision table', () => {
+    expect([APP_REQUEST_HEADER, APP_REQUEST_VALUE]).toEqual(['X-App-Request', '1']);
+    expect(APP_REQUEST_DECISION_FIXTURES.filter(({ accepted }) => accepted)).toHaveLength(1);
+    expect(APP_REQUEST_DECISION_FIXTURES.filter(({ accepted }) => !accepted)).toHaveLength(6);
   });
 
   it('keeps protected, public, and unmatched route sets disjoint', () => {

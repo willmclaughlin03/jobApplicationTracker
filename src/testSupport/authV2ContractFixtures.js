@@ -28,6 +28,8 @@ export const GOOGLE_SESSION_FIXTURE_V1_COOKIE_EVIDENCE = Object.freeze({
 });
 
 export const AUTH_V2_VERSION = 2;
+export const APP_REQUEST_HEADER = 'X-App-Request';
+export const APP_REQUEST_VALUE = '1';
 export const AUTH_COOKIE_STORAGE_KEY = 'sb-apxfjggdcybjticrnbpk-auth-token';
 export const SUPABASE_ENCODED_CHUNK_SIZE = 3180;
 export const MAX_AUTH_COOKIE_CHUNKS_EVIDENCE = Object.freeze({
@@ -516,6 +518,20 @@ export const LOGOUT_INTENT_DECISION_FIXTURES = Object.freeze([
   Object.freeze({
     name: 'array-valued intent',
     value: Object.freeze([LOGOUT_INTENT_VALUE, LOGOUT_INTENT_VALUE]),
+    accepted: false,
+  }),
+]);
+
+export const APP_REQUEST_DECISION_FIXTURES = Object.freeze([
+  Object.freeze({ name: 'exact intent', value: APP_REQUEST_VALUE, accepted: true }),
+  Object.freeze({ name: 'missing intent', value: undefined, accepted: false }),
+  Object.freeze({ name: 'empty intent', value: '', accepted: false }),
+  Object.freeze({ name: 'whitespace-padded intent', value: ' 1 ', accepted: false }),
+  Object.freeze({ name: 'wrong intent', value: '2', accepted: false }),
+  Object.freeze({ name: 'comma-joined intent', value: '1, 1', accepted: false }),
+  Object.freeze({
+    name: 'array-valued intent',
+    value: Object.freeze([APP_REQUEST_VALUE, APP_REQUEST_VALUE]),
     accepted: false,
   }),
 ]);
