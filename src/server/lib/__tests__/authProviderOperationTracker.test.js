@@ -35,6 +35,8 @@ describe('createAuthProviderOperationTracker', () => {
     ['extra refresh query', 'https://project.supabase.co/auth/v1/token?grant_type=refresh_token&extra=1', { method: 'POST' }],
     ['refresh fragment', 'https://project.supabase.co/auth/v1/token?grant_type=refresh_token#sentinel', { method: 'POST' }],
     ['non-auth path', 'https://project.supabase.co/rest/v1/user', { method: 'GET' }],
+    ['embedded credentials', 'https://user:pass@project.supabase.co/auth/v1/user', { method: 'GET' }],
+    ['unsupported protocol', 'data:text/plain,/auth/v1/user', { method: 'GET' }],
     ['malformed URL', 'not-an-absolute-url', { method: 'GET' }],
   ])('leaves %s untracked', async (_name, input, init) => {
     const tracker = createAuthProviderOperationTracker(jest.fn().mockResolvedValue({ ok: true }));

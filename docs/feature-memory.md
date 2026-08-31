@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-30
 
+- `2026-08-31` - `CHUNK-0E operation-policy review follow-ups`: Reused the frozen application-request decision fixtures in production-policy coverage, added explicit credential-bearing URL and unsupported-protocol rejection cases, and documented the operation tracker's single-request concurrency boundary without changing runtime behavior.
+  - validation: the focused operation-tracker and request-policy suites pass 45/45, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-31` - `CHUNK-0E contract-test documentation`: Added short purpose comments above the Node request acceptance, Web `Headers` rejection, and approved provider-error logger-metadata boundary tests without changing assertions or production behavior.
   - validation: the focused provider-error and request-policy suites pass 27/27, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-31` - `CHUNK-0E review contract hardening`: Isolated provider-error unit logging behind a Jest mock and made the auth intent policy's Node-style request contract explicit, accepting only plain or null-prototype normalized headers paired with alternating-string `rawHeaders` and rejecting Web `Headers` objects.
