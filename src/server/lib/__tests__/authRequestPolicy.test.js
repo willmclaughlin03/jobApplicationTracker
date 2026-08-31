@@ -3,6 +3,10 @@ import {
   evaluateAppRequestPolicy,
   evaluateLogoutIntentPolicy,
 } from '../authRequestPolicy.js';
+import {
+  APP_REQUEST_DECISION_FIXTURES,
+  APP_REQUEST_HEADER,
+} from '../../../testSupport/authV2ContractFixtures.js';
 
 /**
  * Builds consistent normalized and raw header views for one intent header.
@@ -61,6 +65,24 @@ describe('auth request intent policies', () => {
       reason: AUTH_REQUEST_POLICY_REASONS.ACCEPTED,
     });
   });
+
+  /**
+   * Keeps the implementation's acceptance decisions aligned with the shared contract fixtures.
+   */
+  it.each(APP_REQUEST_DECISION_FIXTURES)(
+    'matches the shared $name application-request decision',
+    ({ value, accepted }) => {
+      const request = value === undefined
+        ? { headers: {}, rawHeaders: [] }
+        : createIntentRequest(
+          APP_REQUEST_HEADER,
+          value,
+          Array.isArray(value) ? value[0] : value
+        );
+
+      expect(evaluateAppRequestPolicy(request).accepted).toBe(accepted);
+    }
+  );
 
   it.each([
     ['missing', { headers: {}, rawHeaders: [] }, AUTH_REQUEST_POLICY_REASONS.MISSING],

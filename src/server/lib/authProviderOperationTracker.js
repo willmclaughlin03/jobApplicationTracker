@@ -85,6 +85,8 @@ function classifyAuthProviderOperation(input, init) {
 
 /**
  * Wraps a fetch implementation with isolated, bounded operation state.
+ * Each tracker instance supports only one Auth request and must not be shared
+ * across concurrent Auth requests because calls overwrite its single operation slot.
  * Each fetch replaces prior state before delegating and preserves thrown errors.
  *
  * @param {(input: unknown, init?: unknown) => Promise<unknown>} fetchImplementation fetch seam
