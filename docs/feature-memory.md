@@ -14,6 +14,17 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-08-30
+
+- `2026-08-31` - `CHUNK-0E operation-policy review follow-ups`: Reused the frozen application-request decision fixtures in production-policy coverage, added explicit credential-bearing URL and unsupported-protocol rejection cases, and documented the operation tracker's single-request concurrency boundary without changing runtime behavior.
+  - validation: the focused operation-tracker and request-policy suites pass 45/45, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
+- `2026-08-31` - `CHUNK-0E contract-test documentation`: Added short purpose comments above the Node request acceptance, Web `Headers` rejection, and approved provider-error logger-metadata boundary tests without changing assertions or production behavior.
+  - validation: the focused provider-error and request-policy suites pass 27/27, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
+- `2026-08-31` - `CHUNK-0E review contract hardening`: Isolated provider-error unit logging behind a Jest mock and made the auth intent policy's Node-style request contract explicit, accepting only plain or null-prototype normalized headers paired with alternating-string `rawHeaders` and rejecting Web `Headers` objects.
+  - validation: the focused provider-error and request-policy suites pass 27/27, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
+- `2026-08-31` - `CHUNK-0E production auth foundations`: Added browser-safe v2 auth constants and strict response schemas plus server-only SafeUser normalization, request-scoped Supabase operation tracking, exact endpoint-aware error classification, ambiguity-rejecting request-intent policies, and bounded provider-error formatting without changing current v1 behavior or adding v2 routes.
+  - validation: the nine focused CHUNK-0E suites pass 124/124, repository lint passes with zero warnings, all 109 CI suites and 1,615 tests pass, the non-secret-canary production build passes, the 20 credentialed integration suites remain inventory-only, and boundary, sensitive-data, scope, and `git diff --check` audits pass.
+
 ### Week of 2026-08-23
 
 - `2026-08-29` - `Temporary session integration stale-window alignment`: Aligned the atomic integration coverage with the production Lua contract that normalizes expired buckets before validating and persisting the active-window total; production behavior is unchanged.
