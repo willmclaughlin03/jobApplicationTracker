@@ -41,6 +41,9 @@ describe('formatAuthProviderError', () => {
     expect(formatAuthProviderError(input)).toStrictEqual(expected);
   });
 
+  /**
+   * Verifies logging receives only the five approved fields and safe message.
+   */
   it('passes only approved bounded metadata to the logger', () => {
     const sentinels = Object.freeze({
       message: 'message-private-sentinel',

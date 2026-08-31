@@ -20,6 +20,9 @@ function createIntentRequest(name, normalizedValue = '1', rawValue = '1') {
 }
 
 describe('auth request intent policies', () => {
+  /**
+   * Verifies the documented Node-style header views are accepted together.
+   */
   it('accepts the documented Node-style request contract', () => {
     const headers = Object.create(null);
     headers['x-app-request'] = '1';
@@ -34,6 +37,9 @@ describe('auth request intent policies', () => {
     });
   });
 
+  /**
+   * Verifies Web Headers fail closed until adapted to the Node-style contract.
+   */
   it('rejects Web Headers objects outside the Node-style request contract', () => {
     const request = {
       headers: new Headers({ 'X-App-Request': '1' }),

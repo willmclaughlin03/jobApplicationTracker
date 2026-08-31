@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-30
 
+- `2026-08-31` - `CHUNK-0E contract-test documentation`: Added short purpose comments above the Node request acceptance, Web `Headers` rejection, and approved provider-error logger-metadata boundary tests without changing assertions or production behavior.
+  - validation: the focused provider-error and request-policy suites pass 27/27, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-31` - `CHUNK-0E review contract hardening`: Isolated provider-error unit logging behind a Jest mock and made the auth intent policy's Node-style request contract explicit, accepting only plain or null-prototype normalized headers paired with alternating-string `rawHeaders` and rejecting Web `Headers` objects.
   - validation: the focused provider-error and request-policy suites pass 27/27, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-31` - `CHUNK-0E production auth foundations`: Added browser-safe v2 auth constants and strict response schemas plus server-only SafeUser normalization, request-scoped Supabase operation tracking, exact endpoint-aware error classification, ambiguity-rejecting request-intent policies, and bounded provider-error formatting without changing current v1 behavior or adding v2 routes.
