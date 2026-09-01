@@ -16,6 +16,10 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-30
 
+- `2026-09-01` - `CHUNK-1 Vercel provider amendment`: Pinned Next.js and `eslint-config-next` to the 16.3.3 security baseline, replaced AWS/CloudFront source and secret adapters with strict deployment-bound Vercel configuration, shared one immutable HMAC/Upstash runtime pair across the temporary and legacy limiters, updated bounded Vercel attribution, removed the unused AWS Secrets Manager SDK, and sanitized generic rate-limit failure diagnostics.
+  - Validation: the focused rate-limit and middleware suites pass 155/155, repository lint passes with zero warnings, all 109 CI suites and 1,644 tests pass, the 20-suite integration inventory executes 4 passing suites and skips 16 credential-dependent suites (28 passed/192 skipped), the exact local Redis 400/401 ceiling passes, the Next.js 16.3.3 production build and HTTP smoke pass, and artifact, secret-canary, retired-AWS-marker, and `git diff --check` scans pass.
+  - Residual: live Vercel/Upstash source-overwrite, cross-instance, CDN/cache, WAF, rollback, and credential-scoped qualification remains required; `npm audit` currently reports two production findings and six total findings; the known middleware-to-proxy deprecation warning remains without a rename.
+
 - `2026-08-31` - `CHUNK-0E operation-policy review follow-ups`: Reused the frozen application-request decision fixtures in production-policy coverage, added explicit credential-bearing URL and unsupported-protocol rejection cases, and documented the operation tracker's single-request concurrency boundary without changing runtime behavior.
   - validation: the focused operation-tracker and request-policy suites pass 45/45, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-31` - `CHUNK-0E contract-test documentation`: Added short purpose comments above the Node request acceptance, Web `Headers` rejection, and approved provider-error logger-metadata boundary tests without changing assertions or production behavior.
