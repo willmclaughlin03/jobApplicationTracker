@@ -4,10 +4,15 @@ import { getRedisClient, logRedisDownOnce, setLastCallStatus } from './redis';
 import { logger } from '../../shared/logger';
 
 
-// Throttle: at most one logger.warn per 60s for repeated failures,
-// so distinct error types surface without flooding Axiom.
+// Throttle: at most one bounded logger.warn per 60s for repeated failures,
+// preserving fixed operational context without provider detail or Axiom floods.
 let lastWarnTime = 0;
 const WARN_THROTTLE_MS = 60_000;
+const RATE_LIMIT_IDENTIFIER_CLASSES = Object.freeze({
+    USER: 'user',
+    SOURCE: 'source',
+    UNKNOWN: 'unknown',
+});
 
 
 /** @type {Map<string, {limiter: Ratelimit, redis: import('@upstash/redis').Redis}>} Cached limiter instances keyed by tier:operation:window */
@@ -25,6 +30,21 @@ const limiterCache = new Map()
  */
 function isLimiterTimeoutResult(result) {
     return result?.reason === 'timeout';
+}
+
+/**
+ * Classifies a limiter identifier into one fixed diagnostic value.
+ *
+ * Why: identifier prefixes and provider errors must not create attacker-shaped
+ * log fields or reveal the reversible canonical source identifier.
+ *
+ * @param {string} identifier validated limiter identity
+ * @returns {'user'|'source'|'unknown'} fixed-cardinality identity class
+ */
+function classifyRateLimitIdentifier(identifier) {
+    if (identifier.startsWith('user:')) return RATE_LIMIT_IDENTIFIER_CLASSES.USER;
+    if (identifier.startsWith('source:v1:')) return RATE_LIMIT_IDENTIFIER_CLASSES.SOURCE;
+    return RATE_LIMIT_IDENTIFIER_CLASSES.UNKNOWN;
 }
 
 /**
@@ -85,7 +105,7 @@ function getOrCreateLimiter(tier, operation, windowType, redis){
  * - the daily window is checked first so a request that is already over the
  *   broader quota does not spend the narrower hourly token too
  *
- * @param {string} identifier - Rate limit key (e.g. 'user:uuid' or 'ip:1.2.3.4')
+ * @param {string} identifier - Rate limit key (e.g. user or versioned source identity)
  * @param {string} tier - User tier from TIERS constant
  * @param {string} operation - Operation type from OPERATIONS constant
  * @returns {Promise<Object>} Rate limit result with success, limit, remaining, reset, window
@@ -167,13 +187,21 @@ export async function checkRateLimit(identifier, tier, operation){
         }
 
 
-    }catch(error){
+    }catch{
         logRedisDownOnce({ reason: 'call_failed' });
         setLastCallStatus(false);
 
         const now = Date.now();
         if (now - lastWarnTime >= WARN_THROTTLE_MS) {
-            logger.warn({ err: error, identifierType: identifier?.split(':')[0] || 'unknown', tier, operation }, 'Rate limit check failed');
+            logger.warn(
+                {
+                    reason: 'limiter_call_failed',
+                    identifierClass: classifyRateLimitIdentifier(identifier),
+                    tier,
+                    operation,
+                },
+                'Rate limit check failed'
+            );
             lastWarnTime = now;
         }
 

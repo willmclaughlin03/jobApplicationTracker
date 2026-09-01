@@ -27,7 +27,7 @@
  * - Rate limit exceeded after N+1 requests
  * - Graceful degradation when Redis unavailable (resetRedisClient mid-test)
  * - limiterCache invalidation after resetRedisClient()
- * - PII redaction: identifier type logged, never full value
+ * - PII redaction: identifiers never enter invalid-input diagnostics
  * - Malicious inputs: XSS identifiers, absurdly long keys, null bytes, unicode
  */
 
@@ -303,29 +303,15 @@ describeIntegration('rateLimit.js — integration (real Upstash)', () => {
     // ===================================================================
 
     describe('PII redaction in logs', () => {
-        it('error log contains identifierType but never the full user UUID', async () => {
-            // Use the real user UUID in an identifier that will hit the catch block
-            // We force an error by resetting Redis after caching a limiter,
-            // then making the cached limiter's .limit() throw
+        it('invalid-input diagnostics never contain the full user UUID', async () => {
+            // Use the real user UUID in an identifier rejected before Redis work.
             const sensitiveId = `user:${testUserId}`;
 
-            // Trigger input validation error path (invalid tier logs the identifier type)
+            // Trigger input validation; unit tests own deterministic provider-error coverage.
             await checkRateLimit(sensitiveId, 'invalid-tier', 'read');
 
             const allErrorArgs = JSON.stringify(mockLogger.error.mock.calls);
-            // "user" type should be absent from error logs for invalid tier
-            // (the error is logged before identifier is used)
-            // Most importantly: the real UUID must never appear
             expect(allErrorArgs).not.toContain(testUserId);
-        });
-
-        it('identifier type extraction works for user: and ip: prefixes', () => {
-            // Verify the extraction logic used in the catch block (rateLimit.js:121)
-            const userParts = `user:${testUserId}`.split(':');
-            expect(userParts[0]).toBe('user');
-
-            const ipParts = 'ip:192.168.1.1'.split(':');
-            expect(ipParts[0]).toBe('ip');
         });
     });
 
