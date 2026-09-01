@@ -52,13 +52,19 @@ jest.mock('../../../shared/logger.js', () => ({
 }));
 
 const { withRateLimit } = require('../withRateLimit.js');
+const {
+    canonicalizeTemporarySessionAddress,
+    serializeTemporarySessionLegacySource,
+} = require('../../lib/temporarySessionSource.js');
 
 describe('withRateLimit middleware', () => {
     const mockUser = { id: 'user-abc-123', email: 'test@example.com' };
     const originalNodeEnv = process.env.NODE_ENV;
     const originalRequestDurationLogAll = process.env.REQUEST_DURATION_LOG_ALL;
+    const originalVercel = process.env.VERCEL;
+    const originalSourceMode = process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE;
 
-    const createMockRequest = (method, headers = {}, socket = {}) => ({
+    const createMockRequest = (method, headers = {}, socket = {}, rawHeaders = []) => ({
         method,
         headers: {
             authorization: 'Bearer valid-token',
@@ -68,6 +74,7 @@ describe('withRateLimit middleware', () => {
             remoteAddress: '192.168.1.1',
             ...socket,
         },
+        rawHeaders,
     });
 
     const createMockResponse = () => {
@@ -100,8 +107,23 @@ describe('withRateLimit middleware', () => {
         );
     }
 
+    /**
+     * Produces the exact versioned identifier expected by the legacy limiter.
+     *
+     * @param {string} address canonicalizable synthetic address
+     * @returns {string} deterministic legacy source identifier
+     */
+    function legacySourceIdentifier(address) {
+        return serializeTemporarySessionLegacySource(
+            canonicalizeTemporarySessionAddress(address)
+        );
+    }
+
     beforeEach(() => {
         jest.clearAllMocks();
+        process.env.NODE_ENV = 'test';
+        delete process.env.VERCEL;
+        delete process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE;
         mockGetUserFromRequest.mockResolvedValue({ user: mockUser, error: null, supabaseClient: { auth: { getUser: jest.fn() } } });
         mockCheckRateLimit.mockResolvedValue({
             success: true,
@@ -124,6 +146,16 @@ describe('withRateLimit middleware', () => {
         } else {
             process.env.REQUEST_DURATION_LOG_ALL = originalRequestDurationLogAll;
         }
+        if (originalVercel === undefined) {
+            delete process.env.VERCEL;
+        } else {
+            process.env.VERCEL = originalVercel;
+        }
+        if (originalSourceMode === undefined) {
+            delete process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE;
+        } else {
+            process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = originalSourceMode;
+        }
         jest.restoreAllMocks();
     });
 
@@ -144,7 +176,7 @@ describe('withRateLimit middleware', () => {
             await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
-                'ip:10.0.0.1',
+                legacySourceIdentifier('10.0.0.1'),
                 expect.any(String),
                 expect.any(String)
             );
@@ -162,7 +194,7 @@ describe('withRateLimit middleware', () => {
             await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
-                'ip:192.168.1.1',
+                legacySourceIdentifier('192.168.1.1'),
                 expect.any(String),
                 expect.any(String)
             );
@@ -170,23 +202,20 @@ describe('withRateLimit middleware', () => {
 
         /**
          * Test: Valid IPv6 addresses are accepted
-         * Edge case: Full hex colon-notation must pass the regex
-         * Note: CloudFront-Viewer-Address only read when AWS_LAMBDA_FUNCTION_NAME is set
+         * Edge case: compressed colon notation must canonicalize from the socket
          */
         it('should accept valid IPv6 addresses', async () => {
-            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
-            const req = createMockRequest('GET', { 'cloudfront-viewer-address': '2001:db8::1:54321' });
+            const req = createMockRequest('GET', {}, { remoteAddress: '2001:db8::1' });
             const res = createMockResponse();
             const handler = jest.fn();
 
             await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
-                'ip:2001:db8::1',
+                legacySourceIdentifier('2001:db8::1'),
                 expect.any(String),
                 expect.any(String)
             );
-            delete process.env.AWS_LAMBDA_FUNCTION_NAME;
         });
 
         /**
@@ -312,7 +341,7 @@ describe('withRateLimit middleware', () => {
 
         /**
          * Test: Public routes use IP-based identifier
-         * Verifies: ip:{address} format used with requireAuth: false
+         * Verifies: versioned canonical source format used with requireAuth: false
          */
         it('should use IP for public routes (requireAuth: false)', async () => {
             const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.5' });
@@ -322,7 +351,7 @@ describe('withRateLimit middleware', () => {
             await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
-                'ip:10.0.0.5',
+                legacySourceIdentifier('10.0.0.5'),
                 expect.any(String),
                 expect.any(String)
             );
@@ -354,15 +383,17 @@ describe('withRateLimit middleware', () => {
         });
 
         /**
-         * Test: CloudFront-Viewer-Address takes priority on deployed environment
-         * Verifies: Trusted header is preferred over x-forwarded-for
+         * Test: the strict Vercel source feeds the versioned generic identity.
          */
-        it('should prefer cloudfront-viewer-address on deployed Amplify', async () => {
-            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
+        it('uses the singleton Vercel source and ignores every fallback', async () => {
+            process.env.NODE_ENV = 'production';
+            process.env.VERCEL = '1';
+            process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'vercel';
             const req = createMockRequest(
                 'GET',
-                { 'cloudfront-viewer-address': '203.0.113.1:54321', 'x-forwarded-for': '10.0.0.1' },
-                { remoteAddress: '169.254.0.1' }
+                { 'x-vercel-forwarded-for': '203.0.113.1', 'x-forwarded-for': '10.0.0.1' },
+                { remoteAddress: '169.254.0.1' },
+                ['X-Vercel-Forwarded-For', '203.0.113.1']
             );
             const res = createMockResponse();
             const handler = jest.fn();
@@ -370,32 +401,29 @@ describe('withRateLimit middleware', () => {
             await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
-                'ip:203.0.113.1',
+                legacySourceIdentifier('203.0.113.1'),
                 expect.any(String),
                 expect.any(String)
             );
-            delete process.env.AWS_LAMBDA_FUNCTION_NAME;
         });
     });
 
     // =========================================================================
-    // Amplify/CloudFront IP extraction security
+    // Vercel source extraction security
     // =========================================================================
-    describe('Amplify/CloudFront IP extraction security', () => {
-        afterEach(() => {
-            delete process.env.AWS_LAMBDA_FUNCTION_NAME;
-        });
+    describe('Vercel source extraction security', () => {
 
         /**
-         * Test: Deployed Amplify — no CloudFront headers returns 403, no socket fallback
-         * Security: socket.remoteAddress behind CloudFront is the internal Lambda IP.
+         * Test: Vercel mode with no trusted header returns 403 with no socket fallback.
          */
-        it('should return 403 on deployed Amplify when no CloudFront headers are present', async () => {
-            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
+        it('returns 403 in Vercel mode when the trusted header is absent', async () => {
+            process.env.NODE_ENV = 'production';
+            process.env.VERCEL = '1';
+            process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'vercel';
             const req = createMockRequest(
                 'GET',
                 {},
-                { remoteAddress: '169.254.0.1' } // internal Lambda IP — must NOT be used
+                { remoteAddress: '169.254.0.1' }
             );
             const res = createMockResponse();
             const handler = jest.fn();
@@ -411,63 +439,38 @@ describe('withRateLimit middleware', () => {
         });
 
         /**
-         * Test: CloudFront-Viewer-Address strips port suffix correctly
-         * Format from CloudFront is "ip:port"
+         * Test: Vercel source values containing a port fail closed.
          */
-        it('should strip port from cloudfront-viewer-address', async () => {
-            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
+        it('rejects a port-bearing Vercel source', async () => {
+            process.env.NODE_ENV = 'production';
+            process.env.VERCEL = '1';
+            process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'vercel';
             const req = createMockRequest(
                 'GET',
-                { 'cloudfront-viewer-address': '198.51.100.42:12345' },
-                { remoteAddress: '169.254.0.1' }
+                { 'x-vercel-forwarded-for': '198.51.100.42:12345' },
+                { remoteAddress: '169.254.0.1' },
+                ['X-Vercel-Forwarded-For', '198.51.100.42:12345']
             );
             const res = createMockResponse();
             const handler = jest.fn();
 
             await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
-            expect(mockCheckRateLimit).toHaveBeenCalledWith(
-                'ip:198.51.100.42',
-                expect.any(String),
-                expect.any(String)
-            );
-            expect(handler).toHaveBeenCalled();
+            expect(res.status).toHaveBeenCalledWith(403);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
         });
 
         /**
-         * Test: Falls back to rightmost x-forwarded-for when CloudFront-Viewer-Address is absent
-         * Security: CloudFront appends viewer IP as the last entry in x-forwarded-for.
-         * Earlier entries may be client-spoofed, so only the last is trusted.
+         * Test: x-forwarded-for is never a deployed fallback.
          */
-        it('should use rightmost x-forwarded-for when cloudfront-viewer-address is absent', async () => {
-            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
+        it('rejects x-forwarded-for when the trusted Vercel source is absent', async () => {
+            process.env.NODE_ENV = 'production';
+            process.env.VERCEL = '1';
+            process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'vercel';
             const req = createMockRequest(
                 'GET',
                 { 'x-forwarded-for': '10.0.0.1, 192.168.1.1, 203.0.113.50' },
-                { remoteAddress: '169.254.0.1' }
-            );
-            const res = createMockResponse();
-            const handler = jest.fn();
-
-            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
-
-            expect(mockCheckRateLimit).toHaveBeenCalledWith(
-                'ip:203.0.113.50',
-                expect.any(String),
-                expect.any(String)
-            );
-            expect(handler).toHaveBeenCalled();
-        });
-
-        /**
-         * Test: CloudFront-Viewer-Address still fails closed after port stripping
-         * Security: Values that look like "ip:port" but contain an invalid IP must be rejected
-         */
-        it('should reject malformed cloudfront-viewer-address values after stripping the port', async () => {
-            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
-            const req = createMockRequest(
-                'GET',
-                { 'cloudfront-viewer-address': '999.999.999.999:12345' },
                 { remoteAddress: '169.254.0.1' }
             );
             const res = createMockResponse();
@@ -480,8 +483,33 @@ describe('withRateLimit middleware', () => {
             expect(handler).not.toHaveBeenCalled();
         });
 
-        it('should handle x-forwarded-for arrays without throwing and use the rightmost IP', async () => {
-            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
+        /**
+         * Test: malformed Vercel source values fail closed.
+         */
+        it('rejects malformed x-vercel-forwarded-for values', async () => {
+            process.env.NODE_ENV = 'production';
+            process.env.VERCEL = '1';
+            process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'vercel';
+            const req = createMockRequest(
+                'GET',
+                { 'x-vercel-forwarded-for': '999.999.999.999' },
+                { remoteAddress: '169.254.0.1' },
+                ['X-Vercel-Forwarded-For', '999.999.999.999']
+            );
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(403);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        it('rejects x-forwarded-for arrays without throwing', async () => {
+            process.env.NODE_ENV = 'production';
+            process.env.VERCEL = '1';
+            process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'vercel';
             const req = createMockRequest(
                 'GET',
                 { 'x-forwarded-for': ['10.0.0.1, 192.168.1.1', '203.0.113.50'] },
@@ -492,16 +520,15 @@ describe('withRateLimit middleware', () => {
 
             await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
-            expect(mockCheckRateLimit).toHaveBeenCalledWith(
-                'ip:203.0.113.50',
-                expect.any(String),
-                expect.any(String)
-            );
-            expect(handler).toHaveBeenCalled();
+            expect(res.status).toHaveBeenCalledWith(403);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
         });
 
         it('should reject malformed rightmost x-forwarded-for entries', async () => {
-            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
+            process.env.NODE_ENV = 'production';
+            process.env.VERCEL = '1';
+            process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'vercel';
             const req = createMockRequest(
                 'GET',
                 { 'x-forwarded-for': '10.0.0.1, 999.999.999.999' },
@@ -517,12 +544,18 @@ describe('withRateLimit middleware', () => {
             expect(handler).not.toHaveBeenCalled();
         });
 
-        it('should fail closed when cloudfront-viewer-address is repeated as an array', async () => {
-            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
+        it('fails closed on normalized arrays and repeated raw Vercel headers', async () => {
+            process.env.NODE_ENV = 'production';
+            process.env.VERCEL = '1';
+            process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'vercel';
             const req = createMockRequest(
                 'GET',
-                { 'cloudfront-viewer-address': ['203.0.113.1:12345', '203.0.113.2:54321'] },
-                { remoteAddress: '169.254.0.1' }
+                { 'x-vercel-forwarded-for': ['203.0.113.1', '203.0.113.2'] },
+                { remoteAddress: '169.254.0.1' },
+                [
+                    'X-Vercel-Forwarded-For', '203.0.113.1',
+                    'x-vercel-forwarded-for', '203.0.113.2',
+                ]
             );
             const res = createMockResponse();
             const handler = jest.fn();
@@ -535,12 +568,12 @@ describe('withRateLimit middleware', () => {
         });
 
         /**
-         * Test: Spoofed x-forwarded-for prefix is ignored — only rightmost used
-         * Security: A client can prepend arbitrary IPs to x-forwarded-for.
-         * The rightmost entry is appended by CloudFront and is the only trusted one.
+         * Test: spoofed x-forwarded-for lists cannot create a generic identity.
          */
-        it('should ignore spoofed x-forwarded-for prefix entries', async () => {
-            process.env.AWS_LAMBDA_FUNCTION_NAME = 'my-function';
+        it('rejects spoofed x-forwarded-for prefix entries', async () => {
+            process.env.NODE_ENV = 'production';
+            process.env.VERCEL = '1';
+            process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'vercel';
             const req = createMockRequest(
                 'GET',
                 { 'x-forwarded-for': '1.2.3.4, 203.0.113.99' },
@@ -551,28 +584,104 @@ describe('withRateLimit middleware', () => {
 
             await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
-            // Must use the rightmost (203.0.113.99), not the spoofed first (1.2.3.4)
-            expect(mockCheckRateLimit).toHaveBeenCalledWith(
-                'ip:203.0.113.99',
-                expect.any(String),
-                expect.any(String)
+            expect(res.status).toHaveBeenCalledWith(403);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        it.each([
+            ['raw and normalized disagreement',
+                { 'x-vercel-forwarded-for': '203.0.113.10' },
+                ['X-Vercel-Forwarded-For', '203.0.113.11']],
+            ['comma list',
+                { 'x-vercel-forwarded-for': '203.0.113.10, 203.0.113.11' },
+                ['X-Vercel-Forwarded-For', '203.0.113.10, 203.0.113.11']],
+            ['surrounding whitespace',
+                { 'x-vercel-forwarded-for': ' 203.0.113.10' },
+                ['X-Vercel-Forwarded-For', ' 203.0.113.10']],
+            ['casing-created raw duplicate',
+                { 'x-vercel-forwarded-for': '203.0.113.10' },
+                [
+                    'X-Vercel-Forwarded-For', '203.0.113.10',
+                    'x-vercel-forwarded-for', '203.0.113.10',
+                ]],
+        ])('rejects %s through the complete wrapper', async (_label, headers, rawHeaders) => {
+            process.env.NODE_ENV = 'production';
+            process.env.VERCEL = '1';
+            process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'vercel';
+            const req = createMockRequest(
+                'GET',
+                headers,
+                { remoteAddress: '169.254.0.1' },
+                rawHeaders
             );
-            expect(mockCheckRateLimit).not.toHaveBeenCalledWith(
-                'ip:1.2.3.4',
-                expect.any(String),
-                expect.any(String)
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(403);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
+        });
+
+        it('fails closed when Vercel mode and runtime configuration contradict', async () => {
+            process.env.NODE_ENV = 'production';
+            process.env.VERCEL = '1';
+            process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'local';
+            const req = createMockRequest(
+                'GET',
+                { 'x-vercel-forwarded-for': '203.0.113.20' },
+                { remoteAddress: '169.254.0.1' },
+                ['X-Vercel-Forwarded-For', '203.0.113.20']
             );
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(403);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+        });
+
+        it('does not place the source or serialized identifier into logs', async () => {
+            const address = '203.0.113.77';
+            const identifier = legacySourceIdentifier(address);
+            process.env.NODE_ENV = 'production';
+            process.env.VERCEL = '1';
+            process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'vercel';
+            const req = createMockRequest(
+                'GET',
+                { 'x-vercel-forwarded-for': address },
+                { remoteAddress: '169.254.0.1' },
+                ['X-Vercel-Forwarded-For', address]
+            );
+            const res = createMockResponse();
+
+            await withRateLimit(jest.fn(), {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+            })(req, res);
+
+            const serializedLogs = JSON.stringify({
+                info: mockLog.info.mock.calls,
+                warn: mockLog.warn.mock.calls,
+                error: mockLog.error.mock.calls,
+                debug: mockLog.debug.mock.calls,
+            });
+            expect(serializedLogs).not.toContain(address);
+            expect(serializedLogs).not.toContain(identifier);
+            expect(serializedLogs).not.toContain('source:v1:');
         });
 
         /**
-         * Test: Local dev (no AWS_LAMBDA_FUNCTION_NAME) uses socket.remoteAddress
+         * Test: explicit local/test mode uses socket.remoteAddress.
          * Context: No proxy in local dev, socket address is the real client.
          */
         it('should use socket.remoteAddress in local dev', async () => {
-            delete process.env.AWS_LAMBDA_FUNCTION_NAME;
             const req = createMockRequest(
                 'GET',
-                { 'cloudfront-viewer-address': '203.0.113.1:54321' }, // present but must be ignored
+                { 'x-vercel-forwarded-for': '203.0.113.1' },
                 { remoteAddress: '127.0.0.1' }
             );
             const res = createMockResponse();
@@ -581,13 +690,13 @@ describe('withRateLimit middleware', () => {
             await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
-                'ip:127.0.0.1',
+                legacySourceIdentifier('127.0.0.1'),
                 expect.any(String),
                 expect.any(String)
             );
-            // CloudFront header must NOT be used in local dev
+            // The Vercel header must not be used in local/test mode.
             expect(mockCheckRateLimit).not.toHaveBeenCalledWith(
-                'ip:203.0.113.1',
+                legacySourceIdentifier('203.0.113.1'),
                 expect.any(String),
                 expect.any(String)
             );
@@ -595,12 +704,11 @@ describe('withRateLimit middleware', () => {
         });
 
         /**
-         * Test: CloudFront headers ignored in local dev — socket.remoteAddress used
+         * Test: forwarding headers are ignored in local dev.
          * Security: In local dev, proxy headers could be from a different tool
          * and should not override the direct socket connection.
          */
         it('should ignore x-forwarded-for in local dev and use socket', async () => {
-            delete process.env.AWS_LAMBDA_FUNCTION_NAME;
             const req = createMockRequest(
                 'GET',
                 { 'x-forwarded-for': '203.0.113.99' },
@@ -612,7 +720,7 @@ describe('withRateLimit middleware', () => {
             await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
-                'ip:10.0.0.7',
+                legacySourceIdentifier('10.0.0.7'),
                 expect.any(String),
                 expect.any(String)
             );
@@ -1073,7 +1181,7 @@ describe('withRateLimit middleware', () => {
 
             expect(res.status).toHaveBeenCalledWith(401);
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
-                'ip:10.0.0.1',
+                legacySourceIdentifier('10.0.0.1'),
                 'free',
                 'auth'
             );
@@ -1097,7 +1205,7 @@ describe('withRateLimit middleware', () => {
             await withRateLimit(handler, { allowedMethods: ['GET'] })(req, res);
 
             expect(mockCheckRateLimit).toHaveBeenCalledWith(
-                'ip:10.0.0.1',
+                legacySourceIdentifier('10.0.0.1'),
                 'free',
                 'auth'
             );
@@ -1422,25 +1530,23 @@ describe('withRateLimit middleware', () => {
     });
 
     // =========================================================================
-    // IP whitespace trimming
+    // IP whitespace rejection
     // =========================================================================
     describe('IP normalization edge cases (requireAuth: false)', () => {
         /**
-         * Test: Leading/trailing whitespace in IP is trimmed
-         * Edge case: Some proxies may pad IP with whitespace
+         * Test: Leading/trailing whitespace in a local source fails closed.
+         * Edge case: canonical source bytes never normalize ambiguous padding.
          */
-        it('should trim whitespace from IP addresses', async () => {
+        it('should reject whitespace around IP addresses', async () => {
             const req = createMockRequest('GET', {}, { remoteAddress: '  10.0.0.1  ' });
             const res = createMockResponse();
             const handler = jest.fn();
 
             await withRateLimit(handler, { requireAuth: false, allowedMethods: ['GET'] })(req, res);
 
-            expect(mockCheckRateLimit).toHaveBeenCalledWith(
-                'ip:10.0.0.1',
-                expect.any(String),
-                expect.any(String)
-            );
+            expect(res.status).toHaveBeenCalledWith(403);
+            expect(mockCheckRateLimit).not.toHaveBeenCalled();
+            expect(handler).not.toHaveBeenCalled();
         });
     });
 

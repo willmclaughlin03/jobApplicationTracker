@@ -2,10 +2,8 @@ import { randomBytes } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
 export const TEMPORARY_SESSION_TELEMETRY_EVENTS = Object.freeze({
-  SECRET_REFRESH_STARTED: 'secretRefreshStarted',
-  SECRET_REFRESH_SUCCEEDED: 'secretRefreshSucceeded',
-  SECRET_REFRESH_FAILED: 'secretRefreshFailed',
-  SECRET_COOLDOWN_REJECTED: 'secretCooldownRejected',
+  CONFIGURATION_SUCCEEDED: 'configurationSucceeded',
+  CONFIGURATION_FAILED: 'configurationFailed',
   REDIS_CLIENT_ACQUIRED: 'redisClientAcquired',
   REDIS_UNAVAILABLE: 'redisUnavailable',
   REDIS_EVALSHA: 'redisEvalsha',
@@ -167,8 +165,8 @@ export function createTemporarySessionTelemetry(options = {}) {
 
   const attribution = Object.freeze({
     moduleBootId: createModuleBootId(randomBytesFunction),
-    buildId: normalizeBuildAttribution(env.NEXT_BUILD_ID ?? env.AWS_COMMIT_ID),
-    deploymentId: normalizeBuildAttribution(env.AWS_AMPLIFY_DEPLOYMENT_ID),
+    buildId: normalizeBuildAttribution(env.NEXT_BUILD_ID ?? env.VERCEL_GIT_COMMIT_SHA),
+    deploymentId: normalizeBuildAttribution(env.VERCEL_DEPLOYMENT_ID),
   });
   let counters = createCounterState(now());
 

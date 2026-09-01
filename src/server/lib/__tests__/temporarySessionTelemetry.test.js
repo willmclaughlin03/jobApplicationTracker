@@ -12,7 +12,7 @@ describe('temporarySessionTelemetry', () => {
       env: {},
     });
     telemetry.record(
-      TEMPORARY_SESSION_TELEMETRY_EVENTS.SECRET_REFRESH_FAILED,
+      TEMPORARY_SESSION_TELEMETRY_EVENTS.CONFIGURATION_FAILED,
       TEMPORARY_SESSION_FAILURE_REASONS.SECRET_UNAVAILABLE
     );
     telemetry.record('arbitrary_provider_error', 'arbitrary_reason');
@@ -22,7 +22,7 @@ describe('temporarySessionTelemetry', () => {
       275
     );
     const snapshot = telemetry.getSnapshot();
-    expect(snapshot.events.secretRefreshFailed).toBe(1);
+    expect(snapshot.events.configurationFailed).toBe(1);
     expect(snapshot.events.unavailable).toBe(1);
     expect(snapshot.reasons.secret_unavailable).toBe(1);
     expect(snapshot.reasons.redis_uncertain).toBe(1);
@@ -64,13 +64,29 @@ describe('temporarySessionTelemetry', () => {
       randomBytesFunction: () => Buffer.alloc(12, 3),
       env: {
         NEXT_BUILD_ID: 'x'.repeat(129),
-        AWS_AMPLIFY_DEPLOYMENT_ID: 'synthetic-deployment-1',
+        VERCEL_GIT_COMMIT_SHA: 'synthetic-git-sha',
+        VERCEL_DEPLOYMENT_ID: 'synthetic-deployment-1',
       },
     });
     expect(telemetry.getSnapshot().attribution).toEqual({
       moduleBootId: Buffer.alloc(12, 3).toString('base64url'),
       buildId: 'unknown',
       deploymentId: 'synthetic-deployment-1',
+    });
+  });
+
+  it('uses the bounded Vercel Git SHA when a Next build id is unavailable', () => {
+    const telemetry = createTemporarySessionTelemetry({
+      now: () => 0,
+      randomBytesFunction: () => Buffer.alloc(12, 4),
+      env: {
+        VERCEL_GIT_COMMIT_SHA: 'abcdef123456',
+        VERCEL_DEPLOYMENT_ID: 'dpl_synthetic',
+      },
+    });
+    expect(telemetry.getSnapshot().attribution).toMatchObject({
+      buildId: 'abcdef123456',
+      deploymentId: 'dpl_synthetic',
     });
   });
 });

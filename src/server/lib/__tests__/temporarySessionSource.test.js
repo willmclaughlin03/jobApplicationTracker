@@ -1,33 +1,47 @@
 import {
   canonicalizeTemporarySessionAddress,
-  parseTemporarySessionViewerAddress,
+  parseTemporarySessionVercelAddress,
   resolveTemporarySessionSource,
   resolveTemporarySessionSourceMode,
+  serializeTemporarySessionLegacySource,
 } from '../temporarySessionSource.js';
 
 /**
- * Creates a deployed request with exact raw and normalized trusted headers.
+ * Creates a Vercel request with exact raw and normalized trusted headers.
  *
- * @param {string} value synthetic CloudFront viewer-address value
+ * @param {string} value synthetic Vercel viewer-address value
  * @param {object} [overrides] request overrides
  * @returns {object} request fixture
  */
 function createDeployedRequest(value, overrides = {}) {
   return {
-    headers: { 'cloudfront-viewer-address': value },
-    rawHeaders: ['Host', 'example.test', 'CloudFront-Viewer-Address', value],
+    headers: { 'x-vercel-forwarded-for': value },
+    rawHeaders: ['Host', 'example.test', 'X-Vercel-Forwarded-For', value],
     socket: { remoteAddress: '192.0.2.99' },
     ...overrides,
   };
 }
 
 describe('temporarySessionSource', () => {
-  it('requires deployed source mode in production', () => {
+  it('requires explicit Vercel mode and a consistent runtime marker', () => {
     expect(resolveTemporarySessionSourceMode({
-      env: { NODE_ENV: 'production', TEMPORARY_SESSION_CEILING_SOURCE_MODE: 'deployed' },
-    })).toBe('deployed');
+      env: {
+        NODE_ENV: 'production',
+        VERCEL: '1',
+        TEMPORARY_SESSION_CEILING_SOURCE_MODE: 'vercel',
+      },
+    })).toBe('vercel');
     expect(resolveTemporarySessionSourceMode({
       env: { NODE_ENV: 'production', TEMPORARY_SESSION_CEILING_SOURCE_MODE: 'local' },
+    })).toBeNull();
+    expect(resolveTemporarySessionSourceMode({
+      env: { NODE_ENV: 'production', TEMPORARY_SESSION_CEILING_SOURCE_MODE: 'vercel' },
+    })).toBeNull();
+    expect(resolveTemporarySessionSourceMode({
+      env: { NODE_ENV: 'test', VERCEL: '1', TEMPORARY_SESSION_CEILING_SOURCE_MODE: 'local' },
+    })).toBeNull();
+    expect(resolveTemporarySessionSourceMode({
+      env: { NODE_ENV: 'test', VERCEL: '1', TEMPORARY_SESSION_CEILING_SOURCE_MODE: 'vercel' },
     })).toBeNull();
     expect(resolveTemporarySessionSourceMode({ env: { NODE_ENV: 'production' } })).toBeNull();
   });
@@ -44,14 +58,14 @@ describe('temporarySessionSource', () => {
     }, 'local')).toBeNull();
   });
 
-  it('parses deployed IPv4 and bracketed IPv6 into canonical bytes', () => {
+  it('parses Vercel IPv4 and IPv6 scalars into canonical bytes', () => {
     expect(resolveTemporarySessionSource(
-      createDeployedRequest('192.0.2.20:443'),
-      'deployed'
+      createDeployedRequest('192.0.2.20'),
+      'vercel'
     )).toEqual({ family: 4, addressBytes: Buffer.from([192, 0, 2, 20]) });
     expect(resolveTemporarySessionSource(
-      createDeployedRequest('[2001:db8::20]:8443'),
-      'deployed'
+      createDeployedRequest('2001:db8::20'),
+      'vercel'
     )).toEqual({
       family: 6,
       addressBytes: Buffer.from('20010db8000000000000000000000020', 'hex'),
@@ -59,7 +73,7 @@ describe('temporarySessionSource', () => {
   });
 
   it('maps supported IPv4-mapped IPv6 to the IPv4 family', () => {
-    expect(parseTemporarySessionViewerAddress('[::ffff:192.0.2.30]:443')).toEqual({
+    expect(parseTemporarySessionVercelAddress('::ffff:192.0.2.30')).toEqual({
       family: 4,
       addressBytes: Buffer.from([192, 0, 2, 30]),
     });
@@ -71,42 +85,81 @@ describe('temporarySessionSource', () => {
 
   it.each([
     ['missing raw metadata', { rawHeaders: [] }],
+    ['odd raw metadata', { rawHeaders: ['Host'] }],
+    ['non-string raw metadata', { rawHeaders: ['X-Vercel-Forwarded-For', 123] }],
     ['duplicate occurrence', {
       rawHeaders: [
-        'CloudFront-Viewer-Address', '192.0.2.40:443',
-        'cloudfront-viewer-address', '192.0.2.40:443',
+        'X-Vercel-Forwarded-For', '192.0.2.40',
+        'x-vercel-forwarded-for', '192.0.2.40',
       ],
     }],
-    ['normalized mismatch', { headers: { 'cloudfront-viewer-address': '192.0.2.41:443' } }],
+    ['normalized array', { headers: { 'x-vercel-forwarded-for': ['192.0.2.40'] } }],
+    ['normalized mismatch', { headers: { 'x-vercel-forwarded-for': '192.0.2.41' } }],
     ['comma joined', {
-      headers: { 'cloudfront-viewer-address': '192.0.2.40:443, 198.51.100.4:443' },
-      rawHeaders: ['CloudFront-Viewer-Address', '192.0.2.40:443, 198.51.100.4:443'],
+      headers: { 'x-vercel-forwarded-for': '192.0.2.40, 198.51.100.4' },
+      rawHeaders: ['X-Vercel-Forwarded-For', '192.0.2.40, 198.51.100.4'],
     }],
   ])('rejects %s trusted-header input', (_label, overrides) => {
     expect(resolveTemporarySessionSource(
-      createDeployedRequest('192.0.2.40:443', overrides),
-      'deployed'
+      createDeployedRequest('192.0.2.40', overrides),
+      'vercel'
     )).toBeNull();
   });
 
   it.each([
-    '192.0.2.50',
-    '192.0.2.50:0',
-    '192.0.2.50:0443',
-    '192.0.2.999:443',
-    '2001:db8::50:443',
-    '[2001:db8::50]:65536',
-    '[2001:db8::50%zone]:443',
-    'example.test:443',
-  ])('rejects malformed deployed source syntax', (value) => {
-    expect(parseTemporarySessionViewerAddress(value)).toBeNull();
+    ' 192.0.2.50',
+    '192.0.2.50 ',
+    '192.0.2.50:443',
+    '[2001:db8::50]',
+    '2001:db8::50%zone',
+    '192.0.2.999',
+    'example.test',
+    '192.0.2.50\t',
+  ])('rejects malformed Vercel source syntax', (value) => {
+    expect(parseTemporarySessionVercelAddress(value)).toBeNull();
   });
 
   it('does not fall back to forwarding headers or the deployed socket', () => {
     expect(resolveTemporarySessionSource({
-      headers: { 'x-forwarded-for': '192.0.2.60' },
-      rawHeaders: ['X-Forwarded-For', '192.0.2.60'],
+      headers: {
+        'x-forwarded-for': '192.0.2.60',
+        forwarded: 'for=192.0.2.60',
+        'x-real-ip': '192.0.2.60',
+      },
+      rawHeaders: [
+        'X-Forwarded-For', '192.0.2.60',
+        'Forwarded', 'for=192.0.2.60',
+        'X-Real-IP', '192.0.2.60',
+      ],
       socket: { remoteAddress: '192.0.2.61' },
-    }, 'deployed')).toBeNull();
+    }, 'vercel')).toBeNull();
+  });
+
+  it('serializes equivalent addresses identically and separates families and values', () => {
+    const nativeIpv4 = canonicalizeTemporarySessionAddress('192.0.2.30');
+    const mappedIpv4 = canonicalizeTemporarySessionAddress('::ffff:192.0.2.30');
+    const otherIpv4 = canonicalizeTemporarySessionAddress('192.0.2.31');
+    const ipv6 = canonicalizeTemporarySessionAddress('2001:db8::1');
+
+    expect(serializeTemporarySessionLegacySource(nativeIpv4)).toBe(
+      serializeTemporarySessionLegacySource(mappedIpv4)
+    );
+    expect(new Set([
+      serializeTemporarySessionLegacySource(nativeIpv4),
+      serializeTemporarySessionLegacySource(otherIpv4),
+      serializeTemporarySessionLegacySource(ipv6),
+    ])).toHaveProperty('size', 3);
+    expect(serializeTemporarySessionLegacySource(nativeIpv4)).toMatch(/^source:v1:f4:/);
+    expect(serializeTemporarySessionLegacySource(ipv6)).toMatch(/^source:v1:f6:/);
+  });
+
+  it.each([
+    null,
+    {},
+    { family: 4, addressBytes: Buffer.alloc(16) },
+    { family: 6, addressBytes: Buffer.alloc(4) },
+    { family: 7, addressBytes: Buffer.alloc(16) },
+  ])('rejects invalid legacy serializer input', (source) => {
+    expect(serializeTemporarySessionLegacySource(source)).toBeNull();
   });
 });

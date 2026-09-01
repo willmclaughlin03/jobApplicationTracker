@@ -8,6 +8,7 @@
  */
 
 const mockRedisConstructor = jest.fn();
+const TEST_HMAC_KEY = Buffer.alloc(32, 7).toString('base64url');
 
 jest.mock('@upstash/redis', () => ({
     Redis: mockRedisConstructor,
@@ -178,16 +179,59 @@ describe('redis.js', () => {
     });
 
     /**
-     * Deployed Secrets Manager mode may not fall back to explicit environment credentials.
+     * Deployed Vercel mode may not fall back to standalone Redis credentials.
      */
-    it('does not use environment credentials after deployed secret acquisition fails', async () => {
+    it('does not use standalone credentials after deployed configuration fails', async () => {
         process.env.NODE_ENV = 'production';
-        process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE = 'aws-secrets-manager';
-        delete process.env.TEMPORARY_SESSION_CEILING_HMAC_SECRET_ID;
-        delete process.env.TEMPORARY_SESSION_CEILING_REDIS_SECRET_ID;
+        process.env.VERCEL = '1';
+        process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE = 'vercel';
+        delete process.env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON;
+        delete process.env.TEMPORARY_SESSION_CEILING_UPSTASH_JSON;
         const redis = require('../redis.js');
 
         await expect(redis.getRedisClient()).resolves.toBeNull();
         expect(mockRedisConstructor).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Generic consumers retain the same immutable Vercel runtime credentials.
+     *
+     * Why: environment mutation must not split the generic limiter from the
+     * temporary-session ceiling during one deployment instance.
+     */
+    it('uses the memoized Vercel runtime pair for generic consumers', async () => {
+        process.env.NODE_ENV = 'production';
+        process.env.VERCEL = '1';
+        process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE = 'vercel';
+        process.env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON = JSON.stringify({
+            schemaVersion: 1,
+            active: { generation: 1, keyId: 'gate1-key-1', key: TEST_HMAC_KEY },
+            previous: null,
+        });
+        process.env.TEMPORARY_SESSION_CEILING_UPSTASH_JSON = JSON.stringify({
+            schemaVersion: 1,
+            url: 'https://deployed-synthetic.upstash.io',
+            token: 'deployed-token-one',
+        });
+        const redis = require('../redis.js');
+
+        await redis.getRedisClient();
+        process.env.TEMPORARY_SESSION_CEILING_UPSTASH_JSON = JSON.stringify({
+            schemaVersion: 1,
+            url: 'https://changed-synthetic.upstash.io',
+            token: 'deployed-token-two',
+        });
+        redis.resetRedisClient();
+        await redis.getRedisClient();
+
+        expect(mockRedisConstructor).toHaveBeenCalledTimes(2);
+        expect(mockRedisConstructor.mock.calls[0][0]).toMatchObject({
+            url: 'https://deployed-synthetic.upstash.io',
+            token: 'deployed-token-one',
+        });
+        expect(mockRedisConstructor.mock.calls[1][0]).toMatchObject({
+            url: 'https://deployed-synthetic.upstash.io',
+            token: 'deployed-token-one',
+        });
     });
 });

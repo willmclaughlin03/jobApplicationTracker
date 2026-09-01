@@ -86,6 +86,10 @@ jest.mock('../../../shared/logger.js', () => ({
 const { withRateLimit } = require('../withRateLimit.js');
 const { generateCsrfToken } = require('../../lib/csrf.js');
 const { CSRF_COOKIE_NAME, CSRF_MAX_AGE_SECONDS } = require('../../../shared/constants/csrf.js');
+const {
+    canonicalizeTemporarySessionAddress,
+    serializeTemporarySessionLegacySource,
+} = require('../../lib/temporarySessionSource.js');
 
 describe('withRateLimit — integration', () => {
     const TEST_USER_ID = 'user-integration-test';
@@ -133,6 +137,18 @@ describe('withRateLimit — integration', () => {
             cookies: {},
             socket: { remoteAddress: '127.0.0.1' },
         };
+    }
+
+    /**
+     * Produces the versioned source expected by the real legacy wrapper.
+     *
+     * @param {string} address canonicalizable synthetic address
+     * @returns {string} deterministic legacy source identifier
+     */
+    function legacySourceIdentifier(address) {
+        return serializeTemporarySessionLegacySource(
+            canonicalizeTemporarySessionAddress(address)
+        );
     }
 
     function createMockResponse() {
@@ -332,7 +348,7 @@ describe('withRateLimit — integration', () => {
 
         expect(res.status).toHaveBeenCalledWith(401);
         expect(mockCheckRateLimit).toHaveBeenCalledWith(
-            'ip:127.0.0.1',
+            legacySourceIdentifier('127.0.0.1'),
             'free',
             'auth'
         );
