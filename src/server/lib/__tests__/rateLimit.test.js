@@ -144,17 +144,32 @@ describe('checkRateLimit', () => {
     });
 
     // =========================================================================
-    // PII redaction in logs (finding k)
+    // Bounded failure diagnostics
     // =========================================================================
-    describe('PII redaction', () => {
+    describe('bounded failure diagnostics', () => {
         /**
-         * Test: Full identifier (containing user ID or IP) is not logged on error
-         * GDPR: Only the identifier type (user/ip) should appear in logs
+         * Test: provider errors and complete identifiers never enter warning data.
+         *
+         * Why: Error messages, stacks, URLs, tokens, and enumerable provider
+         * metadata may all contain secrets or reversible limiter identities.
          */
-        it('should log only identifier type, not full value, on error', async () => {
-            mockLimit.mockRejectedValue(new Error('Connection refused'));
+        it('emits only fixed fields when a provider error contains sensitive sentinels', async () => {
+            const userIdentifier = 'user:sensitive-user-id-123';
+            const sourceIdentifier = 'source:v1:f4:wAACew';
+            const secretToken = 'provider-token-never-log';
+            const secretUrl = 'https://sensitive-provider.example.test/private';
+            const providerError = new Error(
+                `Provider failed for ${sourceIdentifier} at ${secretUrl} with ${secretToken}`
+            );
+            providerError.stack = `Synthetic stack containing ${secretToken}`;
+            providerError.details = {
+                identifier: sourceIdentifier,
+                token: secretToken,
+                url: secretUrl,
+            };
+            mockLimit.mockRejectedValue(providerError);
 
-            await checkRateLimit('user:sensitive-user-id-123', 'free', 'read');
+            const result = await checkRateLimit(userIdentifier, 'free', 'read');
 
             const warnCalls = mockLogger.warn.mock.calls;
             const rateLimitWarnCall = warnCalls.find(
@@ -162,25 +177,38 @@ describe('checkRateLimit', () => {
             );
 
             expect(rateLimitWarnCall).toBeDefined();
-            const logData = rateLimitWarnCall[0];
-            expect(logData.identifierType).toBe('user');
-            expect(logData).not.toHaveProperty('identifier');
-            expect(JSON.stringify(logData)).not.toContain('sensitive-user-id-123');
+            expect(rateLimitWarnCall[0]).toEqual({
+                reason: 'limiter_call_failed',
+                identifierClass: 'user',
+                tier: 'free',
+                operation: 'read',
+            });
+            expect(rateLimitWarnCall[0]).not.toHaveProperty('err');
+            expect(result).toEqual({ success: false, unavailable: true });
+            expect(mockLogRedisDownOnce).toHaveBeenCalledWith({ reason: 'call_failed' });
+            expect(mockSetLastCallStatus).toHaveBeenCalledWith(false);
+
+            const serializedLogs = JSON.stringify(mockLogger.warn.mock.calls);
+            for (const sentinel of [userIdentifier, sourceIdentifier, secretToken, secretUrl]) {
+                expect(serializedLogs).not.toContain(sentinel);
+            }
         });
 
         /**
-         * Test: IP-based identifier type is logged correctly
+         * Test: the new versioned generic source maps to one fixed class.
          */
-        it('should log ip as identifier type for IP-based identifiers', async () => {
-            mockLimit.mockRejectedValue(new Error('Timeout'));
+        it('classifies a canonical source without logging its value', async () => {
+            const sourceIdentifier = 'source:v1:f4:wAACCg';
+            mockLimit.mockRejectedValue(new Error('Synthetic provider failure'));
 
             // Advance past the 60s warn throttle so this test's warn fires
             const realNow = Date.now;
-            Date.now = () => realNow() + 120_000;
-
-            await checkRateLimit('ip:192.168.1.100', 'free', 'read');
-
-            Date.now = realNow;
+            try {
+                Date.now = () => realNow() + 120_000;
+                await checkRateLimit(sourceIdentifier, 'free', 'read');
+            } finally {
+                Date.now = realNow;
+            }
 
             const warnCalls = mockLogger.warn.mock.calls;
             const rateLimitWarnCall = warnCalls.find(
@@ -189,8 +217,33 @@ describe('checkRateLimit', () => {
 
             expect(rateLimitWarnCall).toBeDefined();
             const logData = rateLimitWarnCall[0];
-            expect(logData.identifierType).toBe('ip');
-            expect(JSON.stringify(logData)).not.toContain('192.168.1.100');
+            expect(logData.identifierClass).toBe('source');
+            expect(logData).not.toHaveProperty('err');
+            expect(JSON.stringify(mockLogger.warn.mock.calls)).not.toContain(sourceIdentifier);
+        });
+
+        /**
+         * Test: an unexpected prefix cannot create a new log-cardinality value.
+         */
+        it('collapses unexpected identifier prefixes to unknown', async () => {
+            const unexpectedIdentifier = 'attacker-shaped-prefix:private-value';
+            mockLimit.mockRejectedValue(new Error('Synthetic provider failure'));
+
+            const realNow = Date.now;
+            try {
+                Date.now = () => realNow() + 240_000;
+                await checkRateLimit(unexpectedIdentifier, 'free', 'read');
+            } finally {
+                Date.now = realNow;
+            }
+
+            const rateLimitWarnCall = mockLogger.warn.mock.calls.find(
+                call => call[1] === 'Rate limit check failed'
+            );
+            expect(rateLimitWarnCall[0].identifierClass).toBe('unknown');
+            expect(JSON.stringify(mockLogger.warn.mock.calls)).not.toContain(
+                unexpectedIdentifier
+            );
         });
     });
 
@@ -610,8 +663,7 @@ describe('checkRateLimit', () => {
          *
          * Why: Axiom would be flooded if every failing request emitted a warn.
          * error() fires only once per outage via logRedisDownOnce; warn()
-         * emits throttled details (identifierType, tier, operation) so distinct
-         * error *types* surface without per-request spam.
+         * emits fixed-cardinality context without per-request spam or raw errors.
          *
          * NOTE: module-level throttle state persists across tests. This test
          * uses jest.resetModules() to guarantee a fresh state and fake timers
@@ -621,7 +673,9 @@ describe('checkRateLimit', () => {
             jest.resetModules();
 
             jest.doMock('@upstash/ratelimit', () => {
-                const limitFn = jest.fn().mockRejectedValue(new Error('upstream down'));
+                const limitFn = jest.fn().mockRejectedValue(
+                    new Error('throttled-provider-sentinel-never-log')
+                );
                 const RatelimitClass = jest.fn().mockImplementation(() => ({
                     limit: limitFn,
                 }));
@@ -659,6 +713,19 @@ describe('checkRateLimit', () => {
                 jest.setSystemTime(new Date('2026-04-07T00:01:05Z'));
                 await throttledCheck('user:abc', 'free', 'read');
                 expect(throttleLogger.warn).toHaveBeenCalledTimes(2);
+                for (const [logData, message] of throttleLogger.warn.mock.calls) {
+                    expect(logData).toEqual({
+                        reason: 'limiter_call_failed',
+                        identifierClass: 'user',
+                        tier: 'free',
+                        operation: 'read',
+                    });
+                    expect(logData).not.toHaveProperty('err');
+                    expect(message).toBe('Rate limit check failed');
+                }
+                expect(JSON.stringify(throttleLogger.warn.mock.calls)).not.toContain(
+                    'throttled-provider-sentinel-never-log'
+                );
             } finally {
                 jest.useRealTimers();
             }

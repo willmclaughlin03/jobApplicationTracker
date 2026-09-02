@@ -9,7 +9,7 @@ const KEY_ONE = Buffer.alloc(32, 1).toString('base64url');
 const KEY_TWO = Buffer.alloc(32, 2).toString('base64url');
 
 /**
- * Builds a strict synthetic HMAC secret fixture.
+ * Builds a strict synthetic HMAC configuration fixture.
  *
  * @param {object} active active key fields
  * @param {object|null} previous previous key fields
@@ -20,7 +20,7 @@ function hmacSecret(active = { generation: 1, keyId: 'gate1-key-1', key: KEY_ONE
 }
 
 /**
- * Builds a strict synthetic Redis secret fixture.
+ * Builds a strict synthetic Redis configuration fixture.
  *
  * @param {string} token synthetic token value
  * @returns {object} strict Redis payload
@@ -30,18 +30,20 @@ function redisSecret(token = 'synthetic-token-one') {
 }
 
 /**
- * Creates a deferred promise used to observe secret single-flight behavior.
+ * Builds an explicit Vercel runtime environment with both JSON values.
  *
- * @returns {{promise: Promise<unknown>, resolve: Function, reject: Function}} deferred
+ * @param {object} [overrides] environment overrides
+ * @returns {object} isolated environment snapshot
  */
-function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((onResolve, onReject) => {
-    resolve = onResolve;
-    reject = onReject;
-  });
-  return { promise, resolve, reject };
+function vercelEnvironment(overrides = {}) {
+  return {
+    NODE_ENV: 'production',
+    VERCEL: '1',
+    TEMPORARY_SESSION_CEILING_SECRET_MODE: 'vercel',
+    TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON: JSON.stringify(hmacSecret()),
+    TEMPORARY_SESSION_CEILING_UPSTASH_JSON: JSON.stringify(redisSecret()),
+    ...overrides,
+  };
 }
 
 describe('temporarySessionSecrets schemas', () => {
@@ -84,42 +86,123 @@ describe('temporarySessionSecrets schemas', () => {
   });
 
   it('rejects malformed and oversized JSON payloads', () => {
-    expect(() => parseTemporarySessionRedisSecret('{')).toThrow();
-    expect(() => parseTemporarySessionRedisSecret('x'.repeat(8_193))).toThrow();
+    expect(() => parseTemporarySessionRedisSecret('{')).toThrow(
+      'temporary session secrets are unavailable'
+    );
+    expect(() => parseTemporarySessionRedisSecret('x'.repeat(8_193))).toThrow(
+      'temporary session secrets are unavailable'
+    );
   });
 
-  it('requires Secrets Manager in production', () => {
+  it('requires explicit Vercel mode and a consistent runtime marker', () => {
+    expect(resolveTemporarySessionSecretMode({ env: vercelEnvironment() })).toBe('vercel');
     expect(resolveTemporarySessionSecretMode({
-      env: { NODE_ENV: 'production', TEMPORARY_SESSION_CEILING_SECRET_MODE: 'aws-secrets-manager' },
-    })).toBe('aws-secrets-manager');
-    expect(resolveTemporarySessionSecretMode({
-      env: { NODE_ENV: 'production', TEMPORARY_SESSION_CEILING_SECRET_MODE: 'local' },
+      env: { NODE_ENV: 'production', TEMPORARY_SESSION_CEILING_SECRET_MODE: 'vercel' },
     })).toBeNull();
+    expect(resolveTemporarySessionSecretMode({
+      env: { NODE_ENV: 'production', VERCEL: '1', TEMPORARY_SESSION_CEILING_SECRET_MODE: 'local' },
+    })).toBeNull();
+    expect(resolveTemporarySessionSecretMode({
+      env: { NODE_ENV: 'test', VERCEL: '1', TEMPORARY_SESSION_CEILING_SECRET_MODE: 'vercel' },
+    })).toBeNull();
+    expect(resolveTemporarySessionSecretMode({ env: { NODE_ENV: 'production' } })).toBeNull();
   });
 });
 
-describe('temporarySessionSecrets runtime cache', () => {
-  afterEach(() => {
-    jest.useRealTimers();
+describe('temporarySessionSecrets instance cache', () => {
+  it('atomically freezes both Vercel values and emits configuration success once', async () => {
+    const env = vercelEnvironment();
+    const onEvent = jest.fn();
+    const loader = createTemporarySessionSecrets({ env, onEvent });
+
+    const [first, second] = await Promise.all([
+      loader.getRuntimePair(),
+      loader.getRuntimePair(),
+    ]);
+
+    expect(second).toBe(first);
+    expect(first).toMatchObject({
+      hmac: { active: { generation: 1, keyId: 'gate1-key-1' }, previous: null },
+      redis: { url: 'https://synthetic-gate1.upstash.io', token: 'synthetic-token-one' },
+    });
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(first.hmac)).toBe(true);
+    expect(Object.isFrozen(first.redis)).toBe(true);
+    expect(Object.isFrozen(first.cacheIdentity)).toBe(true);
+    expect(onEvent).toHaveBeenCalledTimes(1);
+    expect(onEvent).toHaveBeenCalledWith('configurationSucceeded');
+    expect(loader.getSnapshot()).toEqual({ hasCachedPair: true, permanentFailure: false });
   });
 
-  it('loads on first use, caches for less than 60 seconds, and atomically swaps both secrets', async () => {
-    let clock = 0;
+  it('ignores environment changes after success until the test reset seam runs', async () => {
+    const env = vercelEnvironment();
+    const loader = createTemporarySessionSecrets({ env, onEvent: jest.fn() });
+    const first = await loader.getRuntimePair();
+
+    env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON = JSON.stringify(hmacSecret(
+      { generation: 2, keyId: 'gate1-key-2', key: KEY_TWO },
+      { generation: 1, keyId: 'gate1-key-1', key: KEY_ONE }
+    ));
+    env.TEMPORARY_SESSION_CEILING_UPSTASH_JSON = JSON.stringify(
+      redisSecret('synthetic-token-two')
+    );
+
+    expect(await loader.getRuntimePair()).toBe(first);
+    loader.reset();
+    await expect(loader.getRuntimePair()).resolves.toMatchObject({
+      hmac: { active: { generation: 2 }, previous: { generation: 1 } },
+      redis: { token: 'synthetic-token-two' },
+    });
+  });
+
+  it('memoizes one sanitized permanent failure and never falls back to standalone Redis values', async () => {
+    const secretSentinel = 'never-emit-this-config-sentinel';
+    const env = vercelEnvironment({
+      TEMPORARY_SESSION_CEILING_UPSTASH_JSON: `{"schemaVersion":1,"token":"${secretSentinel}"}`,
+      UPSTASH_REDIS_REST_URL: 'https://fallback.upstash.io',
+      UPSTASH_REDIS_REST_TOKEN: 'standalone-fallback-token',
+    });
+    const onEvent = jest.fn();
+    const loader = createTemporarySessionSecrets({ env, onEvent });
+
+    const firstError = await loader.getRuntimePair().catch((error) => error);
+    env.TEMPORARY_SESSION_CEILING_UPSTASH_JSON = JSON.stringify(redisSecret('corrected-token'));
+    const secondError = await loader.getRuntimePair().catch((error) => error);
+
+    expect(firstError).toMatchObject({
+      name: 'TemporarySessionSecretsUnavailableError',
+      message: 'temporary session secrets are unavailable',
+    });
+    expect(secondError).toMatchObject({
+      name: 'TemporarySessionSecretsUnavailableError',
+      message: 'temporary session secrets are unavailable',
+    });
+    expect(onEvent.mock.calls).toEqual([['configurationFailed']]);
+    expect(loader.getSnapshot()).toEqual({ hasCachedPair: false, permanentFailure: true });
+    expect(JSON.stringify({
+      firstError: { name: firstError.name, message: firstError.message },
+      secondError: { name: secondError.name, message: secondError.message },
+      renderedErrors: [String(firstError), firstError.stack, String(secondError), secondError.stack],
+      events: onEvent.mock.calls,
+      snapshot: loader.getSnapshot(),
+    })).not.toContain(secretSentinel);
+
+    loader.reset();
+    await expect(loader.getRuntimePair()).resolves.toMatchObject({
+      redis: { token: 'corrected-token' },
+    });
+  });
+
+  it('keeps local fixtures instance-stable and reloads them only after reset', async () => {
     let payloads = { hmacSecret: hmacSecret(), redisSecret: redisSecret() };
     const provider = jest.fn(() => payloads);
     const loader = createTemporarySessionSecrets({
       mode: 'local',
       env: { NODE_ENV: 'test' },
-      now: () => clock,
       localSecretProvider: provider,
       onEvent: jest.fn(),
     });
-
-    const first = await loader.getRuntimePair({ deadlineAt: 3_000 });
-    clock = 59_999;
-    expect(await loader.getRuntimePair({ deadlineAt: 62_999 })).toBe(first);
-    expect(provider).toHaveBeenCalledTimes(1);
-
+    const first = await loader.getRuntimePair();
     payloads = {
       hmacSecret: hmacSecret(
         { generation: 2, keyId: 'gate1-key-2', key: KEY_TWO },
@@ -127,124 +210,30 @@ describe('temporarySessionSecrets runtime cache', () => {
       ),
       redisSecret: redisSecret('synthetic-token-two'),
     };
-    clock = 60_000;
-    const second = await loader.getRuntimePair({ deadlineAt: 63_000 });
-    expect(second).not.toBe(first);
-    expect(second.hmac.active.generation).toBe(2);
-    expect(second.redis.token).toBe('synthetic-token-two');
-    expect(Object.isFrozen(second)).toBe(true);
+
+    expect(await loader.getRuntimePair()).toBe(first);
+    expect(provider).toHaveBeenCalledTimes(1);
+    loader.reset();
+    await expect(loader.getRuntimePair()).resolves.toMatchObject({
+      hmac: { active: { generation: 2 } },
+      redis: { token: 'synthetic-token-two' },
+    });
+    expect(provider).toHaveBeenCalledTimes(2);
   });
 
-  it('enforces the 62-second bridge drain clock before removing previous', async () => {
-    let clock = 0;
-    let payloads = {
-      hmacSecret: hmacSecret(
-        { generation: 2, keyId: 'gate1-key-2', key: KEY_TWO },
-        { generation: 1, keyId: 'gate1-key-1', key: KEY_ONE }
-      ),
-      redisSecret: redisSecret(),
-    };
-    const loader = createTemporarySessionSecrets({
-      mode: 'local',
-      env: { NODE_ENV: 'test' },
-      now: () => clock,
-      localSecretProvider: () => payloads,
-      onEvent: jest.fn(),
-    });
-    await loader.getRuntimePair({ deadlineAt: 3_000 });
+  it('installs no partial pair when either deployed value is missing', async () => {
+    for (const missingName of [
+      'TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON',
+      'TEMPORARY_SESSION_CEILING_UPSTASH_JSON',
+    ]) {
+      const env = vercelEnvironment();
+      delete env[missingName];
+      const loader = createTemporarySessionSecrets({ env, onEvent: jest.fn() });
 
-    payloads = { hmacSecret: hmacSecret(
-      { generation: 2, keyId: 'gate1-key-2', key: KEY_TWO },
-      null
-    ), redisSecret: redisSecret() };
-    clock = 60_000;
-    await expect(loader.getRuntimePair({ deadlineAt: 63_000 })).rejects.toThrow(
-      'temporary session secrets are unavailable'
-    );
-
-    clock = 65_000;
-    await expect(loader.getRuntimePair({ deadlineAt: 68_000 })).resolves.toMatchObject({
-      hmac: { active: { generation: 2 }, previous: null },
-    });
-  });
-
-  it('deduplicates concurrent AWS reads under one shared abort signal', async () => {
-    const firstRead = deferred();
-    const secondRead = deferred();
-    const send = jest.fn()
-      .mockImplementationOnce(() => firstRead.promise)
-      .mockImplementationOnce(() => secondRead.promise);
-    const loader = createTemporarySessionSecrets({
-      mode: 'aws-secrets-manager',
-      env: {
-        NODE_ENV: 'test',
-        TEMPORARY_SESSION_CEILING_HMAC_SECRET_ID: 'synthetic-hmac-resource',
-        TEMPORARY_SESSION_CEILING_REDIS_SECRET_ID: 'synthetic-redis-resource',
-      },
-      now: () => 0,
-      awsClient: { send },
-      onEvent: jest.fn(),
-    });
-
-    const first = loader.getRuntimePair({ deadlineAt: 3_000 });
-    const second = loader.getRuntimePair({ deadlineAt: 3_000 });
-    expect(send).toHaveBeenCalledTimes(2);
-    expect(send.mock.calls[0][1].abortSignal).toBe(send.mock.calls[1][1].abortSignal);
-    firstRead.resolve({ SecretString: JSON.stringify(hmacSecret()) });
-    secondRead.resolve({ SecretString: JSON.stringify(redisSecret()) });
-    const [firstPair, secondPair] = await Promise.all([first, second]);
-    expect(secondPair).toBe(firstPair);
-  });
-
-  it('starts cooldown after failure and never returns the expired pair', async () => {
-    let clock = 0;
-    const send = jest.fn()
-      .mockResolvedValueOnce({ SecretString: JSON.stringify(hmacSecret()) })
-      .mockResolvedValueOnce({ SecretString: JSON.stringify(redisSecret()) })
-      .mockRejectedValue(new Error('synthetic provider failure'));
-    const loader = createTemporarySessionSecrets({
-      mode: 'aws-secrets-manager',
-      env: {
-        NODE_ENV: 'test',
-        TEMPORARY_SESSION_CEILING_HMAC_SECRET_ID: 'synthetic-hmac-resource',
-        TEMPORARY_SESSION_CEILING_REDIS_SECRET_ID: 'synthetic-redis-resource',
-      },
-      now: () => clock,
-      awsClient: { send },
-      onEvent: jest.fn(),
-    });
-    await loader.getRuntimePair({ deadlineAt: 3_000 });
-    clock = 60_000;
-    await expect(loader.getRuntimePair({ deadlineAt: 63_000 })).rejects.toThrow();
-    const callsAfterFailure = send.mock.calls.length;
-    clock = 60_100;
-    await expect(loader.getRuntimePair({ deadlineAt: 63_100 })).rejects.toThrow();
-    expect(send).toHaveBeenCalledTimes(callsAfterFailure);
-  });
-
-  it('aborts both AWS reads at the shared one-second deadline', async () => {
-    jest.useFakeTimers();
-    let clock = 0;
-    const send = jest.fn((_command, { abortSignal }) => new Promise((_, reject) => {
-      abortSignal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
-    }));
-    const loader = createTemporarySessionSecrets({
-      mode: 'aws-secrets-manager',
-      env: {
-        NODE_ENV: 'test',
-        TEMPORARY_SESSION_CEILING_HMAC_SECRET_ID: 'synthetic-hmac-resource',
-        TEMPORARY_SESSION_CEILING_REDIS_SECRET_ID: 'synthetic-redis-resource',
-      },
-      now: () => clock,
-      awsClient: { send },
-      onEvent: jest.fn(),
-    });
-    const result = loader.getRuntimePair({ deadlineAt: 3_000 });
-    const rejection = expect(result).rejects.toThrow('temporary session secrets are unavailable');
-    clock = 1_000;
-    await jest.advanceTimersByTimeAsync(1_000);
-    await rejection;
-    expect(send.mock.calls[0][1].abortSignal.aborted).toBe(true);
-    expect(send.mock.calls[1][1].abortSignal.aborted).toBe(true);
+      await expect(loader.getRuntimePair()).rejects.toThrow(
+        'temporary session secrets are unavailable'
+      );
+      expect(loader.getSnapshot()).toEqual({ hasCachedPair: false, permanentFailure: true });
+    }
   });
 });

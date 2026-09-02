@@ -3,7 +3,11 @@ import { checkRateLimit } from '../lib/rateLimit.js';
 import { validateCsrfToken } from '../lib/csrf.js';
 import { METHOD_TO_OPERATIONS, OPERATIONS } from '../../shared/constants/tiers.js';
 import { resolveRateLimitTier } from '../lib/userTier.js';
-import { isIP } from 'node:net';
+import {
+    resolveTemporarySessionSource,
+    resolveTemporarySessionSourceMode,
+    serializeTemporarySessionLegacySource,
+} from '../lib/temporarySessionSource.js';
 
 /**
  * Operations where 429 responses are logged at debug instead of warn.
@@ -18,7 +22,6 @@ import { logger, attachRequestLogger } from '../../shared/logger.js';
 
 
 
-const MAX_IP_LENGTH = 45;
 const AUTH_UNAVAILABLE_RETRY_AFTER_SECONDS = 5;
 const REQUEST_DURATION_EVENT = 'api_request_duration';
 const REQUEST_DURATION_LOG_ALL_VALUES = new Set(['1', 'true', 'yes', 'on']);
@@ -396,36 +399,6 @@ function applyRateLimitSkipDecision(decision, req, res, operation) {
 }
 
 /**
- * Normalizes a header expected to have a single string value.
- *
- * Returns null for arrays so malformed/repeated trusted headers fail closed
- * instead of throwing or silently choosing an arbitrary entry.
- *
- * @param {string | string[] | undefined} value
- * @returns {string|null}
- */
-function getSingleHeaderValue(value) {
-    return typeof value === 'string' ? value : null;
-}
-
-/**
- * Normalizes X-Forwarded-For into a single comma-separated string.
- *
- * Multiple header lines are semantically equivalent to one comma-joined value,
- * and extractIpIdentifier() still applies trusted-position rules afterward.
- *
- * @param {string | string[] | undefined} value
- * @returns {string|null}
- */
-function getForwardedForHeaderValue(value) {
-    if (typeof value === 'string') return value;
-    if (Array.isArray(value) && value.length > 0) {
-        return value.join(',');
-    }
-    return null;
-}
-
-/**
  * Format the user-facing Retry-After message for a throttled request.
  *
  * Purpose: keep 429 responses human-readable without exposing implementation
@@ -442,97 +415,31 @@ function formatRateLimitMessage(seconds) {
 }
 
 /**
- * Validates and normalizes an IP address string
+ * Extracts the public-route source identifier used for rate limiting.
  *
- * Strips IPv4-mapped IPv6 prefix and validates the final value with node:net.
- * Rejects strings that aren't strict IPv4/IPv6 addresses to prevent
- * spoofed headers from creating arbitrary rate limit keys.
- *
- * @param {string} ip - Raw IP string from request headers or socket
- * @returns {string|null} Normalized IP or null if invalid
- */
-function normalizeIp(ip){
-    if(!ip || typeof ip !== 'string' || ip.length > MAX_IP_LENGTH){
-        return null;
-    }
-
-    let normalized = ip.trim();
-
-    if(normalized.startsWith('::ffff:')){
-        normalized = normalized.slice(7);
-    }
-
-    const ipVersion = isIP(normalized);
-    if(ipVersion === 4 || ipVersion === 6){
-        return normalized;
-    }
-
-    return null;
-}
-
-
-/**
- * Extracts the public-route IP identifier used for rate limiting.
- *
- * Purpose: provide a fail-closed identifier for unauthenticated routes without
- * trusting spoofable client-controlled headers more than necessary.
- *
- * Deployed on AWS Amplify behind CloudFront:
- * 1. CloudFront-Viewer-Address — set by CloudFront, cannot be spoofed by clients.
- *    Contains "ip:port", so the port suffix is stripped before use.
- * 2. x-forwarded-for — CloudFront appends the viewer IP as the rightmost entry.
- *    Earlier entries may be spoofed by the client, so only the last is trusted.
- * 3. req.socket.remoteAddress — only meaningful in local dev where no proxy exists.
- *
- * Returns null (`->` 403) when no valid IP can be extracted, so proxy
- * misconfiguration is visible rather than silently bypassing throttling.
+ * Purpose: reuse the temporary-session trust boundary and canonical bytes so
+ * public and protected-auth-failure paths cannot drift into provider fallbacks.
  *
  * @param {import('next').NextApiRequest} req - Next.js API request
- * @returns {string|null} 'ip:{address}' or null if no valid IP
+ * @returns {string|null} versioned canonical source or null if unavailable
  */
-function extractIpIdentifier(req){
-    const IS_DEPLOYED = !!process.env.AWS_LAMBDA_FUNCTION_NAME;
+function extractSourceIdentifier(req){
+    const mode = resolveTemporarySessionSourceMode();
+    const source = mode ? resolveTemporarySessionSource(req, mode) : null;
+    const identifier = serializeTemporarySessionLegacySource(source);
 
-    let rawIp = null;
-
-    if(IS_DEPLOYED){
-        // Prefer CloudFront-Viewer-Address (trusted, set by CloudFront)
-        const viewerAddr = getSingleHeaderValue(req.headers['cloudfront-viewer-address']);
-        if(viewerAddr){
-            // Format is "ip:port". For IPv4: "1.2.3.4:54321"
-            // For IPv6: "2001:db8::1:54321" — port is always the last colon-segment
-            // when the address contains multiple colons (IPv6), split on last colon
-            // only if the part after it is purely numeric (the port).
-            const lastColon = viewerAddr.lastIndexOf(':');
-            const afterColon = viewerAddr.slice(lastColon + 1);
-            if(lastColon > 0 && /^\d+$/.test(afterColon)){
-                rawIp = viewerAddr.slice(0, lastColon);
-            }else{
-                rawIp = viewerAddr;
-            }
-        }
-
-        // Fallback: rightmost x-forwarded-for entry (appended by CloudFront)
-        if(!rawIp){
-            const xff = getForwardedForHeaderValue(req.headers['x-forwarded-for']);
-            if(xff){
-                const parts = xff.split(',');
-                rawIp = parts[parts.length - 1].trim();
-            }
-        }
-    }else{
-        // Local dev — no proxy, socket address is the real client
-        rawIp = req.socket?.remoteAddress;
-    }
-
-    const ip = rawIp ? normalizeIp(rawIp) : null;
-
-    if(!ip){
-        (req.log || logger).warn({ hasViewerAddr: !!req.headers['cloudfront-viewer-address'], hasXff: !!req.headers['x-forwarded-for'], hasSocketAddr: !!req.socket?.remoteAddress }, 'Rate limit: no valid IP identifier available');
+    if(!identifier){
+        (req.log || logger).warn(
+            {
+                sourceModeValid: mode !== null,
+                rawHeadersAvailable: Array.isArray(req.rawHeaders),
+                socketAddressAvailable: typeof req.socket?.remoteAddress === 'string',
+            },
+            'Rate limit: no valid source identifier available'
+        );
         return null;
     }
-
-    return `ip:${ip}`;
+    return identifier;
 }
 
 
@@ -568,7 +475,7 @@ function setRateLimitHeaders(res, rateLimitResult){
  * preserving route-level authorization checks such as requireAdmin().
  *
  * @param {import('next').NextApiRequest} req - Request carrying _rateLimitUser when authenticated
- * @param {string} identifier - User or IP rate-limit key
+ * @param {string} identifier - User or canonical source rate-limit key
  * @param {string} operation - Normalized route operation
  * @returns {Promise<object>} checkRateLimit() result or fail-closed unavailable sentinel
  */
@@ -626,10 +533,10 @@ function sendRateLimitExceeded(req, res, rateLimitResult, operation) {
 }
 
 /**
- * Applies an IP-based auth bucket before returning protected-route 401s.
+ * Applies a trusted-source auth bucket before returning protected-route 401s.
  *
  * Purpose: invalid or missing sessions should not bypass Redis entirely and
- * amplify Supabase Auth calls without a local throttle. Successful checks fall
+ * increase Supabase Auth calls without a local throttle. Successful checks fall
  * through to the existing 401 response; exhausted checks return 429.
  *
  * @param {import('next').NextApiRequest & { log: object }} req - Request with auth failure.
@@ -637,7 +544,7 @@ function sendRateLimitExceeded(req, res, rateLimitResult, operation) {
  * @returns {Promise<{handled: boolean, response?: object, rateLimitResult?: object}>}
  */
 async function limitFailedProtectedAuth(req, res) {
-    const authFailureIdentifier = extractIpIdentifier(req);
+    const authFailureIdentifier = extractSourceIdentifier(req);
 
     if (!authFailureIdentifier) {
         return {
@@ -684,10 +591,10 @@ async function limitFailedProtectedAuth(req, res) {
 /**
  * Rate limiting middleware wrapper for Next.js API handlers
  *
- * Applies per-user or per-IP rate limiting before handler execution.
+ * Applies per-user or trusted-source rate limiting before handler execution.
  * Supports two modes:
  * - Protected routes (requireAuth=true): Auth failure blocks request with 401
- * - Public routes (requireAuth=false): IP-based rate limiting, no auth required
+ * - Public routes (requireAuth=false): trusted-source rate limiting, no auth required
  *
  * Method guard (allowedMethods):
  * - Fails closed: if allowedMethods is omitted, all requests return 405
@@ -698,7 +605,7 @@ async function limitFailedProtectedAuth(req, res) {
  *
  * Connects to:
  * - getUserFromRequest() for user authentication (protected routes)
- * - extractIpIdentifier() for IP identification (public routes)
+ * - extractSourceIdentifier() for canonical trusted-source identification
  * - checkRateLimit() from rateLimit.js for limit evaluation
  * - METHOD_TO_OPERATIONS from tiers.js for HTTP method mapping
  * - sendError() from response.js for error responses
@@ -710,7 +617,7 @@ async function limitFailedProtectedAuth(req, res) {
  * @param {Function} handler - Next.js API handler (req, res) => Promise
  * @param {Object} [options] - Configuration options
  * @param {boolean} [options.requireAuth=true] - If true, block when auth fails (protected routes).
- *                                               If false, use IP-based rate limiting (public routes).
+ *                                               If false, use trusted-source rate limiting (public routes).
  * @param {string} [options.operation] - Override operation type. If not set, derived from HTTP method.
  * @param {Record<string, string> | null} [options.operationByMethod=null] - Optional per-method operation map.
  * @param {string[]} [options.allowedMethods=null] - HTTP methods this route accepts (e.g. ['GET', 'POST']).
@@ -789,7 +696,7 @@ export function withRateLimit(handler, options = {}){
 
             try {
                 if(requireAuth){
-                    // PROTECTED ROUTE: Auth is mandatory; failed auth is IP-throttled before 401
+                    // PROTECTED ROUTE: Auth is mandatory; failed auth is source-throttled before 401
                     try{
                         const { user, error, errorCode, supabaseClient } = await getUserFromRequest(req, res);
                         if(!user){
@@ -852,7 +759,7 @@ export function withRateLimit(handler, options = {}){
                     if (publicSkip.skipped) {
                         rateLimitResult = { success: true, skipped: true };
                     } else {
-                        identifier = extractIpIdentifier(req);
+                        identifier = extractSourceIdentifier(req);
                         if(!identifier){
                             return sendError(
                                 res,

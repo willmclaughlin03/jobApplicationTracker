@@ -2,11 +2,12 @@ import { isIP } from 'node:net';
 
 export const TEMPORARY_SESSION_SOURCE_MODES = Object.freeze({
   LOCAL: 'local',
-  DEPLOYED: 'deployed',
+  VERCEL: 'vercel',
 });
 
-const TRUSTED_HEADER_NAME = 'cloudfront-viewer-address';
-const MAX_VIEWER_ADDRESS_LENGTH = 64;
+const TRUSTED_HEADER_NAME = 'x-vercel-forwarded-for';
+const MAX_VIEWER_ADDRESS_LENGTH = 45;
+const LOCAL_NODE_ENVIRONMENTS = new Set(['development', 'test']);
 
 /**
  * Parses canonical dotted-decimal IPv4 into its four network-order bytes.
@@ -124,30 +125,16 @@ export function canonicalizeTemporarySessionAddress(value) {
 }
 
 /**
- * Parses a strict non-zero decimal TCP source port.
+ * Parses the approved Vercel viewer-address scalar.
  *
- * Why: leading zeroes, omitted ports, and out-of-range values make the trusted
- * CloudFront serialization ambiguous and therefore fail closed.
- *
- * @param {unknown} value candidate decimal port text
- * @returns {number|null} validated port
- */
-function parseSourcePort(value) {
-  if (typeof value !== 'string' || !/^[1-9]\d{0,4}$/.test(value)) return null;
-  const port = Number(value);
-  return Number.isInteger(port) && port <= 65_535 ? port : null;
-}
-
-/**
- * Parses the approved CloudFront-Viewer-Address serialization.
- *
- * Why: deployed IPv4 requires `address:port` and IPv6 requires
- * `[address]:port`; no forwarding-header or socket fallback is permitted.
+ * Why: Vercel supplies an address without a port. Any surrounding whitespace,
+ * list syntax, zone identifier, port, or non-address value is ambiguous and
+ * therefore fails closed before identity derivation.
  *
  * @param {unknown} value exact singleton raw-header value
  * @returns {{family: 4|6, addressBytes: Buffer}|null} canonical byte identity
  */
-export function parseTemporarySessionViewerAddress(value) {
+export function parseTemporarySessionVercelAddress(value) {
   if (typeof value !== 'string'
     || value.length === 0
     || value.length > MAX_VIEWER_ADDRESS_LENGTH
@@ -155,19 +142,29 @@ export function parseTemporarySessionViewerAddress(value) {
     || value.includes(',')) {
     return null;
   }
+  return canonicalizeTemporarySessionAddress(value);
+}
 
-  const ipv4Match = /^((?:\d{1,3}\.){3}\d{1,3}):([1-9]\d{0,4})$/.exec(value);
-  if (ipv4Match) {
-    return parseSourcePort(ipv4Match[2]) === null
-      ? null
-      : canonicalizeTemporarySessionAddress(ipv4Match[1]);
-  }
-
-  const ipv6Match = /^\[([^\]]+)\]:([1-9]\d{0,4})$/.exec(value);
-  if (!ipv6Match || parseSourcePort(ipv6Match[2]) === null || isIP(ipv6Match[1]) !== 6) {
+/**
+ * Serializes a canonical source for the legacy generic limiter.
+ *
+ * Why: the provider amendment must avoid object coercion and textual address
+ * variants while preserving a versioned, collision-resistant representation.
+ * This value is reversible pseudonymous data and must never be logged.
+ *
+ * @param {unknown} source canonical family and address bytes
+ * @returns {string|null} versioned legacy identifier or null for invalid input
+ */
+export function serializeTemporarySessionLegacySource(source) {
+  const family = source?.family;
+  const addressBytes = source?.addressBytes;
+  const expectedLength = family === 4 ? 4 : family === 6 ? 16 : null;
+  if (expectedLength === null
+    || !Buffer.isBuffer(addressBytes)
+    || addressBytes.length !== expectedLength) {
     return null;
   }
-  return canonicalizeTemporarySessionAddress(ipv6Match[1]);
+  return `source:v1:f${family}:${addressBytes.toString('base64url')}`;
 }
 
 /**
@@ -198,24 +195,25 @@ function readSingleTrustedRawHeader(req) {
 /**
  * Resolves and validates the configured source trust policy.
  *
- * Why: production must explicitly select the deployed CloudFront boundary;
- * local/test execution may select a socket-only fixture policy.
+ * Why: production must explicitly select the Vercel boundary and agree with
+ * Vercel's runtime marker; local/test execution alone may select socket-only.
  *
  * @param {object} [options] explicit mode and environment seams
  * @param {unknown} [options.mode] explicitly injected mode
  * @param {NodeJS.ProcessEnv|Record<string, unknown>} [options.env] environment snapshot
- * @returns {'local'|'deployed'|null} validated policy
+ * @returns {'local'|'vercel'|null} validated policy
  */
 export function resolveTemporarySessionSourceMode(options = {}) {
   const env = options.env ?? process.env;
   const nodeEnvironment = env?.NODE_ENV;
+  const isVercelRuntime = env?.VERCEL === '1';
   const configured = options.mode ?? env?.TEMPORARY_SESSION_CEILING_SOURCE_MODE
-    ?? ((nodeEnvironment === 'test' || nodeEnvironment === 'development') ? 'local' : undefined);
+    ?? (LOCAL_NODE_ENVIRONMENTS.has(nodeEnvironment) && !isVercelRuntime ? 'local' : undefined);
   if (!Object.values(TEMPORARY_SESSION_SOURCE_MODES).includes(configured)) return null;
-  if (nodeEnvironment === 'production' && configured !== TEMPORARY_SESSION_SOURCE_MODES.DEPLOYED) {
-    return null;
+  if (configured === TEMPORARY_SESSION_SOURCE_MODES.LOCAL) {
+    return LOCAL_NODE_ENVIRONMENTS.has(nodeEnvironment) && !isVercelRuntime ? configured : null;
   }
-  return configured;
+  return nodeEnvironment === 'production' && isVercelRuntime ? configured : null;
 }
 
 /**
@@ -225,19 +223,19 @@ export function resolveTemporarySessionSourceMode(options = {}) {
  * describe the proxy rather than the viewer, so neither is a valid fallback.
  *
  * @param {object} req Next.js request-like object
- * @param {'local'|'deployed'} mode validated source mode
+ * @param {'local'|'vercel'} mode validated source mode
  * @returns {{family: 4|6, addressBytes: Buffer}|null} canonical byte identity
  */
 export function resolveTemporarySessionSource(req, mode) {
   if (mode === TEMPORARY_SESSION_SOURCE_MODES.LOCAL) {
     return canonicalizeTemporarySessionAddress(req?.socket?.remoteAddress);
   }
-  if (mode !== TEMPORARY_SESSION_SOURCE_MODES.DEPLOYED) return null;
+  if (mode !== TEMPORARY_SESSION_SOURCE_MODES.VERCEL) return null;
 
   const rawValue = readSingleTrustedRawHeader(req);
   const normalizedValue = req?.headers?.[TRUSTED_HEADER_NAME];
   if (rawValue === null || typeof normalizedValue !== 'string' || normalizedValue !== rawValue) {
     return null;
   }
-  return parseTemporarySessionViewerAddress(rawValue);
+  return parseTemporarySessionVercelAddress(rawValue);
 }

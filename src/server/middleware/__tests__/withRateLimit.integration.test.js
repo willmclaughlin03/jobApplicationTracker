@@ -86,6 +86,9 @@ jest.mock('../../../shared/logger.js', () => ({
 const { withRateLimit } = require('../withRateLimit.js');
 const { generateCsrfToken } = require('../../lib/csrf.js');
 const { CSRF_COOKIE_NAME, CSRF_MAX_AGE_SECONDS } = require('../../../shared/constants/csrf.js');
+const {
+    legacySourceIdentifier,
+} = require('../../../testSupport/redisTestKey.js');
 
 describe('withRateLimit — integration', () => {
     const TEST_USER_ID = 'user-integration-test';
@@ -332,7 +335,7 @@ describe('withRateLimit — integration', () => {
 
         expect(res.status).toHaveBeenCalledWith(401);
         expect(mockCheckRateLimit).toHaveBeenCalledWith(
-            'ip:127.0.0.1',
+            legacySourceIdentifier('127.0.0.1'),
             'free',
             'auth'
         );
