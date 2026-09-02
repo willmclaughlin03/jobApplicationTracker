@@ -5,6 +5,7 @@ import {
   resolveTemporarySessionSecretMode,
   TEMPORARY_SESSION_SECRET_MODES,
 } from './temporarySessionSecrets.js';
+import { temporarySessionTelemetry } from './temporarySessionTelemetry.js';
 
 const REDIS_REQUEST_TIMEOUT_MS = 1_500;
 const REDIS_CLIENT_CACHE_LIMIT = 2;
@@ -91,6 +92,23 @@ function getLocalCredentialSnapshot() {
 }
 
 /**
+ * Gives the shared telemetry accumulator a generic-consumer emission point.
+ *
+ * Why: configuration loading records one bounded result in Vercel mode, but a
+ * function instance that serves only generic rate limits never enters the
+ * temporary-session ceiling. Observability failures must not affect denial.
+ *
+ * @returns {void}
+ */
+function rotateTemporarySessionTelemetrySafely() {
+  try {
+    temporarySessionTelemetry.maybeRotate(logger);
+  } catch {
+    // Telemetry remains observational.
+  }
+}
+
+/**
  * Resolves credentials for a generic Redis consumer.
  *
  * Why: Vercel mode shares the validated atomic runtime pair; local/test mode may
@@ -106,6 +124,8 @@ async function resolveGenericCredentials() {
       return { credentials: runtimePair.redis, identity: runtimePair.cacheIdentity, requireUpstash: true };
     } catch {
       return null;
+    } finally {
+      rotateTemporarySessionTelemetrySafely();
     }
   }
   if (mode !== TEMPORARY_SESSION_SECRET_MODES.LOCAL) return null;
