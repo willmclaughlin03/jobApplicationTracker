@@ -141,14 +141,16 @@ function createScriptUnavailableError() {
  * Determines whether an error begins with Redis's exact NOSCRIPT code.
  *
  * Why: only a definitely non-executed cached-script lookup is safe to repeat
- * with EVAL; timeouts, lost responses, and other errors may have consumed a slot.
+ * with EVAL; the Upstash auto-pipeline transport adds one fixed wrapper to that
+ * server response, while timeouts, lost responses, and other errors may have
+ * consumed a slot.
  *
  * @param {unknown} error Redis client error
  * @returns {boolean} exact NOSCRIPT classification
  */
 export function isTemporarySessionNoscriptError(error) {
   const message = typeof error?.message === 'string' ? error.message : '';
-  return message === 'NOSCRIPT' || message.startsWith('NOSCRIPT ');
+  return /^(?:Command failed: )?NOSCRIPT(?: |$)/.test(message);
 }
 
 /**
