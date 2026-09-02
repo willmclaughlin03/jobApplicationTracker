@@ -190,9 +190,12 @@ describe('temporarySessionRedisScript', () => {
     );
   });
 
-  it('falls back from EVALSHA to one EVAL only for an exact NOSCRIPT code', async () => {
+  it.each([
+    new Error('NOSCRIPT No matching script.'),
+    new Error('Command failed: NOSCRIPT No matching script. Please use EVAL.'),
+  ])('falls back from EVALSHA to one EVAL for an exact NOSCRIPT response', async (error) => {
     const redis = {
-      evalsha: jest.fn().mockRejectedValue(new Error('NOSCRIPT No matching script.')),
+      evalsha: jest.fn().mockRejectedValue(error),
       eval: jest.fn().mockResolvedValue([1, 0, 0]),
     };
     await expect(executeTemporarySessionRedisScript(redis, 'synthetic-key', {
@@ -210,6 +213,8 @@ describe('temporarySessionRedisScript', () => {
     new Error('transport failed'),
     new Error('prefix NOSCRIPT No matching script.'),
     new Error('NOSCRIPTED'),
+    new Error('Command failed: prefix NOSCRIPT No matching script.'),
+    new Error('Command failed: NOSCRIPTED'),
   ])('never retries uncertain or inexact errors', async (error) => {
     const redis = {
       evalsha: jest.fn().mockRejectedValue(error),
@@ -257,6 +262,13 @@ describe('temporarySessionRedisScript', () => {
   it('recognizes no aliases for the exact NOSCRIPT code', () => {
     expect(isTemporarySessionNoscriptError(new Error('NOSCRIPT'))).toBe(true);
     expect(isTemporarySessionNoscriptError(new Error('NOSCRIPT missing'))).toBe(true);
+    expect(isTemporarySessionNoscriptError(new Error('Command failed: NOSCRIPT'))).toBe(true);
+    expect(isTemporarySessionNoscriptError(
+      new Error('Command failed: NOSCRIPT missing')
+    )).toBe(true);
     expect(isTemporarySessionNoscriptError(new Error(' noscript missing'))).toBe(false);
+    expect(isTemporarySessionNoscriptError(
+      new Error('Command failed: NOSCRIPTED')
+    )).toBe(false);
   });
 });

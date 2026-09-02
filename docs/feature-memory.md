@@ -16,6 +16,10 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-30
 
+- `2026-09-02` - `Upstash NOSCRIPT auto-pipeline compatibility`: Extended the temporary-session Redis executor's exact NOSCRIPT classification to accept Upstash's fixed auto-pipeline error wrapper while preserving fail-closed handling for ambiguous or uncertain errors, with regression coverage for both accepted and rejected message shapes.
+  - validation: the focused Redis-script suite passes 29/29, repository lint passes with zero warnings, all 114 application CI suites and 1,684 tests pass with 16 credential-gated suites and 192 tests skipped normally, the placeholder-only production build passes, and `git diff --check` passes.
+  - residual: the Vercel canary must deploy this commit and repeat the session-route probe to capture `redisNoscriptFallback` plus `scriptAllowed` evidence before hosted qualification continues.
+
 - `2026-09-02` - `Rate-limit helper contract documentation`: Clarified the shared legacy-source helper's valid synthetic address input and production canonicalizer/serializer reuse, and documented the limiter identifier classifier's bounded, deterministic, side-effect-free contract without changing runtime behavior.
   - validation: the focused Redis test-support and rate-limit suites pass 32/32, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 
