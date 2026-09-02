@@ -147,6 +147,24 @@ describe('checkRateLimit', () => {
     // Bounded failure diagnostics
     // =========================================================================
     describe('bounded failure diagnostics', () => {
+        let warningTestNow = Date.now();
+        let dateNowSpy;
+
+        /**
+         * Advances beyond the module's warn-throttle window before each test.
+         */
+        beforeEach(() => {
+            warningTestNow += 120_000;
+            dateNowSpy = jest.spyOn(Date, 'now').mockReturnValue(warningTestNow);
+        });
+
+        /**
+         * Restores the real clock so the shared test stub cannot leak.
+         */
+        afterEach(() => {
+            dateNowSpy.mockRestore();
+        });
+
         /**
          * Test: provider errors and complete identifiers never enter warning data.
          *
@@ -158,9 +176,13 @@ describe('checkRateLimit', () => {
             const sourceIdentifier = 'source:v1:f4:wAACew';
             const secretToken = 'provider-token-never-log';
             const secretUrl = 'https://sensitive-provider.example.test/private';
+            const longErrorName = `ProviderFailure${'X'.repeat(80)}`;
             const providerError = new Error(
                 `Provider failed for ${sourceIdentifier} at ${secretUrl} with ${secretToken}`
             );
+            Object.defineProperty(providerError, 'constructor', {
+                value: { name: longErrorName },
+            });
             providerError.stack = `Synthetic stack containing ${secretToken}`;
             providerError.details = {
                 identifier: sourceIdentifier,
@@ -179,10 +201,12 @@ describe('checkRateLimit', () => {
             expect(rateLimitWarnCall).toBeDefined();
             expect(rateLimitWarnCall[0]).toEqual({
                 reason: 'limiter_call_failed',
+                errorName: longErrorName.slice(0, 64),
                 identifierClass: 'user',
                 tier: 'free',
                 operation: 'read',
             });
+            expect(rateLimitWarnCall[0].errorName).toHaveLength(64);
             expect(rateLimitWarnCall[0]).not.toHaveProperty('err');
             expect(result).toEqual({ success: false, unavailable: true });
             expect(mockLogRedisDownOnce).toHaveBeenCalledWith({ reason: 'call_failed' });
@@ -201,14 +225,7 @@ describe('checkRateLimit', () => {
             const sourceIdentifier = 'source:v1:f4:wAACCg';
             mockLimit.mockRejectedValue(new Error('Synthetic provider failure'));
 
-            // Advance past the 60s warn throttle so this test's warn fires
-            const realNow = Date.now;
-            try {
-                Date.now = () => realNow() + 120_000;
-                await checkRateLimit(sourceIdentifier, 'free', 'read');
-            } finally {
-                Date.now = realNow;
-            }
+            await checkRateLimit(sourceIdentifier, 'free', 'read');
 
             const warnCalls = mockLogger.warn.mock.calls;
             const rateLimitWarnCall = warnCalls.find(
@@ -229,13 +246,7 @@ describe('checkRateLimit', () => {
             const unexpectedIdentifier = 'attacker-shaped-prefix:private-value';
             mockLimit.mockRejectedValue(new Error('Synthetic provider failure'));
 
-            const realNow = Date.now;
-            try {
-                Date.now = () => realNow() + 240_000;
-                await checkRateLimit(unexpectedIdentifier, 'free', 'read');
-            } finally {
-                Date.now = realNow;
-            }
+            await checkRateLimit(unexpectedIdentifier, 'free', 'read');
 
             const rateLimitWarnCall = mockLogger.warn.mock.calls.find(
                 call => call[1] === 'Rate limit check failed'
@@ -716,6 +727,7 @@ describe('checkRateLimit', () => {
                 for (const [logData, message] of throttleLogger.warn.mock.calls) {
                     expect(logData).toEqual({
                         reason: 'limiter_call_failed',
+                        errorName: 'Error',
                         identifierClass: 'user',
                         tier: 'free',
                         operation: 'read',

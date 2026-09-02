@@ -187,15 +187,20 @@ export async function checkRateLimit(identifier, tier, operation){
         }
 
 
-    }catch{
+    }catch(error){
         logRedisDownOnce({ reason: 'call_failed' });
         setLastCallStatus(false);
 
         const now = Date.now();
         if (now - lastWarnTime >= WARN_THROTTLE_MS) {
+            const constructorName = error?.constructor?.name;
+            const errorName = typeof constructorName === 'string' && constructorName.length > 0
+                ? constructorName.slice(0, 64)
+                : 'unknown';
             logger.warn(
                 {
                     reason: 'limiter_call_failed',
+                    errorName,
                     identifierClass: classifyRateLimitIdentifier(identifier),
                     tier,
                     operation,

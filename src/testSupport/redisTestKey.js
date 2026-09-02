@@ -12,12 +12,17 @@ const DEFAULT_REDIS_TEST_TTL_SECONDS = 60;
  * serialization contract without duplicating an expectation helper per suite.
  *
  * @param {string} address canonicalizable synthetic address
- * @returns {string} deterministic legacy source identifier
+ * @returns {string} deterministic identifier for a canonicalizable address
+ * @throws {Error} when the address cannot be canonicalized and serialized
  */
 function legacySourceIdentifier(address) {
-  return serializeTemporarySessionLegacySource(
+  const identifier = serializeTemporarySessionLegacySource(
     canonicalizeTemporarySessionAddress(address)
   );
+  if (identifier === null) {
+    throw new Error('Cannot create legacy source identifier from an invalid address');
+  }
+  return identifier;
 }
 
 /**

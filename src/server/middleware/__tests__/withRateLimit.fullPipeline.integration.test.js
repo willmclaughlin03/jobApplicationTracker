@@ -472,7 +472,8 @@ describeIntegration('withRateLimit — full pipeline integration (real Upstash)'
             const originalSecretMode = process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE;
             const originalHmacJson = process.env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON;
             const originalUpstashJson = process.env.TEMPORARY_SESSION_CEILING_UPSTASH_JSON;
-            const source = '203.0.113.86';
+            const sourceSegments = testUserId.replace(/-/g, '').slice(0, 24).match(/.{4}/g);
+            const source = `2001:db8:${sourceSegments.join(':')}`;
             const req = createMockRequest('GET');
             req.headers['x-vercel-forwarded-for'] = source;
             req.rawHeaders = ['X-Vercel-Forwarded-For', source];

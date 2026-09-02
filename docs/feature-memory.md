@@ -16,6 +16,9 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-30
 
+- `2026-09-02` - `Rate-limit diagnostics and test isolation follow-ups`: Added a bounded limiter error-constructor field without provider payloads, made warning-clock tests order-independent, gave the live Vercel pipeline test a run-specific canonical source, and made the shared legacy-source test helper fail clearly on invalid addresses.
+  - validation: the focused rate-limit, middleware, and Redis test-support suites pass 151/151, changed-file ESLint passes with zero warnings, the credential-dependent full-pipeline suite loads and skips 13/13 without live services, and `git diff --check` passes.
+
 - `2026-09-01` - `CHUNK-1 rate-limit test isolation follow-up`: Cleared the memoized temporary-session runtime pair after Vercel environment overrides and centralized the canonical legacy source identifier fixture for both middleware suites.
   - validation: the focused middleware, integration, secret-cache, and shared test-support suites pass 149/149, the credential-dependent full-pipeline suite loads and skips 13/13 without live services, changed-file ESLint passes, and `git diff --check` passes.
 
