@@ -2,9 +2,25 @@ const {
   DEFAULT_REDIS_TEST_TTL_SECONDS,
   buildRedisTestKey,
   exerciseExpiringRedisTestKey,
+  legacySourceIdentifier,
 } = require('../redisTestKey.js');
 
 describe('Redis integration test key safety', () => {
+  /**
+   * Verifies canonical addresses retain the legacy limiter identifier format.
+   */
+  it('builds a legacy source identifier for a canonicalizable address', () => {
+    expect(legacySourceIdentifier('192.0.2.30')).toMatch(/^source:v1:f4:/);
+  });
+
+  /**
+   * Verifies invalid test inputs fail clearly instead of propagating null.
+   */
+  it('throws when a legacy source identifier cannot be serialized', () => {
+    expect(() => legacySourceIdentifier('not-an-address'))
+      .toThrow('Cannot create legacy source identifier from an invalid address');
+  });
+
   it('builds a key scoped to one run while retaining the test payload', () => {
     expect(buildRedisTestKey('run-123', 'unicode', 'key-value')).toBe(
       'integration-test:run-123:unicode:key-value'

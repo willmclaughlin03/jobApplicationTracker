@@ -8,6 +8,8 @@
  */
 
 const mockRedisConstructor = jest.fn();
+const TEST_HMAC_KEY = Buffer.alloc(32, 7).toString('base64url');
+const { performance } = require('node:perf_hooks');
 
 jest.mock('@upstash/redis', () => ({
     Redis: mockRedisConstructor,
@@ -178,16 +180,146 @@ describe('redis.js', () => {
     });
 
     /**
-     * Deployed Secrets Manager mode may not fall back to explicit environment credentials.
+     * Deployed Vercel mode may not fall back to standalone Redis credentials.
      */
-    it('does not use environment credentials after deployed secret acquisition fails', async () => {
+    it('does not use standalone credentials after deployed configuration fails', async () => {
         process.env.NODE_ENV = 'production';
-        process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE = 'aws-secrets-manager';
-        delete process.env.TEMPORARY_SESSION_CEILING_HMAC_SECRET_ID;
-        delete process.env.TEMPORARY_SESSION_CEILING_REDIS_SECRET_ID;
+        process.env.VERCEL = '1';
+        process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE = 'vercel';
+        delete process.env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON;
+        delete process.env.TEMPORARY_SESSION_CEILING_UPSTASH_JSON;
         const redis = require('../redis.js');
 
         await expect(redis.getRedisClient()).resolves.toBeNull();
         expect(mockRedisConstructor).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Generic consumers retain the same immutable Vercel runtime credentials.
+     *
+     * Why: environment mutation must not split the generic limiter from the
+     * temporary-session ceiling during one deployment instance.
+     */
+    it('uses the memoized Vercel runtime pair for generic consumers', async () => {
+        process.env.NODE_ENV = 'production';
+        process.env.VERCEL = '1';
+        process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE = 'vercel';
+        process.env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON = JSON.stringify({
+            schemaVersion: 1,
+            active: { generation: 1, keyId: 'gate1-key-1', key: TEST_HMAC_KEY },
+            previous: null,
+        });
+        process.env.TEMPORARY_SESSION_CEILING_UPSTASH_JSON = JSON.stringify({
+            schemaVersion: 1,
+            url: 'https://deployed-synthetic.upstash.io',
+            token: 'deployed-token-one',
+        });
+        const redis = require('../redis.js');
+
+        await redis.getRedisClient();
+        process.env.TEMPORARY_SESSION_CEILING_UPSTASH_JSON = JSON.stringify({
+            schemaVersion: 1,
+            url: 'https://changed-synthetic.upstash.io',
+            token: 'deployed-token-two',
+        });
+        redis.resetRedisClient();
+        await redis.getRedisClient();
+
+        expect(mockRedisConstructor).toHaveBeenCalledTimes(2);
+        expect(mockRedisConstructor.mock.calls[0][0]).toMatchObject({
+            url: 'https://deployed-synthetic.upstash.io',
+            token: 'deployed-token-one',
+        });
+        expect(mockRedisConstructor.mock.calls[1][0]).toMatchObject({
+            url: 'https://deployed-synthetic.upstash.io',
+            token: 'deployed-token-one',
+        });
+    });
+
+    /**
+     * Generic-only function instances must rotate the shared configuration event.
+     *
+     * Why: the singleton records one success or permanent failure, and repeated
+     * generic Redis acquisition must emit that bounded result exactly once even
+     * when no temporary-session route executes in the same instance.
+     */
+    it.each([
+        ['success', 'configurationSucceeded', false],
+        ['failure', 'configurationFailed', true],
+    ])('emits one bounded Vercel configuration %s summary for generic-only access', async (
+        _caseName,
+        expectedEvent,
+        shouldFail
+    ) => {
+        const hmacSentinel = Buffer.alloc(32, 9).toString('base64url');
+        const redisUrlSentinel = 'https://generic-observability-sentinel.upstash.io';
+        const redisTokenSentinel = 'generic-observability-token-sentinel';
+        process.env.NODE_ENV = 'production';
+        process.env.VERCEL = '1';
+        process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE = 'vercel';
+        process.env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON = shouldFail
+            ? `{"schemaVersion":1,"active":{"key":"${hmacSentinel}"`
+            : JSON.stringify({
+                schemaVersion: 1,
+                active: { generation: 1, keyId: 'generic-key-1', key: hmacSentinel },
+                previous: null,
+            });
+        process.env.TEMPORARY_SESSION_CEILING_UPSTASH_JSON = JSON.stringify({
+            schemaVersion: 1,
+            url: redisUrlSentinel,
+            token: redisTokenSentinel,
+        });
+        process.env.NEXT_BUILD_ID = 'generic-build-1';
+        process.env.VERCEL_DEPLOYMENT_ID = 'generic-deployment-1';
+        let monotonicTime = 0;
+        const performanceNowSpy = jest
+            .spyOn(performance, 'now')
+            .mockImplementation(() => monotonicTime);
+
+        try {
+            const redis = require('../redis.js');
+
+            if (shouldFail) {
+                await expect(redis.getRedisClient()).resolves.toBeNull();
+            } else {
+                await expect(redis.getRedisClient()).resolves.not.toBeNull();
+            }
+            expect(mockLogger.info).not.toHaveBeenCalled();
+
+            monotonicTime = 60_000;
+            await redis.getRedisClient();
+            monotonicTime = 120_000;
+            await redis.getRedisClient();
+
+            const summaryCalls = mockLogger.info.mock.calls.filter(
+                ([fields]) => fields?.event === 'temporary_session_ceiling_summary'
+            );
+            expect(summaryCalls).toHaveLength(1);
+            expect(summaryCalls[0]).toEqual([
+                expect.objectContaining({
+                    reportingWindowMs: 60_000,
+                    attribution: expect.objectContaining({
+                        buildId: 'generic-build-1',
+                        deploymentId: 'generic-deployment-1',
+                    }),
+                    events: expect.objectContaining({
+                        configurationSucceeded: expectedEvent === 'configurationSucceeded' ? 1 : 0,
+                        configurationFailed: expectedEvent === 'configurationFailed' ? 1 : 0,
+                    }),
+                }),
+                'Temporary session ceiling summary',
+            ]);
+            const serializedLogs = JSON.stringify([
+                ...mockLogger.info.mock.calls,
+                ...mockLogger.warn.mock.calls,
+                ...mockLogger.error.mock.calls,
+                ...mockLogger.debug.mock.calls,
+            ]);
+            expect(serializedLogs).not.toContain(hmacSentinel);
+            expect(serializedLogs).not.toContain(redisUrlSentinel);
+            expect(serializedLogs).not.toContain(redisTokenSentinel);
+        } finally {
+            performanceNowSpy.mockRestore();
+        }
     });
 });

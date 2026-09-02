@@ -99,7 +99,7 @@ export function createTemporarySessionCeiling(options = {}) {
   /**
    * Resolves a fixed or injected source policy for this evaluation.
    *
-   * @returns {'local'|'deployed'|null} validated mode
+   * @returns {'local'|'vercel'|null} validated mode
    */
   function readSourceMode() {
     try {
@@ -151,9 +151,9 @@ export function createTemporarySessionCeiling(options = {}) {
   /**
    * Evaluates and consumes one shared v1/future-v2 allowance.
    *
-   * Side effects: may refresh two secrets, atomically swap the shared Redis
-   * client, and execute exactly one trusted Lua decision (plus safe NOSCRIPT
-   * loading). Rejected decisions invoke no downstream route work.
+   * Side effects: may install one deployment-bound configuration pair, acquire
+   * its shared Redis client, and execute exactly one trusted Lua decision (plus
+   * safe NOSCRIPT loading). Rejected decisions invoke no downstream route work.
    *
    * @param {object} req Next.js request-like object
    * @param {object} [context] bounded route/logger context
@@ -197,7 +197,7 @@ export function createTemporarySessionCeiling(options = {}) {
 
     let runtimePair;
     try {
-      runtimePair = await secrets.getRuntimePair({ deadlineAt });
+      runtimePair = await secrets.getRuntimePair();
     } catch {
       const reason = deadlineExpired(deadlineAt)
         ? TEMPORARY_SESSION_FAILURE_REASONS.DEADLINE_EXCEEDED

@@ -33,7 +33,7 @@
  * - Rate limit headers on real response (X-RateLimit-*)
  * - 429 + Retry-After after exhausting real rate limit
  * - 503 fail-closed when Redis unavailable (no retry)
- * - IP extraction for public routes (IPv4, IPv6, ::ffff: strip, 45-char max)
+ * - strict local and Vercel source extraction for public routes
  * - GET skips CSRF but still rate limits
  */
 
@@ -119,6 +119,7 @@ let createClient;
 let withRateLimit;
 let generateCsrfToken;
 let redis;
+let temporarySessionSecrets;
 
 describeIntegration('withRateLimit — full pipeline integration (real Upstash)', () => {
     let testUserId;
@@ -132,6 +133,7 @@ describeIntegration('withRateLimit — full pipeline integration (real Upstash)'
         ({ withRateLimit } = require('../withRateLimit.js'));
         ({ generateCsrfToken } = require('../../lib/csrf.js'));
         redis = require('../../lib/redis.js');
+        ({ temporarySessionSecrets } = require('../../lib/temporarySessionSecrets.js'));
     });
 
     beforeAll(async () => {
@@ -167,6 +169,7 @@ describeIntegration('withRateLimit — full pipeline integration (real Upstash)'
         return {
             method,
             headers: {},
+            rawHeaders: [],
             cookies: {},
             socket: { remoteAddress: '127.0.0.1' },
         };
@@ -348,10 +351,10 @@ describeIntegration('withRateLimit — full pipeline integration (real Upstash)'
     });
 
     // ===================================================================
-    // IP extraction for public routes
+    // Trusted-source extraction for public routes
     // ===================================================================
 
-    describe('public route IP extraction', () => {
+    describe('public route source extraction', () => {
         it('extracts IPv4 from socket.remoteAddress for local dev', async () => {
             // Ensure VERCEL env is not set (local dev mode)
             const originalVercel = process.env.VERCEL;
@@ -459,6 +462,81 @@ describeIntegration('withRateLimit — full pipeline integration (real Upstash)'
 
             if (originalVercel !== undefined) {
                 process.env.VERCEL = originalVercel;
+            }
+        });
+
+        it('uses the strict Vercel source with the shared deployed Redis pair', async () => {
+            const originalNodeEnv = process.env.NODE_ENV;
+            const originalVercel = process.env.VERCEL;
+            const originalSourceMode = process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE;
+            const originalSecretMode = process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE;
+            const originalHmacJson = process.env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON;
+            const originalUpstashJson = process.env.TEMPORARY_SESSION_CEILING_UPSTASH_JSON;
+            const sourceSegments = testUserId.replace(/-/g, '').slice(0, 24).match(/.{4}/g);
+            const source = `2001:db8:${sourceSegments.join(':')}`;
+            const req = createMockRequest('GET');
+            req.headers['x-vercel-forwarded-for'] = source;
+            req.rawHeaders = ['X-Vercel-Forwarded-For', source];
+            req.socket.remoteAddress = '169.254.0.1';
+            const res = createMockResponse();
+            const handler = jest.fn();
+
+            try {
+                process.env.NODE_ENV = 'production';
+                process.env.VERCEL = '1';
+                process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'vercel';
+                process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE = 'vercel';
+                process.env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON = JSON.stringify({
+                    schemaVersion: 1,
+                    active: {
+                        generation: 1,
+                        keyId: 'integration-key-1',
+                        key: Buffer.alloc(32, 8).toString('base64url'),
+                    },
+                    previous: null,
+                });
+                process.env.TEMPORARY_SESSION_CEILING_UPSTASH_JSON = JSON.stringify({
+                    schemaVersion: 1,
+                    url: process.env.UPSTASH_REDIS_REST_URL,
+                    token: process.env.UPSTASH_REDIS_REST_TOKEN,
+                });
+
+                await withRateLimit(handler, {
+                    requireAuth: false,
+                    allowedMethods: ['GET'],
+                })(req, res);
+
+                expect(handler).toHaveBeenCalled();
+                expect(res.status).not.toHaveBeenCalledWith(403);
+                expect(res.status).not.toHaveBeenCalledWith(503);
+                expect(JSON.stringify(mockLog.info.mock.calls)).not.toContain(source);
+                expect(JSON.stringify(mockLog.warn.mock.calls)).not.toContain(source);
+                expect(JSON.stringify(mockLog.error.mock.calls)).not.toContain(source);
+            } finally {
+                restoreEnvironmentVariable(process.env, 'NODE_ENV', originalNodeEnv);
+                restoreEnvironmentVariable(process.env, 'VERCEL', originalVercel);
+                restoreEnvironmentVariable(
+                    process.env,
+                    'TEMPORARY_SESSION_CEILING_SOURCE_MODE',
+                    originalSourceMode
+                );
+                restoreEnvironmentVariable(
+                    process.env,
+                    'TEMPORARY_SESSION_CEILING_SECRET_MODE',
+                    originalSecretMode
+                );
+                restoreEnvironmentVariable(
+                    process.env,
+                    'TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON',
+                    originalHmacJson
+                );
+                restoreEnvironmentVariable(
+                    process.env,
+                    'TEMPORARY_SESSION_CEILING_UPSTASH_JSON',
+                    originalUpstashJson
+                );
+                temporarySessionSecrets.reset();
+                redis.resetRedisClient();
             }
         });
     });

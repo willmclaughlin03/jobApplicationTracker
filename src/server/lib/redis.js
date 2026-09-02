@@ -5,6 +5,7 @@ import {
   resolveTemporarySessionSecretMode,
   TEMPORARY_SESSION_SECRET_MODES,
 } from './temporarySessionSecrets.js';
+import { temporarySessionTelemetry } from './temporarySessionTelemetry.js';
 
 const REDIS_REQUEST_TIMEOUT_MS = 1_500;
 const REDIS_CLIENT_CACHE_LIMIT = 2;
@@ -68,7 +69,7 @@ function validateRedisUrl(value, requireUpstash) {
  * Creates a stable local/test credential snapshot from explicit environment values.
  *
  * Why: local generic integrations may retain explicit credentials while the
- * deployed path is forbidden from falling back after Secrets Manager failure.
+ * deployed path is forbidden from falling back after Vercel configuration failure.
  *
  * @returns {Readonly<object>|null} local credentials and private cache identity
  */
@@ -91,21 +92,40 @@ function getLocalCredentialSnapshot() {
 }
 
 /**
+ * Gives the shared telemetry accumulator a generic-consumer emission point.
+ *
+ * Why: configuration loading records one bounded result in Vercel mode, but a
+ * function instance that serves only generic rate limits never enters the
+ * temporary-session ceiling. Observability failures must not affect denial.
+ *
+ * @returns {void}
+ */
+function rotateTemporarySessionTelemetrySafely() {
+  try {
+    temporarySessionTelemetry.maybeRotate(logger);
+  } catch {
+    // Telemetry remains observational.
+  }
+}
+
+/**
  * Resolves credentials for a generic Redis consumer.
  *
- * Why: AWS mode shares the validated atomic runtime pair; local/test mode may
+ * Why: Vercel mode shares the validated atomic runtime pair; local/test mode may
  * use explicit environment credentials and production never falls back.
  *
  * @returns {Promise<{credentials: object, identity: object}|null>} credential snapshot
  */
 async function resolveGenericCredentials() {
   const mode = resolveTemporarySessionSecretMode();
-  if (mode === TEMPORARY_SESSION_SECRET_MODES.AWS_SECRETS_MANAGER) {
+  if (mode === TEMPORARY_SESSION_SECRET_MODES.VERCEL) {
     try {
       const runtimePair = await getTemporarySessionRuntimePair();
       return { credentials: runtimePair.redis, identity: runtimePair.cacheIdentity, requireUpstash: true };
     } catch {
       return null;
+    } finally {
+      rotateTemporarySessionTelemetrySafely();
     }
   }
   if (mode !== TEMPORARY_SESSION_SECRET_MODES.LOCAL) return null;
@@ -184,7 +204,7 @@ function createRedisClient(credentials, requireUpstash) {
  * Purpose: a caller may pin client construction to the exact runtime pair used
  * for HMAC identity. Generic consumers acquire the same pair in deployed mode.
  * A bounded LRU cache prevents alternating credential paths from reconstructing
- * clients while limiting retention after credential refreshes.
+ * clients while retaining a fixed memory bound for explicit caller identities.
  *
  * @param {Readonly<object>|undefined} runtimePair optional validated runtime pair
  * @returns {Promise<Redis|null>} Redis client or null when unavailable

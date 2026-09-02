@@ -16,6 +16,22 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-30
 
+- `2026-09-02` - `Rate-limit helper contract documentation`: Clarified the shared legacy-source helper's valid synthetic address input and production canonicalizer/serializer reuse, and documented the limiter identifier classifier's bounded, deterministic, side-effect-free contract without changing runtime behavior.
+  - validation: the focused Redis test-support and rate-limit suites pass 32/32, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
+
+- `2026-09-02` - `Rate-limit diagnostics and test isolation follow-ups`: Added a bounded limiter error-constructor field without provider payloads, made warning-clock tests order-independent, gave the live Vercel pipeline test a run-specific canonical source, and made the shared legacy-source test helper fail clearly on invalid addresses.
+  - validation: the focused rate-limit, middleware, and Redis test-support suites pass 151/151, changed-file ESLint passes with zero warnings, the credential-dependent full-pipeline suite loads and skips 13/13 without live services, and `git diff --check` passes.
+
+- `2026-09-01` - `CHUNK-1 rate-limit test isolation follow-up`: Cleared the memoized temporary-session runtime pair after Vercel environment overrides and centralized the canonical legacy source identifier fixture for both middleware suites.
+  - validation: the focused middleware, integration, secret-cache, and shared test-support suites pass 149/149, the credential-dependent full-pipeline suite loads and skips 13/13 without live services, changed-file ESLint passes, and `git diff --check` passes.
+
+- `2026-09-01` - `CHUNK-1 Vercel composition qualification follow-up`: Added a CI-running production/Vercel session-route composition test across the real source resolver, immutable secret singleton, HMAC identity, shared ceiling, Redis client, middleware, and route; also gave generic-only Redis consumers a fail-safe shared telemetry rotation point so their one-time configuration result is emitted with bounded deployment attribution.
+  - validation: the new route and Redis regressions pass 17/17, adjacent session, secret, telemetry, ceiling, and middleware suites pass 174/174, repository lint passes with zero warnings, all application CI suites pass, the subprocess-dependent trusted integration runner passes 23/23 outside the managed sandbox, and `git diff --check` passes.
+
+- `2026-09-01` - `CHUNK-1 Vercel provider amendment`: Pinned Next.js and `eslint-config-next` to the 16.3.3 security baseline, replaced AWS/CloudFront source and secret adapters with strict deployment-bound Vercel configuration, shared one immutable HMAC/Upstash runtime pair across the temporary and legacy limiters, updated bounded Vercel attribution, removed the unused AWS Secrets Manager SDK, and sanitized generic rate-limit failure diagnostics.
+  - Validation: the focused rate-limit and middleware suites pass 155/155, repository lint passes with zero warnings, all 109 CI suites and 1,644 tests pass, the 20-suite integration inventory executes 4 passing suites and skips 16 credential-dependent suites (28 passed/192 skipped), the exact local Redis 400/401 ceiling passes, the Next.js 16.3.3 production build and HTTP smoke pass, and artifact, secret-canary, retired-AWS-marker, and `git diff --check` scans pass.
+  - Residual: live Vercel/Upstash source-overwrite, cross-instance, CDN/cache, WAF, rollback, and credential-scoped qualification remains required; `npm audit` currently reports two production findings and six total findings; the known middleware-to-proxy deprecation warning remains without a rename.
+
 - `2026-08-31` - `CHUNK-0E operation-policy review follow-ups`: Reused the frozen application-request decision fixtures in production-policy coverage, added explicit credential-bearing URL and unsupported-protocol rejection cases, and documented the operation tracker's single-request concurrency boundary without changing runtime behavior.
   - validation: the focused operation-tracker and request-policy suites pass 45/45, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
 - `2026-08-31` - `CHUNK-0E contract-test documentation`: Added short purpose comments above the Node request acceptance, Web `Headers` rejection, and approved provider-error logger-metadata boundary tests without changing assertions or production behavior.

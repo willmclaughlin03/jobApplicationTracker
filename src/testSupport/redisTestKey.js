@@ -1,4 +1,30 @@
+const {
+  canonicalizeTemporarySessionAddress,
+  serializeTemporarySessionLegacySource,
+} = require('../server/lib/temporarySessionSource.js');
+
 const DEFAULT_REDIS_TEST_TTL_SECONDS = 60;
+
+/**
+ * Build the versioned legacy-limiter identifier for a synthetic address.
+ *
+ * Purpose: keep rate-limit expectations aligned with production by reusing its
+ * `canonicalizeTemporarySessionAddress` canonicalizer and
+ * `serializeTemporarySessionLegacySource` legacy serializer.
+ *
+ * @param {string} address valid synthetic IPv4 or IPv6 address
+ * @returns {string} deterministic identifier for a canonicalizable address
+ * @throws {Error} when the address cannot be canonicalized and serialized
+ */
+function legacySourceIdentifier(address) {
+  const identifier = serializeTemporarySessionLegacySource(
+    canonicalizeTemporarySessionAddress(address)
+  );
+  if (identifier === null) {
+    throw new Error('Cannot create legacy source identifier from an invalid address');
+  }
+  return identifier;
+}
 
 /**
  * Build a Redis key owned by one serialized integration-test run.
@@ -49,4 +75,5 @@ module.exports = {
   DEFAULT_REDIS_TEST_TTL_SECONDS,
   buildRedisTestKey,
   exerciseExpiringRedisTestKey,
+  legacySourceIdentifier,
 };
