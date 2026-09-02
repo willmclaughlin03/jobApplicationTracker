@@ -1,4 +1,24 @@
+const {
+  canonicalizeTemporarySessionAddress,
+  serializeTemporarySessionLegacySource,
+} = require('../server/lib/temporarySessionSource.js');
+
 const DEFAULT_REDIS_TEST_TTL_SECONDS = 60;
+
+/**
+ * Produce the versioned source identifier expected by the legacy limiter.
+ *
+ * Purpose: rate-limit tests share the production address canonicalization and
+ * serialization contract without duplicating an expectation helper per suite.
+ *
+ * @param {string} address canonicalizable synthetic address
+ * @returns {string} deterministic legacy source identifier
+ */
+function legacySourceIdentifier(address) {
+  return serializeTemporarySessionLegacySource(
+    canonicalizeTemporarySessionAddress(address)
+  );
+}
 
 /**
  * Build a Redis key owned by one serialized integration-test run.
@@ -49,4 +69,5 @@ module.exports = {
   DEFAULT_REDIS_TEST_TTL_SECONDS,
   buildRedisTestKey,
   exerciseExpiringRedisTestKey,
+  legacySourceIdentifier,
 };

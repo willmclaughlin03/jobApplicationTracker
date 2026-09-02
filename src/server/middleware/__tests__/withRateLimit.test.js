@@ -53,9 +53,8 @@ jest.mock('../../../shared/logger.js', () => ({
 
 const { withRateLimit } = require('../withRateLimit.js');
 const {
-    canonicalizeTemporarySessionAddress,
-    serializeTemporarySessionLegacySource,
-} = require('../../lib/temporarySessionSource.js');
+    legacySourceIdentifier,
+} = require('../../../testSupport/redisTestKey.js');
 
 describe('withRateLimit middleware', () => {
     const mockUser = { id: 'user-abc-123', email: 'test@example.com' };
@@ -104,18 +103,6 @@ describe('withRateLimit middleware', () => {
     function getRequestDurationLogCall() {
         return mockLog.info.mock.calls.find(
             ([logData, message]) => logData?.event === 'api_request_duration' && message === 'API request duration'
-        );
-    }
-
-    /**
-     * Produces the exact versioned identifier expected by the legacy limiter.
-     *
-     * @param {string} address canonicalizable synthetic address
-     * @returns {string} deterministic legacy source identifier
-     */
-    function legacySourceIdentifier(address) {
-        return serializeTemporarySessionLegacySource(
-            canonicalizeTemporarySessionAddress(address)
         );
     }
 

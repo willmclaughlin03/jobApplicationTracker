@@ -16,6 +16,9 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-30
 
+- `2026-09-01` - `CHUNK-1 rate-limit test isolation follow-up`: Cleared the memoized temporary-session runtime pair after Vercel environment overrides and centralized the canonical legacy source identifier fixture for both middleware suites.
+  - validation: the focused middleware, integration, secret-cache, and shared test-support suites pass 149/149, the credential-dependent full-pipeline suite loads and skips 13/13 without live services, changed-file ESLint passes, and `git diff --check` passes.
+
 - `2026-09-01` - `CHUNK-1 Vercel composition qualification follow-up`: Added a CI-running production/Vercel session-route composition test across the real source resolver, immutable secret singleton, HMAC identity, shared ceiling, Redis client, middleware, and route; also gave generic-only Redis consumers a fail-safe shared telemetry rotation point so their one-time configuration result is emitted with bounded deployment attribution.
   - validation: the new route and Redis regressions pass 17/17, adjacent session, secret, telemetry, ceiling, and middleware suites pass 174/174, repository lint passes with zero warnings, all application CI suites pass, the subprocess-dependent trusted integration runner passes 23/23 outside the managed sandbox, and `git diff --check` passes.
 

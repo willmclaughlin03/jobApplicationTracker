@@ -119,6 +119,7 @@ let createClient;
 let withRateLimit;
 let generateCsrfToken;
 let redis;
+let temporarySessionSecrets;
 
 describeIntegration('withRateLimit — full pipeline integration (real Upstash)', () => {
     let testUserId;
@@ -132,6 +133,7 @@ describeIntegration('withRateLimit — full pipeline integration (real Upstash)'
         ({ withRateLimit } = require('../withRateLimit.js'));
         ({ generateCsrfToken } = require('../../lib/csrf.js'));
         redis = require('../../lib/redis.js');
+        ({ temporarySessionSecrets } = require('../../lib/temporarySessionSecrets.js'));
     });
 
     beforeAll(async () => {
@@ -532,6 +534,7 @@ describeIntegration('withRateLimit — full pipeline integration (real Upstash)'
                     'TEMPORARY_SESSION_CEILING_UPSTASH_JSON',
                     originalUpstashJson
                 );
+                temporarySessionSecrets.reset();
                 redis.resetRedisClient();
             }
         });
