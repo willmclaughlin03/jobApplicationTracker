@@ -35,8 +35,9 @@ function isLimiterTimeoutResult(result) {
 /**
  * Classifies a limiter identifier into one fixed diagnostic value.
  *
- * Why: identifier prefixes and provider errors must not create attacker-shaped
- * log fields or reveal the reversible canonical source identifier.
+ * Purpose: reduce identifiers to bounded diagnostic classes so logs cannot be
+ * attacker-shaped or reveal reversible source values. This helper is
+ * deterministic and has no side effects.
  *
  * @param {string} identifier validated limiter identity
  * @returns {'user'|'source'|'unknown'} fixed-cardinality identity class

@@ -16,6 +16,9 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-30
 
+- `2026-09-02` - `Rate-limit helper contract documentation`: Clarified the shared legacy-source helper's valid synthetic address input and production canonicalizer/serializer reuse, and documented the limiter identifier classifier's bounded, deterministic, side-effect-free contract without changing runtime behavior.
+  - validation: the focused Redis test-support and rate-limit suites pass 32/32, changed-file ESLint passes with zero warnings, and `git diff --check` passes.
+
 - `2026-09-02` - `Rate-limit diagnostics and test isolation follow-ups`: Added a bounded limiter error-constructor field without provider payloads, made warning-clock tests order-independent, gave the live Vercel pipeline test a run-specific canonical source, and made the shared legacy-source test helper fail clearly on invalid addresses.
   - validation: the focused rate-limit, middleware, and Redis test-support suites pass 151/151, changed-file ESLint passes with zero warnings, the credential-dependent full-pipeline suite loads and skips 13/13 without live services, and `git diff --check` passes.
 

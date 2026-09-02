@@ -6,12 +6,13 @@ const {
 const DEFAULT_REDIS_TEST_TTL_SECONDS = 60;
 
 /**
- * Produce the versioned source identifier expected by the legacy limiter.
+ * Build the versioned legacy-limiter identifier for a synthetic address.
  *
- * Purpose: rate-limit tests share the production address canonicalization and
- * serialization contract without duplicating an expectation helper per suite.
+ * Purpose: keep rate-limit expectations aligned with production by reusing its
+ * `canonicalizeTemporarySessionAddress` canonicalizer and
+ * `serializeTemporarySessionLegacySource` legacy serializer.
  *
- * @param {string} address canonicalizable synthetic address
+ * @param {string} address valid synthetic IPv4 or IPv6 address
  * @returns {string} deterministic identifier for a canonicalizable address
  * @throws {Error} when the address cannot be canonicalized and serialized
  */
