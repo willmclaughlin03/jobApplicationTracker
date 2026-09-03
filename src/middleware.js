@@ -7,8 +7,9 @@
  * 2. Redirect unauthenticated users to /login on protected routes, preventing
  *    the page shell (layout, sidebar, labels) from reaching the browser.
  *
- * Public routes (/login, /auth/callback, and custom error pages) bypass the
- * redirect check.
+ * Public routes (/login, /auth/callback, and custom error pages) and unmatched
+ * page paths bypass Supabase construction entirely. Unmatched paths continue
+ * to Next.js so the real route or 404 behavior remains authoritative.
  *
  * Uses the anon key (not service role) - middleware runs at the Edge and
  * only needs to validate/refresh the user's own session.
@@ -28,12 +29,64 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse } from 'next/server';
 import { ERROR_STATUS_CODES } from './shared/constants/errorStatusCodes';
+import { PRIVATE_NO_STORE } from './shared/constants/authV2.js';
+
+export const ROUTE_POLICY = Object.freeze({
+  PROTECTED: 'protected',
+  PUBLIC: 'public',
+  UNMATCHED: 'unmatched',
+});
 
 const PUBLIC_PATHS = [
   { path: '/login', allowSubpaths: false },
   { path: '/auth/callback', allowSubpaths: false },
   ...ERROR_STATUS_CODES.map((statusCode) => ({ path: `/${statusCode}`, allowSubpaths: false })),
 ];
+
+const PROTECTED_NAMESPACES = ['/admin', '/billing'];
+
+/**
+ * Checks whether a pathname is the named route or one of its subpaths.
+ *
+ * Purpose: enforce exact segment boundaries so lookalike paths such as
+ * /administrator and /billing-example do not enter protected auth handling.
+ *
+ * @param {string} pathname - Incoming request pathname.
+ * @param {string} namespace - Protected route namespace without a trailing slash.
+ * @returns {boolean} True when the pathname is inside the namespace.
+ */
+function isRouteOrSubpath(pathname, namespace) {
+  return pathname === namespace || pathname.startsWith(`${namespace}/`);
+}
+
+/**
+ * Classifies page paths before any authentication client or cookie state exists.
+ *
+ * Purpose: limit middleware authentication work to known protected pages while
+ * allowing exact public pages and unrelated paths to reach Next.js unchanged.
+ *
+ * @param {string} pathname - Incoming request pathname from NextRequest.
+ * @returns {'protected'|'public'|'unmatched'} Explicit page-route policy.
+ */
+export function classifyRoutePolicy(pathname) {
+  if (typeof pathname !== 'string') {
+    return ROUTE_POLICY.UNMATCHED;
+  }
+
+  const isPublicRoute = PUBLIC_PATHS.some(({ path, allowSubpaths }) => (
+    pathname === path || (allowSubpaths && pathname.startsWith(`${path}/`))
+  ));
+  if (isPublicRoute) {
+    return ROUTE_POLICY.PUBLIC;
+  }
+
+  if (pathname === '/'
+      || PROTECTED_NAMESPACES.some((namespace) => isRouteOrSubpath(pathname, namespace))) {
+    return ROUTE_POLICY.PROTECTED;
+  }
+
+  return ROUTE_POLICY.UNMATCHED;
+}
 
 /**
  * Determines whether a page route should bypass the auth redirect.
@@ -45,78 +98,93 @@ const PUBLIC_PATHS = [
  * @returns {boolean} True when the route is public.
  */
 export function isPublicPath(pathname) {
-  if (typeof pathname !== 'string') {
-    return false;
-  }
+  return classifyRoutePolicy(pathname) === ROUTE_POLICY.PUBLIC;
+}
 
-  return PUBLIC_PATHS.some(({ path, allowSubpaths }) => (
-    pathname === path || (allowSubpaths && pathname.startsWith(`${path}/`))
-  ));
+/**
+ * Collects the final Supabase descriptor for each response cookie name.
+ *
+ * Purpose: token refreshes may write a cookie more than once during one request;
+ * retaining the final descriptor avoids duplicate or stale browser writes while
+ * updating request cookies immediately for downstream authentication work.
+ *
+ * @param {import('next/server').NextRequest} req - Mutable middleware request.
+ * @param {Map<string, {name: string, value: string, options?: object}>} cookies - Cookie collector.
+ * @param {Array<{name: string, value: string, options?: object}>} cookiesToSet - Supabase writes.
+ * @returns {void}
+ */
+function collectSupabaseCookies(req, cookies, cookiesToSet) {
+  cookiesToSet.forEach(({ name, value, options }) => {
+    req.cookies.set(name, value);
+    cookies.set(name, { name, value, options });
+  });
+}
+
+/**
+ * Applies protected response policy and deferred Supabase cookie writes once.
+ *
+ * Purpose: redirects and pass-through responses must receive the same refreshed
+ * or deleted cookies without binding cookie collection to a discarded response.
+ * Security attributes are enforced after Supabase options while maxAge remains
+ * overridable so maxAge: 0 deletion cookies continue to work.
+ *
+ * @param {import('next/server').NextResponse} response - Selected final response.
+ * @param {Map<string, {name: string, value: string, options?: object}>} cookies - Final cookie descriptors.
+ * @returns {import('next/server').NextResponse} The finalized protected response.
+ */
+function finalizeProtectedResponse(response, cookies) {
+  response.headers.set('Cache-Control', PRIVATE_NO_STORE);
+  cookies.forEach(({ name, value, options }) => {
+    response.cookies.set(name, value, {
+      maxAge: 604800,
+      ...options,
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+    });
+  });
+  return response;
 }
 
 export async function middleware(req) {
-  // supabaseResponse is re-assigned inside setAll when tokens are refreshed,
-  // so we use let and close over it in the cookie adapter below.
-  let supabaseResponse = NextResponse.next({ request: req });
+  const routePolicy = classifyRoutePolicy(req.nextUrl.pathname);
+  if (routePolicy !== ROUTE_POLICY.PROTECTED) {
+    return NextResponse.next({ request: req });
+  }
 
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-    {
-      cookies: {
-        getAll() {
-          return req.cookies.getAll();
-        },
-
-        setAll(cookiesToSet) {
-          // Step 1: update req.cookies so any downstream middleware/handlers
-          // in the same request chain see the refreshed tokens immediately.
-          cookiesToSet.forEach(({ name, value }) => req.cookies.set(name, value));
-
-          // Step 2: create a new response based on the updated request so the
-          // refreshed cookies are propagated to the browser.
-          supabaseResponse = NextResponse.next({ request: req });
-
-          // Step 3: write the refreshed tokens to the response with enforced
-          // security options. maxAge is not overridden so supabase can still
-          // pass maxAge: 0 to expire cookies when signing out.
-          cookiesToSet.forEach(({ name, value, options }) => {
-            supabaseResponse.cookies.set(name, value, {
-              maxAge: 604800, // 7-day default; supabase may override (e.g. 0 on sign-out)
-              ...options,
-              // Security attributes always enforced last
-              httpOnly: true,
-              secure: process.env.NODE_ENV === 'production',
-              sameSite: 'lax',
-              path: '/'
-            });
-          });
-        }
-      }
-    }
-  );
-
-  // getUser() triggers a token refresh if the access token is expired and a
-  // valid refresh token exists. The refreshed tokens are written to the
-  // response via the setAll callback above.
-  // If the session is invalid and the route is protected, redirect to /login.
+  const collectedCookies = new Map();
   try {
-    const { data: { user } } = await supabase.auth.getUser();
-    const { pathname } = req.nextUrl;
-    const isPublicRoute = isPublicPath(pathname);
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+      {
+        cookies: {
+          getAll() {
+            return req.cookies.getAll();
+          },
 
-    if (!isPublicRoute && !user) {
+          setAll(cookiesToSet) {
+            collectSupabaseCookies(req, collectedCookies, cookiesToSet);
+          },
+        },
+      }
+    );
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
       const loginUrl = req.nextUrl.clone();
       loginUrl.pathname = '/login';
-      return NextResponse.redirect(loginUrl);
+      return finalizeProtectedResponse(NextResponse.redirect(loginUrl), collectedCookies);
     }
+
+    return finalizeProtectedResponse(NextResponse.next({ request: req }), collectedCookies);
   } catch {
     // Supabase unreachable - degrade gracefully instead of 500-ing every
     // page navigation. The user keeps their existing (possibly stale) cookies
     // and the next API call will surface the auth error where it can be handled.
+    return finalizeProtectedResponse(NextResponse.next({ request: req }), collectedCookies);
   }
-
-  return supabaseResponse;
 }
 
 export const config = {

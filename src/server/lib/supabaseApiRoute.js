@@ -20,6 +20,7 @@
  */
 import { createServerClient } from '@supabase/ssr';
 import { serialize } from 'cookie';
+import { PRIVATE_NO_STORE } from '../../shared/constants/authV2.js';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -34,6 +35,7 @@ const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
  * @returns {import('@supabase/supabase-js').SupabaseClient} SSR Supabase client
  */
 export function createApiRouteClient(req, res) {
+  res.setHeader('Cache-Control', PRIVATE_NO_STORE);
   return createServerClient(supabaseUrl, supabaseAnonKey, {
     cookies: {
       /**

@@ -14,8 +14,12 @@
  */
 
 // Mock withRateLimit as passthrough so we test handler logic directly
+let mockCapturedRateLimitOptions;
 jest.mock('../../../server/middleware/withRateLimit.js', () => ({
-  withRateLimit: (handler) => handler,
+  withRateLimit: (handler, options) => {
+    mockCapturedRateLimitOptions = options;
+    return handler;
+  },
 }));
 
 // Mock jobService
@@ -69,6 +73,13 @@ const {
 } = require('../../../shared/constants/billing.js');
 
 describe('index API handler (/api/jobs)', () => {
+  /** Verify the collection route remains behind the protected wrapper default. */
+  it('keeps /api protected for cache and authentication policy', () => {
+    expect(mockCapturedRateLimitOptions).toEqual({
+      requireAuth: true,
+      allowedMethods: ['GET', 'POST'],
+    });
+  });
   const mockUser = { id: 'user-123', email: 'test@example.com' };
   const mockJobs = [
     { id: 'job-1', company: 'Acme', position: 'Dev', status: 'Applied', user_id: 'user-123' },

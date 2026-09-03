@@ -106,6 +106,19 @@ describe('withRateLimit middleware', () => {
         );
     }
 
+    /**
+     * Verifies the exact protected-response cache policy on a response mock.
+     *
+     * Purpose: all protected middleware exits share one frozen cache contract,
+     * so individual failure-path tests should assert the same exact value.
+     *
+     * @param {object} res - Response mock whose setHeader calls are observable.
+     * @returns {void}
+     */
+    function expectPrivateNoStore(res) {
+        expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
+    }
+
     beforeEach(() => {
         jest.clearAllMocks();
         process.env.NODE_ENV = 'test';
@@ -2394,6 +2407,165 @@ describe('withRateLimit middleware', () => {
             expect(res.setHeader).not.toHaveBeenCalledWith('Cache-Control', expect.anything());
             expect(mockCheckRateLimit).toHaveBeenCalledTimes(1);
             expect(handler).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    describe('protected cache policy', () => {
+        it.each([
+            ['OPTIONS method rejection', 'OPTIONS', async () => {}],
+            ['unsupported method rejection', 'DELETE', async () => {}],
+            ['signed-out authentication', 'GET', async () => {
+                mockGetUserFromRequest.mockResolvedValue({
+                    user: null,
+                    error: 'User not found',
+                    errorCode: 'AUTH_NOT_FOUND',
+                });
+            }],
+            ['authentication backend unavailability', 'GET', async () => {
+                mockGetUserFromRequest.mockResolvedValue({
+                    user: null,
+                    error: 'Authentication service unavailable',
+                    errorCode: 'AUTH_UNAVAILABLE',
+                });
+            }],
+            ['CSRF rejection', 'POST', async () => {
+                mockValidateCsrfToken.mockReturnValue(false);
+            }],
+            ['rate-limit rejection', 'GET', async () => {
+                mockCheckRateLimit.mockResolvedValue({
+                    success: false,
+                    limit: 20,
+                    remaining: 0,
+                    reset: Date.now() + 1000,
+                    window: 'hourly',
+                });
+            }],
+            ['Redis unavailability', 'GET', async () => {
+                mockCheckRateLimit.mockResolvedValue({ success: false, unavailable: true });
+            }],
+            ['handler success', 'GET', async () => {}],
+            ['handler exception', 'GET', async () => {}],
+        ])('sets private no-store before %s', async (scenario, method, configure) => {
+            await configure();
+            const req = createMockRequest(method);
+            const res = createMockResponse();
+            const handler = scenario === 'handler exception'
+                ? jest.fn().mockRejectedValue(new Error('handler failed'))
+                : jest.fn();
+
+            await withRateLimit(handler, {
+                requireAuth: true,
+                allowedMethods: ['GET', 'POST'],
+            })(req, res);
+
+            expect(res.setHeader.mock.calls[0]).toEqual([
+                'Cache-Control',
+                'private, no-store',
+            ]);
+            expectPrivateNoStore(res);
+        });
+
+        it('sets private no-store on protected source-identification failure', async () => {
+            mockGetUserFromRequest.mockResolvedValue({
+                user: null,
+                error: 'User not found',
+                errorCode: 'AUTH_NOT_FOUND',
+            });
+            const req = createMockRequest(
+                'GET',
+                {},
+                { remoteAddress: 'not-an-ip-address' }
+            );
+            const res = createMockResponse();
+
+            await withRateLimit(jest.fn(), { allowedMethods: ['GET'] })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(403);
+            expectPrivateNoStore(res);
+        });
+
+        it.each([
+            ['invalid guard decision', {
+                preRateLimitGuard: () => ({ allowed: false, statusCode: 503 }),
+                writePreRateLimitGuardResponse: jest.fn(),
+            }],
+            ['invalid protected skip', {
+                skipRateLimitWhen: () => 'not-a-boolean',
+            }],
+        ])('sets private no-store on %s failure', async (_scenario, extraOptions) => {
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+
+            await withRateLimit(jest.fn(), {
+                requireAuth: true,
+                allowedMethods: ['GET'],
+                ...extraOptions,
+            })(req, res);
+
+            expect(res.status).toHaveBeenCalledWith(503);
+            expectPrivateNoStore(res);
+        });
+
+        it('prevents a protected route from downgrading the cache policy', async () => {
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+
+            await withRateLimit(jest.fn(), {
+                requireAuth: true,
+                allowedMethods: ['GET'],
+                cacheControl: 'public, max-age=3600',
+            })(req, res);
+
+            expect(res.setHeader.mock.calls[0]).toEqual([
+                'Cache-Control',
+                'private, no-store',
+            ]);
+            expect(res.setHeader).not.toHaveBeenCalledWith(
+                'Cache-Control',
+                'public, max-age=3600'
+            );
+        });
+
+        it('does not attempt to rewrite cache policy after headers have started', async () => {
+            const req = createMockRequest('GET');
+            const res = createMockResponse();
+            res.headersSent = true;
+
+            await withRateLimit(jest.fn(), { allowedMethods: ['GET'] })(req, res);
+
+            expect(res.setHeader).not.toHaveBeenCalledWith(
+                'Cache-Control',
+                expect.anything()
+            );
+        });
+
+        it('keeps public routes unchanged unless they explicitly opt into no-store', async () => {
+            const defaultReq = createMockRequest('GET');
+            const defaultRes = createMockResponse();
+
+            await withRateLimit(jest.fn(), {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+            })(defaultReq, defaultRes);
+
+            expect(defaultRes.setHeader).not.toHaveBeenCalledWith(
+                'Cache-Control',
+                expect.anything()
+            );
+
+            const optedInReq = createMockRequest('POST');
+            const optedInRes = createMockResponse();
+            await withRateLimit(jest.fn(), {
+                requireAuth: false,
+                allowedMethods: ['GET'],
+                cacheControl: 'private, no-store',
+            })(optedInReq, optedInRes);
+
+            expect(optedInRes.setHeader.mock.calls[0]).toEqual([
+                'Cache-Control',
+                'private, no-store',
+            ]);
+            expect(mockCheckRateLimit).toHaveBeenCalledTimes(1);
         });
     });
 });

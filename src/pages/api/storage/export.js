@@ -25,7 +25,7 @@ const storageExportQuerySchema = z.object({}).strict();
  * @returns {void}
  */
 function setStorageExportCacheHeaders(res) {
-  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Cache-Control', 'private, no-store');
   res.setHeader('CDN-Cache-Control', 'no-store');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Vary', 'Cookie');

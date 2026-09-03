@@ -16,8 +16,12 @@
  */
 
 // Mock withRateLimit as passthrough so we test handler logic directly
+let mockCapturedRateLimitOptions;
 jest.mock('../../../server/middleware/withRateLimit.js', () => ({
-  withRateLimit: (handler) => handler,
+  withRateLimit: (handler, options) => {
+    mockCapturedRateLimitOptions = options;
+    return handler;
+  },
 }));
 
 // Mock jobService before importing handler
@@ -76,6 +80,13 @@ const { STORAGE_CREATE_ERROR_CODES, STORAGE_STATUSES } = require('../../../share
 const { JOB_STORAGE_ERRORS } = require('../../../shared/constants/storage.js');
 
 describe('[id] API handler', () => {
+  /** Verify detail mutations remain behind the protected wrapper default. */
+  it('keeps /api/[id] protected for cache and authentication policy', () => {
+    expect(mockCapturedRateLimitOptions).toEqual({
+      requireAuth: true,
+      allowedMethods: ['GET', 'PUT', 'DELETE'],
+    });
+  });
   // Test fixtures
   const validUUID = '550e8400-e29b-41d4-a716-446655440000';
   const mockUser = { id: 'user-123', email: 'test@example.com' };
