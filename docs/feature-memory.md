@@ -16,6 +16,10 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-30
 
+- `2026-09-03` - `Vercel sanitizer CommonJS compatibility`: Scoped `isomorphic-dompurify` to `jsdom@25.0.1` so Next.js server bundles no longer reach the ESM-only `@exodus/bytes` chain, and added real-sanitizer plus strict-CommonJS regression coverage for the shared job schema.
+  - validation: the resolved tree retains `isomorphic-dompurify@2.36.0` with overridden `jsdom@25.0.1`, `html-encoding-sniffer@4.0.0`, and `parse5@7.3.0` while Jest retains its independent `jsdom@20.0.3`; the strict-CommonJS smoke passes, the four focused suites pass 130/130, all 111 unit suites and 1,662 tests pass, repository lint and the Next.js 16.3.3 production build pass, both local production API boot canaries return application JSON with request IDs instead of the HTML `/500`, and the production audit has the same two pre-existing findings as the baseline.
+  - residual: the Vercel preview and production canaries must prove `/api`, `/api/<valid-uuid>`, and the authenticated dashboard no longer emit the deployed module-load failure; the separate auth-response `private, no-store` remediation remains required before final deployed `GATE-1` evidence.
+
 - `2026-09-03` - `Auth-route canary test callback documentation`: Documented the middleware matcher setup and route-boundary assertions plus the missing-session mock and logger expectations without changing test behavior.
   - validation: the focused middleware public-path and Supabase server suites pass 24/24, and `git diff --check` passes.
 
