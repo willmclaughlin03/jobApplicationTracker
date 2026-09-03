@@ -46,3 +46,35 @@ describe('isPublicPath', () => {
     expect(isPublicPath('/auth/callback-extra')).toBe(false);
   });
 });
+
+describe('middleware matcher', () => {
+  let matcher;
+
+  /**
+   * Builds the suite-scoped matcher from the middleware config once.
+   * Side effect: assigns matcher without invoking the middleware request path.
+   */
+  beforeAll(() => {
+    const { config } = require('../middleware.js');
+    matcher = new RegExp(`^${config.matcher[0]}$`);
+  });
+
+  /**
+   * Verifies matcher excludes the API root and nested API routes from middleware.
+   * Uses the suite-scoped matcher and has no runtime side effects.
+   */
+  it('excludes both the API root and nested API routes', () => {
+    expect(matcher.test('/api')).toBe(false);
+    expect(matcher.test('/api/health')).toBe(false);
+    expect(matcher.test('/api/auth/session')).toBe(false);
+  });
+
+  /**
+   * Verifies matcher still includes page routes whose names merely begin with api.
+   * Uses the suite-scoped matcher and has no runtime side effects.
+   */
+  it('does not exclude nearby page routes that only begin with api', () => {
+    expect(matcher.test('/apix')).toBe(true);
+    expect(matcher.test('/apiary')).toBe(true);
+  });
+});
