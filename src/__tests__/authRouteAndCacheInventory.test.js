@@ -108,6 +108,26 @@ function readPageSource(relativePath) {
   return fs.readFileSync(path.join(PAGES_ROOT, ...relativePath.split('/')), 'utf8');
 }
 
+/**
+ * Converts an inventoried Pages Router file into a representative pathname.
+ *
+ * Purpose: keep middleware policy assertions derived from the authoritative
+ * page inventories, including index routes and concrete dynamic-route samples.
+ *
+ * @param {string} relativePath - Forward-slash path relative to src/pages.
+ * @returns {string} Representative URL pathname for the page file.
+ */
+function getRepresentativePagePath(relativePath) {
+  const pageSegments = relativePath.replace(/\.js$/, '').split('/');
+  const routeSegments = pageSegments.at(-1) === 'index'
+    ? pageSegments.slice(0, -1)
+    : pageSegments;
+
+  return `/${routeSegments.map((segment) => (
+    /^\[.*\]$/.test(segment) ? 'example-id' : segment
+  )).join('/')}`;
+}
+
 describe('auth route and cache inventory', () => {
   it('requires every routable page and API to have an explicit policy', () => {
     const actualRoutes = listPageJavascriptFiles().filter((relativePath) => (
@@ -125,26 +145,8 @@ describe('auth route and cache inventory', () => {
   });
 
   it('keeps inventoried pages aligned with middleware classification', () => {
-    const protectedPaths = [
-      '/',
-      '/admin',
-      '/admin/users',
-      '/admin/users/example-id',
-      '/billing',
-      '/billing/cancel',
-      '/billing/success',
-    ];
-    const publicPaths = [
-      '/login',
-      '/auth/callback',
-      '/403',
-      '/404',
-      '/429',
-      '/500',
-      '/502',
-      '/503',
-      '/504',
-    ];
+    const protectedPaths = PROTECTED_PAGES.map(getRepresentativePagePath);
+    const publicPaths = PUBLIC_PAGES.map(getRepresentativePagePath);
 
     protectedPaths.forEach((pathname) => {
       expect(classifyRoutePolicy(pathname)).toBe(ROUTE_POLICY.PROTECTED);
