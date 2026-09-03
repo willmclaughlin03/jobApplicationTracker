@@ -16,6 +16,10 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-30
 
+- `2026-09-02` - `Deployed auth-route canary corrections`: Classified Supabase's normal missing-session result as signed out instead of backend-unavailable, and excluded both exact `/api` and nested API routes from the page-auth middleware matcher so API handlers retain their JSON auth contract.
+  - validation: the focused auth and matcher suites pass 143/143, repository lint passes with zero warnings, all 110 application CI suites and 1,660 tests pass, the Next.js 16.3.3 production build passes, the compiled matcher excludes `/api` and `/api/health` while retaining `/apix`, and `git diff --check` passes.
+  - residual: after merge and Vercel rebuild, repeat the signed-out `/api/auth/csrf` and `/api` canaries to capture rate-limited JSON 401 responses instead of the observed 503 and 307.
+
 - `2026-09-02` - `Upstash NOSCRIPT auto-pipeline compatibility`: Extended the temporary-session Redis executor's exact NOSCRIPT classification to accept Upstash's fixed auto-pipeline error wrapper while preserving fail-closed handling for ambiguous or uncertain errors, with regression coverage for both accepted and rejected message shapes.
   - validation: the focused Redis-script suite passes 29/29, repository lint passes with zero warnings, all 114 application CI suites and 1,684 tests pass with 16 credential-gated suites and 192 tests skipped normally, the placeholder-only production build passes, and `git diff --check` passes.
   - residual: the Vercel canary must deploy this commit and repeat the session-route probe to capture `redisNoscriptFallback` plus `scriptAllowed` evidence before hosted qualification continues.

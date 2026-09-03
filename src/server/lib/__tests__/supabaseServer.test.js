@@ -187,6 +187,31 @@ describe('supabaseServer', () => {
       });
     });
 
+    it('treats a missing Supabase session as signed out instead of unavailable', async () => {
+      mockGetUser.mockResolvedValue({
+        data: { user: null },
+        error: {
+          name: 'AuthSessionMissingError',
+          status: 400,
+          message: 'Auth session missing!',
+        },
+      });
+
+      const req = { headers: {}, cookies: {} };
+      const res = createMockRes();
+
+      const result = await getUserFromRequest(req, res);
+
+      expect(result).toEqual({
+        user: null,
+        error: 'User not found',
+        errorCode: AUTH_ERROR_CODES.AUTH_NOT_FOUND,
+        supabaseClient: null,
+      });
+      expect(mockLogger.error).not.toHaveBeenCalled();
+      expect(mockLogger.warn).not.toHaveBeenCalled();
+    });
+
     /**
      * Test: No user returned from Supabase (no error, but user is null)
      * Expected: Returns user not found error
@@ -308,6 +333,7 @@ describe('supabaseServer', () => {
     });
 
     it.each([
+      [{ name: 'AuthSessionMissingError', status: 400 }, AUTH_ERROR_CODES.AUTH_NOT_FOUND],
       [{ status: 401 }, AUTH_ERROR_CODES.AUTH_INVALID],
       [{ status: 403 }, AUTH_ERROR_CODES.AUTH_INVALID],
       [{ status: 503 }, AUTH_ERROR_CODES.AUTH_UNAVAILABLE],

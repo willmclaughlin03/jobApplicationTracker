@@ -46,3 +46,23 @@ describe('isPublicPath', () => {
     expect(isPublicPath('/auth/callback-extra')).toBe(false);
   });
 });
+
+describe('middleware matcher', () => {
+  let matcher;
+
+  beforeAll(() => {
+    const { config } = require('../middleware.js');
+    matcher = new RegExp(`^${config.matcher[0]}$`);
+  });
+
+  it('excludes both the API root and nested API routes', () => {
+    expect(matcher.test('/api')).toBe(false);
+    expect(matcher.test('/api/health')).toBe(false);
+    expect(matcher.test('/api/auth/session')).toBe(false);
+  });
+
+  it('does not exclude nearby page routes that only begin with api', () => {
+    expect(matcher.test('/apix')).toBe(true);
+    expect(matcher.test('/apiary')).toBe(true);
+  });
+});

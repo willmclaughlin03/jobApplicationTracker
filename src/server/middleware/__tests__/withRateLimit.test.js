@@ -1159,7 +1159,11 @@ describe('withRateLimit middleware', () => {
          * Verifies: Protected routes still block unauthenticated requests while metering retries
          */
         it('should return 401 when auth fails on protected route', async () => {
-            mockGetUserFromRequest.mockResolvedValue({ user: null, error: 'No auth' });
+            mockGetUserFromRequest.mockResolvedValue({
+                user: null,
+                error: 'User not found',
+                errorCode: 'AUTH_NOT_FOUND',
+            });
             const req = createMockRequest('GET', {}, { remoteAddress: '10.0.0.1' });
             const res = createMockResponse();
             const handler = jest.fn();
@@ -1172,6 +1176,7 @@ describe('withRateLimit middleware', () => {
                 'free',
                 'auth'
             );
+            expect(res.setHeader).not.toHaveBeenCalledWith('Retry-After', 5);
             expect(handler).not.toHaveBeenCalled();
         });
 
