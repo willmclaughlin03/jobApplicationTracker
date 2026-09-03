@@ -21,9 +21,11 @@
 import Spinner from '../../client/components/Spinner';
 import { createApiRouteClient } from '../../server/lib/supabaseApiRoute.js';
 import { generateCsrfToken, setCsrfCookie } from '../../server/lib/csrf.js';
+import { PRIVATE_NO_STORE } from '../../shared/constants/authV2.js';
 import { logger } from '../../shared/logger.js';
 
 export async function getServerSideProps({ req, res, query }) {
+  res.setHeader('Cache-Control', PRIVATE_NO_STORE);
   const { code, next: rawNext } = query;
 
   if (!code || typeof code !== 'string' || code.trim() === '') {

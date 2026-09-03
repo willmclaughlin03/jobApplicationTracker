@@ -38,7 +38,7 @@ const lockedBulkDeleteBodySchema = z.object({
  * @returns {void}
  */
 function setLockedBulkDeleteCacheHeaders(res) {
-  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Cache-Control', 'private, no-store');
   res.setHeader('CDN-Cache-Control', 'no-store');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Vary', 'Cookie');

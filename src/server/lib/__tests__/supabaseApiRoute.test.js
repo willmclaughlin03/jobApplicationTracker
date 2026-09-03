@@ -19,11 +19,7 @@
 
 const mockCreateServerClient = jest.fn();
 jest.mock('@supabase/ssr', () => ({
-  createServerClient: (...args) => {
-    mockCreateServerClient(...args);
-    // Return the cookie adapter so we can test it
-    return { _cookieAdapter: args[2].cookies };
-  },
+  createServerClient: (...args) => mockCreateServerClient(...args),
 }));
 
 // Must set env before requiring module
@@ -48,6 +44,38 @@ describe('createApiRouteClient', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockCreateServerClient.mockImplementation((...args) => ({
+      _cookieAdapter: args[2].cookies,
+    }));
+  });
+
+  /**
+   * Cache policy must be the first response mutation before client construction.
+   */
+  it('sets private no-store before createServerClient', () => {
+    const req = createMockReq();
+    const res = createMockRes();
+
+    createApiRouteClient(req, res);
+
+    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
+    expect(res.setHeader.mock.invocationCallOrder[0]).toBeLessThan(
+      mockCreateServerClient.mock.invocationCallOrder[0]
+    );
+  });
+
+  /**
+   * Construction failures cannot remove the cache policy already applied.
+   */
+  it('retains private no-store when createServerClient throws', () => {
+    const req = createMockReq();
+    const res = createMockRes();
+    mockCreateServerClient.mockImplementation(() => {
+      throw new Error('client construction failed');
+    });
+
+    expect(() => createApiRouteClient(req, res)).toThrow('client construction failed');
+    expect(res._headers['Cache-Control']).toBe('private, no-store');
   });
 
   /**
@@ -98,6 +126,28 @@ describe('createApiRouteClient', () => {
     expect(cookie).toContain('HttpOnly');
     expect(cookie).toContain('SameSite=Lax');
     expect(cookie).toContain('Path=/');
+    expect(res._headers['Cache-Control']).toBe('private, no-store');
+  });
+
+  /**
+   * Multiple Supabase writes remain distinct and keep the cache policy intact.
+   */
+  it('appends multiple refreshed cookies without replacing cache policy', () => {
+    const req = createMockReq();
+    const res = createMockRes();
+
+    const client = createApiRouteClient(req, res);
+    client._cookieAdapter.setAll([
+      { name: 'sb-token.0', value: 'first', options: {} },
+    ]);
+    client._cookieAdapter.setAll([
+      { name: 'sb-token.1', value: 'second', options: {} },
+    ]);
+
+    expect(res._headers['Set-Cookie']).toHaveLength(2);
+    expect(res._headers['Set-Cookie'][0]).toContain('sb-token.0=first');
+    expect(res._headers['Set-Cookie'][1]).toContain('sb-token.1=second');
+    expect(res._headers['Cache-Control']).toBe('private, no-store');
   });
 
   /**

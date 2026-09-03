@@ -2,6 +2,7 @@ import { AUTH_ERROR_CODES, getUserFromRequest } from '../lib/supabaseServer.js';
 import { checkRateLimit } from '../lib/rateLimit.js';
 import { validateCsrfToken } from '../lib/csrf.js';
 import { METHOD_TO_OPERATIONS, OPERATIONS } from '../../shared/constants/tiers.js';
+import { PRIVATE_NO_STORE } from '../../shared/constants/authV2.js';
 import { resolveRateLimitTier } from '../lib/userTier.js';
 import {
     resolveTemporarySessionSource,
@@ -647,14 +648,18 @@ export function withRateLimit(handler, options = {}){
         writePreRateLimitGuardResponse,
         skipRateLimitWhen,
     } = options;
+    const effectiveCacheControl = requireAuth ? PRIVATE_NO_STORE : cacheControl;
 
     // Default: protected routes (requireAuth: true) get CSRF protection.
     // Pass csrfProtect: false explicitly to opt out (e.g., the csrf.js endpoint itself).
     const shouldCsrfProtect = csrfProtect !== undefined ? csrfProtect : requireAuth;
 
     return async(req, res) => {
-        if (cacheControl !== null) {
-            res.setHeader('Cache-Control', cacheControl);
+        if (effectiveCacheControl !== null
+            && res.headersSent !== true
+            && res.writableEnded !== true
+            && res.finished !== true) {
+            res.setHeader('Cache-Control', effectiveCacheControl);
         }
 
         // Attach a child logger with requestId for request-scoped correlation

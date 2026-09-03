@@ -86,7 +86,7 @@ describe('/api/storage/export handler', () => {
     await handler(req, res);
 
     expect(mockGetJobsCsvExportForUser).toHaveBeenCalledWith(mockUser.id, mockLog);
-    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
+    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
     expect(res.setHeader).toHaveBeenCalledWith('CDN-Cache-Control', 'no-store');
     expect(res.setHeader).toHaveBeenCalledWith('Pragma', 'no-cache');
     expect(res.setHeader).toHaveBeenCalledWith('Vary', 'Cookie');
