@@ -47,10 +47,14 @@ export const AUTH_ERROR_CODES = Object.freeze({
  * backend outages so retryable service failures return 503 instead of 401.
  *
  * @param {unknown} error
- * @returns {'AUTH_INVALID' | 'AUTH_UNAVAILABLE'}
+ * @returns {'AUTH_INVALID' | 'AUTH_NOT_FOUND' | 'AUTH_UNAVAILABLE'}
  */
 export function classifyAuthError(error) {
   const status = typeof error?.status === 'number' ? error.status : null;
+
+  if (error?.name === 'AuthSessionMissingError') {
+    return AUTH_ERROR_CODES.AUTH_NOT_FOUND;
+  }
 
   if (status === 401 || status === 403) {
     return AUTH_ERROR_CODES.AUTH_INVALID;
@@ -107,6 +111,15 @@ export async function getUserFromRequest(req, res) {
 
     if (error) {
       const errorCode = classifyAuthError(error);
+
+      if (errorCode === AUTH_ERROR_CODES.AUTH_NOT_FOUND) {
+        return {
+          user: null,
+          error: 'User not found',
+          errorCode,
+          supabaseClient: null,
+        };
+      }
 
       if (errorCode === AUTH_ERROR_CODES.AUTH_UNAVAILABLE) {
         logger.error(sanitizeAuthErrorForLog(error), 'Authentication service unavailable');

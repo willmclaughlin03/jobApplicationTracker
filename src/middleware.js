@@ -126,9 +126,9 @@ export const config = {
      * - _next/static  (Next.js build output - no auth needed)
      * - _next/image   (Next.js image optimisation - no auth needed)
      * - favicon.ico
-     * - api/          (API routes verify auth themselves via getUserFromRequest)
+     * - api and api/  (API routes verify auth themselves via getUserFromRequest)
      * - Common static asset extensions
      */
-    '/((?!_next/static|_next/image|favicon.ico|api/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'
+    '/((?!_next/static|_next/image|favicon.ico|api(?:/|$)|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'
   ]
 };
