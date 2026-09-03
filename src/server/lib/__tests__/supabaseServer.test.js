@@ -187,6 +187,11 @@ describe('supabaseServer', () => {
       });
     });
 
+    /**
+     * Test: Missing Supabase sessions are classified as signed-out users.
+     * Mocks: mockGetUser returns the session error; mockLogger verifies no logging.
+     * Side effect: Replaces mockGetUser's resolved value for this test.
+     */
     it('treats a missing Supabase session as signed out instead of unavailable', async () => {
       mockGetUser.mockResolvedValue({
         data: { user: null },

@@ -16,6 +16,9 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-30
 
+- `2026-09-03` - `Auth-route canary test callback documentation`: Documented the middleware matcher setup and route-boundary assertions plus the missing-session mock and logger expectations without changing test behavior.
+  - validation: the focused middleware public-path and Supabase server suites pass 24/24, and `git diff --check` passes.
+
 - `2026-09-02` - `Deployed auth-route canary corrections`: Classified Supabase's normal missing-session result as signed out instead of backend-unavailable, and excluded both exact `/api` and nested API routes from the page-auth middleware matcher so API handlers retain their JSON auth contract.
   - validation: the focused auth and matcher suites pass 143/143, repository lint passes with zero warnings, all 110 application CI suites and 1,660 tests pass, the Next.js 16.3.3 production build passes, the compiled matcher excludes `/api` and `/api/health` while retaining `/apix`, and `git diff --check` passes.
   - residual: after merge and Vercel rebuild, repeat the signed-out `/api/auth/csrf` and `/api` canaries to capture rate-limited JSON 401 responses instead of the observed 503 and 307.
