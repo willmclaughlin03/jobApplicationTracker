@@ -43,9 +43,35 @@ describe('/admin/users direct-request authorization', () => {
     const result = await getServerSideProps({ req, res });
 
     expect(mockGetUserFromRequest).toHaveBeenCalledWith(req, res);
+    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
+    expect(res.setHeader.mock.invocationCallOrder[0]).toBeLessThan(
+      mockGetUserFromRequest.mock.invocationCallOrder[0]
+    );
     expect(result).toEqual({
       redirect: { destination: '/login', permanent: false },
     });
+  });
+
+  /** Verify current auth-backend failures still redirect with private cache policy. */
+  it('treats an unavailable auth result as missing without losing no-store', async () => {
+    const req = { headers: {} };
+    const res = {
+      statusCode: 200,
+      finished: false,
+      setHeader: jest.fn(),
+      end: jest.fn(),
+    };
+    mockGetUserFromRequest.mockResolvedValue({
+      user: null,
+      error: 'Authentication service unavailable',
+    });
+
+    const result = await getServerSideProps({ req, res });
+
+    expect(result).toEqual({
+      redirect: { destination: '/login', permanent: false },
+    });
+    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
   });
 
   it('rejects an authenticated non-admin before rendering the page shell', async () => {
@@ -77,6 +103,7 @@ describe('/admin/users direct-request authorization', () => {
       'Content-Type',
       'application/json; charset=utf-8'
     );
+    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
     expect(JSON.parse(res.body)).toEqual({
       data: null,
       error: 'ADMIN_FORBIDDEN',
@@ -86,8 +113,8 @@ describe('/admin/users direct-request authorization', () => {
     expect(result).toEqual({ props: {} });
   });
 
-  /** Verify successful admin authorization leaves the page response untouched. */
-  it('renders props for an authenticated admin without mutating the response', async () => {
+  /** Verify successful admin authorization adds only the required cache policy. */
+  it('renders props for an authenticated admin with private no-store', async () => {
     const req = { headers: { cookie: 'session=admin' } };
     const res = {
       statusCode: 200,
@@ -110,7 +137,8 @@ describe('/admin/users direct-request authorization', () => {
     expect(result).toEqual({ props: {} });
     expect(res.statusCode).toBe(200);
     expect(res.finished).toBe(false);
-    expect(res.setHeader).not.toHaveBeenCalled();
+    expect(res.setHeader).toHaveBeenCalledTimes(1);
+    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
     expect(res.end).not.toHaveBeenCalled();
     expect(res).not.toHaveProperty('body');
   });

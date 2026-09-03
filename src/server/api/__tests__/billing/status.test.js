@@ -70,7 +70,7 @@ describe('/api/billing/status handler', () => {
     await handler(req, res);
 
     expect(mockLoadBillingStatusOrThrow).toHaveBeenCalledWith(mockUser.id, mockClient, mockLog);
-    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
+    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
     expect(res.setHeader).toHaveBeenCalledWith('CDN-Cache-Control', 'no-store');
     expect(res.setHeader).toHaveBeenCalledWith('Pragma', 'no-cache');
     expect(res.setHeader).toHaveBeenCalledWith('Vary', 'Cookie');

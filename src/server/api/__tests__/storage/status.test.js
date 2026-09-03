@@ -102,7 +102,7 @@ describe('/api/storage/status handler', () => {
       mockLog,
       { storageStatusResult: mockStorageStatusResult }
     );
-    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-store');
+    expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
     expect(res.setHeader).toHaveBeenCalledWith('CDN-Cache-Control', 'no-store');
     expect(res.setHeader).toHaveBeenCalledWith('Pragma', 'no-cache');
     expect(res.setHeader).toHaveBeenCalledWith('Vary', 'Cookie');

@@ -16,8 +16,13 @@
  * - Returns 401 when req._rateLimitUser is missing (defense-in-depth)
  */
 
+let mockCapturedRateLimitOptions;
+const mockWithRateLimit = jest.fn((handler, options) => {
+    mockCapturedRateLimitOptions = options;
+    return handler;
+});
 jest.mock('../../../../server/middleware/withRateLimit.js', () => ({
-    withRateLimit: (handler) => handler,
+    withRateLimit: (...args) => mockWithRateLimit(...args),
 }));
 
 const mockGenerateCsrfToken = jest.fn();
@@ -61,6 +66,18 @@ describe('/api/auth/csrf handler', () => {
     beforeEach(() => {
         jest.clearAllMocks();
         mockGenerateCsrfToken.mockReturnValue('mock-nonce.12345.mock-signature');
+    });
+
+    /**
+     * The CSRF route remains protected so the wrapper supplies private no-store.
+     */
+    it('uses the protected wrapper and retains explicit CSRF exemption', () => {
+        expect(mockCapturedRateLimitOptions).toEqual({
+            requireAuth: true,
+            csrfProtect: false,
+            operation: 'read',
+            allowedMethods: ['GET'],
+        });
     });
 
     /**

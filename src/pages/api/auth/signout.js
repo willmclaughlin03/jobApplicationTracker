@@ -21,6 +21,7 @@ import { sendSuccess } from '../../../shared/response.js';
 
 import { withRateLimit } from '../../../server/middleware/withRateLimit.js';
 import { OPERATIONS } from '../../../shared/constants/tiers.js';
+import { PRIVATE_NO_STORE } from '../../../shared/constants/authV2.js';
 import { serialize } from 'cookie';
 import { clearCsrfCookie } from '../../../server/lib/csrf.js';
 
@@ -88,5 +89,6 @@ async function handler(req, res) {
 export default withRateLimit(handler, {
   requireAuth: false,
   operation: OPERATIONS.AUTH,
-  allowedMethods: ['POST']
+  allowedMethods: ['POST'],
+  cacheControl: PRIVATE_NO_STORE,
 });
