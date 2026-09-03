@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-30
 
+- `2026-09-03` - `Route-policy inventory derivation`: Derived protected and public middleware classification cases from the authoritative page inventories, including index and dynamic routes, so future page additions cannot silently miss policy coverage.
+
 - `2026-09-03` - `Partial CHUNK-6 auth cache correctness`: Enforced exact `private, no-store` policy at protected API, shared Supabase adapter, OAuth callback, Admin SSR, and sign-out boundaries; classified page routes before Supabase work; preserved refreshed or deleted cookies on the single final protected middleware response; and added a fail-closed route/cache inventory. This is a partial CHUNK-6 cache-correctness change and also gathers some deployed GATE-1 evidence during post-merge acceptance.
   - validation: the 16 focused suites pass 311/311, all 113 unit suites pass 1,725/1,725 with no skips, repository lint and `git diff --check` pass, the Next.js 16.3.3 production build passes with explicit non-secret fixtures, and sanitized local production canaries confirm exact `private, no-store` on auth-handling responses while unknown routes reach the real 404 and health remains outside the protected default.
   - deployed evidence: the cache-patch deployment attribution, temporary-session-ceiling summary, signed-out hosted canaries, and two-profile isolation matrix are not yet collected; they remain required after merge and deployment before any deployed acceptance claim.
