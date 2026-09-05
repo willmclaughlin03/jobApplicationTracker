@@ -16,10 +16,14 @@ function isRecord(value) {
  * Assert built Pages Router artifacts match independently discovered sources.
  * Accepts parsed artifacts for negative tests; returns only route/count metadata.
  * Static HTML, ISR, missing/non-matching SSR data routes, and unknown routes fail closed.
- * @param {object} input - Inventory, discovery, manifests, and validated nextBuildId.
+ * Validates nextBuildId before using it to match SSR data routes.
+ * @param {object} input - Inventory, discovery, manifests, and nextBuildId.
  * @returns {object} Safe qualification summary.
  */
 function checkProtectedPageArtifacts({ entries, discovered, pages, prerender, routes, nextBuildId }) {
+  if (typeof nextBuildId !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(nextBuildId)) {
+    throw new Error('Missing or invalid Next build ID.');
+  }
   reconcilePageRoutes(discovered, entries);
   if (!isRecord(pages) || !isRecord(prerender?.routes)
       || !isRecord(prerender?.dynamicRoutes) || !Array.isArray(routes?.dataRoutes)

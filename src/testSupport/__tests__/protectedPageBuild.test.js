@@ -19,13 +19,37 @@ function fixture() {
 }
 
 describe('protected-page production artifacts', () => {
-  it('accepts request-time artifacts for every protected route', () => {
-    expect(checkProtectedPageArtifacts(fixture()).count).toBe(2);
+  /** Match both protected routes to each valid ID to preserve the accepted format. */
+  it.each(['build', 'Build_123-abc'])('accepts request-time artifacts for build ID %s', (nextBuildId) => {
+    const input = fixture();
+    input.nextBuildId = nextBuildId;
+    for (const dataRoute of input.routes.dataRoutes) {
+      dataRoute.dataRouteRegex = dataRoute.dataRouteRegex.replace('build', nextBuildId);
+    }
+    expect(checkProtectedPageArtifacts(input).count).toBe(2);
   });
+  /** Omitted IDs must fail at the artifact boundary with the established diagnostic. */
+  it('rejects a missing build ID', () => {
+    const input = fixture();
+    delete input.nextBuildId;
+    expect(() => checkProtectedPageArtifacts(input)).toThrow('Missing or invalid Next build ID.');
+  });
+  /** Permissive routes must not let malformed IDs bypass boundary validation. */
+  it.each([undefined, null, '', ' ', 'build/id', 'build.id', 'build?query', 123, true, {}])(
+    'rejects an invalid build ID even when data routes match: %j',
+    (nextBuildId) => {
+      const input = fixture();
+      input.nextBuildId = nextBuildId;
+      for (const dataRoute of input.routes.dataRoutes) {
+        dataRoute.dataRouteRegex = '^/_next/data/.+\\.json$';
+      }
+      expect(() => checkProtectedPageArtifacts(input)).toThrow('Missing or invalid Next build ID.');
+    },
+  );
   it('rejects data routes for a different build ID', () => {
     const input = fixture();
     input.nextBuildId = 'different-build';
-    expect(() => checkProtectedPageArtifacts(input)).toThrow('SSR data route');
+    expect(() => checkProtectedPageArtifacts(input)).toThrow('Non-matching SSR data route: /');
   });
   it('rejects a regex matching only the literal dynamic route', () => {
     const input = fixture();
