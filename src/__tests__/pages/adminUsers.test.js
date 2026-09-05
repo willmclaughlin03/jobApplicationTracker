@@ -22,6 +22,21 @@ jest.mock('../../client/hooks/useAdminUsers', () => ({
 const { getServerSideProps } = require('../../pages/admin/users.js');
 
 describe('/admin/users direct-request authorization', () => {
+  /** Verify every auth branch receives all cache headers before provider work. */
+  afterEach(() => {
+    const [, res] = mockGetUserFromRequest.mock.calls[0];
+    for (const [name, value] of [
+      ['Cache-Control', 'private, no-store'],
+      ['CDN-Cache-Control', 'no-store'],
+      ['Vercel-CDN-Cache-Control', 'no-store'],
+    ]) {
+      const index = res.setHeader.mock.calls.findIndex((call) => call[0] === name);
+      expect(res.setHeader).toHaveBeenCalledWith(name, value);
+      expect(res.setHeader.mock.invocationCallOrder[index]).toBeLessThan(
+        mockGetUserFromRequest.mock.invocationCallOrder[0]
+      );
+    }
+  });
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -137,7 +152,7 @@ describe('/admin/users direct-request authorization', () => {
     expect(result).toEqual({ props: {} });
     expect(res.statusCode).toBe(200);
     expect(res.finished).toBe(false);
-    expect(res.setHeader).toHaveBeenCalledTimes(1);
+    expect(res.setHeader).toHaveBeenCalledTimes(3);
     expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
     expect(res.end).not.toHaveBeenCalled();
     expect(res).not.toHaveProperty('body');

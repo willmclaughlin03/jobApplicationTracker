@@ -84,6 +84,16 @@ function createMockRequest(pathname, initialCookies = []) {
 }
 
 describe('middleware route policy', () => {
+  /** Check all final mocked branches, including public bypass, for CDN policy. */
+  afterEach(() => {
+    for (const result of [...mockNext.mock.results, ...mockRedirect.mock.results]) {
+      if (result.type !== 'return' || !result.value?.headers) continue;
+      const headers = result.value.headers;
+      const expected = headers.get('Cache-Control') ? 'no-store' : undefined;
+      expect(headers.get('CDN-Cache-Control')).toBe(expected);
+      expect(headers.get('Vercel-CDN-Cache-Control')).toBe(expected);
+    }
+  });
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetUser.mockResolvedValue({ data: { user: { id: 'user-123' } } });

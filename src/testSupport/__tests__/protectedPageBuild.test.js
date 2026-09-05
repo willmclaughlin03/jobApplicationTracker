@@ -1,0 +1,69 @@
+const { checkProtectedPageArtifacts } = require('../../../scripts/check-protected-page-build.js');
+
+/** Build a minimal independent source/manifest fixture without touching .next. */
+function fixture() {
+  return {
+    entries: [
+      { file: 'index.js', route: '/', policy: 'protected-page' },
+      { file: 'admin/users/[id].tsx', route: '/admin/users/[id]', policy: 'protected-page' },
+    ],
+    discovered: [{ file: 'index.js', route: '/' }, { file: 'admin/users/[id].tsx', route: '/admin/users/[id]' }],
+    pages: { '/': 'pages/index.js', '/admin/users/[id]': 'pages/admin/users/[id].js', '/_app': 'pages/_app.js' },
+    prerender: { routes: {}, dynamicRoutes: {} },
+    routes: { dataRoutes: [
+      { page: '/', dataRouteRegex: '^/_next/data/build/index.json$' },
+      { page: '/admin/users/[id]', dataRouteRegex: '^/_next/data/build/admin/users/[^/]+.json$' },
+    ] },
+  };
+}
+
+describe('protected-page production artifacts', () => {
+  it('accepts request-time artifacts for every protected route', () => {
+    expect(checkProtectedPageArtifacts(fixture()).count).toBe(2);
+  });
+  it.each(['/', '/admin/users/[id]'])('rejects static HTML even with an empty prerender manifest: %s', (route) => {
+    const input = fixture();
+    input.pages[route] = 'pages/static.html';
+    expect(() => checkProtectedPageArtifacts(input)).toThrow('not a server module');
+  });
+  it.each(['routes', 'dynamicRoutes'])('rejects protected prerender entries in %s', (kind) => {
+    const input = fixture();
+    input.prerender[kind]['/'] = {};
+    expect(() => checkProtectedPageArtifacts(input)).toThrow('prerendered');
+  });
+  it('reconciles newly discovered JSX before trusting the explicit list', () => {
+    const input = fixture();
+    input.discovered.push({ file: 'billing/history.jsx', route: '/billing/history' });
+    expect(() => checkProtectedPageArtifacts(input)).toThrow('Unclassified');
+  });
+  it('rejects unknown built routes, including underscore-prefixed routes', () => {
+    const input = fixture();
+    input.pages['/_hidden'] = 'pages/_hidden.html';
+    expect(() => checkProtectedPageArtifacts(input)).toThrow('Unclassified built route');
+  });
+  it('rejects missing modules and data routes', () => {
+    const missingPage = fixture();
+    delete missingPage.pages['/'];
+    expect(() => checkProtectedPageArtifacts(missingPage)).toThrow('Missing built route');
+    const missingData = fixture();
+    missingData.routes.dataRoutes = [];
+    expect(() => checkProtectedPageArtifacts(missingData)).toThrow('SSR data route');
+  });
+  it.each(['pages', 'prerender', 'routes'])('rejects a missing %s manifest', (key) => {
+    const input = fixture();
+    delete input[key];
+    expect(() => checkProtectedPageArtifacts(input)).toThrow('manifests');
+  });
+
+  it.each(['not-a-map', [], null])('rejects malformed prerender route maps: %j', (value) => {
+    const input = fixture();
+    input.prerender.routes = value;
+    expect(() => checkProtectedPageArtifacts(input)).toThrow('manifests');
+  });
+
+  it.each(['', '^[$'])('rejects malformed data regex: %s', (regex) => {
+    const input = fixture();
+    input.routes.dataRoutes[0].dataRouteRegex = regex;
+    expect(() => checkProtectedPageArtifacts(input)).toThrow('SSR data route');
+  });
+});
