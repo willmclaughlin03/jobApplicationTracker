@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { normalizePagePath } = require('next/dist/shared/lib/page-path/normalize-page-path');
 const {
   FRAMEWORK_FILES, discoverPageRoutes, reconcilePageRoutes,
   getConfiguredPageExtensions, validatePageExtensions,
@@ -14,11 +15,15 @@ function isRecord(value) {
 /**
  * Assert built Pages Router artifacts match independently discovered sources.
  * Accepts parsed artifacts for negative tests; returns only route/count metadata.
- * Static HTML, ISR, missing SSR data routes, and unknown built routes fail closed.
- * @param {object} input - Inventory, discovery, and sanitized manifest structures.
+ * Static HTML, ISR, missing/non-matching SSR data routes, and unknown routes fail closed.
+ * Validates nextBuildId before using it to match SSR data routes.
+ * @param {object} input - Inventory, discovery, manifests, and nextBuildId.
  * @returns {object} Safe qualification summary.
  */
-function checkProtectedPageArtifacts({ entries, discovered, pages, prerender, routes }) {
+function checkProtectedPageArtifacts({ entries, discovered, pages, prerender, routes, nextBuildId }) {
+  if (typeof nextBuildId !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(nextBuildId)) {
+    throw new Error('Missing or invalid Next build ID.');
+  }
   reconcilePageRoutes(discovered, entries);
   if (!isRecord(pages) || !isRecord(prerender?.routes)
       || !isRecord(prerender?.dynamicRoutes) || !Array.isArray(routes?.dataRoutes)
@@ -45,8 +50,14 @@ function checkProtectedPageArtifacts({ entries, discovered, pages, prerender, ro
         || !dataRoutes[0].dataRouteRegex.startsWith('^') || !dataRoutes[0].dataRouteRegex.endsWith('$')) {
       throw new Error(`Missing or ambiguous SSR data route: ${route}`);
     }
-    try { new RegExp(dataRoutes[0].dataRouteRegex); } catch {
+    let dataRouteRegex;
+    try { dataRouteRegex = new RegExp(dataRoutes[0].dataRouteRegex); } catch {
       throw new Error(`Malformed SSR data route: ${route}`);
+    }
+    // Resolve the index path and dynamic parameters into a concrete Pages Router data URL.
+    const pagePath = normalizePagePath(route).replace(/\[[^/]+\]/g, 'sample');
+    if (!dataRouteRegex.test(`/_next/data/${nextBuildId}${pagePath}.json`)) {
+      throw new Error(`Non-matching SSR data route: ${route}`);
     }
   }
   return { protectedRoutes: protectedRoutes.map((entry) => entry.route), count: protectedRoutes.length };
@@ -75,15 +86,16 @@ function checkProtectedPageBuild(root = process.cwd()) {
   if (JSON.stringify(extensions) !== JSON.stringify(configuredExtensions)) {
     throw new Error('Source and production-build pageExtensions differ.');
   }
+  const nextBuildId = fs.readFileSync(path.join(root, '.next/BUILD_ID'), 'utf8').trim();
+  if (!/^[a-zA-Z0-9_-]+$/.test(nextBuildId)) throw new Error('Missing or invalid Next build ID.');
   const summary = checkProtectedPageArtifacts({
+    nextBuildId,
     entries: inventory,
     discovered: discoverPageRoutes(path.join(root, 'src/pages'), extensions),
     pages: readManifest(root, '.next/server/pages-manifest.json'),
     prerender: readManifest(root, '.next/prerender-manifest.json'),
     routes: readManifest(root, '.next/routes-manifest.json'),
   });
-  const nextBuildId = fs.readFileSync(path.join(root, '.next/BUILD_ID'), 'utf8').trim();
-  if (!/^[a-zA-Z0-9_-]+$/.test(nextBuildId)) throw new Error('Missing or invalid Next build ID.');
   return { ...summary, nextBuildId };
 }
 

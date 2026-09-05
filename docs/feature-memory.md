@@ -16,6 +16,10 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-30
 
+- `2026-09-05` - `Protected-page artifact build-ID validation`: Validate `nextBuildId` at the artifact-check boundary using the existing identifier format and error message. Focused coverage rejects missing, malformed, and non-string IDs even with permissive data-route patterns, while preserving valid IDs and route-mismatch diagnostics. All 32 artifact tests, targeted ESLint, and diff checks pass.
+
+- `2026-09-05` - `Protected-page artifact review follow-ups`: Validate each SSR data-route regex against a concrete route-derived Pages Router data URL using the actual build ID, including substituted dynamic segments. Added rejection coverage for empty-match regexes, unrelated paths, literal dynamic paths, and mismatched build IDs, and documented recursive route discovery and its filesystem fixture. The two focused suites pass 36 tests, targeted ESLint and diff checks pass, and the existing build artifacts pass all seven protected-route checks.
+
 - `2026-09-05` - `Protected-page runtime harness review fixes`: Replaced retained subprocess output with numeric signature-match progress per stream, separated cookie writes from deletions with a matching deletion-only qualification assertion, and added SIGKILL escalation after the owned process's bounded SIGTERM wait. Regression coverage verifies split signatures, stream isolation, cookie counts, and shutdown ordering; all 19 harness tests, targeted ESLint, and diff checks pass. Full runtime/browser/deployed qualification was not rerun.
 
 - `2026-09-05` - `Partial CHUNK-6 protected-page cache boundary`: Made all seven protected pages explicitly request-time rendered, with shared page-owned private/CDN no-store headers and matching middleware coverage. Added configured-extension route discovery reconciled with the explicit inventory, a production-artifact CI guard, and real Next.js HTTP cookie-composition qualification fixtures. This remains a partial CHUNK-6 cache-correctness implementation with some deployed GATE-1 evidence collection, not an unrelated standalone change.

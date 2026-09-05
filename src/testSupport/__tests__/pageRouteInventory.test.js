@@ -4,7 +4,12 @@ const {
   getConfiguredPageExtensions,
 } = require('../pageRouteInventory.js');
 
-/** Supply a small in-memory directory tree to exercise the real recursive scanner. */
+/**
+ * Create an in-memory filesystem for testing recursive page discovery.
+ * Supplies fs-compatible readdirSync and Dirent objects without disk access.
+ * @param {string[]} files - Slash-separated file paths relative to fixture-pages.
+ * @returns {object} Fixture filesystem accepted by discoverPageRoutes.
+ */
 function fixtureFilesystem(files) {
   return {
     /** Return only immediate children as fs-style Dirents, without disk writes. */
