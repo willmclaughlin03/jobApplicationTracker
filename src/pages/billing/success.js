@@ -1,3 +1,17 @@
+import { applyProtectedPageCache } from '../../server/lib/protectedPageCache.js';
+
+/**
+ * Opt this protected shell into request-time rendering and prevent CDN storage.
+ * Middleware and existing client/API guards retain their authentication duties;
+ * no user data or credentials are serialized into props by this cache boundary.
+ * @param {import('next').GetServerSidePropsContext} context - Page response.
+ * @returns {Promise<{props: object}>} Empty props for the existing client shell.
+ */
+export async function getServerSideProps({ res }) {
+  applyProtectedPageCache(res);
+  return { props: {} };
+}
+
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';

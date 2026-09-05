@@ -25,78 +25,25 @@ const {
 } = require('../middleware.js');
 
 const PAGES_ROOT = path.join(process.cwd(), 'src', 'pages');
-const PROTECTED_PAGES = [
-  'admin/index.js',
-  'admin/users.js',
-  'admin/users/[id].js',
-  'billing/cancel.js',
-  'billing/index.js',
-  'billing/success.js',
-  'index.js',
-];
-const PUBLIC_PAGES = [
-  '403.js',
-  '404.js',
-  '429.js',
-  '500.js',
-  '502.js',
-  '503.js',
-  '504.js',
-  'auth/callback.js',
-  'login.js',
-];
-const PROTECTED_APIS = [
-  'api/[id].js',
-  'api/admin/users/[id].js',
-  'api/admin/users/[id]/role.js',
-  'api/admin/users/index.js',
-  'api/auth/csrf.js',
-  'api/billing/checkout-status.js',
-  'api/billing/checkout.js',
-  'api/billing/portal.js',
-  'api/billing/status.js',
-  'api/index.js',
-  'api/storage/export.js',
-  'api/storage/locked-jobs.js',
-  'api/storage/status.js',
-];
-const PUBLIC_COOKIE_APIS = [
-  'api/auth/session.js',
-  'api/auth/signout.js',
-];
-const PUBLIC_NON_COOKIE_APIS = [
-  'api/billing/webhook.js',
-  'api/health.js',
-];
+const inventory = require('../testSupport/authRouteInventory.json');
+const {
+  getConfiguredPageExtensions,
+  discoverPageRoutes,
+  reconcilePageRoutes,
+  pageFileToRoute,
+} = require('../testSupport/pageRouteInventory.js');
+const extensions = getConfiguredPageExtensions(process.cwd());
+const PROTECTED_PAGES = inventory.filter((entry) => entry.policy === 'protected-page').map((entry) => entry.file);
+const PUBLIC_PAGES = inventory.filter((entry) => entry.policy === 'public-page').map((entry) => entry.file);
+const PROTECTED_APIS = inventory.filter((entry) => entry.policy === 'protected-api').map((entry) => entry.file);
+const PUBLIC_COOKIE_APIS = inventory.filter((entry) => entry.policy === 'public-cookie-api').map((entry) => entry.file);
+
 const ROUTE_OWNED_PRIVATE_CACHE_APIS = [
   'api/billing/status.js',
   'api/storage/export.js',
   'api/storage/locked-jobs.js',
   'api/storage/status.js',
 ];
-
-/**
- * Recursively lists JavaScript files relative to the pages directory.
- *
- * Purpose: route inventories must detect newly added nested pages and APIs on
- * every platform while keeping comparisons stable with forward slashes.
- *
- * @param {string} directory - Absolute directory currently being inspected.
- * @returns {string[]} Sorted page-root-relative JavaScript paths.
- */
-function listPageJavascriptFiles(directory = PAGES_ROOT) {
-  const entries = fs.readdirSync(directory, { withFileTypes: true });
-  return entries.flatMap((entry) => {
-    const absolutePath = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      return listPageJavascriptFiles(absolutePath);
-    }
-    if (!entry.isFile() || path.extname(entry.name) !== '.js') {
-      return [];
-    }
-    return [path.relative(PAGES_ROOT, absolutePath).replaceAll('\\', '/')];
-  }).sort();
-}
 
 /**
  * Reads one routable source file from the page-root inventory.
@@ -118,30 +65,13 @@ function readPageSource(relativePath) {
  * @returns {string} Representative URL pathname for the page file.
  */
 function getRepresentativePagePath(relativePath) {
-  const pageSegments = relativePath.replace(/\.js$/, '').split('/');
-  const routeSegments = pageSegments.at(-1) === 'index'
-    ? pageSegments.slice(0, -1)
-    : pageSegments;
-
-  return `/${routeSegments.map((segment) => (
-    /^\[.*\]$/.test(segment) ? 'example-id' : segment
-  )).join('/')}`;
+  return pageFileToRoute(relativePath, extensions).replace(/\[[^/]+\]/g, 'example-id');
 }
 
 describe('auth route and cache inventory', () => {
   it('requires every routable page and API to have an explicit policy', () => {
-    const actualRoutes = listPageJavascriptFiles().filter((relativePath) => (
-      !path.basename(relativePath).startsWith('_')
-    ));
-    const expectedRoutes = [
-      ...PROTECTED_PAGES,
-      ...PUBLIC_PAGES,
-      ...PROTECTED_APIS,
-      ...PUBLIC_COOKIE_APIS,
-      ...PUBLIC_NON_COOKIE_APIS,
-    ].sort();
-
-    expect(actualRoutes).toEqual(expectedRoutes);
+    const actualRoutes = discoverPageRoutes(PAGES_ROOT, extensions);
+    expect(() => reconcilePageRoutes(actualRoutes, inventory)).not.toThrow();
   });
 
   it('keeps inventoried pages aligned with middleware classification', () => {

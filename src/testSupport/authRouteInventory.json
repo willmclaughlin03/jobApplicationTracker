@@ -1,0 +1,167 @@
+[
+  {
+    "file": "403.js",
+    "route": "/403",
+    "policy": "public-page"
+  },
+  {
+    "file": "404.js",
+    "route": "/404",
+    "policy": "public-page"
+  },
+  {
+    "file": "429.js",
+    "route": "/429",
+    "policy": "public-page"
+  },
+  {
+    "file": "500.js",
+    "route": "/500",
+    "policy": "public-page"
+  },
+  {
+    "file": "502.js",
+    "route": "/502",
+    "policy": "public-page"
+  },
+  {
+    "file": "503.js",
+    "route": "/503",
+    "policy": "public-page"
+  },
+  {
+    "file": "504.js",
+    "route": "/504",
+    "policy": "public-page"
+  },
+  {
+    "file": "admin/index.js",
+    "route": "/admin",
+    "policy": "protected-page"
+  },
+  {
+    "file": "admin/users.js",
+    "route": "/admin/users",
+    "policy": "protected-page"
+  },
+  {
+    "file": "admin/users/[id].js",
+    "route": "/admin/users/[id]",
+    "policy": "protected-page"
+  },
+  {
+    "file": "api/[id].js",
+    "route": "/api/[id]",
+    "policy": "protected-api"
+  },
+  {
+    "file": "api/admin/users/[id].js",
+    "route": "/api/admin/users/[id]",
+    "policy": "protected-api"
+  },
+  {
+    "file": "api/admin/users/[id]/role.js",
+    "route": "/api/admin/users/[id]/role",
+    "policy": "protected-api"
+  },
+  {
+    "file": "api/admin/users/index.js",
+    "route": "/api/admin/users",
+    "policy": "protected-api"
+  },
+  {
+    "file": "api/auth/csrf.js",
+    "route": "/api/auth/csrf",
+    "policy": "protected-api"
+  },
+  {
+    "file": "api/auth/session.js",
+    "route": "/api/auth/session",
+    "policy": "public-cookie-api"
+  },
+  {
+    "file": "api/auth/signout.js",
+    "route": "/api/auth/signout",
+    "policy": "public-cookie-api"
+  },
+  {
+    "file": "api/billing/checkout-status.js",
+    "route": "/api/billing/checkout-status",
+    "policy": "protected-api"
+  },
+  {
+    "file": "api/billing/checkout.js",
+    "route": "/api/billing/checkout",
+    "policy": "protected-api"
+  },
+  {
+    "file": "api/billing/portal.js",
+    "route": "/api/billing/portal",
+    "policy": "protected-api"
+  },
+  {
+    "file": "api/billing/status.js",
+    "route": "/api/billing/status",
+    "policy": "protected-api"
+  },
+  {
+    "file": "api/billing/webhook.js",
+    "route": "/api/billing/webhook",
+    "policy": "public-non-cookie-api"
+  },
+  {
+    "file": "api/health.js",
+    "route": "/api/health",
+    "policy": "public-non-cookie-api"
+  },
+  {
+    "file": "api/index.js",
+    "route": "/api",
+    "policy": "protected-api"
+  },
+  {
+    "file": "api/storage/export.js",
+    "route": "/api/storage/export",
+    "policy": "protected-api"
+  },
+  {
+    "file": "api/storage/locked-jobs.js",
+    "route": "/api/storage/locked-jobs",
+    "policy": "protected-api"
+  },
+  {
+    "file": "api/storage/status.js",
+    "route": "/api/storage/status",
+    "policy": "protected-api"
+  },
+  {
+    "file": "auth/callback.js",
+    "route": "/auth/callback",
+    "policy": "public-page"
+  },
+  {
+    "file": "billing/cancel.js",
+    "route": "/billing/cancel",
+    "policy": "protected-page"
+  },
+  {
+    "file": "billing/index.js",
+    "route": "/billing",
+    "policy": "protected-page"
+  },
+  {
+    "file": "billing/success.js",
+    "route": "/billing/success",
+    "policy": "protected-page"
+  },
+  {
+    "file": "index.js",
+    "route": "/",
+    "policy": "protected-page"
+  },
+  {
+    "file": "login.js",
+    "route": "/login",
+    "policy": "public-page"
+  }
+]

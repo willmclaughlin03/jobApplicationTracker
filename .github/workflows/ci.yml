@@ -61,6 +61,9 @@ jobs:
           CSRF_SECRET: ci-build-only-secret-at-least-32-characters
         run: npm run build
 
+      - name: Verify protected-page rendering artifacts
+        run: node scripts/check-protected-page-build.js
+
       - name: Smoke test Sharp image optimization
         env:
           NEXT_PUBLIC_SUPABASE_URL: https://ci-build.invalid
