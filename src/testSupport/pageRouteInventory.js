@@ -71,7 +71,12 @@ function pageFileToRoute(file, extensions) {
 function discoverPageRoutes(pagesRoot, extensions, filesystem = fs) {
   const suffixes = validatePageExtensions(extensions);
   const discovered = [];
-  /** Walk only this pages directory and collect extension-matched files. */
+  /**
+   * Recursively read the supplied filesystem to collect routable page files.
+   * Appends matching file/route entries to the enclosing discovered array.
+   * @param {string} directory - Absolute directory within pagesRoot to traverse.
+   * @returns {void}
+   */
   function walk(directory) {
     for (const entry of filesystem.readdirSync(directory, { withFileTypes: true })) {
       const absolute = path.join(directory, entry.name);

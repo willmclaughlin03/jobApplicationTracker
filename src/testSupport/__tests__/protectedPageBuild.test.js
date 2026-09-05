@@ -3,6 +3,7 @@ const { checkProtectedPageArtifacts } = require('../../../scripts/check-protecte
 /** Build a minimal independent source/manifest fixture without touching .next. */
 function fixture() {
   return {
+    nextBuildId: 'build',
     entries: [
       { file: 'index.js', route: '/', policy: 'protected-page' },
       { file: 'admin/users/[id].tsx', route: '/admin/users/[id]', policy: 'protected-page' },
@@ -20,6 +21,16 @@ function fixture() {
 describe('protected-page production artifacts', () => {
   it('accepts request-time artifacts for every protected route', () => {
     expect(checkProtectedPageArtifacts(fixture()).count).toBe(2);
+  });
+  it('rejects data routes for a different build ID', () => {
+    const input = fixture();
+    input.nextBuildId = 'different-build';
+    expect(() => checkProtectedPageArtifacts(input)).toThrow('SSR data route');
+  });
+  it('rejects a regex matching only the literal dynamic route', () => {
+    const input = fixture();
+    input.routes.dataRoutes[1].dataRouteRegex = '^/_next/data/build/admin/users/\\[id\\]\\.json$';
+    expect(() => checkProtectedPageArtifacts(input)).toThrow('SSR data route');
   });
   it.each(['/', '/admin/users/[id]'])('rejects static HTML even with an empty prerender manifest: %s', (route) => {
     const input = fixture();
@@ -61,9 +72,11 @@ describe('protected-page production artifacts', () => {
     expect(() => checkProtectedPageArtifacts(input)).toThrow('manifests');
   });
 
-  it.each(['', '^[$'])('rejects malformed data regex: %s', (regex) => {
-    const input = fixture();
-    input.routes.dataRoutes[0].dataRouteRegex = regex;
-    expect(() => checkProtectedPageArtifacts(input)).toThrow('SSR data route');
+  it.each(['', '^[$', '^$', '^/_next/data/build/unrelated\\.json$'])('rejects invalid data regex: %s', (regex) => {
+    for (const routeIndex of [0, 1]) {
+      const input = fixture();
+      input.routes.dataRoutes[routeIndex].dataRouteRegex = regex;
+      expect(() => checkProtectedPageArtifacts(input)).toThrow('SSR data route');
+    }
   });
 });
