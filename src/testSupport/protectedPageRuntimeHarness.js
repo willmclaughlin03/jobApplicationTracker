@@ -164,7 +164,7 @@ function fixtureEnvironment(inherited, providerUrl) {
  * HTTPS check. Do not comma-split Set-Cookie, which can contain Expires dates.
  * @param {Map} jar - One fixture profile's cookies, retained only in memory.
  * @param {string[]} cookies - Actual separate final Set-Cookie header values.
- * @returns {object} Safe write/deletion counts, never cookie values.
+ * @returns {object} Separate non-deletion write and deletion counts, never cookie values.
  */
 function applyResponseCookies(jar, cookies) {
   let deletions = 0;
@@ -187,7 +187,7 @@ function applyResponseCookies(jar, cookies) {
       jar.set(name, value);
     }
   }
-  return { writes: cookies.length, deletions };
+  return { writes: cookies.length - deletions, deletions };
 }
 
 /** Check actual final page/data cache headers, without returning response content. */
@@ -219,15 +219,30 @@ function spawnNext(root, args, env) {
   const child = spawn(process.execPath, [path.join(root, 'node_modules/next/dist/bin/next'), ...args], {
     cwd: root, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
   });
-  let trailing = '';
-  /** Retain only bounded suffix and boolean signatures; never save raw logs. */
-  function inspect(chunk) {
-    const text = trailing + chunk.toString();
-    if (/ERR_REQUIRE_ESM|Failed to load external module|Cannot find module/.test(text)) flags.moduleFailure = true;
-    trailing = text.slice(-100);
+  const signatures = ['ERR_REQUIRE_ESM', 'Failed to load external module', 'Cannot find module'];
+  /** Keep only numeric signature-prefix lengths between chunks, independently per stream. */
+  function createInspector() {
+    const matched = signatures.map(() => 0);
+    /** Inspect transient chunk text, updating match lengths and the shared failure flag. */
+    return function inspect(chunk) {
+      if (flags.moduleFailure) return;
+      const text = chunk.toString();
+      for (let index = 0; index < signatures.length; index += 1) {
+        const signature = signatures[index];
+        const candidate = signature.slice(0, matched[index]) + text;
+        if (candidate.includes(signature)) {
+          flags.moduleFailure = true;
+          matched.fill(0);
+          return;
+        }
+        let length = Math.min(signature.length - 1, candidate.length);
+        while (length > 0 && !candidate.endsWith(signature.slice(0, length))) length -= 1;
+        matched[index] = length;
+      }
+    };
   }
-  child.stdout.on('data', inspect);
-  child.stderr.on('data', inspect);
+  child.stdout.on('data', createInspector());
+  child.stderr.on('data', createInspector());
   const ended = new Promise((resolve) => {
     child.once('error', () => resolve(-1));
     child.once('exit', (code) => resolve(code ?? -1));
@@ -241,11 +256,10 @@ function spawnNext(root, args, env) {
         return await Promise.race([ended, new Promise((resolve) => { timer = setTimeout(() => resolve(-2), timeoutMs); })]);
       } finally { clearTimeout(timer); }
     },
-    /** Terminate only this owned Next process and release its output listeners. */
+    /** Terminate this owned Next process, escalating on timeout before stream cleanup. */
     async stop() {
       if (child.exitCode === null) child.kill();
-      await this.wait(5000);
-      trailing = '';
+      if (await this.wait(5000) === -2) child.kill('SIGKILL');
       child.stdout.destroy();
       child.stderr.destroy();
     },

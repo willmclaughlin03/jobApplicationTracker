@@ -129,7 +129,8 @@ async function main() {
         const response = await requestPage(base, pathname, jar, data);
         assertPrivateResponse(response);
         const counts = applyResponseCookies(jar, response.headers.getSetCookie());
-        ensure(counts.writes > 0 && counts.deletions >= 3, 'Required refresh/obsolete-chunk cookies were lost.');
+        ensure((scenario.deleted ? counts.writes === 0 : counts.writes > 0) && counts.deletions >= 3,
+          'Required refresh/obsolete-chunk cookies were lost.');
         for (const chunk of [0, 1, 5]) ensure(!jar.has(`${COOKIE_NAME}.${chunk}`), 'Obsolete chunk survived final response.');
         const observations = provider.observations.slice(observationStart);
         ensure(observations.filter((entry) => entry.operation === 'refresh').length === 1, 'Downstream SSR repeated refresh; updated cookies were not forwarded.');
