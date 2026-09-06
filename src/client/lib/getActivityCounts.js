@@ -24,25 +24,17 @@ export function getActivityCounts(jobs) {
 }
 
 /**
- * Returns the green intensity level (0–4) for a given count.
- * Scale is linear, capped at 30 applications per day.
+ * Returns the activity intensity level (0–4) for a given daily count.
+ * ActivityCalendar darkens its blue fill every three applications:
+ * 0 is neutral, 1–3 is level 1, 4–6 is level 2, 7–9 is level 3, and 10+ is level 4.
  *
  * @param {number} count - Number of applications on a given day
  * @returns {number} Intensity level 0–4
  */
 export function getIntensityLevel(count) {
   if (count === 0) return 0;
-  if (count <= 7) return 1;
-  if (count <= 15) return 2;
-  if (count <= 22) return 3;
+  if (count <= 3) return 1;
+  if (count <= 6) return 2;
+  if (count <= 9) return 3;
   return 4;
 }
-
-/** Tailwind background classes for each intensity level */
-export const INTENSITY_COLORS = [
-  'bg-gray-200',
-  'bg-green-200',
-  'bg-green-400',
-  'bg-green-500',
-  'bg-green-700',
-];
