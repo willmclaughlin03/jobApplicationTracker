@@ -57,7 +57,7 @@ function checkProtectedPageArtifacts({ entries, discovered, pages, prerender, ro
     // Resolve the index path and dynamic parameters into a concrete Pages Router data URL.
     const pageSegments = normalizePagePath(route).split('/');
     const pagePath = pageSegments.join('/').replace(/\[[^/]+\]/g, 'sample');
-    const expectedDataUrl = `/_next/data/${nextBuildId}${pagePath}.json`;
+    const expectedDataUrl = path.posix.join('/_next/data', nextBuildId, `${pagePath}.json`);
     if (!dataRouteRegex.test(expectedDataUrl)) {
       throw new Error(`Non-matching SSR data route: ${route}`);
     }
@@ -72,10 +72,11 @@ function checkProtectedPageArtifacts({ entries, discovered, pages, prerender, ro
     const offRoutePath = offRouteSegments.join('/');
     // Fully dynamic catch-alls may accept any page path, but never a different data prefix.
     const offRouteUrl = offRoutePath === pagePath
-      ? `/_next/unrelated/${nextBuildId}${pagePath}.json`
-      : `/_next/data/${nextBuildId}${offRoutePath}.json`;
+      ? path.posix.join('/_next/unrelated', nextBuildId, `${pagePath}.json`)
+      : path.posix.join('/_next/data', nextBuildId, `${offRoutePath}.json`);
     if (dataRouteRegex.test(`/_next/data/${nextBuildId}-incorrect${pagePath}.json`)
         || dataRouteRegex.test(offRouteUrl)
+        || dataRouteRegex.test(path.posix.join('/_next/data', nextBuildId, `${pagePath}xjson`))
         // Extra path depth is off-route only when the page has no catch-all parameter.
         || (!route.includes('[...') && dataRouteRegex.test(`${expectedDataUrl}/unrelated.json`))) {
       throw new Error(`Overbroad SSR data route: ${route}`);

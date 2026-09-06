@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-30
 
+- `2026-09-06` - `Protected-page data URL suffix and empty-ID coverage`: Reject near-match data URLs with a character replacing the suffix dot, escape both default test patterns, and use POSIX joining for expected and related probe URLs so empty build IDs match Next-generated routes without duplicate slashes. Added empty-ID acceptance and suffix/off-route rejection regressions while retaining non-empty-ID coverage. All 63 artifact tests, targeted ESLint, and diff checks pass.
+
 - `2026-09-06` - `Protected-page build validation compatibility and rejection coverage`: Accept custom string build IDs, including version strings, and require SSR data-route patterns to reject incorrect build IDs and off-route URLs. Added broad-pattern regressions, Next-generated static/dynamic/catch-all acceptance cases, a mocked filesystem build check, and missing test-callback documentation. The two focused suites pass 73 tests; targeted ESLint and diff checks pass.
 
 - `2026-09-05` - `Protected-page artifact build-ID validation`: Validate `nextBuildId` at the artifact-check boundary using the existing identifier format and error message. Focused coverage rejects missing, malformed, and non-string IDs even with permissive data-route patterns, while preserving valid IDs and route-mismatch diagnostics. All 32 artifact tests, targeted ESLint, and diff checks pass.

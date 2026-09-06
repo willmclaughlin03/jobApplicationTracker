@@ -24,15 +24,15 @@ function fixture() {
     pages: { '/': 'pages/index.js', '/admin/users/[id]': 'pages/admin/users/[id].js', '/_app': 'pages/_app.js' },
     prerender: { routes: {}, dynamicRoutes: {} },
     routes: { dataRoutes: [
-      { page: '/', dataRouteRegex: '^/_next/data/build/index.json$' },
-      { page: '/admin/users/[id]', dataRouteRegex: '^/_next/data/build/admin/users/[^/]+.json$' },
+      { page: '/', dataRouteRegex: '^/_next/data/build/index\\.json$' },
+      { page: '/admin/users/[id]', dataRouteRegex: '^/_next/data/build/admin/users/[^/]+\\.json$' },
     ] },
   };
 }
 
 describe('protected-page production artifacts', () => {
   /** Match both protected routes to string IDs, including custom versions and punctuation. */
-  it.each(['build', 'Build_123-abc', 'v1.2.3', 'v1.2.3+release', '', ' ', 'build/id', 'build?query'])(
+  it.each(['build', 'Build_123-abc', 'v1.2.3', 'v1.2.3+release', ' ', 'build/id', 'build?query'])(
     'accepts request-time artifacts for string build ID %j', (nextBuildId) => {
       const input = fixture();
       input.nextBuildId = nextBuildId;
@@ -43,6 +43,14 @@ describe('protected-page production artifacts', () => {
       expect(checkProtectedPageArtifacts(input).count).toBe(2);
     },
   );
+  /** Use Next-generated empty-ID routes to verify URL joining without a duplicate slash. */
+  it('accepts Next-generated data routes for an empty build ID', () => {
+    const input = fixture();
+    input.nextBuildId = '';
+    input.routes.dataRoutes = [buildDataRoute('/', ''), buildDataRoute('/admin/users/[id]', '')];
+    expect(new RegExp(input.routes.dataRoutes[0].dataRouteRegex).test('/_next/data/index.json')).toBe(true);
+    expect(checkProtectedPageArtifacts(input).count).toBe(2);
+  });
   /** Omitted IDs must fail at the artifact boundary with the established diagnostic. */
   it('rejects a missing build ID', () => {
     const input = fixture();
@@ -131,7 +139,7 @@ describe('protected-page production artifacts', () => {
     }
   });
 
-  /** Positive matches alone must not qualify patterns spanning other builds or routes. */
+  /** Positive matches alone must not qualify patterns spanning other builds, routes or suffixes. */
   it.each([
     [0, '^.*$'],
     [1, '^.*$'],
@@ -141,8 +149,18 @@ describe('protected-page production artifacts', () => {
     [1, '^/_next/data/build/.*\\.json$'],
     [1, '^/_next/data/build/admin/.*\\.json$'],
     [1, '^/_next/data/build/admin/users/.*\\.json$'],
-  ])('rejects an overbroad data regex for route %i: %s', (routeIndex, regex) => {
+    [0, '^/_next/data/build/index.json$'],
+    [1, '^/_next/data/build/admin/users/[^/]+.json$'],
+    [0, '^/_next/data/index.json$', ''],
+    [1, '^/_next/data/admin/users/[^/]+.json$', ''],
+    [0, '^/_next/data/index[^/]*\\.json$', ''],
+    [1, '^/_next/data/admin/users[^/]*/[^/]+\\.json$', ''],
+  ])('rejects an overbroad data regex for route %i: %s', (routeIndex, regex, nextBuildId = 'build') => {
     const input = fixture();
+    input.nextBuildId = nextBuildId;
+    for (const dataRoute of input.routes.dataRoutes) {
+      Object.assign(dataRoute, buildDataRoute(dataRoute.page, nextBuildId));
+    }
     input.routes.dataRoutes[routeIndex].dataRouteRegex = regex;
     expect(() => checkProtectedPageArtifacts(input)).toThrow('Overbroad SSR data route');
   });
