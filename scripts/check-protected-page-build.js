@@ -15,13 +15,13 @@ function isRecord(value) {
 /**
  * Assert built Pages Router artifacts match independently discovered sources.
  * Accepts parsed artifacts for negative tests; returns only route/count metadata.
- * Static HTML, ISR, missing/non-matching SSR data routes, and unknown routes fail closed.
+ * Static HTML, ISR, missing/non-matching/overbroad SSR data routes, and unknown routes fail closed.
  * Validates nextBuildId before using it to match SSR data routes.
  * @param {object} input - Inventory, discovery, manifests, and nextBuildId.
  * @returns {object} Safe qualification summary.
  */
 function checkProtectedPageArtifacts({ entries, discovered, pages, prerender, routes, nextBuildId }) {
-  if (typeof nextBuildId !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(nextBuildId)) {
+  if (typeof nextBuildId !== 'string') {
     throw new Error('Missing or invalid Next build ID.');
   }
   reconcilePageRoutes(discovered, entries);
@@ -55,9 +55,30 @@ function checkProtectedPageArtifacts({ entries, discovered, pages, prerender, ro
       throw new Error(`Malformed SSR data route: ${route}`);
     }
     // Resolve the index path and dynamic parameters into a concrete Pages Router data URL.
-    const pagePath = normalizePagePath(route).replace(/\[[^/]+\]/g, 'sample');
-    if (!dataRouteRegex.test(`/_next/data/${nextBuildId}${pagePath}.json`)) {
+    const pageSegments = normalizePagePath(route).split('/');
+    const pagePath = pageSegments.join('/').replace(/\[[^/]+\]/g, 'sample');
+    const expectedDataUrl = `/_next/data/${nextBuildId}${pagePath}.json`;
+    if (!dataRouteRegex.test(expectedDataUrl)) {
       throw new Error(`Non-matching SSR data route: ${route}`);
+    }
+    // Change a literal segment; changing a dynamic parameter would still be on-route.
+    const offRouteSegments = pagePath.split('/');
+    for (let index = pageSegments.length - 1; index > 0; index -= 1) {
+      if (!pageSegments[index].includes('[')) {
+        offRouteSegments[index] += '-unrelated';
+        break;
+      }
+    }
+    const offRoutePath = offRouteSegments.join('/');
+    // Fully dynamic catch-alls may accept any page path, but never a different data prefix.
+    const offRouteUrl = offRoutePath === pagePath
+      ? `/_next/unrelated/${nextBuildId}${pagePath}.json`
+      : `/_next/data/${nextBuildId}${offRoutePath}.json`;
+    if (dataRouteRegex.test(`/_next/data/${nextBuildId}-incorrect${pagePath}.json`)
+        || dataRouteRegex.test(offRouteUrl)
+        // Extra path depth is off-route only when the page has no catch-all parameter.
+        || (!route.includes('[...') && dataRouteRegex.test(`${expectedDataUrl}/unrelated.json`))) {
+      throw new Error(`Overbroad SSR data route: ${route}`);
     }
   }
   return { protectedRoutes: protectedRoutes.map((entry) => entry.route), count: protectedRoutes.length };
@@ -87,7 +108,7 @@ function checkProtectedPageBuild(root = process.cwd()) {
     throw new Error('Source and production-build pageExtensions differ.');
   }
   const nextBuildId = fs.readFileSync(path.join(root, '.next/BUILD_ID'), 'utf8').trim();
-  if (!/^[a-zA-Z0-9_-]+$/.test(nextBuildId)) throw new Error('Missing or invalid Next build ID.');
+  if (typeof nextBuildId !== 'string') throw new Error('Missing or invalid Next build ID.');
   const summary = checkProtectedPageArtifacts({
     nextBuildId,
     entries: inventory,
