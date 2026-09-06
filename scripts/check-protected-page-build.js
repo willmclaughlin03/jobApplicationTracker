@@ -13,6 +13,45 @@ function isRecord(value) {
 }
 
 /**
+ * Generate representative positive data URLs independently of the manifest regex.
+ * Varies each parameter separately to keep probe count linear, including catch-all
+ * depths and optional omission. The first URL retains the baseline for negative checks.
+ * @param {string} route - Inventoried Pages Router route, normalized for index paths.
+ * @param {string} nextBuildId - Build ID already validated by the artifact checker.
+ * @returns {string[]} Concrete probes checked against Next's generator in unit tests.
+ */
+function getExpectedDataUrls(route, nextBuildId) {
+  const pageSegments = normalizePagePath(route).split('/');
+  const sampleSegments = [];
+  for (const segment of pageSegments) {
+    sampleSegments.push(segment.replace(/\[[^/]+\]/g, 'sample'));
+  }
+  const pagePaths = [sampleSegments.join('/')];
+  for (let index = 1; index < pageSegments.length; index += 1) {
+    const segment = pageSegments[index];
+    if (!segment.includes('[')) continue;
+    const values = ['42', 'item-42_A', 'item.v2', 'caf%C3%A9'];
+    if (segment.includes('[...')) values.push('first/second', 'first/second/third');
+    for (const value of values) {
+      const segments = [...sampleSegments];
+      segments[index] = segment.replace(/\[[^/]+\]/g, value);
+      pagePaths.push(segments.join('/'));
+    }
+    if (segment.startsWith('[[...')) {
+      const segments = [...sampleSegments];
+      segments.splice(index, 1);
+      pagePaths.push(segments.join('/'));
+    }
+  }
+  const urls = [];
+  for (const pagePath of pagePaths) {
+    // Append the suffix after joining: Next's root optional catch-all also matches <build-id>.json.
+    urls.push(`${path.posix.join('/_next/data', nextBuildId, pagePath)}.json`);
+  }
+  return urls;
+}
+
+/**
  * Assert built Pages Router artifacts match independently discovered sources.
  * Accepts parsed artifacts for negative tests; returns only route/count metadata.
  * Static HTML, ISR, missing/non-matching/overbroad SSR data routes, and unknown routes fail closed.
@@ -56,12 +95,15 @@ function checkProtectedPageArtifacts({ entries, discovered, pages, prerender, ro
     try { dataRouteRegex = new RegExp(dataRoutes[0].dataRouteRegex); } catch {
       throw new Error(`Malformed SSR data route: ${route}`);
     }
-    // Resolve the index path and dynamic parameters into a concrete Pages Router data URL.
+    // Require representative parameter values, catch-all depths, and optional base URLs.
     const pageSegments = normalizePagePath(route).split('/');
     const pagePath = pageSegments.join('/').replace(/\[[^/]+\]/g, 'sample');
-    const expectedDataUrl = path.posix.join('/_next/data', nextBuildId, `${pagePath}.json`);
-    if (!dataRouteRegex.test(expectedDataUrl)) {
-      throw new Error(`Non-matching SSR data route: ${route}`);
+    const expectedDataUrls = getExpectedDataUrls(route, nextBuildId);
+    const [expectedDataUrl] = expectedDataUrls;
+    for (const dataUrl of expectedDataUrls) {
+      if (!dataRouteRegex.test(dataUrl)) {
+        throw new Error(`Non-matching SSR data route: ${route}`);
+      }
     }
     // Change a literal segment; changing a dynamic parameter would still be on-route.
     const offRouteSegments = pagePath.split('/');
@@ -132,4 +174,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { checkProtectedPageArtifacts, checkProtectedPageBuild };
+module.exports = { checkProtectedPageArtifacts, checkProtectedPageBuild, getExpectedDataUrls };

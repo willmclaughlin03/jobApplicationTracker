@@ -3,7 +3,9 @@ const path = require('node:path');
 const { buildDataRoute } = require('next/dist/server/lib/router-utils/build-data-route');
 const { getConfiguredPageExtensions, discoverPageRoutes } = require('../pageRouteInventory.js');
 const inventory = require('../authRouteInventory.json');
-const { checkProtectedPageArtifacts, checkProtectedPageBuild } = require('../../../scripts/check-protected-page-build.js');
+const {
+  checkProtectedPageArtifacts, checkProtectedPageBuild, getExpectedDataUrls,
+} = require('../../../scripts/check-protected-page-build.js');
 
 /** Isolate source discovery/configuration so build checks can use in-memory artifacts. */
 jest.mock('../pageRouteInventory.js', () => ({
@@ -29,6 +31,54 @@ function fixture() {
     ] },
   };
 }
+
+/** Build one protected route's in-memory artifacts using the installed Next generator. */
+function routeFixture(route, nextBuildId = 'build') {
+  const input = fixture();
+  input.nextBuildId = nextBuildId;
+  input.entries = [{ file: 'fixture.js', route, policy: 'protected-page' }];
+  input.discovered = [{ file: 'fixture.js', route }];
+  input.pages = { [route]: 'pages/server.js' };
+  input.routes.dataRoutes = [buildDataRoute(route, nextBuildId)];
+  return input;
+}
+
+/** Check every generated probe against Next 16.3.3 and require distinct values, depths, and base URLs. */
+describe('SSR data URL probes', () => {
+  /** Explicit paths prevent an empty or sample-only probe list from satisfying the Next oracle. */
+  it.each([
+    ['/', ['/index.json']],
+    ['/index', ['/index/index.json']],
+    ['/index/history', ['/index/index/history.json']],
+    ['/index/[id]', ['/index/sample.json', '/index/42.json']],
+    ['/admin/users', ['/admin/users.json']],
+    ['/admin/users/[id]', [
+      '/admin/users/sample.json', '/admin/users/42.json', '/admin/users/item-42_A.json',
+      '/admin/users/item.v2.json', '/admin/users/caf%C3%A9.json',
+    ]],
+    ['/[id]', ['/sample.json', '/42.json']],
+    ['/docs/[...slug]', ['/docs/sample.json', '/docs/42.json', '/docs/first/second.json', '/docs/first/second/third.json']],
+    ['/[...slug]', ['/sample.json', '/42.json', '/first/second.json', '/first/second/third.json']],
+    ['/docs/[[...slug]]', ['/docs/sample.json', '/docs/42.json', '/docs/first/second.json', '/docs/first/second/third.json', '/docs.json']],
+    ['/[[...slug]]', ['/sample.json', '/42.json', '/first/second.json', '/first/second/third.json', '.json']],
+    ['/teams/[teamId]/users/[id]', ['/teams/42/users/sample.json', '/teams/sample/users/42.json']],
+    ['/teams/[id]/docs/[[...slug]]', ['/teams/42/docs/sample.json', '/teams/sample/docs/first/second.json', '/teams/sample/docs.json']],
+  ])('matches Next-generated data routes for every probe of %s', (route, requiredPaths) => {
+    for (const nextBuildId of ['build', 'v1.2.3+release']) {
+      const probes = getExpectedDataUrls(route, nextBuildId);
+      const nextRegex = new RegExp(buildDataRoute(route, nextBuildId).dataRouteRegex);
+      for (const dataPath of requiredPaths) {
+        expect(probes).toContain(`/_next/data/${nextBuildId}${dataPath}`);
+      }
+      for (const probe of probes) {
+        expect(probe).toMatch(nextRegex);
+      }
+      expect(checkProtectedPageArtifacts(routeFixture(route, nextBuildId))).toEqual({
+        protectedRoutes: [route], count: 1,
+      });
+    }
+  });
+});
 
 describe('protected-page production artifacts', () => {
   /** Match both protected routes to request-safe IDs, including custom versions and punctuation. */
@@ -82,6 +132,29 @@ describe('protected-page production artifacts', () => {
     const input = fixture();
     input.routes.dataRoutes[1].dataRouteRegex = '^/_next/data/build/admin/users/\\[id\\]\\.json$';
     expect(() => checkProtectedPageArtifacts(input)).toThrow('SSR data route');
+  });
+
+  /** Reject sample allowlists, missing catch-all depths/base URLs, and restrictions on either parameter. */
+  it.each([
+    ['/admin/users/[id]', '^/_next/data/build/admin/users/sample\\.json$'],
+    ['/[id]', '^/_next/data/build/sample\\.json$'],
+    ['/docs/[...slug]', '^/_next/data/build/docs/sample\\.json$'],
+    ['/[...slug]', '^/_next/data/build/sample\\.json$'],
+    ['/docs/[[...slug]]', '^/_next/data/build/docs/sample\\.json$'],
+    ['/[[...slug]]', '^/_next/data/build/sample\\.json$'],
+    ['/docs/[...slug]', '^/_next/data/build/docs/[^/]+\\.json$'],
+    ['/[...slug]', '^/_next/data/build/[^/]+\\.json$'],
+    ['/docs/[[...slug]]', '^/_next/data/build/docs(?:/[^/]+)?\\.json$'],
+    ['/[[...slug]]', '^/_next/data/build(?:/[^/]+)?\\.json$'],
+    ['/docs/[...slug]', '^/_next/data/build/docs(?:/[^/]+){1,2}\\.json$'],
+    ['/docs/[[...slug]]', '^/_next/data/build/docs/(.+?)\\.json$'],
+    ['/[[...slug]]', '^/_next/data/build/(.+?)\\.json$'],
+    ['/teams/[teamId]/users/[id]', '^/_next/data/build/teams/sample/users/[^/]+\\.json$'],
+    ['/teams/[teamId]/users/[id]', '^/_next/data/build/teams/[^/]+/users/sample\\.json$'],
+  ])('rejects a restrictive data regex for %s: %s', (route, regex) => {
+    const input = routeFixture(route);
+    input.routes.dataRoutes[0].dataRouteRegex = regex;
+    expect(() => checkProtectedPageArtifacts(input)).toThrow(`Non-matching SSR data route: ${route}`);
   });
   /** For each protected route, reject HTML output even when prerender metadata is empty. */
   it.each(['/', '/admin/users/[id]'])('rejects static HTML even with an empty prerender manifest: %s', (route) => {
@@ -160,12 +233,7 @@ describe('protected-page production artifacts', () => {
   /** Next-generated static, dynamic and catch-all routes remain valid with custom IDs. */
   it.each(['/', '/admin/users', '/admin/users/[id]', '/[id]', '/docs/[...slug]', '/[...slug]', '/docs/[[...slug]]', '/[[...slug]]'])(
     'accepts the Next-generated data route for %s', (route) => {
-      const input = fixture();
-      input.nextBuildId = 'v1.2.3+release';
-      input.entries = [{ file: 'fixture.js', route, policy: 'protected-page' }];
-      input.discovered = [{ file: 'fixture.js', route }];
-      input.pages = { [route]: 'pages/server.js' };
-      input.routes.dataRoutes = [buildDataRoute(route, input.nextBuildId)];
+      const input = routeFixture(route, 'v1.2.3+release');
       expect(checkProtectedPageArtifacts(input)).toEqual({ protectedRoutes: [route], count: 1 });
     },
   );
