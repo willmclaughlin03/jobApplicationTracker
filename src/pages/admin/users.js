@@ -8,7 +8,7 @@ import ProfileDropdown from '../../client/components/ProfileDropdown';
 import Spinner from '../../client/components/Spinner';
 import { getUserFromRequest } from '../../server/lib/supabaseServer.js';
 import { requireAdmin } from '../../server/lib/requireAdmin.js';
-import { PRIVATE_NO_STORE } from '../../shared/constants/authV2.js';
+import { applyProtectedPageCache } from '../../server/lib/protectedPageCache.js';
 
 /**
  * Adapt a page response to the chainable interface used by requireAdmin.
@@ -50,7 +50,7 @@ function createPageAdminResponse(res) {
  * @returns {Promise<object>} Redirect, denied-response sentinel, or page props.
  */
 export async function getServerSideProps({ req, res }) {
-  res.setHeader('Cache-Control', PRIVATE_NO_STORE);
+  applyProtectedPageCache(res);
   const { user } = await getUserFromRequest(req, res);
 
   if (!user) {

@@ -134,6 +134,8 @@ function collectSupabaseCookies(req, cookies, cookiesToSet) {
  */
 function finalizeProtectedResponse(response, cookies) {
   response.headers.set('Cache-Control', PRIVATE_NO_STORE);
+  response.headers.set('CDN-Cache-Control', 'no-store');
+  response.headers.set('Vercel-CDN-Cache-Control', 'no-store');
   cookies.forEach(({ name, value, options }) => {
     response.cookies.set(name, value, {
       maxAge: 604800,
