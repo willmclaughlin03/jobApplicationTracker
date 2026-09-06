@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-08-30
 
+- `2026-09-06` - `Blue activity calendar intensity`: Matched the activity calendar and legend to the Applied badge's sky-blue palette, with daily tiers of 1–3, 4–6, 7–9, and 10+ applications. Kept zero-activity days neutral and used dark blue date text for readable contrast.
+
 - `2026-09-06` - `Protected-page dynamic data URL probes`: Expanded artifact checks with independent representative parameter values, two- and three-segment catch-all paths, and optional catch-all base URLs. Added Next 16.3.3 generator comparisons for every probe and 15 restrictive-regex rejection fixtures. All 93 artifact tests, targeted ESLint, and diff checks pass.
 
 - `2026-09-06` - `Protected-page build-ID request compatibility`: Require build IDs to survive URL parsing as one unchanged, nonempty path segment, retaining ordinary and version IDs while correcting the earlier empty-ID acceptance test. Extended the runtime qualification script with a temporary SSR fixture and `--build-id-only` mode. All 100 focused tests, targeted ESLint, and diff checks pass; the Next 16.3.3 Webpack build/start fixture returns SSR JSON for `v1.2.3+release` and 404 for an incorrect ID.
