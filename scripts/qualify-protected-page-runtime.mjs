@@ -8,7 +8,8 @@ const {
   COOKIE_NAME, ensure, startFixtureProvider, fixtureEnvironment,
   applyResponseCookies, assertPrivateResponse, requestPage, spawnNext,
 } = require('../src/testSupport/protectedPageRuntimeHarness.js');
-const { checkProtectedPageBuild } = require('./check-protected-page-build.js');
+const { checkProtectedPageArtifacts, checkProtectedPageBuild } = require('./check-protected-page-build.js');
+const { discoverPageRoutes } = require('../src/testSupport/pageRouteInventory.js');
 const { runBuildEnvironmentPreflight } = require('./validate-build-env.js');
 
 /** Allocate a loopback port without ever stopping an unrelated listening process. */
@@ -20,17 +21,82 @@ async function allocatePort() {
   return port;
 }
 
-/** Wait for this exact build to serve login; no cookie or body content is retained. */
-async function waitForServer(base, nextBuildId) {
+/** Wait for this exact build to serve the supplied page; discard cookie and body content. */
+async function waitForServer(base, nextBuildId, route = '/login') {
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     try {
-      const response = await requestPage(base, '/login', new Map());
+      const response = await requestPage(base, route, new Map());
       if (response.status === 200 && (await response.text()).includes(`"buildId":"${nextBuildId}"`)) return;
     } catch { /* Bounded retries while the owned server starts. */ }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error('Owned Next server did not serve the expected build.');
+}
+
+/**
+ * Qualify a version build ID against real build artifacts and next start data HTTP.
+ * Uses a tiny temporary SSR app and the locked Next install supplied by root;
+ * env contains only synthetic values. Owned processes and fixture files are cleaned up.
+ */
+async function qualifyCustomBuildId(root, env) {
+  const fixtureParent = path.resolve(root, '.tmp');
+  fs.mkdirSync(fixtureParent, { recursive: true });
+  const fixtureRoot = fs.mkdtempSync(path.join(fixtureParent, 'build-id-http-'));
+  const nextBuildId = 'v1.2.3+release';
+  let build;
+  let server;
+  try {
+    const pagesRoot = path.join(fixtureRoot, 'pages');
+    fs.mkdirSync(pagesRoot);
+    fs.writeFileSync(path.join(fixtureRoot, 'package.json'), JSON.stringify({ name: 'build-id-http-fixture', private: true }));
+    fs.writeFileSync(path.join(fixtureRoot, 'next.config.js'), `module.exports = {
+      /** Pin the fixture ID to exercise version punctuation at the HTTP boundary. */
+      generateBuildId: async () => '${nextBuildId}',
+    };\n`);
+    for (const page of ['index', '404', '500']) {
+      fs.writeFileSync(path.join(pagesRoot, `${page}.js`), `
+        /** Render a minimal fixture page; only SSR data behavior matters here. */
+        export default function Page() { return null; }
+        ${page === 'index' ? `
+        /** Mark request-time props so the HTTP assertion cannot pass on an HTML response. */
+        export async function getServerSideProps() { return { props: { buildIdFixture: true } }; }
+        ` : ''}
+      `);
+    }
+    // Webpack keeps this tiny nested fixture independent of Turbopack's workspace-root inference.
+    build = spawnNext(root, ['build', fixtureRoot, '--webpack'], env);
+    ensure(await build.wait(240000) === 0 && !build.flags.moduleFailure, 'Synthetic build-ID fixture build failed.');
+    ensure(fs.readFileSync(path.join(fixtureRoot, '.next/BUILD_ID'), 'utf8').trim() === nextBuildId,
+      'Synthetic build-ID fixture did not retain the configured ID.');
+    const discovered = discoverPageRoutes(pagesRoot, ['js']);
+    /** Classify actual fixture sources, including the static public error pages. */
+    const entries = discovered.map((entry) => ({ ...entry, policy: entry.route === '/' ? 'protected-page' : 'public-page' }));
+    checkProtectedPageArtifacts({
+      nextBuildId, entries, discovered,
+      pages: JSON.parse(fs.readFileSync(path.join(fixtureRoot, '.next/server/pages-manifest.json'), 'utf8')),
+      prerender: JSON.parse(fs.readFileSync(path.join(fixtureRoot, '.next/prerender-manifest.json'), 'utf8')),
+      routes: JSON.parse(fs.readFileSync(path.join(fixtureRoot, '.next/routes-manifest.json'), 'utf8')),
+    });
+    const base = `http://127.0.0.1:${await allocatePort()}`;
+    server = spawnNext(root, ['start', fixtureRoot, '--hostname', '127.0.0.1', '--port', new URL(base).port], env);
+    await waitForServer(base, nextBuildId, '/');
+    const response = await requestPage(base, `/_next/data/${nextBuildId}/index.json`, new Map(), true);
+    ensure(response.status === 200 && response.headers.get('content-type')?.includes('application/json'),
+      'Synthetic build-ID data request did not return JSON successfully.');
+    const body = await response.json();
+    ensure(body.__N_SSP === true && body.pageProps?.buildIdFixture === true, 'Synthetic build-ID SSR props missing.');
+    const incorrect = await requestPage(base, `/_next/data/${nextBuildId}-incorrect/index.json`, new Map(), true);
+    ensure(incorrect.status === 404, 'Synthetic build-ID request accepted a different build.');
+    await incorrect.arrayBuffer();
+    ensure(!server.flags.moduleFailure, 'Synthetic build-ID runtime module-load failure.');
+    return { transport: 'data-http', route: '/', scenario: 'custom-build-id', nextBuildId, passed: true };
+  } finally {
+    if (server) await server.stop();
+    if (build) await build.stop();
+    ensure(path.dirname(fixtureRoot) === fixtureParent, 'Synthetic build-ID cleanup escaped its temporary parent.');
+    fs.rmSync(fixtureRoot, { recursive: true, force: true, maxRetries: 3 });
+  }
 }
 
 /** Resolve the concrete document/data URL from the checked build's route manifest. */
@@ -79,6 +145,12 @@ async function main() {
   try {
     const env = fixtureEnvironment(process.env, provider.url);
     ensure(runBuildEnvironmentPreflight(env), 'Synthetic build preflight failed.');
+    process.stdout.write('Qualifying a custom build ID with a temporary Next SSR app.\n');
+    results.push(await qualifyCustomBuildId(root, env));
+    if (process.argv.includes('--build-id-only')) {
+      process.stdout.write(`${JSON.stringify({ scope: 'local-build-id-http-only', results }, null, 2)}\n`);
+      return;
+    }
     process.stdout.write('Building a synthetic-config production artifact for local HTTP composition only.\n');
     build = spawnNext(root, ['build'], env);
     ensure(await build.wait(240000) === 0, 'Synthetic production build failed or timed out; raw logs withheld.');

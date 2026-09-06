@@ -31,8 +31,8 @@ function fixture() {
 }
 
 describe('protected-page production artifacts', () => {
-  /** Match both protected routes to string IDs, including custom versions and punctuation. */
-  it.each(['build', 'Build_123-abc', 'v1.2.3', 'v1.2.3+release', ' ', 'build/id', 'build?query'])(
+  /** Match both protected routes to request-safe IDs, including custom versions and punctuation. */
+  it.each(['build', 'Build_123-abc', 'v1.2.3', 'v1.2.3+release'])(
     'accepts request-time artifacts for string build ID %j', (nextBuildId) => {
       const input = fixture();
       input.nextBuildId = nextBuildId;
@@ -43,13 +43,12 @@ describe('protected-page production artifacts', () => {
       expect(checkProtectedPageArtifacts(input).count).toBe(2);
     },
   );
-  /** Use Next-generated empty-ID routes to verify URL joining without a duplicate slash. */
-  it('accepts Next-generated data routes for an empty build ID', () => {
+  /** Manifest regex generation alone cannot qualify an ID that request matching cannot consume. */
+  it('rejects an empty build ID even with Next-generated data routes', () => {
     const input = fixture();
     input.nextBuildId = '';
     input.routes.dataRoutes = [buildDataRoute('/', ''), buildDataRoute('/admin/users/[id]', '')];
-    expect(new RegExp(input.routes.dataRoutes[0].dataRouteRegex).test('/_next/data/index.json')).toBe(true);
-    expect(checkProtectedPageArtifacts(input).count).toBe(2);
+    expect(() => checkProtectedPageArtifacts(input)).toThrow('Missing or invalid Next build ID.');
   });
   /** Omitted IDs must fail at the artifact boundary with the established diagnostic. */
   it('rejects a missing build ID', () => {
@@ -57,8 +56,9 @@ describe('protected-page production artifacts', () => {
     delete input.nextBuildId;
     expect(() => checkProtectedPageArtifacts(input)).toThrow('Missing or invalid Next build ID.');
   });
-  /** Permissive routes must not let non-string IDs bypass boundary validation. */
-  it.each([undefined, null, 123, true, {}, []])(
+  /** Permissive routes cannot qualify IDs that are missing, split, decoded or changed by URL parsing. */
+  it.each([undefined, null, 123, true, {}, [], '', ' ', 'build/id', 'build\\id',
+    'build?query', 'build#hash', 'build%2Fid', 'build%invalid', '.', '..', 'build id', 'build\nid', 'b\u00fcild'])(
     'rejects an invalid build ID even when data routes match: %j',
     (nextBuildId) => {
       const input = fixture();
@@ -70,7 +70,7 @@ describe('protected-page production artifacts', () => {
     },
   );
   /** String IDs still need to match the build's SSR routes after type validation. */
-  it.each(['different-build', 'v1.2.3', 'v1.2.3+release', '', ' ', 'build/id', 'build?query'])(
+  it.each(['different-build', 'v1.2.3', 'v1.2.3+release'])(
     'rejects data routes for a different build ID: %j', (nextBuildId) => {
       const input = fixture();
       input.nextBuildId = nextBuildId;
@@ -151,16 +151,8 @@ describe('protected-page production artifacts', () => {
     [1, '^/_next/data/build/admin/users/.*\\.json$'],
     [0, '^/_next/data/build/index.json$'],
     [1, '^/_next/data/build/admin/users/[^/]+.json$'],
-    [0, '^/_next/data/index.json$', ''],
-    [1, '^/_next/data/admin/users/[^/]+.json$', ''],
-    [0, '^/_next/data/index[^/]*\\.json$', ''],
-    [1, '^/_next/data/admin/users[^/]*/[^/]+\\.json$', ''],
-  ])('rejects an overbroad data regex for route %i: %s', (routeIndex, regex, nextBuildId = 'build') => {
+  ])('rejects an overbroad data regex for route %i: %s', (routeIndex, regex) => {
     const input = fixture();
-    input.nextBuildId = nextBuildId;
-    for (const dataRoute of input.routes.dataRoutes) {
-      Object.assign(dataRoute, buildDataRoute(dataRoute.page, nextBuildId));
-    }
     input.routes.dataRoutes[routeIndex].dataRouteRegex = regex;
     expect(() => checkProtectedPageArtifacts(input)).toThrow('Overbroad SSR data route');
   });

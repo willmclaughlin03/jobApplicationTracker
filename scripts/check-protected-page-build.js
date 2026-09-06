@@ -21,7 +21,9 @@ function isRecord(value) {
  * @returns {object} Safe qualification summary.
  */
 function checkProtectedPageArtifacts({ entries, discovered, pages, prerender, routes, nextBuildId }) {
-  if (typeof nextBuildId !== 'string') {
+  // Next compares one decoded request segment to the build ID; URL parsing must preserve it.
+  if (typeof nextBuildId !== 'string' || !nextBuildId || /[/\\%?#\s]/.test(nextBuildId)
+      || new URL(`/_next/data/${nextBuildId}/`, 'http://localhost').pathname !== `/_next/data/${nextBuildId}/`) {
     throw new Error('Missing or invalid Next build ID.');
   }
   reconcilePageRoutes(discovered, entries);
