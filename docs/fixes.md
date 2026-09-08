@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-09-07` - `Activity and Applied blue consistency`: The calendar and Applied badge used sky blue while the Applied dot and chart used a different blue. Approach: use the requested royal blue family throughout these indicators and check date-text contrast. Fix: updated calendar and legend fills and borders, set the Applied accent to `#2563EB`, and adjusted calendar numerals to maintain at least 5.17:1 contrast on active cells.
+
 - `2026-09-06` - `Activity heatmap blended into the green dashboard`: Green activity fills were difficult to distinguish from the dashboard background. Approach: use the Applied badge's sky-blue family and darken every three applications. Fix: changed calendar and legend fills and borders, adjusted date text for contrast, replaced the old thresholds with 1–3, 4–6, 7–9, and 10+ tiers, and removed the unused green palette.
 
 - `2026-09-06` - `Restrictive dynamic SSR patterns passed artifact checks`: A single `sample` URL allowed manifests restricted to that value, shallow catch-all paths, or nonempty optional catch-alls to pass qualification. Approach: vary each parameter independently and verify all positive probes against Next 16.3.3's generator. Fix: added representative numeric, punctuation, encoded, nested, and optional-base probes plus 15 rejection fixtures that failed before the fix and now pass. All 93 artifact tests, targeted ESLint, and diff checks pass; full production build and deployed qualification were not rerun.
