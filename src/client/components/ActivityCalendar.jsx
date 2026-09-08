@@ -10,10 +10,10 @@ const MONTH_NAMES = [
 ];
 const ACTIVITY_INTENSITY_CLASSES = [
   'border-dashboard-line/80 bg-dashboard-canvas',
-  'border-sky-300 bg-sky-200',
-  'border-sky-400 bg-sky-300',
-  'border-sky-500 bg-sky-400',
-  'border-sky-600 bg-sky-500',
+  'border-blue-400 bg-blue-300',
+  'border-blue-500 bg-blue-400',
+  'border-blue-600 bg-blue-500',
+  'border-blue-700 bg-blue-600',
 ];
 
 /**
@@ -201,7 +201,7 @@ export default function ActivityCalendar({ jobs, selectedDates = new Set(), onDa
               title={title}
             >
               <span className={`text-xs font-medium leading-none ${
-                level > 0 ? 'text-sky-950' : 'text-dashboard-muted'
+                level === 4 ? 'text-white' : level > 0 ? 'text-slate-950' : 'text-dashboard-muted'
               }`}>
                 {cell.day}
               </span>
