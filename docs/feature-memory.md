@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-06
 
+- `2026-09-08` - `Application status badge palette`: Set dashboard badge text to amber (`#FCD34D`) for Interviewing, lavender (`#C4B5FD`) for Offered, mint (`#6EE7B7`) for Accepted, and soft rose (`#FDA4AF`) for Rejected. Retained Applied's royal blue styling and existing badge fills and borders.
+
 - `2026-09-07` - `Royal blue activity and Applied styling`: Updated the activity calendar and legend to four blue shades ending at royal blue (`#2563EB`), and matched the Applied badge, status dot, and chart fill. Used dark numerals on lighter activity cells and white on the darkest tier for readable contrast.
 
 ### Week of 2026-08-30
