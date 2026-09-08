@@ -14,6 +14,10 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-09-06
+
+- `2026-09-07` - `Royal blue activity and Applied styling`: Updated the activity calendar and legend to four blue shades ending at royal blue (`#2563EB`), and matched the Applied badge, status dot, and chart fill. Used dark numerals on lighter activity cells and white on the darkest tier for readable contrast.
+
 ### Week of 2026-08-30
 
 - `2026-09-06` - `Blue activity calendar intensity`: Matched the activity calendar and legend to the Applied badge's sky-blue palette, with daily tiers of 1–3, 4–6, 7–9, and 10+ applications. Kept zero-activity days neutral and used dark blue date text for readable contrast.

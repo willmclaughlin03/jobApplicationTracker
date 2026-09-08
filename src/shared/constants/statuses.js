@@ -14,9 +14,9 @@ export const STATUS_CONFIG = {
     bgClass: 'bg-blue-100',
     textClass: 'text-blue-800',
     borderClass: 'border-blue-300',
-    dashboardClass: 'border-sky-400/40 bg-sky-400/10 text-sky-200',
-    dotColor: 'bg-blue-500',
-    hexColor: '#3b82f6',
+    dashboardClass: 'border-blue-600/60 bg-blue-600/20 text-blue-200',
+    dotColor: 'bg-blue-600',
+    hexColor: '#2563eb',
     order: 1
   },
   interviewing: {
