@@ -14,6 +14,10 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-09-13
+
+- `2026-09-13` - `GATE-1 shared-IP qualification runner`: Added preparation, entirely mocked dry-run, and explicitly authorized live modes for 50 disposable accounts with independent authenticated sessions and cookie jars. The proposed three-cycle temporary-v1 profile has five-request concurrency, 31-second visibility intervals, 302 application requests, and at most 150 direct provider requests including owned-account cleanup. Reports retain sanitized counts and automated durations, preserve accepted CSRF exceptions, and distinguish deployment/Git attribution from actual Next build checks. Both syntax checks, 40 offline tests, targeted lint, and CLI checks pass. Live provisioning, traffic, and cleanup remain unexecuted and separately authorized; GATE-1 remains open and CHUNK-5A is unchanged.
+
 ### Week of 2026-09-06
 
 - `2026-09-08` - `Application status badge palette`: Set dashboard badge text to amber (`#FCD34D`) for Interviewing, lavender (`#C4B5FD`) for Offered, mint (`#6EE7B7`) for Accepted, and soft rose (`#FDA4AF`) for Rejected. Retained Applied's royal blue styling and existing badge fills and borders.
