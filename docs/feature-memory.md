@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-13
 
+- `2026-09-13` - `GATE-1 Supabase dependency pins`: Pinned `@supabase/ssr` to `0.8.0` and `@supabase/supabase-js` to `2.90.1` in both package manifests to match the runner's runtime checks, preserving transitive `@supabase/auth-js@2.90.1`. All 40 Gate-1 tests, dependency consistency assertions, and diff checks pass.
+
 - `2026-09-13` - `GATE-1 shared-IP qualification runner`: Added preparation, entirely mocked dry-run, and explicitly authorized live modes for 50 disposable accounts with independent authenticated sessions and cookie jars. The proposed three-cycle temporary-v1 profile has five-request concurrency, 31-second visibility intervals, 302 application requests, and at most 150 direct provider requests including owned-account cleanup. Reports retain sanitized counts and automated durations, preserve accepted CSRF exceptions, and distinguish deployment/Git attribution from actual Next build checks. Both syntax checks, 40 offline tests, targeted lint, and CLI checks pass. Live provisioning, traffic, and cleanup remain unexecuted and separately authorized; GATE-1 remains open and CHUNK-5A is unchanged.
 
 ### Week of 2026-09-06
