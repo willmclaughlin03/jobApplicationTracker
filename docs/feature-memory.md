@@ -14,6 +14,16 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-09-13
+
+- `2026-09-13` - `GATE-1 reconciliation completion`: Stop provider pagination as soon as all uncertain creates have confirmed receipts, including on a full final page. Updated recovery tests to reject extra requests and false reconciliation failures, with regression coverage for unresolved-account budget exhaustion and provider failures. All 52 Gate-1 tests, targeted lint, syntax checks, and diff checks pass.
+
+- `2026-09-13` - `GATE-1 uncertain-create recovery and live CLI coverage`: Persist credential-free run markers before provisioning and reconcile uncertain creates through bounded provider pages before deleting confirmed owned accounts. Discovery preserves both ownership tags, attempted-account identity, the direct-request budget, and five deletion workers; incomplete scans remain visible while discovered accounts are cleaned up. Updated the preparation summary for reconciliation and added mocked authorized live CLI dispatch, structured-report, and signal-cleanup coverage. All 50 Gate-1 tests, targeted lint, syntax checks, and diff checks pass; no live provider operations ran.
+
+- `2026-09-13` - `GATE-1 Supabase dependency pins`: Pinned `@supabase/ssr` to `0.8.0` and `@supabase/supabase-js` to `2.90.1` in both package manifests to match the runner's runtime checks, preserving transitive `@supabase/auth-js@2.90.1`. All 40 Gate-1 tests, dependency consistency assertions, and diff checks pass.
+
+- `2026-09-13` - `GATE-1 shared-IP qualification runner`: Added preparation, entirely mocked dry-run, and explicitly authorized live modes for 50 disposable accounts with independent authenticated sessions and cookie jars. The proposed three-cycle temporary-v1 profile has five-request concurrency, 31-second visibility intervals, 302 application requests, and at most 150 direct provider requests including owned-account cleanup. Reports retain sanitized counts and automated durations, preserve accepted CSRF exceptions, and distinguish deployment/Git attribution from actual Next build checks. Both syntax checks, 40 offline tests, targeted lint, and CLI checks pass. Live provisioning, traffic, and cleanup remain unexecuted and separately authorized; GATE-1 remains open and CHUNK-5A is unchanged.
+
 ### Week of 2026-09-06
 
 - `2026-09-08` - `Application status badge palette`: Set dashboard badge text to amber (`#FCD34D`) for Interviewing, lavender (`#C4B5FD`) for Offered, mint (`#6EE7B7`) for Accepted, and soft rose (`#FDA4AF`) for Rejected. Retained Applied's royal blue styling and existing badge fills and borders.
