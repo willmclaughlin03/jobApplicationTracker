@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-13
 
+- `2026-09-13` - `GATE-1 reconciliation completion`: Stop provider pagination as soon as all uncertain creates have confirmed receipts, including on a full final page. Updated recovery tests to reject extra requests and false reconciliation failures, with regression coverage for unresolved-account budget exhaustion and provider failures. All 52 Gate-1 tests, targeted lint, syntax checks, and diff checks pass.
+
 - `2026-09-13` - `GATE-1 uncertain-create recovery and live CLI coverage`: Persist credential-free run markers before provisioning and reconcile uncertain creates through bounded provider pages before deleting confirmed owned accounts. Discovery preserves both ownership tags, attempted-account identity, the direct-request budget, and five deletion workers; incomplete scans remain visible while discovered accounts are cleaned up. Updated the preparation summary for reconciliation and added mocked authorized live CLI dispatch, structured-report, and signal-cleanup coverage. All 50 Gate-1 tests, targeted lint, syntax checks, and diff checks pass; no live provider operations ran.
 
 - `2026-09-13` - `GATE-1 Supabase dependency pins`: Pinned `@supabase/ssr` to `0.8.0` and `@supabase/supabase-js` to `2.90.1` in both package manifests to match the runner's runtime checks, preserving transitive `@supabase/auth-js@2.90.1`. All 40 Gate-1 tests, dependency consistency assertions, and diff checks pass.

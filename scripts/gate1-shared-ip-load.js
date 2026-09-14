@@ -418,7 +418,7 @@ function createLiveServices(profileInput, env, fetchImpl = globalThis.fetch, {
         stats.created++; stats.reconciled++; stats.unconfirmedCreates--;
       }
       // Avoid the pinned SDK's truncated numeric Link parsing; walk bounded pages ourselves.
-      if (result.data.users.length < RECONCILIATION_PAGE_SIZE) return;
+      if (stats.unconfirmedCreates === 0 || result.data.users.length < RECONCILIATION_PAGE_SIZE) return;
     }
     throw new Gate1Error('reconciliation_failed');
   }

@@ -489,14 +489,16 @@ describe('installed SDK provisioning and owned cleanup with mocked HTTP', () => 
       reconciled: 1, deleted: 2, unconfirmedCreates: 0 });
     expect(fixture.users.size).toBe(1);
   });
-  /** A later page failure must report incomplete discovery while still draining recovered receipts. */
-  test('deletes accounts discovered before a later reconciliation failure', async () => {
+  /** Resolving all uncertain creates on a full page must avoid a needless, potentially failing request. */
+  test('stops after a full page recovers all uncertain creates without requesting a later page', async () => {
     const { report, fixture } = await runProvider({ loseCreateResponseAt: 2, failListAt: 2,
-      /** Fill page one so reconciliation must attempt page two after retaining the recovered ID. */
+      /** Fill page one with the recovered account and harmless padding; page two must never be requested. */
       listPage: (_page, users) => [...users, ...Array(50 - users.length).fill(users[0])] }, profile({ sessions: 3 }));
-    expect(report.provider).toMatchObject({ reconciliationAttempts: 2, reconciled: 1,
-      reconciliationFailed: 1, deleted: 2, ownedRemaining: 0, unconfirmedCreates: 0 });
-    expect(report.failureCounts.reconciliation_failed).toBe(1);
+    expect(report.provider).toMatchObject({ reconciliationAttempts: 1, reconciled: 1,
+      reconciliationFailed: 0, deleted: 2, ownedRemaining: 0, unconfirmedCreates: 0 });
+    expect(fixture.calls.list).toBe(1);
+    expect(report.failureCounts.reconciliation_failed).toBeUndefined();
+    expect(report.failureCounts.cleanup_failed).toBeUndefined();
     expect(report.result).toBe('stopped');
     expect(fixture.users.size).toBe(1);
     expect(JSON.stringify(report)).not.toContain('SYNTHETIC_PROVIDER_SECRET');
@@ -522,16 +524,35 @@ describe('installed SDK provisioning and owned cleanup with mocked HTTP', () => 
       expect(report.result).toBe('stopped');
       expect(fixture.users.has(fixture.preExistingId)).toBe(true);
     });
-  /** A full final budgeted page remains an explicit incomplete scan, with deletion capacity reserved. */
-  test('bounds reconciliation by unused direct requests and still deletes discovered accounts', async () => {
+  /** Recovery on the final budgeted page succeeds even when that page is full. */
+  test('recovers all uncertain creates on a full final budgeted page without reconciliation failure', async () => {
     const { report, fixture } = await runProvider({ loseCreateResponseAt: 2,
-      /** Return full pages to force the bounded scan to report exhaustion instead of looping. */
+      /** Fill the only budgeted page while including the last uncertain account. */
       listPage: (_page, users) => [...users, ...Array(50 - users.length).fill(users[0])] });
-    expect(report.provider).toMatchObject({ reconciliationAttempts: 1, reconciliationFailed: 1,
-      reconciled: 1, deleted: 2, ownedRemaining: 0 });
+    expect(report.provider).toMatchObject({ reconciliationAttempts: 1, reconciliationFailed: 0,
+      reconciled: 1, deleted: 2, ownedRemaining: 0, unconfirmedCreates: 0 });
+    expect(fixture.calls.list).toBe(1);
     expect(fixture.calls.create + fixture.calls.signIn + fixture.calls.list + fixture.calls.delete).toBe(6);
-    expect(report.failureCounts.reconciliation_failed).toBe(1);
+    expect(report.failureCounts.reconciliation_failed).toBeUndefined();
+    expect(report.failureCounts.cleanup_failed).toBeUndefined();
   });
+  /** Unresolved accounts must still surface scan-budget exhaustion or a later provider failure. */
+  test.each([{ sessions: 2, failListAt: 0, attempts: 1 }, { sessions: 3, failListAt: 2, attempts: 2 }])(
+    'reports incomplete reconciliation when an uncertain account remains: %j',
+    /** Hide the uncertain account from full pages and verify known receipts are still cleaned up. */
+    async ({ sessions, failListAt, attempts }) => {
+      const { report, fixture } = await runProvider({ loseCreateResponseAt: 2, failListAt,
+        /** Return unrelated users so the lost create stays unresolved across every successful page. */
+        listPage: (_page, users) => Array(50).fill(users[0]),
+      }, profile({ sessions }));
+      expect(report.provider).toMatchObject({ reconciliationAttempts: attempts, reconciliationFailed: 1,
+        reconciled: 0, deleted: 1, ownedRemaining: 0, unconfirmedCreates: 1 });
+      expect(fixture.calls.list).toBe(attempts);
+      expect(fixture.calls.delete).toBe(1);
+      expect(report.failureCounts.reconciliation_failed).toBe(1);
+      expect(report.result).toBe('stopped');
+      expect(fixture.users.has(fixture.preExistingId)).toBe(true);
+    });
   /** Durable persistence failure must stop provisioning before any credential-bearing provider request. */
   test('fails closed when the run marker cannot be persisted', async () => {
     /** Emulate a private filesystem failure; only its fixed public code may reach the report. */
