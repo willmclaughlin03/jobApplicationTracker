@@ -4,7 +4,7 @@
  * Live account creation, traffic, and owned-account cleanup require separate approval.
  */
 const {
-  TARGET, PROPOSED_PROFILE, ENV_NAMES, Gate1Error, failureCode,
+  TARGET, PROPOSED_PROFILE, PROVISIONING_COOLDOWN_MS, ENV_NAMES, Gate1Error, failureCode,
   validateProfile, validateLiveEnvironment, createLiveServices, createOfflineServices, runProfile,
 } = require('./gate1-shared-ip-load.js');
 const { withSuppressedDependencyConsole } = require('./capture-gate0-auth-evidence.js');
@@ -80,6 +80,9 @@ function preparation(profile, env) {
     targetAttribution: 'operator rechecks deployment and Git SHA before approval; runner checks actual Next build before and after',
     provider: { existingPreproductionProjectOnly: true, newDependencies: false,
       sessionsPerDisposableAccount: 1, provisioningConcurrency: 1, cleanupConcurrency: 5,
+      provisioningCooldownMs: PROVISIONING_COOLDOWN_MS,
+      setupPacing: 'pause between completed account preparations within the setup deadline; load cadence is separate',
+      statusReporting: 'completed HTTP responses counted by operation and status only; no provider messages, bodies, or headers',
       maxCreateRequests: profile.sessions, maxSignInRequests: profile.sessions,
       maxDeleteRequests: profile.sessions, maxDirectRequests: profile.sessions * 3,
       maxReconciliationRequests: profile.sessions,
