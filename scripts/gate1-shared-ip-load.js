@@ -4,6 +4,7 @@
  * provisioning, traffic, and owned-account deletion. This does not close GATE-1.
  */
 const path = require('node:path');
+const fs = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { performance } = require('node:perf_hooks');
 const { z } = require('zod');
@@ -29,13 +30,14 @@ const ENV_NAMES = Object.freeze([
 const CSRF_COOKIE = '__Host-csrf-token';
 const cookieExpirations = new WeakMap();
 const ROUTES = Object.freeze({ session: '/api/auth/session', csrf: '/api/auth/csrf' });
+const RECONCILIATION_PAGE_SIZE = 50;
 const ERROR_CODES = new Set([
   'configuration', 'cancelled', 'timeout', 'setup_deadline', 'duration_limit',
   'request_budget', 'wrong_target', 'redirect', 'build_mismatch', 'response_size',
   'response_shape', 'cookie_contract', 'cache_contract', 'identity_mismatch',
   'duplicate_session', 'http_rejection', 'transport_error', 'provisioning_failed',
   'sign_in_failed', 'cleanup_failed', 'ownership_unconfirmed', 'dependency_version',
-  'unexpected_error',
+  'run_marker_failed', 'reconciliation_failed', 'unexpected_error',
 ]);
 const profileSchema = z.object({
   sessions: z.number().int().min(1).max(50),
@@ -269,12 +271,23 @@ function cookieHeader(jar, now = Date.now()) {
   return [...jar].map(([name, value]) => `${name}=${value}`).join('; ');
 }
 
+/** Persist only ownership tags before provisioning so interrupted runs retain a recovery marker. */
+function persistRunMarker(runMarker) {
+  const directory = path.join(__dirname, '..', '.tmp', 'gate1-runs');
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, `${runMarker}.json`),
+    JSON.stringify({ gate1_qualification: true, gate1_run: runMarker }),
+    { flag: 'wx', mode: 0o600, flush: true });
+}
+
 /**
  * Construct live services after explicit CLI approval and environment validation.
- * Ownership is private to this invocation. No list-users or arbitrary deletion API
- * exists. Unknown create outcomes and failed cleanup are reported, never retried.
+ * Persist the private run marker before any create; reconcile uncertain receipts through
+ * bounded provider pages before deletion. Injected persistence keeps tests off disk.
  */
-function createLiveServices(profileInput, env, fetchImpl = globalThis.fetch) {
+function createLiveServices(profileInput, env, fetchImpl = globalThis.fetch, {
+  persistMarker = persistRunMarker,
+} = {}) {
   const profile = validateProfile(profileInput);
   const credentials = validateLiveEnvironment(env);
   for (const name of ['@supabase/supabase-js', '@supabase/auth-js']) {
@@ -284,8 +297,11 @@ function createLiveServices(profileInput, env, fetchImpl = globalThis.fetch) {
   const { createClient } = require('@supabase/supabase-js');
   const owned = new Map();
   const runMarker = randomUUID();
+  const uncertainEmails = new Set();
+  let markerPersisted = false;
   const stats = { createAttempts: 0, signInAttempts: 0, deleteAttempts: 0,
-    created: 0, deleted: 0, cleanupFailed: 0, unconfirmedCreates: 0 };
+    created: 0, deleted: 0, cleanupFailed: 0, unconfirmedCreates: 0,
+    reconciliationAttempts: 0, reconciled: 0, reconciliationFailed: 0 };
   let cleaning = false;
 
   /** Limit each SDK operation to one exact method/URL; disable implicit SDK retries and redirects. */
@@ -294,14 +310,15 @@ function createLiveServices(profileInput, env, fetchImpl = globalThis.fetch) {
     let transportFailure;
     /** Supply a one-use bounded fetch to the SDK, keeping credentials on the pinned provider only. */
     async function providerFetch(url, init) {
-      const method = operation === 'delete' ? 'DELETE' : 'POST';
+      const method = operation === 'list' ? 'GET' : operation === 'delete' ? 'DELETE' : 'POST';
       if (requested || url !== `${EXPECTED_SUPABASE_URL}${endpoint}` || init?.method !== method) {
         transportFailure = new Gate1Error('wrong_target');
         throw transportFailure;
       }
       checkSignal(signal);
       requested = true;
-      stats[operation === 'create' ? 'createAttempts' : operation === 'signIn' ? 'signInAttempts' : 'deleteAttempts']++;
+      stats[operation === 'create' ? 'createAttempts' : operation === 'signIn' ? 'signInAttempts'
+        : operation === 'list' ? 'reconciliationAttempts' : 'deleteAttempts']++;
       try {
         // Let an already-dispatched create settle within its request timeout so graceful cancellation
         // does not discard a returned ownership receipt. No subsequent create/sign-in starts after abort.
@@ -325,6 +342,11 @@ function createLiveServices(profileInput, env, fetchImpl = globalThis.fetch) {
   async function provision(signal) {
     checkSignal(signal);
     if (cleaning || stats.createAttempts >= profile.sessions) throw new Gate1Error('request_budget');
+    if (!markerPersisted) {
+      try { await persistMarker(runMarker); markerPersisted = true; }
+      catch { throw new Gate1Error('run_marker_failed'); }
+      checkSignal(signal);
+    }
     const disposable = createDisposableCredentials();
     const admin = clientFor('create', '/auth/v1/admin/users', signal);
     let created;
@@ -332,13 +354,14 @@ function createLiveServices(profileInput, env, fetchImpl = globalThis.fetch) {
       created = await admin.client.auth.admin.createUser({ ...disposable, email_confirm: true,
         app_metadata: { gate1_qualification: true, gate1_run: runMarker } });
     } catch {
-      if (admin.requested()) stats.unconfirmedCreates++;
+      if (admin.requested()) { uncertainEmails.add(disposable.email); stats.unconfirmedCreates++; }
       throw admin.failure() || new Gate1Error('provisioning_failed');
     }
     const user = created.data?.user;
     if (!z.string().uuid().safeParse(user?.id).success
+      || user?.app_metadata?.gate1_qualification !== true
       || user?.app_metadata?.gate1_run !== runMarker || owned.has(user.id)) {
-      if (admin.requested()) stats.unconfirmedCreates++;
+      if (admin.requested()) { uncertainEmails.add(disposable.email); stats.unconfirmedCreates++; }
       throw admin.failure() || new Gate1Error('ownership_unconfirmed');
     }
     owned.set(user.id, true);
@@ -370,13 +393,47 @@ function createLiveServices(profileInput, env, fetchImpl = globalThis.fetch) {
   }
 
   /**
-   * Delete only confirmed create receipts, once each, with independent timeouts and at most five workers.
+   * Scan once before deleting so our deletions cannot shift provider pagination.
+   * Reserve one delete per attempted create within the existing total request budget;
+   * retain each confirmed ID immediately, even when a later page is invalid or fails.
+   */
+  async function reconcile() {
+    const maxPages = Math.min(profile.sessions,
+      profile.sessions * 3 - stats.createAttempts * 2 - stats.signInAttempts);
+    for (let page = 1; page <= maxPages; page++) {
+      const admin = clientFor('list', `/auth/v1/admin/users?page=${page}&per_page=${RECONCILIATION_PAGE_SIZE}`);
+      const result = await admin.client.auth.admin.listUsers({ page, perPage: RECONCILIATION_PAGE_SIZE });
+      if (result.error || !Array.isArray(result.data?.users)
+        || result.data.users.length > RECONCILIATION_PAGE_SIZE) throw new Gate1Error('reconciliation_failed');
+      for (const user of result.data.users) {
+        if (user?.app_metadata?.gate1_qualification !== true || user.app_metadata.gate1_run !== runMarker) continue;
+        if (!z.string().uuid().safeParse(user.id).success) { stats.reconciliationFailed = 1; continue; }
+        if (owned.has(user.id)) continue;
+        if (!uncertainEmails.has(user.email) || stats.created >= stats.createAttempts) {
+          stats.reconciliationFailed = 1;
+          continue;
+        }
+        owned.set(user.id, true);
+        uncertainEmails.delete(user.email);
+        stats.created++; stats.reconciled++; stats.unconfirmedCreates--;
+      }
+      // Avoid the pinned SDK's truncated numeric Link parsing; walk bounded pages ourselves.
+      if (result.data.users.length < RECONCILIATION_PAGE_SIZE) return;
+    }
+    throw new Gate1Error('reconciliation_failed');
+  }
+
+  /**
+   * Reconcile uncertain creates, then delete confirmed owned IDs once with at most five workers.
    * SIGINT stops setup/load but not cleanup. Hard process termination cannot guarantee remote cleanup;
-   * inspect provider accounts carrying gate1_qualification metadata before any separately approved recovery.
+   * the persisted run marker identifies ownership for separately approved recovery.
    */
   async function cleanup() {
     if (cleaning) return;
     cleaning = true;
+    if (stats.unconfirmedCreates) {
+      try { await reconcile(); } catch { stats.reconciliationFailed = 1; }
+    }
     const pending = [...owned.keys()];
     let cursor = 0;
     /** Drain distinct owned receipts; never allow a failure to skip another known account. */
@@ -598,12 +655,14 @@ async function runProfile(profileInput, services, { signal, dryRun = false,
     try { await services.cleanup(); } catch { stop(new Gate1Error('cleanup_failed')); }
     const lifecycle = services.snapshot();
     for (const key of ['createAttempts', 'signInAttempts', 'deleteAttempts', 'created', 'deleted',
-      'cleanupFailed', 'unconfirmedCreates', 'ownedRemaining']) {
+      'cleanupFailed', 'unconfirmedCreates', 'ownedRemaining', 'reconciliationAttempts',
+      'reconciled', 'reconciliationFailed']) {
       const value = lifecycle[key];
       report.provider[key] = Number.isSafeInteger(value) && value >= 0 && value <= 50 ? value : null;
     }
     if (Object.values(report.provider).some(value => value === null) || report.provider.cleanupFailed
       || report.provider.unconfirmedCreates || report.provider.ownedRemaining) stop(new Gate1Error('cleanup_failed'));
+    if (report.provider.reconciliationFailed) stop(new Gate1Error('reconciliation_failed'));
     for (const state of sessions) { state.jar.clear(); state.session = null; state.userId = null; }
     userIds.clear(); accessTokens.clear(); refreshTokens.clear(); jars.clear();
   }
@@ -623,7 +682,8 @@ function createOfflineServices(profileInput) {
   const profile = validateProfile(profileInput);
   const owned = new Map();
   const stats = { createAttempts: 0, signInAttempts: 0, deleteAttempts: 0,
-    created: 0, deleted: 0, cleanupFailed: 0, unconfirmedCreates: 0, ownedRemaining: 0 };
+    created: 0, deleted: 0, cleanupFailed: 0, unconfirmedCreates: 0, ownedRemaining: 0,
+    reconciliationAttempts: 0, reconciled: 0, reconciliationFailed: 0 };
   let now = 0;
   const clock = { now: () => now,
     /** Advance simulated time only; no timer, DNS lookup, socket, or provider client is used. */

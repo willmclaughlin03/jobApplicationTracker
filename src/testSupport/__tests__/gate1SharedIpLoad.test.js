@@ -1,4 +1,6 @@
 const net = require('node:net');
+const fs = require('node:fs');
+const path = require('node:path');
 const {
   TARGET, PROPOSED_PROFILE, CSRF_COOKIE, ROUTES, Gate1Error, validateProfile,
   validateLiveEnvironment, requestBounded, sessionCookieJar, applyCookies, cookieHeader,
@@ -33,10 +35,11 @@ function appResponse(body, status = 200, extra = {}) {
  * Emulate only the exact hosted Auth endpoints behind the installed real SDK.
  * Fault options exercise account ownership and cleanup with zero real network access.
  */
-function providerFixture({ failCreateAt = 0, failSignInAt = 0, failDeleteAt = 0, onCreate } = {}) {
+function providerFixture({ failCreateAt = 0, loseCreateResponseAt = 0, failSignInAt = 0,
+  failDeleteAt = 0, failListAt = 0, listPage, onCreate } = {}) {
   const users = new Map();
   const deleted = [];
-  const calls = { create: 0, signIn: 0, delete: 0, app: 0 };
+  const calls = { create: 0, signIn: 0, delete: 0, list: 0, app: 0 };
   const preExistingId = '90000000-0000-4000-8000-000000000001';
   users.set(preExistingId, { id: preExistingId, email: 'pre-existing@example.invalid' });
   /** Return SDK-compatible JSON without consulting a provider or real credential. */
@@ -59,6 +62,14 @@ function providerFixture({ failCreateAt = 0, failSignInAt = 0, failDeleteAt = 0,
       return new Response(response.text, { status: response.status, headers: response.headers });
     }
     expect(parsed.origin).toBe(EXPECTED_SUPABASE_URL);
+    if (parsed.pathname === '/auth/v1/admin/users' && init.method === 'GET') {
+      calls.list++;
+      expect(calls.delete).toBe(0);
+      expect(parsed.search).toBe(`?page=${calls.list}&per_page=50`);
+      if (calls.list === failListAt) return json({ message: 'SYNTHETIC_PROVIDER_SECRET' }, 503);
+      const records = [...users.values()];
+      return json({ users: listPage ? listPage(calls.list, records) : records.slice((calls.list - 1) * 50, calls.list * 50) });
+    }
     const body = JSON.parse(init.body);
     if (parsed.pathname === '/auth/v1/admin/users' && init.method === 'POST') {
       calls.create++;
@@ -67,6 +78,7 @@ function providerFixture({ failCreateAt = 0, failSignInAt = 0, failDeleteAt = 0,
         email: body.email, app_metadata: body.app_metadata };
       users.set(user.id, user);
       onCreate?.(calls.create);
+      if (calls.create === loseCreateResponseAt) throw new Error('SYNTHETIC_PROVIDER_SECRET create-response-lost');
       return json({ user });
     }
     if (parsed.pathname === '/auth/v1/token' && init.method === 'POST') {
@@ -95,9 +107,9 @@ function providerFixture({ failCreateAt = 0, failSignInAt = 0, failDeleteAt = 0,
 }
 
 /** Run installed-SDK lifecycle tests with all dependency-owned console output suppressed like the CLI. */
-async function runProvider(options = {}, config = profile()) {
+async function runProvider(options = {}, config = profile(), persistMarker = jest.fn()) {
   const fixture = providerFixture(options);
-  const services = createLiveServices(config, environment(), fixture.fetchImpl);
+  const services = createLiveServices(config, environment(), fixture.fetchImpl, { persistMarker });
   const report = await withSuppressedDependencyConsole(() => runProfile(config, services));
   return { fixture, services, report };
 }
@@ -134,6 +146,52 @@ describe('configuration, authorization and offline CLI', () => {
     expect(() => parseArguments(['--sessions', '50', '--sessions', '50'])).toThrow('configuration');
     expect(() => parseArguments(['--help', '--live'])).toThrow('configuration');
   });
+  /** Exercise authorized live CLI dispatch and report serialization with synthetic credentials and mocked services. */
+  test('authorized live CLI arguments dispatch to live services and emit an attested structured report', async () => {
+    // Import the CLI after installing spies because it captures the runner exports on import.
+    /** Keep the mocked runner exports private to this CLI test so SDK lifecycle tests use real services. */
+    await jest.isolateModulesAsync(async () => {
+      const runner = require('../../../scripts/gate1-shared-ip-load.js');
+      const services = {};
+      const factory = jest.spyOn(runner, 'createLiveServices').mockReturnValue(services);
+      const execute = jest.spyOn(runner, 'runProfile').mockResolvedValue({
+        schemaVersion: 1, mode: 'live', result: 'completed', target: TARGET, profile: PROPOSED_PROFILE,
+        appRequests: 302, provider: { created: 50, deleted: 50, ownedRemaining: 0 },
+        attribution: { deploymentAndGit: 'operator_attestation_required', buildBefore: true, buildAfter: true },
+      });
+      const { runCli: liveRunCli } = require('../../../scripts/qualify-gate1-shared-ip-load.js');
+      const env = environment();
+      const output = jest.fn(); const errors = jest.fn(); const fetchImpl = jest.fn();
+      const beforeSigint = process.listeners('SIGINT');
+      const beforeSigterm = process.listeners('SIGTERM');
+      const code = await liveRunCli([
+        '--live', '--authorize-provision-traffic-cleanup',
+        '--sessions', '50', '--cycles', '3', '--interval-ms', '31000', '--concurrency', '5',
+        '--timeout-ms', '10000', '--setup-timeout-ms', '600000', '--duration-ms', '180000',
+        '--max-app-requests', '302', '--target', TARGET.origin, '--deployment-id', TARGET.deploymentId,
+        '--git-sha', TARGET.gitSha, '--next-build-id', TARGET.nextBuildId,
+      ], env, { writeOutput: output, writeError: errors, fetchImpl });
+      expect(code).toBe(0);
+      expect(factory).toHaveBeenCalledTimes(1);
+      expect(factory).toHaveBeenCalledWith(PROPOSED_PROFILE, env, fetchImpl);
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(execute).toHaveBeenCalledWith(PROPOSED_PROFILE, services, { signal: expect.any(AbortSignal) });
+      expect(output).toHaveBeenCalledTimes(1);
+      const report = JSON.parse(output.mock.calls[0][0]);
+      expect(report).toEqual({
+        schemaVersion: 1, mode: 'live', result: 'completed', target: TARGET, profile: PROPOSED_PROFILE,
+        appRequests: 302, provider: { created: 50, deleted: 50, ownedRemaining: 0 },
+        attribution: { deploymentAndGit: 'operator_attested', buildBefore: true, buildAfter: true },
+      });
+      expect(output.mock.calls[0][0]).not.toContain('SYNTHETIC_SENTINEL');
+      expect(errors).not.toHaveBeenCalled();
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(net.Socket.prototype.connect).not.toHaveBeenCalled();
+      expect(process.listeners('SIGINT')).toEqual(beforeSigint);
+      expect(process.listeners('SIGTERM')).toEqual(beforeSigterm);
+    });
+  });
   test('help and import do not read credential values or use the network', async () => {
     const env = new Proxy({}, { get: () => { throw new Error('Environment must not be read'); } });
     const output = jest.fn();
@@ -145,6 +203,9 @@ describe('configuration, authorization and offline CLI', () => {
   test('preparation reports names/presence and the direct budgets, without credential values', () => {
     const result = preparation(PROPOSED_PROFILE, environment());
     expect(result.provider.maxDirectRequests).toBe(150);
+    expect(result.provider.maxDeleteRequests).toBe(50);
+    expect(result.provider.cleanupConcurrency).toBe(5);
+    expect(result.provider.maxReconciliationRequests).toBe(50);
     expect(result.application.maxDirectRequests).toBe(302);
     expect(JSON.stringify(result)).not.toContain('SYNTHETIC_SENTINEL');
     expect(result.hostedEvidence).toBe('not_executed');
@@ -393,7 +454,113 @@ describe('installed SDK provisioning and owned cleanup with mocked HTTP', () => 
     expect(report.provider).toMatchObject({ createAttempts: 2, created: 1, deleted: 1, unconfirmedCreates: 1 });
     expect(fixture.calls.create).toBe(2);
     expect(fixture.calls.delete).toBe(1);
+    expect(report.provider.reconciliationAttempts).toBe(1);
     expect(fixture.users.has(fixture.preExistingId)).toBe(true);
+  });
+  /** A committed create with a lost response must be found and deleted without repeating the create. */
+  test('reconciles a lost successful create response before cleanup and keeps the run marker private', async () => {
+    const persistMarker = jest.fn();
+    const { report, fixture, services } = await runProvider({ loseCreateResponseAt: 2 }, profile(), persistMarker);
+    expect(persistMarker).toHaveBeenCalledTimes(1);
+    expect(report.provider).toMatchObject({ createAttempts: 2, signInAttempts: 1, created: 2,
+      deleted: 2, unconfirmedCreates: 0, reconciled: 1, reconciliationAttempts: 1,
+      reconciliationFailed: 0, ownedRemaining: 0 });
+    expect(fixture.users.size).toBe(1);
+    expect(fixture.users.has(fixture.preExistingId)).toBe(true);
+    await services.cleanup();
+    expect(fixture.calls).toMatchObject({ create: 2, list: 1, delete: 2 });
+    expect(JSON.stringify(report)).not.toContain(persistMarker.mock.calls[0][0]);
+    expect(JSON.stringify(report)).not.toMatch(/SYNTHETIC|example.invalid|00000000-/);
+  });
+  /** Recovery scans later pages and requires both server-owned tags and the attempted account identity. */
+  test('finds an uncertain account on a later page while ignoring unrelated ownership tags', async () => {
+    const { report, fixture } = await runProvider({ loseCreateResponseAt: 2,
+      /** Put only unrelated users on page one, including partial tags and user-editable metadata. */
+      listPage: (page, users) => {
+        const lost = users.at(-1);
+        return page === 1 ? [
+          { ...lost, id: '90000000-0000-4000-8000-000000000002', app_metadata: { gate1_qualification: true, gate1_run: 'another-run' } },
+          { ...lost, id: '90000000-0000-4000-8000-000000000003', app_metadata: { gate1_run: lost.app_metadata.gate1_run } },
+          { ...lost, id: '90000000-0000-4000-8000-000000000004', app_metadata: {}, user_metadata: lost.app_metadata },
+          ...Array(47).fill(users[0]),
+        ] : [lost];
+      } }, profile({ sessions: 3 }));
+    expect(report.provider).toMatchObject({ reconciliationAttempts: 2, reconciliationFailed: 0,
+      reconciled: 1, deleted: 2, unconfirmedCreates: 0 });
+    expect(fixture.users.size).toBe(1);
+  });
+  /** A later page failure must report incomplete discovery while still draining recovered receipts. */
+  test('deletes accounts discovered before a later reconciliation failure', async () => {
+    const { report, fixture } = await runProvider({ loseCreateResponseAt: 2, failListAt: 2,
+      /** Fill page one so reconciliation must attempt page two after retaining the recovered ID. */
+      listPage: (_page, users) => [...users, ...Array(50 - users.length).fill(users[0])] }, profile({ sessions: 3 }));
+    expect(report.provider).toMatchObject({ reconciliationAttempts: 2, reconciled: 1,
+      reconciliationFailed: 1, deleted: 2, ownedRemaining: 0, unconfirmedCreates: 0 });
+    expect(report.failureCounts.reconciliation_failed).toBe(1);
+    expect(report.result).toBe('stopped');
+    expect(fixture.users.size).toBe(1);
+    expect(JSON.stringify(report)).not.toContain('SYNTHETIC_PROVIDER_SECRET');
+  });
+  /** Invalid matching IDs cannot authorize deletion or prevent valid discoveries in the same page. */
+  test('reports malformed ownership records while retaining valid discoveries', async () => {
+    const { report, fixture } = await runProvider({ loseCreateResponseAt: 2,
+      /** Prepend an invalid receipt and append a duplicate to exercise validation and deduplication. */
+      listPage: (_page, users) => [{ ...users.at(-1), id: 'invalid-id' }, ...users, users.at(-1)] });
+    expect(report.provider).toMatchObject({ reconciliationFailed: 1, reconciled: 1, deleted: 2, ownedRemaining: 0 });
+    expect(report.failureCounts.reconciliation_failed).toBe(1);
+    expect(fixture.calls.delete).toBe(2);
+  });
+  /** Failed discovery must not skip known accounts, and a failed deletion cannot skip a recovered account. */
+  test.each([{ failListAt: 1, deleted: 1, uncertain: 1 }, { failDeleteAt: 1, deleted: 1, uncertain: 0 }])(
+    'reports recovery failures and drains every confirmed account: %j',
+    /** Exercise independent discovery/deletion failures while preserving the existing cleanup workers. */
+    async ({ failListAt, failDeleteAt, deleted, uncertain }) => {
+      const { report, fixture } = await runProvider({ loseCreateResponseAt: 2, failListAt, failDeleteAt });
+      expect(report.provider.deleted).toBe(deleted);
+      expect(report.provider.unconfirmedCreates).toBe(uncertain);
+      expect(fixture.calls.delete).toBe(failListAt ? 1 : 2);
+      expect(report.result).toBe('stopped');
+      expect(fixture.users.has(fixture.preExistingId)).toBe(true);
+    });
+  /** A full final budgeted page remains an explicit incomplete scan, with deletion capacity reserved. */
+  test('bounds reconciliation by unused direct requests and still deletes discovered accounts', async () => {
+    const { report, fixture } = await runProvider({ loseCreateResponseAt: 2,
+      /** Return full pages to force the bounded scan to report exhaustion instead of looping. */
+      listPage: (_page, users) => [...users, ...Array(50 - users.length).fill(users[0])] });
+    expect(report.provider).toMatchObject({ reconciliationAttempts: 1, reconciliationFailed: 1,
+      reconciled: 1, deleted: 2, ownedRemaining: 0 });
+    expect(fixture.calls.create + fixture.calls.signIn + fixture.calls.list + fixture.calls.delete).toBe(6);
+    expect(report.failureCounts.reconciliation_failed).toBe(1);
+  });
+  /** Durable persistence failure must stop provisioning before any credential-bearing provider request. */
+  test('fails closed when the run marker cannot be persisted', async () => {
+    /** Emulate a private filesystem failure; only its fixed public code may reach the report. */
+    const persistMarker = jest.fn(() => { throw new Error('SYNTHETIC_PRIVATE_PATH'); });
+    const { report, fixture } = await runProvider({}, profile(), persistMarker);
+    expect(report.failureCounts.run_marker_failed).toBe(1);
+    expect(fixture.calls).toMatchObject({ create: 0, signIn: 0, list: 0, delete: 0 });
+    expect(JSON.stringify(report)).not.toContain('SYNTHETIC_PRIVATE_PATH');
+  });
+  /** Verify the real persistence boundary writes only tags, flushes exclusively, and precedes creates. */
+  test('persists the run marker once in the ignored recovery directory before provisioning', async () => {
+    const mkdir = jest.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+    const write = jest.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
+    const config = profile();
+    const fixture = providerFixture({
+      /** Each synthetic create must observe a completed marker write. */
+      onCreate: () => expect(write).toHaveBeenCalledTimes(1),
+    });
+    const services = createLiveServices(config, environment(), fixture.fetchImpl);
+    const report = await withSuppressedDependencyConsole(() => runProfile(config, services));
+    expect(report.result).toBe('completed');
+    expect(write).toHaveBeenCalledTimes(1);
+    const [filename, content, options] = write.mock.calls[0];
+    const marker = JSON.parse(content);
+    expect(marker).toEqual({ gate1_qualification: true, gate1_run: expect.any(String) });
+    expect(path.basename(filename)).toBe(`${marker.gate1_run}.json`);
+    expect(path.basename(path.dirname(filename))).toBe('gate1-runs');
+    expect(mkdir).toHaveBeenCalledWith(path.dirname(filename), { recursive: true });
+    expect(options).toEqual({ flag: 'wx', mode: 0o600, flush: true });
   });
   test('cleanup failure is visible and does not skip other owned users or retry deletion', async () => {
     const { report, fixture } = await runProvider({ failDeleteAt: 1 });
@@ -406,7 +573,7 @@ describe('installed SDK provisioning and owned cleanup with mocked HTTP', () => 
     const controller = new AbortController();
     const config = profile();
     const fixture = providerFixture({ onCreate: () => queueMicrotask(() => controller.abort(new Gate1Error('cancelled'))) });
-    const services = createLiveServices(config, environment(), fixture.fetchImpl);
+    const services = createLiveServices(config, environment(), fixture.fetchImpl, { persistMarker: jest.fn() });
     const report = await withSuppressedDependencyConsole(() => runProfile(config, services, { signal: controller.signal }));
     expect(report.result).toBe('stopped');
     expect(report.requests.session).toBe(0);
@@ -418,7 +585,7 @@ describe('installed SDK provisioning and owned cleanup with mocked HTTP', () => 
   test('cancellation before starting performs neither provisioning nor traffic', async () => {
     const controller = new AbortController(); controller.abort();
     const config = profile(); const fixture = providerFixture();
-    const services = createLiveServices(config, environment(), fixture.fetchImpl);
+    const services = createLiveServices(config, environment(), fixture.fetchImpl, { persistMarker: jest.fn() });
     const report = await runProfile(config, services, { signal: controller.signal });
     expect(report.failureCounts.cancelled).toBe(1);
     expect(fixture.fetchImpl).not.toHaveBeenCalled();
