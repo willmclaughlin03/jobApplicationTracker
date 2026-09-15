@@ -614,12 +614,13 @@ async function runProfile(profileInput, services, { signal, dryRun = false,
 
   try {
     checkSignal(signal);
+    const setupDeadline = clock.now() + profile.setupTimeoutMs;
     setup = phaseSignal(signal, profile.setupTimeoutMs, 'setup_deadline');
     verifyBuild(await request('build', null, setup.signal));
     report.attribution.buildBefore = true;
     for (let index = 0; index < profile.sessions; index++) {
       if (index > 0) {
-        const resumeAt = clock.now() + PROVISIONING_COOLDOWN_MS;
+        const resumeAt = Math.min(clock.now() + PROVISIONING_COOLDOWN_MS, setupDeadline);
         // Recheck monotonic time in case a timer wakes early; never catch up with a burst.
         while (clock.now() < resumeAt) {
           checkSignal(setup.signal);
@@ -627,6 +628,8 @@ async function runProfile(profileInput, services, { signal, dryRun = false,
         }
       }
       checkSignal(setup.signal);
+      // The injected clock also enforces setup time when virtual waits do not advance real timers.
+      if (clock.now() >= setupDeadline) throw new Gate1Error('setup_deadline');
       const state = await services.provision(setup.signal);
       if (!state?.userId || state.session?.user?.id !== state.userId || !(state.jar instanceof Map)
         || !state.session.access_token || !state.session.refresh_token) throw new Gate1Error('identity_mismatch');

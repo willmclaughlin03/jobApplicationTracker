@@ -314,6 +314,43 @@ describe('cookie jars and HTTP boundaries', () => {
 });
 
 describe('scheduling, identity, exceptions and accounting', () => {
+  /** Virtual setup time must stop provisioning and clean owned accounts without advancing real timers. */
+  test('virtual-clock setup deadline stops before the second provisioning attempt', async () => {
+    jest.useFakeTimers();
+    const config = profile({ sessions: 2, setupTimeoutMs: 1000 });
+    const offline = createOfflineServices(config);
+    await offline.clock.sleep(10000);
+    const started = offline.clock.now();
+    const report = await runProfile(config, offline.services, { dryRun: true, clock: offline.clock });
+    expect(report.failureCounts).toEqual({ setup_deadline: 1 });
+    expect(report).toMatchObject({ result: 'stopped', preparedSessions: 1, completedCycles: 0,
+      requests: { build: 1, session: 0, csrf: 0 } });
+    expect(report.provider).toMatchObject({ createAttempts: 1, signInAttempts: 1, deleted: 1,
+      cleanupFailed: 0, ownedRemaining: 0 });
+    expect(offline.clock.now() - started).toBe(config.setupTimeoutMs);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+  /** Build verification consumes the same setup budget, including the exact deadline boundary. */
+  test.each([1000, 1001])('build verification taking %i ms prevents the first provisioning attempt',
+    /** Advance only the injected clock during the build response to exercise the first-attempt guard. */
+    async elapsedMs => {
+      jest.useFakeTimers();
+      const config = profile({ sessions: 2, setupTimeoutMs: 1000 });
+      const offline = createOfflineServices(config);
+      const original = offline.services.request;
+      /** Model a slow build response while retaining the valid offline build identity. */
+      offline.services.request = async (...args) => {
+        const started = offline.clock.now();
+        const response = await original(...args);
+        await offline.clock.sleep(elapsedMs - (offline.clock.now() - started));
+        return response;
+      };
+      const report = await runProfile(config, offline.services, { dryRun: true, clock: offline.clock });
+      expect(report.failureCounts).toEqual({ setup_deadline: 1 });
+      expect(report).toMatchObject({ result: 'stopped', preparedSessions: 0, appRequests: 1 });
+      expect(report.provider).toMatchObject({ createAttempts: 0, signInAttempts: 0, ownedRemaining: 0 });
+      expect(jest.getTimerCount()).toBe(0);
+    });
   test('visibility cadence is per session, mount throttle starts after response, and requests never overlap within a jar', async () => {
     const config = profile({ sessions: 3, concurrency: 2, cycles: 3 });
     const offline = createOfflineServices(config);
