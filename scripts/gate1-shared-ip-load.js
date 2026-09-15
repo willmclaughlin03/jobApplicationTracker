@@ -14,9 +14,9 @@ const {
 
 const TARGET = Object.freeze({
   origin: 'https://job-application-tracker-kappa-seven.vercel.app',
-  deploymentId: 'dpl_67mvmPmnq9GArtsBaTL1nc1m9TB1',
-  gitSha: '7ac94ff885f515f87c2f16fce98529d3bc3a51c8',
-  nextBuildId: 'WjDE6P7t35Ab1eWqO48Z_',
+  deploymentId: 'dpl_3YVZFouJ9sJavy484DzWrwAW3qA1',
+  gitSha: '5cc0f9af06c717feecb2ecbc6809a7bea9168556',
+  nextBuildId: 'jTf6vCUyNRjB4Y2DBy_AR',
 });
 const PROPOSED_PROFILE = Object.freeze({
   sessions: 50, cycles: 3, intervalMs: 31000, concurrency: 5,
@@ -31,6 +31,8 @@ const CSRF_COOKIE = '__Host-csrf-token';
 const cookieExpirations = new WeakMap();
 const ROUTES = Object.freeze({ session: '/api/auth/session', csrf: '/api/auth/csrf' });
 const RECONCILIATION_PAGE_SIZE = 50;
+// Pause between account preparations to reduce password sign-in bursts against the provider's IP limit.
+const PROVISIONING_COOLDOWN_MS = 2500;
 const ERROR_CODES = new Set([
   'configuration', 'cancelled', 'timeout', 'setup_deadline', 'duration_limit',
   'request_budget', 'wrong_target', 'redirect', 'build_mismatch', 'response_size',
@@ -101,7 +103,7 @@ function cancellationError(signal) {
   return new Gate1Error(code === 'unexpected_error' ? 'cancelled' : code);
 }
 
-/** Wait for a visibility interval; remove the timer and listener on completion or cancellation. */
+/** Wait for setup pacing or a visibility interval; release the timer/listener on completion or cancellation. */
 function sleep(ms, signal) {
   checkSignal(signal);
   return new Promise((resolve, reject) => {
@@ -302,6 +304,7 @@ function createLiveServices(profileInput, env, fetchImpl = globalThis.fetch, {
   const stats = { createAttempts: 0, signInAttempts: 0, deleteAttempts: 0,
     created: 0, deleted: 0, cleanupFailed: 0, unconfirmedCreates: 0,
     reconciliationAttempts: 0, reconciled: 0, reconciliationFailed: 0 };
+  const statusCounts = {};
   let cleaning = false;
 
   /** Limit each SDK operation to one exact method/URL; disable implicit SDK retries and redirects. */
@@ -324,6 +327,10 @@ function createLiveServices(profileInput, env, fetchImpl = globalThis.fetch, {
         // does not discard a returned ownership receipt. No subsequent create/sign-in starts after abort.
         const response = await requestBounded(url, init, { fetchImpl,
           signal: operation === 'create' ? undefined : signal, timeoutMs: profile.timeoutMs });
+        if (Number.isInteger(response.status) && response.status >= 100 && response.status <= 599) {
+          const key = `${operation}_${response.status}`;
+          statusCounts[key] = (statusCounts[key] || 0) + 1;
+        }
         return new Response(response.text, { status: response.status, headers: response.headers });
       } catch (error) {
         transportFailure = error;
@@ -452,8 +459,8 @@ function createLiveServices(profileInput, env, fetchImpl = globalThis.fetch, {
     await Promise.all(Array.from({ length: Math.min(5, pending.length) }, worker));
   }
 
-  /** Expose only aggregate lifecycle counts; owned IDs and credentials stay in the service closure. */
-  function snapshot() { return { ...stats, ownedRemaining: owned.size }; }
+  /** Expose aggregate lifecycle and completed HTTP status counts; IDs, bodies, and headers stay private. */
+  function snapshot() { return { ...stats, ownedRemaining: owned.size, statusCounts: { ...statusCounts } }; }
   return { provision, request, cleanup, snapshot };
 }
 
@@ -504,6 +511,7 @@ async function runProfile(profileInput, services, { signal, dryRun = false,
   const report = {
     schemaVersion: 1, mode: dryRun ? 'dry_run' : 'live', gate1Status: 'open',
     result: 'stopped', target: TARGET, profile,
+    setup: { provisioningCooldownMs: PROVISIONING_COOLDOWN_MS },
     attribution: { deploymentAndGit: 'operator_attestation_required', buildBefore: false, buildAfter: false },
     startedAt: new Date().toISOString(), preparedSessions: 0, distinctSessions: 0,
     completedCycles: 0, appRequests: 0, maxObservedConcurrency: 0,
@@ -606,11 +614,22 @@ async function runProfile(profileInput, services, { signal, dryRun = false,
 
   try {
     checkSignal(signal);
+    const setupDeadline = clock.now() + profile.setupTimeoutMs;
     setup = phaseSignal(signal, profile.setupTimeoutMs, 'setup_deadline');
     verifyBuild(await request('build', null, setup.signal));
     report.attribution.buildBefore = true;
     for (let index = 0; index < profile.sessions; index++) {
+      if (index > 0) {
+        const resumeAt = Math.min(clock.now() + PROVISIONING_COOLDOWN_MS, setupDeadline);
+        // Recheck monotonic time in case a timer wakes early; never catch up with a burst.
+        while (clock.now() < resumeAt) {
+          checkSignal(setup.signal);
+          await clock.sleep(resumeAt - clock.now(), setup.signal);
+        }
+      }
       checkSignal(setup.signal);
+      // The injected clock also enforces setup time when virtual waits do not advance real timers.
+      if (clock.now() >= setupDeadline) throw new Gate1Error('setup_deadline');
       const state = await services.provision(setup.signal);
       if (!state?.userId || state.session?.user?.id !== state.userId || !(state.jar instanceof Map)
         || !state.session.access_token || !state.session.refresh_token) throw new Gate1Error('identity_mismatch');
@@ -663,6 +682,11 @@ async function runProfile(profileInput, services, { signal, dryRun = false,
     if (Object.values(report.provider).some(value => value === null) || report.provider.cleanupFailed
       || report.provider.unconfirmedCreates || report.provider.ownedRemaining) stop(new Gate1Error('cleanup_failed'));
     if (report.provider.reconciliationFailed) stop(new Gate1Error('reconciliation_failed'));
+    // Validate status keys and counts at the report boundary, never copying arbitrary provider fields.
+    const statuses = z.record(z.string().regex(/^(create|signIn|delete|list)_[1-5]\d{2}$/),
+      z.number().int().positive().max(profile.sessions)).safeParse(lifecycle.statusCounts);
+    report.provider.statusCounts = statuses.success ? statuses.data : {};
+    if (!statuses.success) stop(new Gate1Error('response_shape'));
     for (const state of sessions) { state.jar.clear(); state.session = null; state.userId = null; }
     userIds.clear(); accessTokens.clear(); refreshTokens.clear(); jars.clear();
   }
@@ -718,11 +742,17 @@ function createOfflineServices(profileInput) {
   }
   /** Delete only this mock pool's receipts, mirroring the aggregate live lifecycle. */
   async function cleanup() { stats.deleteAttempts += owned.size; stats.deleted += owned.size; owned.clear(); }
-  /** Return safe mock counters; no synthetic identifiers are included in dry-run output. */
-  function snapshot() { return { ...stats, ownedRemaining: owned.size }; }
+  /** Return aggregate mock lifecycle/status counts; no synthetic identifiers reach dry-run output. */
+  function snapshot() {
+    const statusCounts = {};
+    if (stats.created) statusCounts.create_200 = stats.created;
+    if (stats.signInAttempts) statusCounts.signIn_200 = stats.signInAttempts;
+    if (stats.deleted) statusCounts.delete_200 = stats.deleted;
+    return { ...stats, ownedRemaining: owned.size, statusCounts };
+  }
   return { services: { provision, request, cleanup, snapshot }, clock };
 }
 
-module.exports = { TARGET, PROPOSED_PROFILE, ENV_NAMES, CSRF_COOKIE, ROUTES, Gate1Error,
+module.exports = { TARGET, PROPOSED_PROFILE, PROVISIONING_COOLDOWN_MS, ENV_NAMES, CSRF_COOKIE, ROUTES, Gate1Error,
   failureCode, validateProfile, validateLiveEnvironment, requestBounded, sessionCookieJar,
   applyCookies, cookieHeader, createLiveServices, runProfile, createOfflineServices, sleep };

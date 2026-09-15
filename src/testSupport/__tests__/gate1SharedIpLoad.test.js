@@ -2,7 +2,7 @@ const net = require('node:net');
 const fs = require('node:fs');
 const path = require('node:path');
 const {
-  TARGET, PROPOSED_PROFILE, CSRF_COOKIE, ROUTES, Gate1Error, validateProfile,
+  TARGET, PROPOSED_PROFILE, PROVISIONING_COOLDOWN_MS, CSRF_COOKIE, ROUTES, Gate1Error, validateProfile,
   validateLiveEnvironment, requestBounded, sessionCookieJar, applyCookies, cookieHeader,
   createLiveServices, createOfflineServices, runProfile, sleep,
 } = require('../../../scripts/gate1-shared-ip-load.js');
@@ -36,7 +36,7 @@ function appResponse(body, status = 200, extra = {}) {
  * Fault options exercise account ownership and cleanup with zero real network access.
  */
 function providerFixture({ failCreateAt = 0, loseCreateResponseAt = 0, failSignInAt = 0,
-  failDeleteAt = 0, failListAt = 0, listPage, onCreate } = {}) {
+  signInFailureStatus = 400, failDeleteAt = 0, failListAt = 0, listPage, onCreate, onSignIn } = {}) {
   const users = new Map();
   const deleted = [];
   const calls = { create: 0, signIn: 0, delete: 0, list: 0, app: 0 };
@@ -84,7 +84,9 @@ function providerFixture({ failCreateAt = 0, loseCreateResponseAt = 0, failSignI
     if (parsed.pathname === '/auth/v1/token' && init.method === 'POST') {
       expect(parsed.search).toBe('?grant_type=password');
       calls.signIn++;
-      if (calls.signIn === failSignInAt) return json({ message: 'SYNTHETIC_PROVIDER_SECRET', code: 'bad_credentials' }, 400);
+      onSignIn?.();
+      if (calls.signIn === failSignInAt) return json({ message: 'SYNTHETIC_PROVIDER_SECRET',
+        code: 'SYNTHETIC_PRIVATE_PROVIDER_CODE' }, signInFailureStatus);
       const user = [...users.values()].find(candidate => candidate.email === body.email);
       const payload = Buffer.from(JSON.stringify({ sub: user.id, exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url');
       return json({ user, access_token: `eyJhbGciOiJIUzI1NiJ9.${payload}.synthetic-signature`,
@@ -106,11 +108,12 @@ function providerFixture({ failCreateAt = 0, loseCreateResponseAt = 0, failSignI
   return { fetchImpl, calls, users, deleted, preExistingId };
 }
 
-/** Run installed-SDK lifecycle tests with all dependency-owned console output suppressed like the CLI. */
-async function runProvider(options = {}, config = profile(), persistMarker = jest.fn()) {
+/** Run the installed SDK with mocked HTTP and a virtual clock; callers can inject real fake-timer waits. */
+async function runProvider(options = {}, config = profile(), persistMarker = jest.fn(), runOptions = {}) {
   const fixture = providerFixture(options);
   const services = createLiveServices(config, environment(), fixture.fetchImpl, { persistMarker });
-  const report = await withSuppressedDependencyConsole(() => runProfile(config, services));
+  const report = await withSuppressedDependencyConsole(() => runProfile(config, services,
+    { clock: createOfflineServices(config).clock, ...runOptions }));
   return { fixture, services, report };
 }
 
@@ -205,6 +208,7 @@ describe('configuration, authorization and offline CLI', () => {
     expect(result.provider.maxDirectRequests).toBe(150);
     expect(result.provider.maxDeleteRequests).toBe(50);
     expect(result.provider.cleanupConcurrency).toBe(5);
+    expect(result.provider.provisioningCooldownMs).toBe(2500);
     expect(result.provider.maxReconciliationRequests).toBe(50);
     expect(result.application.maxDirectRequests).toBe(302);
     expect(JSON.stringify(result)).not.toContain('SYNTHETIC_SENTINEL');
@@ -219,6 +223,8 @@ describe('configuration, authorization and offline CLI', () => {
       appRequests: 302, maxObservedConcurrency: 5, identityMatches: 150,
       hostedEvidence: 'not_executed', gate1Status: 'open' });
     expect(report.provider).toMatchObject({ created: 50, deleted: 50, ownedRemaining: 0 });
+    expect(report.setup).toEqual({ provisioningCooldownMs: 2500 });
+    expect(report.provider.statusCounts).toEqual({ create_200: 50, signIn_200: 50, delete_200: 50 });
     expect(output.mock.calls[0][0]).not.toMatch(/00000000-|synthetic-access|synthetic-refresh|base64-|__Host-csrf-token/);
     expect(errors).not.toHaveBeenCalled();
     expect(globalThis.fetch).not.toHaveBeenCalled();
@@ -308,6 +314,43 @@ describe('cookie jars and HTTP boundaries', () => {
 });
 
 describe('scheduling, identity, exceptions and accounting', () => {
+  /** Virtual setup time must stop provisioning and clean owned accounts without advancing real timers. */
+  test('virtual-clock setup deadline stops before the second provisioning attempt', async () => {
+    jest.useFakeTimers();
+    const config = profile({ sessions: 2, setupTimeoutMs: 1000 });
+    const offline = createOfflineServices(config);
+    await offline.clock.sleep(10000);
+    const started = offline.clock.now();
+    const report = await runProfile(config, offline.services, { dryRun: true, clock: offline.clock });
+    expect(report.failureCounts).toEqual({ setup_deadline: 1 });
+    expect(report).toMatchObject({ result: 'stopped', preparedSessions: 1, completedCycles: 0,
+      requests: { build: 1, session: 0, csrf: 0 } });
+    expect(report.provider).toMatchObject({ createAttempts: 1, signInAttempts: 1, deleted: 1,
+      cleanupFailed: 0, ownedRemaining: 0 });
+    expect(offline.clock.now() - started).toBe(config.setupTimeoutMs);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+  /** Build verification consumes the same setup budget, including the exact deadline boundary. */
+  test.each([1000, 1001])('build verification taking %i ms prevents the first provisioning attempt',
+    /** Advance only the injected clock during the build response to exercise the first-attempt guard. */
+    async elapsedMs => {
+      jest.useFakeTimers();
+      const config = profile({ sessions: 2, setupTimeoutMs: 1000 });
+      const offline = createOfflineServices(config);
+      const original = offline.services.request;
+      /** Model a slow build response while retaining the valid offline build identity. */
+      offline.services.request = async (...args) => {
+        const started = offline.clock.now();
+        const response = await original(...args);
+        await offline.clock.sleep(elapsedMs - (offline.clock.now() - started));
+        return response;
+      };
+      const report = await runProfile(config, offline.services, { dryRun: true, clock: offline.clock });
+      expect(report.failureCounts).toEqual({ setup_deadline: 1 });
+      expect(report).toMatchObject({ result: 'stopped', preparedSessions: 0, appRequests: 1 });
+      expect(report.provider).toMatchObject({ createAttempts: 0, signInAttempts: 0, ownedRemaining: 0 });
+      expect(jest.getTimerCount()).toBe(0);
+    });
   test('visibility cadence is per session, mount throttle starts after response, and requests never overlap within a jar', async () => {
     const config = profile({ sessions: 3, concurrency: 2, cycles: 3 });
     const offline = createOfflineServices(config);
@@ -429,6 +472,60 @@ describe('scheduling, identity, exceptions and accounting', () => {
 });
 
 describe('installed SDK provisioning and owned cleanup with mocked HTTP', () => {
+  /** Slow setup must respect the shared-IP sign-in cadence without consuming the separate load budget. */
+  test('paces all 50 sign-ins even after an early timer wake and completes all application cycles', async () => {
+    const config = profile({ sessions: 50, cycles: 3, durationMs: 70000 });
+    const clock = createOfflineServices(config).clock;
+    const wait = clock.sleep;
+    let wokeEarly = false;
+    /** Emulate one early timer wake so the runner must recheck its monotonic deadline. */
+    clock.sleep = async (ms, signal) => {
+      const delay = wokeEarly ? ms : ms / 2;
+      wokeEarly = true;
+      await wait(delay, signal);
+    };
+    const signIns = [];
+    const { report, fixture } = await runProvider({
+      /** Observe only synthetic dispatch times, without changing provider behavior. */
+      onSignIn: () => signIns.push(clock.now()),
+    }, config, jest.fn(), { clock });
+    expect(signIns).toHaveLength(50);
+    for (let index = 1; index < signIns.length; index++) {
+      expect(signIns[index] - signIns[index - 1]).toBeGreaterThanOrEqual(PROVISIONING_COOLDOWN_MS);
+    }
+    expect(signIns.at(-1)).toBeGreaterThan(config.durationMs);
+    expect(report).toMatchObject({ result: 'completed', preparedSessions: 50, completedCycles: 3,
+      appRequests: 302, identityMatches: 150 });
+    expect(fixture.calls).toEqual({ create: 50, signIn: 50, delete: 50, list: 0, app: 302 });
+    expect(report.provider.statusCounts).toEqual({ create_200: 50, signIn_200: 50, delete_200: 50 });
+  });
+  /** A setup deadline during the pause must stop before another create and leave cleanup active. */
+  test('setup deadline interrupts pacing, deletes the first account, and releases timers', async () => {
+    jest.useFakeTimers();
+    const pending = runProvider({}, profile({ setupTimeoutMs: 1000 }), jest.fn(), { clock: { now: Date.now, sleep } });
+    await jest.advanceTimersByTimeAsync(1000);
+    const { report, fixture } = await pending;
+    expect(report.failureCounts).toEqual({ setup_deadline: 1 });
+    expect(report).toMatchObject({ result: 'stopped', preparedSessions: 1, appRequests: 1 });
+    expect(fixture.calls).toEqual({ create: 1, signIn: 1, delete: 1, list: 0, app: 1 });
+    expect(report.provider).toMatchObject({ deleted: 1, cleanupFailed: 0, ownedRemaining: 0 });
+    expect(jest.getTimerCount()).toBe(0);
+  });
+  /** Operator cancellation during pacing must not provision another account or leak the abort reason. */
+  test('cancellation interrupts pacing and still deletes owned accounts without retries', async () => {
+    jest.useFakeTimers();
+    const controller = new AbortController();
+    const pending = runProvider({}, profile(), jest.fn(), { signal: controller.signal, clock: { now: Date.now, sleep } });
+    await jest.advanceTimersByTimeAsync(0);
+    controller.abort('SYNTHETIC_PRIVATE_ABORT_REASON');
+    const { report, fixture } = await pending;
+    expect(report.failureCounts).toEqual({ cancelled: 1 });
+    expect(report.preparedSessions).toBe(1);
+    expect(fixture.calls).toEqual({ create: 1, signIn: 1, delete: 1, list: 0, app: 1 });
+    expect(report.provider).toMatchObject({ deleted: 1, cleanupFailed: 0, ownedRemaining: 0 });
+    expect(JSON.stringify(report)).not.toContain('SYNTHETIC_PRIVATE_ABORT_REASON');
+    expect(jest.getTimerCount()).toBe(0);
+  });
   test('creates independent sessions, applies cookies, and deletes only owned accounts once', async () => {
     const { fixture, services, report } = await runProvider();
     expect(report.result).toBe('completed');
@@ -440,14 +537,20 @@ describe('installed SDK provisioning and owned cleanup with mocked HTTP', () => 
     expect(fixture.calls.delete).toBe(2);
     expect(JSON.stringify(report)).not.toMatch(/SYNTHETIC|synthetic-refresh|gate0-|example.invalid|00000000-/);
   });
-  test('sign-in failure after creation deletes the partially prepared account and earlier accounts', async () => {
-    const { report, fixture } = await runProvider({ failSignInAt: 2 });
-    expect(report.result).toBe('stopped');
-    expect(report.provider).toMatchObject({ created: 2, deleted: 2, cleanupFailed: 0 });
-    expect(report.requests.session).toBe(0);
-    expect(fixture.calls.signIn).toBe(2);
-    expect(JSON.stringify(report)).not.toContain('SYNTHETIC_PROVIDER_SECRET');
-  });
+  /** Preserve the numeric rejection status while stopping once and cleaning both owned accounts. */
+  test.each([400, 429, 503])('sign-in HTTP %i is sanitized and cleans up without retries',
+    /** Provider bodies/codes remain private even when their numeric status is useful for diagnosis. */
+    async signInFailureStatus => {
+      const { report, fixture } = await runProvider({ failSignInAt: 2, signInFailureStatus });
+      expect(report.result).toBe('stopped');
+      expect(report.failureCounts).toEqual({ sign_in_failed: 1 });
+      expect(report.provider).toMatchObject({ created: 2, deleted: 2, cleanupFailed: 0 });
+      expect(report.provider.statusCounts).toEqual({ create_200: 2, signIn_200: 1,
+        [`signIn_${signInFailureStatus}`]: 1, delete_200: 2 });
+      expect(report.requests.session).toBe(0);
+      expect(fixture.calls).toEqual({ create: 2, signIn: 2, delete: 2, list: 0, app: 1 });
+      expect(JSON.stringify(report)).not.toMatch(/SYNTHETIC|gate0-|example.invalid|00000000-/);
+    });
   test('lost create response is reported as uncertain and no unknown/pre-existing account is deleted', async () => {
     const { report, fixture } = await runProvider({ failCreateAt: 2 });
     expect(report.result).toBe('stopped');
@@ -572,7 +675,8 @@ describe('installed SDK provisioning and owned cleanup with mocked HTTP', () => 
       onCreate: () => expect(write).toHaveBeenCalledTimes(1),
     });
     const services = createLiveServices(config, environment(), fixture.fetchImpl);
-    const report = await withSuppressedDependencyConsole(() => runProfile(config, services));
+    const report = await withSuppressedDependencyConsole(() => runProfile(config, services,
+      { clock: createOfflineServices(config).clock }));
     expect(report.result).toBe('completed');
     expect(write).toHaveBeenCalledTimes(1);
     const [filename, content, options] = write.mock.calls[0];
