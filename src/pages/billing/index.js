@@ -16,6 +16,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import { ArrowLeft, ArrowRight, CreditCard, Download, ExternalLink } from 'lucide-react';
+import { z } from 'zod';
 import ProfileDropdown from '../../client/components/ProfileDropdown';
 import PublicPageShell, {
   PUBLIC_PRIMARY_ACTION_CLASS_NAME,
@@ -44,6 +45,7 @@ import {
 import { ERROR_MESSAGES } from '../../shared/errors.js';
 
 const STORAGE_STATUS_UNAVAILABLE_MESSAGE = 'Storage details are temporarily unavailable. Please refresh before relying on archive or downgrade counts.';
+const BILLING_STATUS_VALUE_SCHEMA = z.string();
 
 /**
  * Format a billing period timestamp for display in the billing summary.
@@ -201,7 +203,15 @@ export default function BillingPage() {
 
         const storageStatusFailed = Boolean(storageResult.error || storageResult.data?.error);
 
-        setBillingStatus(result.data?.data ?? null);
+        const billingStatusData = result.data?.data;
+        // Null is canonical for no subscription; other non-string statuses are unavailable.
+        const hasNoSubscription = billingStatusData?.status === null
+          && billingStatusData?.hasSubscription === false
+          && billingStatusData?.entitled === false;
+        const hasValidStatus = BILLING_STATUS_VALUE_SCHEMA.safeParse(billingStatusData?.status).success
+          || hasNoSubscription;
+
+        setBillingStatus(hasValidStatus ? billingStatusData : null);
         setStorageSummary(storageStatusFailed ? null : storageResult.data?.data ?? null);
         setStorageStatusErrorMessage(storageStatusFailed ? STORAGE_STATUS_UNAVAILABLE_MESSAGE : '');
         setLoadState(BILLING_PAGE_LOAD_STATES.READY);
@@ -382,7 +392,7 @@ export default function BillingPage() {
           <div className="min-w-0 rounded-dashboard-control border border-dashboard-line bg-dashboard-surface-raised/70 p-4">
             <dt className="text-dashboard-caption text-dashboard-muted">Subscription status</dt>
             <dd className="mt-2 break-words text-base font-medium capitalize text-dashboard-text">
-              {loading ? 'Loading...' : statusUnavailable ? 'Unavailable' : billingStatus?.status?.replace(/_/g, ' ') ?? 'none'}
+              {loading ? 'Loading...' : statusUnavailable ? 'Unavailable' : billingStatus?.status?.replace(/_/g, ' ') ?? 'Not subscribed'}
             </dd>
           </div>
           <div className="min-w-0 rounded-dashboard-control border border-dashboard-line bg-dashboard-surface-raised/70 p-4">
