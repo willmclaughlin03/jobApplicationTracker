@@ -16,7 +16,7 @@ describe('billingPageState', () => {
         })
       ).toEqual({
         title: 'Billing status unavailable',
-        description: 'We could not verify your local billing state right now. Refresh this page before starting checkout or opening the billing portal.',
+        description: 'We could not verify your subscription right now. Refresh this page before starting checkout or opening the billing portal.',
       });
     });
 
@@ -28,7 +28,7 @@ describe('billingPageState', () => {
         })
       ).toEqual({
         title: 'Billing status unavailable',
-        description: 'We could not verify your local billing state right now. Refresh this page before starting checkout or opening the billing portal.',
+        description: 'We could not verify your subscription right now. Refresh this page before starting checkout or opening the billing portal.',
       });
     });
 
@@ -40,7 +40,7 @@ describe('billingPageState', () => {
         })
       ).toEqual({
         title: 'Loading billing status',
-        description: 'Checking your local billing state.',
+        description: 'Checking your subscription details.',
       });
     });
   });

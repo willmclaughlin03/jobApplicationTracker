@@ -15,6 +15,12 @@ export async function getServerSideProps({ res }) {
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
+import { ArrowRight, CheckCircle2, CircleAlert, Clock3, RefreshCw } from 'lucide-react';
+import PublicPageShell, {
+  PUBLIC_PRIMARY_ACTION_CLASS_NAME,
+  PUBLIC_SECONDARY_ACTION_CLASS_NAME,
+} from '../../client/components/public/PublicPageShell';
+import Spinner from '../../client/components/Spinner';
 import { useAuth } from '../../client/contexts/AuthContext';
 import { api } from '../../client/lib/api.js';
 import {
@@ -76,7 +82,7 @@ function getOutcomeCopy(outcome, checkoutState) {
     case BILLING_SUCCESS_OUTCOMES.ACTIVE:
       return {
         title: 'Premium access is active',
-        description: 'Your local billing state is active and premium access is ready to use.',
+        description: 'Your subscription is active and your premium features are ready to use.',
       };
     case BILLING_SUCCESS_OUTCOMES.REAUTH:
       return {
@@ -86,13 +92,13 @@ function getOutcomeCopy(outcome, checkoutState) {
     case BILLING_SUCCESS_OUTCOMES.RATE_LIMITED:
       return {
         title: 'Polling paused',
-        description: 'The billing write rate limit was reached. Refresh this page in a moment to continue.',
+        description: 'We need a moment before checking again. Try refreshing your payment status shortly.',
       };
     case BILLING_SUCCESS_OUTCOMES.UNAVAILABLE:
       return {
         title: 'Billing is temporarily unavailable',
         supportLines: [
-          'Your payment may have completed, but we couldn’t confirm the local billing update yet.',
+          'Your payment may have completed, but we couldn’t confirm your subscription yet.',
           'Please refresh this page or return in a few minutes to check again.',
           'If premium access still doesn’t appear, contact support at tracktheapp.support@gmail.com.',
         ],
@@ -101,7 +107,7 @@ function getOutcomeCopy(outcome, checkoutState) {
       return {
         title: 'Still processing',
         description: checkoutState === 'free'
-          ? 'Checkout completed, but the local billing state is still catching up. Refresh this page to check again.'
+          ? 'Checkout completed, but your subscription is still updating. Refresh this page to check again.'
           : 'Stripe is still finishing the checkout flow. Refresh this page to check again.',
       };
     case BILLING_SUCCESS_OUTCOMES.ERROR:
@@ -111,14 +117,14 @@ function getOutcomeCopy(outcome, checkoutState) {
     case BILLING_SUCCESS_OUTCOMES.TERMINAL_ERROR:
       return {
         title: 'Checkout could not be confirmed',
-        description: 'The redirect completed, but premium access was not confirmed from local billing state.',
+        description: 'We could not confirm premium access. Return to billing to check your subscription status.',
       };
     case BILLING_SUCCESS_OUTCOMES.CONTINUE:
     default:
       return {
         title: 'Finalizing billing',
         description: checkoutState === 'free'
-          ? 'Checkout completed. Waiting for the local billing state to reflect the update.'
+          ? 'Checkout completed. Waiting for your subscription to update.'
           : 'Waiting for Stripe to finish the checkout flow.',
       };
   }
@@ -350,9 +356,12 @@ export default function BillingSuccessPage() {
 
   if (authLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-100 text-gray-500">
-        Loading...
-      </div>
+      <PublicPageShell>
+        <div role="status" aria-live="polite" className="flex items-center gap-3 text-dashboard-body text-dashboard-muted">
+          <Spinner size="sm" className="text-dashboard-accent" />
+          <span>Loading...</span>
+        </div>
+      </PublicPageShell>
     );
   }
 
@@ -363,70 +372,88 @@ export default function BillingSuccessPage() {
   const copy = getOutcomeCopy(outcome, checkoutState);
   const refreshDisabled = isBillingSuccessRefreshDisabled(rateLimitCooldownSeconds);
   const refreshButtonLabel = getBillingSuccessRefreshButtonLabel(rateLimitCooldownSeconds);
+  const isPending = outcome === BILLING_SUCCESS_OUTCOMES.CONTINUE || refreshPending;
+  const isActive = outcome === BILLING_SUCCESS_OUTCOMES.ACTIVE;
+  const isTerminalError = outcome === BILLING_SUCCESS_OUTCOMES.TERMINAL_ERROR;
+  const OutcomeIcon = isActive ? CheckCircle2 : isTerminalError ? CircleAlert : Clock3;
 
   return (
-    <div className="min-h-screen bg-gray-100 flex items-center justify-center px-6 py-12">
-      <div className="w-full max-w-2xl rounded-xl border border-gray-200 bg-white p-8 shadow-sm">
-        <p className="text-sm uppercase tracking-wide text-blue-600 font-semibold">
-          Billing
-        </p>
-        <h1 className="mt-2 text-3xl font-semibold text-gray-900">{copy.title}</h1>
+    <PublicPageShell contentTestId="billing-success-panel">
+      <div role="status" aria-live="polite" aria-atomic="true">
+        <div className={[
+          'mb-6 inline-flex h-12 w-12 items-center justify-center rounded-dashboard-panel border',
+          isPending || isActive
+            ? 'border-dashboard-accent/50 bg-dashboard-accent/10 text-dashboard-accent'
+            : isTerminalError
+              ? 'border-red-400/40 bg-red-500/10 text-red-200'
+              : 'border-amber-400/40 bg-amber-500/10 text-amber-200',
+        ].join(' ')}>
+          {isPending ? <Spinner size="md" /> : <OutcomeIcon aria-hidden="true" size={24} strokeWidth={1.6} />}
+        </div>
+        <p className="text-dashboard-caption font-semibold uppercase tracking-wider text-dashboard-accent">Billing</p>
+        <h1 className="mt-2 text-2xl font-semibold tracking-tight text-dashboard-text sm:text-[1.75rem] sm:leading-9">{copy.title}</h1>
         {copy.description && (
-          <p className="mt-3 text-gray-600">{copy.description}</p>
+          <p className="mt-3 text-dashboard-body leading-6 text-dashboard-muted">{copy.description}</p>
         )}
         {copy.supportLines?.map((line) => (
-          <p key={line} className="mt-3 text-gray-600">
+          <p key={line} className="mt-3 break-words text-dashboard-body leading-6 text-dashboard-muted">
             {line}
           </p>
         ))}
-
-        <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-          {(outcome === BILLING_SUCCESS_OUTCOMES.MANUAL_REFRESH
-            || outcome === BILLING_SUCCESS_OUTCOMES.ERROR
-            || outcome === BILLING_SUCCESS_OUTCOMES.UNAVAILABLE
-            || outcome === BILLING_SUCCESS_OUTCOMES.RATE_LIMITED) && (
-            <button
-              type="button"
-              onClick={() => {
-                if (refreshPending) {
-                  return;
-                }
-
-                setRefreshPending(true);
-                setRefreshVersion((value) => value + 1);
-              }}
-              disabled={refreshDisabled || refreshPending}
-              className="inline-flex items-center justify-center rounded-md bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-400"
-            >
-              {refreshButtonLabel}
-            </button>
-          )}
-
-          {outcome === BILLING_SUCCESS_OUTCOMES.REAUTH ? (
-            <button
-              type="button"
-              onClick={() => router.push('/login')}
-              className="inline-flex items-center justify-center rounded-md bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700"
-            >
-              Sign in again
-            </button>
-          ) : (
-            <Link
-              href="/billing"
-              className="inline-flex items-center justify-center rounded-md border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-            >
-              Back to billing
-            </Link>
-          )}
-
-          <Link
-            href="/"
-            className="inline-flex items-center justify-center rounded-md border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-          >
-            Dashboard
-          </Link>
-        </div>
       </div>
-    </div>
+
+      <div className="mt-8 flex flex-col gap-3">
+        {(outcome === BILLING_SUCCESS_OUTCOMES.MANUAL_REFRESH
+          || outcome === BILLING_SUCCESS_OUTCOMES.ERROR
+          || outcome === BILLING_SUCCESS_OUTCOMES.UNAVAILABLE
+          || outcome === BILLING_SUCCESS_OUTCOMES.RATE_LIMITED) && (
+          <button
+            type="button"
+            onClick={() => {
+              if (refreshPending) {
+                return;
+              }
+
+              setRefreshPending(true);
+              setRefreshVersion((value) => value + 1);
+            }}
+            disabled={refreshDisabled || refreshPending}
+            aria-busy={refreshPending || undefined}
+            className={[PUBLIC_PRIMARY_ACTION_CLASS_NAME, 'justify-center gap-3'].join(' ')}
+          >
+            <RefreshCw aria-hidden="true" size={16} className="shrink-0 text-dashboard-accent" />
+            {refreshButtonLabel}
+          </button>
+        )}
+
+        {outcome === BILLING_SUCCESS_OUTCOMES.REAUTH ? (
+          <button
+            type="button"
+            onClick={() => router.push('/login')}
+            className={[PUBLIC_PRIMARY_ACTION_CLASS_NAME, 'justify-center gap-3'].join(' ')}
+          >
+            Sign in again
+            <ArrowRight aria-hidden="true" size={16} className="text-dashboard-accent" />
+          </button>
+        ) : (
+          <Link
+            href={isActive ? '/' : '/billing'}
+            className={isActive
+              ? [PUBLIC_PRIMARY_ACTION_CLASS_NAME, 'justify-center gap-3'].join(' ')
+              : PUBLIC_SECONDARY_ACTION_CLASS_NAME}
+          >
+            {isActive ? 'Dashboard' : 'Back to billing'}
+            {isActive && <ArrowRight aria-hidden="true" size={16} className="text-dashboard-accent" />}
+          </Link>
+        )}
+
+        <Link
+          href={isActive ? '/billing' : '/'}
+          className={PUBLIC_SECONDARY_ACTION_CLASS_NAME}
+        >
+          {isActive ? 'Back to billing' : 'Dashboard'}
+        </Link>
+      </div>
+    </PublicPageShell>
   );
 }

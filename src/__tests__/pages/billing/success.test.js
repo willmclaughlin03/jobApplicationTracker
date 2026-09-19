@@ -27,6 +27,11 @@ const mockRouter = {
 const mockUseAuth = jest.fn();
 const mockApiPost = jest.fn();
 
+/** Keep the real shared shell in page tests without invoking Next's font loader. */
+jest.mock('next/font/google', () => ({
+  Inter: jest.fn().mockReturnValue({ variable: 'mock-public-font-variable' }),
+}));
+
 jest.mock('next/router', () => ({
   useRouter: () => mockRouter,
 }));
@@ -137,6 +142,26 @@ describe('BillingSuccessPage', () => {
     jest.useRealTimers();
   });
 
+  /** The redirect alone must not announce access; only a verified response may do so. */
+  it('announces confirmed access and presents dashboard navigation in reading order', async () => {
+    mockApiPost
+      .mockResolvedValueOnce({ data: { data: { state: 'pending' } } })
+      .mockResolvedValueOnce({ data: { data: { state: 'active' } } });
+
+    const el = await renderBillingSuccessPage();
+    const status = el.querySelector('[role="status"]');
+    expect(status.textContent).toContain('Finalizing billing');
+    expect(status.textContent).not.toContain('Premium access is active');
+
+    await advanceTimersAndFlush(3000);
+
+    expect(status.textContent).toContain('Premium access is active');
+    expect(Array.from(el.querySelectorAll('main a')).map((link) => [link.textContent, link.getAttribute('href')]))
+      .toEqual([['Dashboard', '/'], ['Back to billing', '/billing']]);
+    await advanceTimersAndFlush(60000);
+    expect(mockApiPost).toHaveBeenCalledTimes(2);
+  });
+
   it('stops polling and shows a terminal error when a checkout-status poll rejects', async () => {
     mockApiPost
       .mockResolvedValueOnce({
@@ -158,7 +183,7 @@ describe('BillingSuccessPage', () => {
     expect(mockApiPost).toHaveBeenCalledTimes(2);
     expect(el.textContent).toContain('Checkout could not be confirmed');
     expect(el.textContent).toContain(
-      'The redirect completed, but premium access was not confirmed from local billing state.'
+      'We could not confirm premium access. Return to billing to check your subscription status.'
     );
     expect(el.textContent).not.toContain('Please wait for payment status to update');
     expect(el.textContent).not.toContain('Finalizing billing');
