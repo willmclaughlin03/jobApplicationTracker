@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-13
 
+- `2026-09-19` - `Readable billing status labels`: Replace underscores with spaces in the displayed subscription status while preserving the `Loading...`, `Unavailable`, and `none` fallbacks. All 17 billing-page tests, 13 direct formatting/fallback checks, and diff checks pass.
+
 - `2026-09-19` - `Emerald billing pages`: Matched billing, checkout success, and checkout cancellation to the shared login shell with its dotted wave, emerald panels, themed controls, responsive layout, and clearer subscription copy. Preserved protected-page cache exports and billing action/polling guards, with focused coverage for verified success and unavailable details.
 
 - `2026-09-14` - `GATE-1 clock-based setup deadline`: Enforce the setup budget with the injected clock before every provisioning attempt and cap cooldown waits at that deadline, retaining phase-signal cancellation for live requests. Added the two-session, 1,000 ms virtual-clock regression plus exact/over-deadline build-verification coverage. All 60 focused tests, targeted ESLint, and diff checks pass.

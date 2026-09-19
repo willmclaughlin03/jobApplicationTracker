@@ -382,7 +382,7 @@ export default function BillingPage() {
           <div className="min-w-0 rounded-dashboard-control border border-dashboard-line bg-dashboard-surface-raised/70 p-4">
             <dt className="text-dashboard-caption text-dashboard-muted">Subscription status</dt>
             <dd className="mt-2 break-words text-base font-medium capitalize text-dashboard-text">
-              {loading ? 'Loading...' : statusUnavailable ? 'Unavailable' : billingStatus?.status ?? 'none'}
+              {loading ? 'Loading...' : statusUnavailable ? 'Unavailable' : billingStatus?.status?.replace(/_/g, ' ') ?? 'none'}
             </dd>
           </div>
           <div className="min-w-0 rounded-dashboard-control border border-dashboard-line bg-dashboard-surface-raised/70 p-4">

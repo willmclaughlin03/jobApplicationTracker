@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-09-19` - `Raw underscores in billing status`: Subscription status values such as `past_due` displayed their internal separators. Approach: format only the rendered status string. Fix: replace every underscore with a space using optional chaining and retain the existing loading, unavailable, and nullish fallbacks. All 17 billing-page tests, 13 direct formatting/fallback checks, and diff checks pass.
+
 - `2026-09-19` - `Billing visual mismatch and unavailable details`: Billing used white and blue surfaces outside the emerald application theme, and failed reads displayed fallback values that could look like confirmed subscription facts. Approach: reuse the login shell and existing state guards. Fix: applied the shared wave, panels, controls, loading/recovery styling, and user-facing copy to all three billing routes; failed reads now show unavailable details, with verified-success and unavailable-state regression tests.
 
 - `2026-09-14` - `GATE-1 virtual setup bypassed the deadline`: Virtual cooldowns advanced the injected clock without firing the real setup timer, allowing provisioning after the setup budget expired. Approach: enforce the same budget using the injected clock while preserving cancellation of active live requests. Fix: capture the setup deadline before build verification, cap cooldowns at the deadline, and report `setup_deadline` before each expired provisioning attempt. Three regression cases failed before the fix; all 60 focused tests, targeted ESLint, and diff checks pass.
