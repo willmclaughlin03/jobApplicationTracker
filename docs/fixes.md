@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-09-19` - `Billing overflow warning color`: The storage-after-cancellation warning used amber instead of the requested red. Approach: reuse the billing page's red warning palette. Fix: updated only the overflow warning's border, background, and text classes. All 23 billing-page/state tests and diff checks pass.
+
 - `2026-09-19` - `Raw underscores in billing status`: Subscription status values such as `past_due` displayed their internal separators. Approach: format only the rendered status string. Fix: replace every underscore with a space using optional chaining and retain the existing loading, unavailable, and nullish fallbacks. All 17 billing-page tests, 13 direct formatting/fallback checks, and diff checks pass.
 
 - `2026-09-19` - `Billing visual mismatch and unavailable details`: Billing used white and blue surfaces outside the emerald application theme, and failed reads displayed fallback values that could look like confirmed subscription facts. Approach: reuse the login shell and existing state guards. Fix: applied the shared wave, panels, controls, loading/recovery styling, and user-facing copy to all three billing routes; failed reads now show unavailable details, with verified-success and unavailable-state regression tests.

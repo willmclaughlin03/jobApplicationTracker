@@ -403,7 +403,7 @@ export default function BillingPage() {
           <div className={[
             'mt-6 rounded-dashboard-control border p-4 text-dashboard-body',
             showPremiumStorageWarning
-              ? 'border-amber-400/40 bg-amber-500/10 text-amber-100'
+              ? 'border-red-400/55 bg-red-500/10 text-red-100'
               : 'border-dashboard-line bg-dashboard-surface-raised/70 text-dashboard-text',
           ].join(' ')}>
             {showPremiumStorageWarning && (
