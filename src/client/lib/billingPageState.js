@@ -25,14 +25,14 @@ export function getBillingStatusSummary(input = {}) {
   if (loadState === BILLING_PAGE_LOAD_STATES.ERROR || (loadState === BILLING_PAGE_LOAD_STATES.READY && !billingStatus)) {
     return {
       title: 'Billing status unavailable',
-      description: 'We could not verify your local billing state right now. Refresh this page before starting checkout or opening the billing portal.',
+      description: 'We could not verify your subscription right now. Refresh this page before starting checkout or opening the billing portal.',
     };
   }
 
   if (loadState !== BILLING_PAGE_LOAD_STATES.READY) {
     return {
       title: 'Loading billing status',
-      description: 'Checking your local billing state.',
+      description: 'Checking your subscription details.',
     };
   }
 
@@ -41,7 +41,7 @@ export function getBillingStatusSummary(input = {}) {
       title: 'Premium access is active',
       description: billingStatus.cancelAtPeriodEnd
         ? 'Your premium access stays active until the end of the current billing period.'
-        : 'Your premium features are active from the canonical local billing record.',
+        : 'Your subscription is active and your premium features are ready to use.',
     };
   }
 
@@ -71,14 +71,14 @@ export function getBillingStatusSummary(input = {}) {
         title: 'Billing needs attention',
         description: hasPortalCustomer
           ? 'Open the billing portal to update payment details or review the subscription state.'
-          : 'Refresh this page to re-check your local billing state before taking billing action.',
+          : 'Refresh this page to check your subscription before taking billing action.',
       };
     default:
       return {
         title: 'Billing status needs review',
         description: hasPortalCustomer
           ? 'Refresh this page or open the billing portal to review the subscription state.'
-          : 'Refresh this page to re-check your local billing state before taking billing action.',
+          : 'Refresh this page to check your subscription before taking billing action.',
       };
   }
 }

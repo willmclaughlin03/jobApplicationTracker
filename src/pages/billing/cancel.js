@@ -13,6 +13,11 @@ export async function getServerSideProps({ res }) {
 }
 
 import Link from 'next/link';
+import { ArrowRight, CircleX } from 'lucide-react';
+import PublicPageShell, {
+  PUBLIC_PRIMARY_ACTION_CLASS_NAME,
+  PUBLIC_SECONDARY_ACTION_CLASS_NAME,
+} from '../../client/components/public/PublicPageShell';
 
 /**
  * Render the billing checkout cancel redirect page.
@@ -35,31 +40,33 @@ import Link from 'next/link';
  */
 export default function BillingCancelPage() {
   return (
-    <div className="min-h-screen bg-gray-100 flex items-center justify-center px-6 py-12">
-      <div className="w-full max-w-2xl rounded-xl border border-gray-200 bg-white p-8 shadow-sm">
-        <p className="text-sm uppercase tracking-wide text-blue-600 font-semibold">
-          Billing
-        </p>
-        <h1 className="mt-2 text-3xl font-semibold text-gray-900">Checkout was canceled</h1>
-        <p className="mt-3 text-gray-600">
-          No entitlement changes were granted from the redirect alone. You can return to billing whenever you are ready to try again.
-        </p>
-
-        <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-          <Link
-            href="/billing"
-            className="inline-flex items-center justify-center rounded-md bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700"
-          >
-            Back to billing
-          </Link>
-          <Link
-            href="/"
-            className="inline-flex items-center justify-center rounded-md border border-gray-300 px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-          >
-            Dashboard
-          </Link>
-        </div>
+    <PublicPageShell contentTestId="billing-cancel-panel">
+      <div className="mb-6 inline-flex h-12 w-12 items-center justify-center rounded-dashboard-panel border border-dashboard-line bg-dashboard-surface/60 text-dashboard-muted">
+        <CircleX aria-hidden="true" size={24} strokeWidth={1.6} />
       </div>
-    </div>
+      <p className="text-dashboard-caption font-semibold uppercase tracking-wider text-dashboard-accent">
+        Billing
+      </p>
+      <h1 className="mt-2 text-2xl font-semibold tracking-tight text-dashboard-text sm:text-[1.75rem] sm:leading-9">Checkout was canceled</h1>
+      <p className="mt-3 text-dashboard-body leading-6 text-dashboard-muted">
+        Checkout was not completed. You can return to billing whenever you are ready to try again.
+      </p>
+
+      <div className="mt-8 flex flex-col gap-3">
+        <Link
+          href="/billing"
+          className={[PUBLIC_PRIMARY_ACTION_CLASS_NAME, 'justify-center gap-3'].join(' ')}
+        >
+          Back to billing
+          <ArrowRight aria-hidden="true" size={16} className="text-dashboard-accent" />
+        </Link>
+        <Link
+          href="/"
+          className={PUBLIC_SECONDARY_ACTION_CLASS_NAME}
+        >
+          Dashboard
+        </Link>
+      </div>
+    </PublicPageShell>
   );
 }

@@ -15,7 +15,13 @@ export async function getServerSideProps({ res }) {
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
+import { ArrowLeft, ArrowRight, CreditCard, Download, ExternalLink } from 'lucide-react';
 import ProfileDropdown from '../../client/components/ProfileDropdown';
+import PublicPageShell, {
+  PUBLIC_PRIMARY_ACTION_CLASS_NAME,
+  PUBLIC_SECONDARY_ACTION_CLASS_NAME,
+} from '../../client/components/public/PublicPageShell';
+import Spinner from '../../client/components/Spinner';
 import { useAuth } from '../../client/contexts/AuthContext';
 import {
   BILLING_ACTION_RESULT_STATUSES,
@@ -292,9 +298,12 @@ export default function BillingPage() {
 
   if (authLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-100 text-gray-500">
-        Loading...
-      </div>
+      <PublicPageShell>
+        <div role="status" aria-live="polite" className="flex items-center gap-3 text-dashboard-body text-dashboard-muted">
+          <Spinner size="sm" className="text-dashboard-accent" />
+          <span>Loading...</span>
+        </div>
+      </PublicPageShell>
     );
   }
 
@@ -314,146 +323,158 @@ export default function BillingPage() {
   const showPortalButton = canOpenPortalFromLocalStatus({ billingStatus, loadState });
   const retryCooldownActive = Number.isSafeInteger(retryAfterSeconds) && retryAfterSeconds > 0;
   const billingActionDisabled = loading || actionLoading !== '' || retryCooldownActive;
+  const statusUnavailable = loadState === BILLING_PAGE_LOAD_STATES.ERROR || (!loading && !billingStatus);
 
   return (
-    <div className="min-h-screen bg-gray-100">
-      <header className="bg-white shadow-sm py-4 px-6">
-        <div className="max-w-5xl mx-auto flex items-center justify-between gap-4">
-          <div>
-            <p className="text-sm text-gray-500">Account</p>
-            <h1 className="text-xl font-semibold text-gray-800">Billing</h1>
-          </div>
-          <ProfileDropdown user={user} onSignOut={handleSignOut} />
+    <PublicPageShell
+      layout="billing"
+      contentTestId="billing-panel"
+      headerActions={<ProfileDropdown user={user} onSignOut={handleSignOut} />}
+    >
+      <div className="mb-6 flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-dashboard-text sm:text-dashboard-heading">Billing</h1>
+          <p className="mt-1 text-dashboard-body text-dashboard-muted">Manage your subscription and billing details.</p>
         </div>
-      </header>
+        <Link href="/" className={[PUBLIC_SECONDARY_ACTION_CLASS_NAME, 'shrink-0 sm:w-auto'].join(' ')}>
+          <ArrowLeft aria-hidden="true" size={16} />
+          Back to dashboard
+        </Link>
+      </div>
 
-      <main className="max-w-4xl mx-auto px-6 py-8">
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-            <div>
-              <p className="text-sm uppercase tracking-wide text-blue-600 font-semibold">
-                Premium
-              </p>
-              <h2 className="text-2xl font-semibold text-gray-900 mt-1">{summary.title}</h2>
-              <p className="text-gray-600 mt-2 max-w-2xl">{summary.description}</p>
-            </div>
-            <Link
-              href="/"
-              className="inline-flex items-center justify-center rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-            >
-              Back to dashboard
-            </Link>
+      <section aria-labelledby="billing-summary-heading" className="dashboard-major-panel p-5 sm:p-7">
+        <div role="status" aria-live="polite" aria-atomic="true">
+          <p className="flex items-center gap-2 text-dashboard-caption font-semibold uppercase tracking-wider text-dashboard-accent">
+            <CreditCard aria-hidden="true" size={16} />
+            {billingStatus?.entitled && !statusUnavailable ? 'Premium' : 'Subscription'}
+          </p>
+          <h2 id="billing-summary-heading" className="mt-3 text-xl font-semibold tracking-tight text-dashboard-text sm:text-2xl">{summary.title}</h2>
+          <p className="mt-2 max-w-2xl text-dashboard-body leading-6 text-dashboard-muted">{summary.description}</p>
+        </div>
+
+        {statusErrorMessage && (
+          <div className="mt-5 rounded-dashboard-control border border-red-400/55 bg-red-500/10 px-4 py-3 text-dashboard-body text-red-100">
+            <span role='alert'>{statusErrorMessage}</span>
           </div>
+        )}
 
-          {statusErrorMessage && (
-            <div className="mt-5 rounded-md bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
-              <span role='alert'>{statusErrorMessage}</span>
-            </div>
-          )}
-
-          {actionError && (
-            <div
-              role='alert'
-              className='mt-5 rounded-md bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700'
-            >
-              {actionError.message}
-              {retryCooldownActive && ' Try again in ' + retryAfterSeconds + 's.'}
-            </div>
-          )}
-
-          {storageStatusErrorMessage && (
-            <div
-              role="status"
-              aria-live="polite"
-              className="mt-5 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
-            >
-              {storageStatusErrorMessage}
-            </div>
-          )}
-
-          <div className="mt-6 grid gap-4 md:grid-cols-3">
-            <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-              <p className="text-sm text-gray-500">Local status</p>
-              <p className="mt-1 text-lg font-medium text-gray-900">
-                {loading ? 'Loading...' : billingStatus?.status ?? 'none'}
-              </p>
-            </div>
-            <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-              <p className="text-sm text-gray-500">Current period end</p>
-              <p className="mt-1 text-lg font-medium text-gray-900">
-                {loading ? 'Loading...' : formatDate(billingStatus?.currentPeriodEnd)}
-              </p>
-            </div>
-            <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-              <p className="text-sm text-gray-500">Cancel at period end</p>
-              <p className="mt-1 text-lg font-medium text-gray-900">
-                {loading ? 'Loading...' : billingStatus?.cancelAtPeriodEnd ? 'Yes' : 'No'}
-              </p>
-            </div>
+        {actionError && (
+          <div
+            role='alert'
+            className="mt-5 rounded-dashboard-control border border-red-400/55 bg-red-500/10 px-4 py-3 text-dashboard-body text-red-100"
+          >
+            {actionError.message}
+            {retryCooldownActive && ' Try again in ' + retryAfterSeconds + 's.'}
           </div>
+        )}
 
-          {(showPremiumStorageWarning || showTerminalFreeArchiveNotice) && (
-            <div className="mt-6 rounded-lg border border-blue-100 bg-blue-50 p-4 text-sm text-blue-950">
-              {showPremiumStorageWarning && (
-                <div>
-                  <h3 className="font-semibold">Storage after cancellation</h3>
-                  <p className="mt-1 leading-6">
-                    Your Premium plan ends on {storagePeriodEnd}. Free accounts can keep {storageActiveLimit}
-                    {' '}active applications. You currently have {storageActiveCount}, so {storageOverflowCount}
-                    {' '}will move to a locked archive if you do not renew. Nothing will be deleted.
-                  </p>
-                </div>
-              )}
-              {showTerminalFreeArchiveNotice && (
-                <div>
-                  <h3 className="font-semibold">Free storage archive</h3>
-                  <p className="mt-1 leading-6">
-                    Your Free account has {storageActiveCount} active applications and {storageLockedCount}
-                    {' '}archived application{storageLockedCount === 1 ? '' : 's'}. Free accounts can keep
-                    {' '}{storageActiveLimit} active applications.
-                  </p>
-                  {storageLockedCount > 0 && (
-                    <>
-                      {/* This API navigation intentionally triggers a browser-managed CSV download. */}
-                      {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
-                      <a
-                        href="/api/storage/export"
-                        className="mt-3 inline-flex items-center justify-center rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-                      >
-                        Export CSV
-                      </a>
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
+        {storageStatusErrorMessage && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="mt-5 rounded-dashboard-control border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-dashboard-body text-amber-100"
+          >
+            {storageStatusErrorMessage}
+          </div>
+        )}
 
-          <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-            {showCheckoutButton && (
-              <button
-                type="button"
-                onClick={handleCheckout}
-                disabled={billingActionDisabled}
-                className="inline-flex items-center justify-center rounded-md bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-              >
-                {actionLoading === 'checkout' ? 'Redirecting to checkout...' : 'Start checkout'}
-              </button>
+        <dl className="mt-7 grid gap-3 md:grid-cols-3">
+          <div className="min-w-0 rounded-dashboard-control border border-dashboard-line bg-dashboard-surface-raised/70 p-4">
+            <dt className="text-dashboard-caption text-dashboard-muted">Subscription status</dt>
+            <dd className="mt-2 break-words text-base font-medium capitalize text-dashboard-text">
+              {loading ? 'Loading...' : statusUnavailable ? 'Unavailable' : billingStatus?.status?.replace(/_/g, ' ') ?? 'none'}
+            </dd>
+          </div>
+          <div className="min-w-0 rounded-dashboard-control border border-dashboard-line bg-dashboard-surface-raised/70 p-4">
+            <dt className="text-dashboard-caption text-dashboard-muted">Billing period ends</dt>
+            <dd className="mt-2 break-words text-base font-medium text-dashboard-text">
+              {loading ? 'Loading...' : statusUnavailable ? 'Unavailable' : formatDate(billingStatus?.currentPeriodEnd)}
+            </dd>
+          </div>
+          <div className="min-w-0 rounded-dashboard-control border border-dashboard-line bg-dashboard-surface-raised/70 p-4">
+            <dt className="text-dashboard-caption text-dashboard-muted">Cancels at period end</dt>
+            <dd className="mt-2 text-base font-medium text-dashboard-text">
+              {loading ? 'Loading...' : statusUnavailable ? 'Unavailable' : billingStatus?.cancelAtPeriodEnd ? 'Yes' : 'No'}
+            </dd>
+          </div>
+        </dl>
+
+        {(showPremiumStorageWarning || showTerminalFreeArchiveNotice) && (
+          <div className={[
+            'mt-6 rounded-dashboard-control border p-4 text-dashboard-body',
+            showPremiumStorageWarning
+              ? 'border-red-400/55 bg-red-500/10 text-red-100'
+              : 'border-dashboard-line bg-dashboard-surface-raised/70 text-dashboard-text',
+          ].join(' ')}>
+            {showPremiumStorageWarning && (
+              <div>
+                <h3 className="font-semibold">Storage after cancellation</h3>
+                <p className="mt-1 leading-6">
+                  Your Premium plan ends on {storagePeriodEnd}. Free accounts can keep {storageActiveLimit}
+                  {' '}active applications. You currently have {storageActiveCount}, so {storageOverflowCount}
+                  {' '}will move to a locked archive if you do not renew. Nothing will be deleted.
+                </p>
+              </div>
             )}
-
-            {showPortalButton && (
-              <button
-                type="button"
-                onClick={handlePortal}
-                disabled={billingActionDisabled}
-                className="inline-flex items-center justify-center rounded-md border border-gray-300 bg-white px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed"
-              >
-                {actionLoading === 'portal' ? 'Opening portal...' : 'Open billing portal'}
-              </button>
+            {showTerminalFreeArchiveNotice && (
+              <div>
+                <h3 className="font-semibold">Free storage archive</h3>
+                <p className="mt-1 leading-6">
+                  Your Free account has {storageActiveCount} active applications and {storageLockedCount}
+                  {' '}archived application{storageLockedCount === 1 ? '' : 's'}. Free accounts can keep
+                  {' '}{storageActiveLimit} active applications.
+                </p>
+                {storageLockedCount > 0 && (
+                  <>
+                    {/* This API navigation intentionally triggers a browser-managed CSV download. */}
+                    {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+                    <a
+                      href="/api/storage/export"
+                      className={[PUBLIC_SECONDARY_ACTION_CLASS_NAME, 'mt-4 sm:w-auto'].join(' ')}
+                    >
+                      <Download aria-hidden="true" size={16} />
+                      Export CSV
+                    </a>
+                  </>
+                )}
+              </div>
             )}
           </div>
+        )}
+
+        <div className="mt-7 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+          {showCheckoutButton && (
+            <button
+              type="button"
+              onClick={handleCheckout}
+              disabled={billingActionDisabled}
+              aria-busy={actionLoading === 'checkout' || undefined}
+              className={[PUBLIC_PRIMARY_ACTION_CLASS_NAME, 'justify-center gap-3 sm:w-auto'].join(' ')}
+            >
+              {actionLoading === 'checkout' && <Spinner size="sm" className="shrink-0 text-dashboard-accent" />}
+              {actionLoading === 'checkout' ? 'Redirecting to checkout...' : 'Start checkout'}
+              {actionLoading !== 'checkout' && <ArrowRight aria-hidden="true" size={16} className="shrink-0 text-dashboard-accent" />}
+            </button>
+          )}
+
+          {showPortalButton && (
+            <button
+              type="button"
+              onClick={handlePortal}
+              disabled={billingActionDisabled}
+              aria-busy={actionLoading === 'portal' || undefined}
+              className={[
+                showCheckoutButton ? PUBLIC_SECONDARY_ACTION_CLASS_NAME : PUBLIC_PRIMARY_ACTION_CLASS_NAME,
+                'justify-center gap-3 sm:w-auto',
+              ].join(' ')}
+            >
+              {actionLoading === 'portal' && <Spinner size="sm" className="shrink-0 text-dashboard-accent" />}
+              {actionLoading === 'portal' ? 'Opening portal...' : 'Open billing portal'}
+              {actionLoading !== 'portal' && <ExternalLink aria-hidden="true" size={16} className="shrink-0 text-dashboard-accent" />}
+            </button>
+          )}
         </div>
-      </main>
-    </div>
+      </section>
+    </PublicPageShell>
   );
 }

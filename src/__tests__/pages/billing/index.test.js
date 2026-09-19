@@ -35,6 +35,11 @@ const checkoutAttemptNonce = '0123456789abcdef0123456789abcdef';
 const retryCheckoutAttemptUuid = 'fedcba98-7654-3210-fedc-ba9876543210';
 const retryCheckoutAttemptNonce = 'fedcba9876543210fedcba9876543210';
 
+/** Keep the real shared shell in page tests without invoking Next's font loader. */
+jest.mock('next/font/google', () => ({
+  Inter: jest.fn().mockReturnValue({ variable: 'mock-public-font-variable' }),
+}));
+
 jest.mock('next/router', () => ({
   useRouter: () => mockRouter,
 }));
@@ -254,6 +259,19 @@ describe('BillingPage', () => {
   });
 
   afterEach(cleanup);
+
+  /** Failed reads must not present false cancellation or subscription facts. */
+  it('shows unavailable details and no billing actions when verification fails', async () => {
+    mockApiGet.mockRejectedValue(new Error('billing unavailable'));
+
+    const el = await renderBillingPage();
+
+    expect(Array.from(el.querySelectorAll('dd')).map((detail) => detail.textContent))
+      .toEqual(['Unavailable', 'Unavailable', 'Unavailable']);
+    expect(findButtonByText(el, 'Start checkout')).toBeNull();
+    expect(findButtonByText(el, 'Open billing portal')).toBeNull();
+    expect(el.querySelector('[role="alert"]').textContent).toContain(ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+  });
 
   it('signs out and redirects to login on shared-client 401 errors', async () => {
     const signOut = jest.fn().mockResolvedValue({ error: null });
@@ -659,7 +677,7 @@ describe('BillingPage', () => {
     expect(mockApiGet).toHaveBeenCalledWith('/api/storage/status');
     expect(mockRouter.replace).not.toHaveBeenCalled();
     expect(el.textContent).toContain('Storage details are temporarily unavailable');
-    expect(el.textContent).toContain('Local status');
+    expect(el.textContent).toContain('Subscription status');
     expect(el.textContent).not.toContain('Storage after cancellation');
     expect(el.textContent).not.toContain('Free storage archive');
   });
