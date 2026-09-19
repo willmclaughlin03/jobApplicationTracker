@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-13
 
+- `2026-09-19` - `Validated billing status display`: Validate subscription status before storing the API response, route malformed non-string statuses to the unavailable UI, and display canonical no-subscription status as "Not subscribed" with checkout retained. Added regression coverage for malformed responses, loading, valid status formatting, and no-subscription behavior.
+
 - `2026-09-19` - `Red billing overflow warning`: Applied the existing red border, background, and text palette to the storage-after-cancellation warning. All 23 billing-page/state tests and diff checks pass.
 
 - `2026-09-19` - `Readable billing status labels`: Replace underscores with spaces in the displayed subscription status while preserving the `Loading...`, `Unavailable`, and `none` fallbacks. All 17 billing-page tests, 13 direct formatting/fallback checks, and diff checks pass.

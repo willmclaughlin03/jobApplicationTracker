@@ -260,6 +260,84 @@ describe('BillingPage', () => {
 
   afterEach(cleanup);
 
+  /** Verify malformed API statuses cannot render details or enable billing actions. */
+  it.each([undefined, null, false, true, 0, 123, {}, []])(
+    'shows an unavailable billing state for malformed status %p',
+    async (status) => {
+      mockApiGet.mockResolvedValue(buildApiSuccess({
+        status,
+        entitled: true,
+        hasSubscription: false,
+        currentPeriodEnd: null,
+        cancelAtPeriodEnd: true,
+        hasPortalCustomer: true,
+      }));
+
+      const el = await renderBillingPage();
+
+      expect(el.querySelector('#billing-summary-heading').textContent).toBe('Billing status unavailable');
+      expect(Array.from(el.querySelectorAll('dd')).map((detail) => detail.textContent))
+        .toEqual(['Unavailable', 'Unavailable', 'Unavailable']);
+      expect(findButtonByText(el, 'Start checkout')).toBeNull();
+      expect(findButtonByText(el, 'Open billing portal')).toBeNull();
+    },
+  );
+
+  /** Keep canonical null status usable for accounts that have no subscription. */
+  it('preserves no-subscription details and checkout for canonical null status', async () => {
+    mockApiGet.mockResolvedValue(buildApiSuccess({
+      status: null,
+      entitled: false,
+      entitlement: null,
+      hasSubscription: false,
+      currentPeriodEnd: null,
+      cancelAtPeriodEnd: false,
+      hasCustomerMapping: false,
+      hasPortalCustomer: false,
+    }));
+
+    const el = await renderBillingPage();
+
+    expect(el.querySelector('#billing-summary-heading').textContent).toBe('No active subscription');
+    expect(Array.from(el.querySelectorAll('dd')).map((detail) => detail.textContent))
+      .toEqual(['Not subscribed', 'Not set', 'No']);
+    expect(findButtonByText(el, 'Start checkout').disabled).toBe(false);
+    expect(findButtonByText(el, 'Open billing portal')).toBeNull();
+  });
+
+  /** Preserve loading details until the API resolves, then format validated strings. */
+  it.each([
+    ['active', 'active'],
+    ['past_due', 'past due'],
+    ['free', 'free'],
+  ])(
+    'preserves loading and formatted status display for %s',
+    async (status, label) => {
+      const pendingStatus = createDeferred();
+      mockApiGet.mockImplementation((endpoint) => endpoint === '/api/billing/status'
+        ? pendingStatus.promise
+        : Promise.resolve(buildApiSuccess(null)));
+
+      const el = await renderBillingPage();
+
+      expect(el.querySelector('#billing-summary-heading').textContent).toBe('Loading billing status');
+      expect(Array.from(el.querySelectorAll('dd')).map((detail) => detail.textContent))
+        .toEqual(['Loading...', 'Loading...', 'Loading...']);
+
+      await act(async () => {
+        pendingStatus.resolve(buildApiSuccess({
+          status,
+          currentPeriodEnd: null,
+          cancelAtPeriodEnd: false,
+          hasPortalCustomer: false,
+        }));
+      });
+
+      expect(Array.from(el.querySelectorAll('dd')).map((detail) => detail.textContent))
+        .toEqual([label, 'Not set', 'No']);
+    },
+  );
+
   /** Failed reads must not present false cancellation or subscription facts. */
   it('shows unavailable details and no billing actions when verification fails', async () => {
     mockApiGet.mockRejectedValue(new Error('billing unavailable'));

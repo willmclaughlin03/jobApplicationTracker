@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-09-19` - `Malformed billing status rendering`: Non-string API statuses could reach string formatting and crash the billing page. Approach: validate status at the response boundary while preserving canonical null status for accounts without a subscription. Fix: reject malformed snapshots into the unavailable state, retain valid status formatting and checkout eligibility, display "Not subscribed" for the valid null case, and cover the affected rendering paths with regression tests.
+
 - `2026-09-19` - `Billing overflow warning color`: The storage-after-cancellation warning used amber instead of the requested red. Approach: reuse the billing page's red warning palette. Fix: updated only the overflow warning's border, background, and text classes. All 23 billing-page/state tests and diff checks pass.
 
 - `2026-09-19` - `Raw underscores in billing status`: Subscription status values such as `past_due` displayed their internal separators. Approach: format only the rendered status string. Fix: replace every underscore with a space using optional chaining and retain the existing loading, unavailable, and nullish fallbacks. All 17 billing-page tests, 13 direct formatting/fallback checks, and diff checks pass.
