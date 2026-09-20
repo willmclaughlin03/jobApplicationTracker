@@ -66,8 +66,10 @@ describe('GATE-1 restart probe', () => {
   /**
    * The observable identity remains stable while process age advances across requests.
    */
-  it('returns only bounded module-scoped facts and preserves the original request', () => {
-    const { probe, readRuntime, randomBytesFunction } = createProbe();
+  it.each(['preview', 'production'])('returns bounded module-scoped facts in %s', (deploymentEnvironment) => {
+    const { probe, readRuntime, randomBytesFunction } = createProbe({
+      env: { ...ENABLED_PREVIEW, VERCEL_ENV: deploymentEnvironment },
+    });
     const first = createExchange();
     const second = createExchange();
     Object.freeze(first.req.headers);
@@ -101,9 +103,12 @@ describe('GATE-1 restart probe', () => {
     {},
     { ...ENABLED_PREVIEW, VERCEL: undefined },
     { ...ENABLED_PREVIEW, VERCEL: '0' },
-    { ...ENABLED_PREVIEW, VERCEL_ENV: 'production' },
+    { ...ENABLED_PREVIEW, VERCEL_ENV: 'staging' },
     { ...ENABLED_PREVIEW, VERCEL_ENV: 'development' },
     { ...ENABLED_PREVIEW, VERCEL_ENV: undefined },
+    { ...ENABLED_PREVIEW, VERCEL_ENV: 'Production' },
+    { ...ENABLED_PREVIEW, VERCEL_ENV: 'production ' },
+    { ...ENABLED_PREVIEW, VERCEL_ENV: ['production'] },
     { ...ENABLED_PREVIEW, NODE_ENV: 'test' },
     { ...ENABLED_PREVIEW, NODE_ENV: undefined },
     { ...ENABLED_PREVIEW, GATE1_RESTART_PROBE_ENABLED: undefined },
@@ -114,6 +119,12 @@ describe('GATE-1 restart probe', () => {
     { ...ENABLED_PREVIEW, GATE1_RESTART_PROBE_SECRET: 'a'.repeat(65) },
     { ...ENABLED_PREVIEW, GATE1_RESTART_PROBE_SECRET: 'g'.repeat(64) },
     { ...ENABLED_PREVIEW, GATE1_RESTART_PROBE_SECRET: ` ${TEST_SECRET}` },
+    { ...ENABLED_PREVIEW, VERCEL_ENV: 'production', GATE1_RESTART_PROBE_ENABLED: undefined },
+    { ...ENABLED_PREVIEW, VERCEL_ENV: 'production', GATE1_RESTART_PROBE_ENABLED: 'false' },
+    { ...ENABLED_PREVIEW, VERCEL_ENV: 'production', GATE1_RESTART_PROBE_SECRET: undefined },
+    { ...ENABLED_PREVIEW, VERCEL_ENV: 'production', GATE1_RESTART_PROBE_SECRET: 'invalid' },
+    { ...ENABLED_PREVIEW, VERCEL_ENV: 'production', NODE_ENV: 'development' },
+    { ...ENABLED_PREVIEW, VERCEL_ENV: 'production', VERCEL: '0' },
   ])('omits diagnostics for disabled or invalid configuration %#', (env) => {
     const { probe, readRuntime, randomBytesFunction } = createProbe({ env });
     const { req, res } = createExchange();
@@ -124,7 +135,7 @@ describe('GATE-1 restart probe', () => {
   });
 
   /**
-   * Credentials must be scalar, exact, bounded, and not an array or alternate encoding.
+   * Both deployment targets require scalar, exact, bounded credentials.
    */
   it.each([
     undefined, '', TEST_SECRET, [TEST_AUTHORIZATION],
@@ -132,17 +143,21 @@ describe('GATE-1 restart probe', () => {
     `${TEST_AUTHORIZATION}, ${TEST_AUTHORIZATION}`, `Bearer ${'a'.repeat(65)}`,
     `Bearer ${'é'.repeat(64)}`, `Bearer ${'A'.repeat(64)}`,
   ])('omits diagnostics for an invalid credential %#', (authorization) => {
-    const { probe, readRuntime } = createProbe();
-    const { req, res } = createExchange();
-    req.headers.authorization = authorization;
-    req.rawHeaders = ['Authorization', authorization];
-    probe.attach(req, res);
-    expect(res.setHeader).not.toHaveBeenCalled();
-    expect(readRuntime).not.toHaveBeenCalled();
+    for (const deploymentEnvironment of ['preview', 'production']) {
+      const { probe, readRuntime } = createProbe({
+        env: { ...ENABLED_PREVIEW, VERCEL_ENV: deploymentEnvironment },
+      });
+      const { req, res } = createExchange();
+      req.headers.authorization = authorization;
+      req.rawHeaders = ['Authorization', authorization];
+      probe.attach(req, res);
+      expect(res.setHeader).not.toHaveBeenCalled();
+      expect(readRuntime).not.toHaveBeenCalled();
+    }
   });
 
   /**
-   * Node normalization cannot hide duplicate or contradictory raw credentials.
+   * Neither deployment target accepts raw credentials hidden by Node normalization.
    */
   it.each([
     undefined, {}, [], ['Authorization'],
@@ -153,11 +168,15 @@ describe('GATE-1 restart probe', () => {
     ['x'.repeat(129), 'invalid-name', 'Authorization', TEST_AUTHORIZATION],
     Array(258).fill('oversized'),
   ])('rejects missing or ambiguous raw metadata %#', (rawHeaders) => {
-    const { probe } = createProbe();
-    const { req, res } = createExchange();
-    req.rawHeaders = rawHeaders;
-    probe.attach(req, res);
-    expect(res.setHeader).not.toHaveBeenCalled();
+    for (const deploymentEnvironment of ['preview', 'production']) {
+      const { probe } = createProbe({
+        env: { ...ENABLED_PREVIEW, VERCEL_ENV: deploymentEnvironment },
+      });
+      const { req, res } = createExchange();
+      req.rawHeaders = rawHeaders;
+      probe.attach(req, res);
+      expect(res.setHeader).not.toHaveBeenCalled();
+    }
   });
 
   /**

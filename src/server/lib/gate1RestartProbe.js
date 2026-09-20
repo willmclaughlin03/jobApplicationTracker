@@ -1,9 +1,10 @@
 /**
  * Read-only runtime observations for the GATE-1 hosted restart investigation.
  *
- * Enable only on an approved preview with GATE1_RESTART_PROBE_ENABLED=true and
- * a separate GATE1_RESTART_PROBE_SECRET containing 64 lowercase hexadecimal
- * characters. A diagnostic GET supplies that secret as Authorization: Bearer.
+ * Enable on an approved Vercel preview or production deployment with
+ * GATE1_RESTART_PROBE_ENABLED=true and a separate GATE1_RESTART_PROBE_SECRET
+ * containing 64 lowercase hexadecimal characters. A diagnostic GET supplies
+ * that secret as Authorization: Bearer.
  * Deployment Protection access is separate; neither credential bypasses the
  * session ceiling. Configuration and hosted requests require separate approval.
  *
@@ -92,7 +93,7 @@ export function createGate1RestartProbe(options = {}) {
   let contextId = null;
 
   /**
-   * Adds bounded diagnostics only to authenticated GETs in an enabled preview.
+   * Adds bounded diagnostics to authenticated GETs on an enabled Vercel target.
    *
    * Why: observations must cover normal, rejected, and unavailable responses
    * without skipping the composed session route. Invalid credentials/config or
@@ -104,7 +105,8 @@ export function createGate1RestartProbe(options = {}) {
    */
   function attach(req, res) {
     try {
-      if (env.VERCEL !== '1' || env.VERCEL_ENV !== 'preview'
+      if (env.VERCEL !== '1'
+        || (env.VERCEL_ENV !== 'preview' && env.VERCEL_ENV !== 'production')
         || env.NODE_ENV !== 'production' || env.GATE1_RESTART_PROBE_ENABLED !== 'true'
         || req.method !== 'GET' || res.headersSent === true
         || res.writableEnded === true || res.finished === true) return;
