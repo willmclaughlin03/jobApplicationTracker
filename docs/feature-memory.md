@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-20
 
+- `2026-09-20` - `GATE-1 production runtime diagnostics`: Allowed the read-only session probe on explicitly enabled Vercel production deployments as well as previews, retaining the dedicated credential and normal session enforcement. Extended configuration, credential, raw-header, and composed-route coverage across both targets. All 119 focused tests, changed-file ESLint, and whitespace checks pass; hosted diagnostics and restart proof remain unexecuted.
+
 - `2026-09-20` - `Trusted route-wrapper bindings`: Require direct API wrapper calls to resolve to the corresponding named import from the approved middleware module. Preserve trusted aliases, webhook path restrictions, and the session probe composition; add local/shadowed binding and untrusted-import regressions. All 131 focused route-safety, session, and probe tests, changed-file ESLint, and diff checks pass.
 
 - `2026-09-20` - `Session probe route-safety coverage`: Parse API route exports and recognize the session probe only when trusted imports, an immutable middleware binding, and unconditional request/response delegation remain intact. Added bypass, comment/string, webhook-path, and Windows-path regressions. All 119 focused route-safety, session, and probe tests, changed-file ESLint, and diff checks pass.
