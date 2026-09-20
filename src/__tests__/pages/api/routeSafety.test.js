@@ -10,12 +10,13 @@
  * How it works:
  * - Recursively scans src/pages/api/ for .js route files
  * - Reads each file's source code
- * - Asserts that each file contains an approved wrapper export
+ * - Verifies a direct approved wrapper export or the session probe composition
  * - Fails CI with a clear message listing unwrapped routes
  */
 
 const fs = require('fs');
 const path = require('path');
+const { parse } = require('@babel/parser');
 
 // Routes that intentionally skip withRateLimit — currently none.
 // health.js was moved behind withRateLimit with OPERATIONS.HEALTH (60 req/hour per IP).
@@ -51,21 +52,290 @@ function getRouteFiles(dir) {
   return files;
 }
 
+/**
+ * Restricts webhook-only wrappers to webhook filenames or directories.
+ * @param {string} relativePath - Route path using either platform's separators.
+ * @returns {boolean} Whether the route may use withWebhookAuth.
+ */
+function isWebhookRoute(relativePath) {
+  return /(^|[\\/])webhooks?(?:controller|route)?\.(js|ts)$|(^|[\\/])webhooks?(?:[\\/]|$)/i.test(relativePath);
+}
+
+/**
+ * Matches an actual identifier so strings and member accesses cannot impersonate it.
+ * @param {object} node - Parsed syntax node.
+ * @param {string} name - Required identifier name.
+ * @returns {boolean} Whether the node names the expected binding.
+ */
+function isIdentifier(node, name) {
+  return node?.type === 'Identifier' && node.name === name;
+}
+
+/**
+ * Requires a call to forward the original request and response without substitutions.
+ * @param {object} node - Parsed call expression.
+ * @returns {boolean} Whether its only arguments are req and res, in order.
+ */
+function forwardsRequestAndResponse(node) {
+  return node?.type === 'CallExpression'
+    && node.arguments.length === 2
+    && isIdentifier(node.arguments[0], 'req')
+    && isIdentifier(node.arguments[1], 'res');
+}
+
+/**
+ * Recognizes only the session route's observational probe followed by its limiter.
+ * Requires trusted imports, an immutable top-level limiter binding, and exactly two
+ * wrapper statements so an early return, shadowed binding, or branch cannot bypass it.
+ * @param {object[]} statements - Parsed module statements; comments are excluded.
+ * @param {object} exported - Actual default-export declaration.
+ * @param {string} relativePath - Route path, scoped to pages/api/auth/session.js.
+ * @returns {boolean} Whether the approved composition is structurally intact.
+ */
+function isSessionProbeComposition(statements, exported, relativePath) {
+  if (relativePath.replace(/\\/g, '/') !== 'pages/api/auth/session.js'
+    || exported?.type !== 'FunctionDeclaration'
+    || !isIdentifier(exported.id, 'sessionWithRestartProbe')
+    || exported.generator
+    || exported.params.length !== 2
+    || !isIdentifier(exported.params[0], 'req')
+    || !isIdentifier(exported.params[1], 'res')
+    || exported.body.body.length !== 2) return false;
+
+  const hasTrustedImports = [
+    ['withRateLimit', '../../../server/middleware/withRateLimit.js'],
+    ['gate1RestartProbe', '../../../server/lib/gate1RestartProbe.js'],
+  ].every(([name, source]) => statements.some((statement) =>
+    statement.type === 'ImportDeclaration' && statement.source.value === source
+    && statement.specifiers.some((specifier) => specifier.type === 'ImportSpecifier'
+      && isIdentifier(specifier.imported, name) && isIdentifier(specifier.local, name))
+  ));
+  const hasWrappedRoute = statements.some((statement) =>
+    statement.type === 'VariableDeclaration' && statement.kind === 'const'
+    && statement.declarations.some((declaration) =>
+      isIdentifier(declaration.id, 'sessionRoute')
+      && declaration.init?.type === 'CallExpression'
+      && isIdentifier(declaration.init.callee, 'withRateLimit')
+      && declaration.init.arguments.length === 2
+      && isIdentifier(declaration.init.arguments[0], 'handler')
+      && declaration.init.arguments[1].type === 'ObjectExpression'
+    )
+  );
+  const [observation, delegation] = exported.body.body;
+  const probeCall = observation.expression;
+  return hasTrustedImports && hasWrappedRoute
+    && observation.type === 'ExpressionStatement'
+    && forwardsRequestAndResponse(probeCall)
+    && probeCall.callee.type === 'MemberExpression'
+    && !probeCall.callee.computed
+    && isIdentifier(probeCall.callee.object, 'gate1RestartProbe')
+    && isIdentifier(probeCall.callee.property, 'attach')
+    && delegation.type === 'ReturnStatement'
+    && forwardsRequestAndResponse(delegation.argument)
+    && isIdentifier(delegation.argument.callee, 'sessionRoute');
+}
+
+/**
+ * Checks the actual export instead of matching wrapper text in comments or strings.
+ * Uses the Babel parser already installed with the Jest/Next toolchain; no route runs.
+ * Direct calls must resolve to a trusted named import in module scope, where the
+ * parser rejects conflicting local declarations; the session composition stays separate.
+ * @param {string} content - Complete route source.
+ * @param {string} relativePath - Route path for webhook and session restrictions.
+ * @returns {boolean} Whether a supported wrapper is present; invalid syntax fails closed.
+ */
+function hasApprovedWrapper(content, relativePath) {
+  let statements;
+  try {
+    statements = parse(content, { sourceType: 'module' }).program.body;
+  } catch {
+    return false;
+  }
+  const exported = statements.find((statement) =>
+    statement.type === 'ExportDefaultDeclaration'
+  )?.declaration;
+  if (exported?.type === 'CallExpression') {
+    const approvedNames = isWebhookRoute(relativePath)
+      ? ['withRateLimit', 'withWebhookAuth'] : ['withRateLimit'];
+    const routeDirectory = path.posix.dirname(relativePath.replace(/\\/g, '/'));
+    /** Resolves the module-level callee only through relative imports from trusted modules. */
+    return statements.some((statement) => statement.type === 'ImportDeclaration'
+      && /^\.{1,2}\//.test(statement.source.value)
+      /** Requires the local binding and corresponding named export, allowing trusted aliases. */
+      && statement.specifiers.some((specifier) => specifier.type === 'ImportSpecifier'
+        && isIdentifier(exported.callee, specifier.local.name)
+        && approvedNames.includes(specifier.imported.name)
+        && path.posix.join(routeDirectory, statement.source.value)
+          === `server/middleware/${specifier.imported.name}.js`
+      )
+    );
+  }
+  return isSessionProbeComposition(statements, exported, relativePath);
+}
+
 describe('API Route Safety', () => {
   const APPROVED_WRAPPER_EXPORTS = [
     'export default withRateLimit(',
   ];
   const WEBHOOK_WRAPPER_EXPORT = 'export default withWebhookAuth(';
 
-  function isWebhookRoute(relativePath) {
-    return /(^|[\\/])webhooks?(?:controller|route)?\.(js|ts)$|(^|[\\/])webhooks?(?:[\\/]|$)/i.test(relativePath);
-  }
+  const sessionProbeSource = `
+    import { withRateLimit } from '../../../server/middleware/withRateLimit.js';
+    import { gate1RestartProbe } from '../../../server/lib/gate1RestartProbe.js';
+    const sessionRoute = withRateLimit(handler, {});
+    export default function sessionWithRestartProbe(req, res) {
+      gate1RestartProbe.attach(req, res);
+      return sessionRoute(req, res);
+    }
+  `;
+
+  /**
+   * Keeps the direct export and webhook path rules while ignoring formatting.
+   */
+  it.each([
+    ['pages/api/jobs.js', 'export default withRateLimit(handler, {});', true],
+    ['pages/api/jobs.js', 'export default withRateLimit (handler, {});', true],
+    ['pages/api/billing/webhook.js', 'export default withWebhookAuth(handler, {});', true],
+    ['pages/api/webhooks/events.js', 'export default withWebhookAuth(handler, {});', true],
+    ['pages\\api\\billing\\webhook.js', 'export default withWebhookAuth(handler, {});', true],
+    ['pages/api/jobs.js', 'export default withWebhookAuth(handler, {});', false],
+    ['pages/api/jobs.js', 'export default handler;', false],
+    ['pages/api/jobs.js', '// export default withRateLimit(handler, {});\nexport default handler;', false],
+    ['pages/api/jobs.js', 'const text = "export default withRateLimit("; export default handler;', false],
+    ['pages/api/jobs.js', 'export default withRateLimit(', false],
+  ])('checks the actual direct export for %s (case %#)', (relativePath, source, approved) => {
+    const middlewarePath = relativePath === 'pages/api/jobs.js'
+      ? '../../server/middleware' : '../../../server/middleware';
+    expect(hasApprovedWrapper(`
+      import { withRateLimit } from '${middlewarePath}/withRateLimit.js';
+      import { withWebhookAuth } from '${middlewarePath}/withWebhookAuth.js';
+      ${source}
+    `, relativePath)).toBe(approved);
+  });
+
+  const wrapperCases = [
+    {
+      wrapper: 'withRateLimit',
+      route: 'pages/api/health.js',
+      source: '../../server/middleware/withRateLimit.js',
+    },
+    {
+      wrapper: 'withWebhookAuth',
+      route: 'pages/api/billing/webhook.js',
+      source: '../../../server/middleware/withWebhookAuth.js',
+    },
+  ];
+
+  /** Ensures each approved named import, including aliases, still passes for its route. */
+  it.each(wrapperCases)('accepts trusted $wrapper imports', ({ wrapper, route, source }) => {
+    expect(hasApprovedWrapper(`
+      import { ${wrapper} } from '${source}';
+      export default ${wrapper}(handler);
+    `, route)).toBe(true);
+    expect(hasApprovedWrapper(`
+      import { ${wrapper} as approvedWrapper } from '${source}';
+      export default approvedWrapper(handler);
+    `, route)).toBe(true);
+  });
+
+  /** A trusted import under another name must not approve a local lookalike binding. */
+  it.each(wrapperCases)('rejects local $wrapper bindings', ({ wrapper, route, source }) => {
+    expect(hasApprovedWrapper(`
+      import { ${wrapper} as trustedWrapper } from '${source}';
+      /** Local passthrough simulates a wrapper that provides no middleware protection. */
+      const ${wrapper} = (handler) => handler;
+      export default ${wrapper}(handler);
+    `, route)).toBe(false);
+    expect(hasApprovedWrapper(`export default ${wrapper}(handler);`, route)).toBe(false);
+  });
+
+  /** Matching imported names and filenames cannot approve an untrusted module path. */
+  it.each(wrapperCases)('rejects untrusted $wrapper imports', ({ wrapper, route }) => {
+    expect(hasApprovedWrapper(`
+      import { ${wrapper} } from './untrusted/${wrapper}.js';
+      export default ${wrapper}(handler);
+    `, route)).toBe(false);
+  });
+
+  /** The approved module must supply the corresponding named export, not a lookalike alias. */
+  it.each(wrapperCases)('rejects the wrong named import for $wrapper', ({ wrapper, route, source }) => {
+    expect(hasApprovedWrapper(`
+      import { otherWrapper as ${wrapper} } from '${source}';
+      export default ${wrapper}(handler);
+    `, route)).toBe(false);
+    expect(hasApprovedWrapper(`
+      import ${wrapper} from '${source}';
+      export default ${wrapper}(handler);
+    `, route)).toBe(false);
+  });
+
+  /** A parameter shadowing a trusted import cannot establish a protected default export. */
+  it.each(wrapperCases)('rejects shadowed $wrapper parameters', ({ wrapper, route, source }) => {
+    expect(hasApprovedWrapper(`
+      import { ${wrapper} } from '${source}';
+      /** Route-local parameter replaces the trusted wrapper binding. */
+      export default function routeHandler(${wrapper}) {
+        return ${wrapper}(handler);
+      }
+    `, route)).toBe(false);
+  });
+
+  /** Webhook authentication stays restricted by route path even when the import is aliased. */
+  it.each(['withWebhookAuth', 'withRateLimit'])('rejects webhook auth as %s on non-webhook routes', (localName) => {
+    expect(hasApprovedWrapper(`
+      import { withWebhookAuth as ${localName} } from '../../server/middleware/withWebhookAuth.js';
+      export default ${localName}(handler);
+    `, 'pages/api/health.js')).toBe(false);
+  });
+
+  /**
+   * Both CI and Windows paths accept the same constrained session composition.
+   */
+  it.each(['pages/api/auth/session.js', 'pages\\api\\auth\\session.js'])(
+    'accepts the observational session composition at %s', (relativePath) => {
+      expect(hasApprovedWrapper(sessionProbeSource, relativePath)).toBe(true);
+    }
+  );
+
+  /**
+   * The session exception cannot authorize unrelated routes.
+   */
+  it('rejects the session composition on another route', () => {
+    expect(hasApprovedWrapper(sessionProbeSource, 'pages/api/jobs.js')).toBe(false);
+  });
+
+  /**
+   * Mutations model concrete ways a composed export could stop enforcing middleware.
+   */
+  it.each([
+    ['missing middleware', 'withRateLimit(handler, {})', 'handler'],
+    ['unused middleware', 'return sessionRoute(req, res);', 'return handler(req, res);'],
+    ['comment-only middleware', 'const sessionRoute =', '// const sessionRoute ='],
+    ['mutable middleware binding', 'const sessionRoute =', 'let sessionRoute ='],
+    ['untrusted middleware import', '../../../server/middleware/withRateLimit.js', './fake.js'],
+    ['untrusted probe import', '../../../server/lib/gate1RestartProbe.js', './fake.js'],
+    ['early return', 'gate1RestartProbe.attach(req, res);',
+      'if (req.query.bypass) return handler(req, res); gate1RestartProbe.attach(req, res);'],
+    ['conditional delegation', 'return sessionRoute(req, res);',
+      'return req.query.bypass ? handler(req, res) : sessionRoute(req, res);'],
+    ['shadowed middleware binding', 'return sessionRoute(req, res);',
+      'const sessionRoute = handler; return sessionRoute(req, res);'],
+    ['shadowing function name', 'function sessionWithRestartProbe', 'function sessionRoute'],
+    ['substituted request', 'return sessionRoute(req, res);', 'return sessionRoute({}, res);'],
+    ['generator export', 'function sessionWithRestartProbe', 'function* sessionWithRestartProbe'],
+  ])('rejects a session composition with %s', (_description, original, replacement) => {
+    expect(sessionProbeSource).toContain(original);
+    expect(hasApprovedWrapper(
+      sessionProbeSource.replace(original, replacement), 'pages/api/auth/session.js'
+    )).toBe(false);
+  });
 
   /**
    * Test: All route files must use one of the approved wrappers
    *
    * Scans every .js file in src/pages/api/ (excluding __tests__/) and
-   * verifies it contains an approved wrapper export in its source.
+   * verifies its actual export uses an approved wrapper. The session probe may
+   * observe requests before unconditionally returning its rate-limited route.
    * This catches any new route that was added without the middleware wrapper.
    *
    * If this test fails, wrap your new route handler with:
@@ -89,15 +359,7 @@ describe('API Route Safety', () => {
     for (const filePath of routeFiles) {
       const content = fs.readFileSync(filePath, 'utf-8');
       const relativePath = path.relative(path.resolve(__dirname, '../../..'), filePath);
-      const approvedWrappers = isWebhookRoute(relativePath)
-        ? [...APPROVED_WRAPPER_EXPORTS, WEBHOOK_WRAPPER_EXPORT]
-        : APPROVED_WRAPPER_EXPORTS;
-
-      const hasApprovedWrapper = approvedWrappers.some((wrapperExport) =>
-        content.includes(wrapperExport)
-      );
-
-      if (!hasApprovedWrapper) {
+      if (!hasApprovedWrapper(content, relativePath)) {
         unwrappedRoutes.push(relativePath);
       }
     }
@@ -110,6 +372,8 @@ describe('API Route Safety', () => {
         APPROVED_WRAPPER_EXPORTS.map((wrapperExport) => `  - ${wrapperExport}...`).join('\n') +
         `\nWebhook-named routes may also use:\n` +
         `  - ${WEBHOOK_WRAPPER_EXPORT}...` +
+        `\nThe session route may also observe with gate1RestartProbe.attach(req, res), then\n` +
+        `unconditionally return its const sessionRoute = withRateLimit(...) handler.\n` +
         `\nSee src/server/middleware/withRateLimit.js and src/server/middleware/withWebhookAuth.js for usage.`
       );
     }
