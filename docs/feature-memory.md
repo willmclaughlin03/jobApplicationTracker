@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-20
 
+- `2026-09-20` - `GATE-1 probe outcome diagnostics`: Added a nonsecret request marker for fixed internal probe outcomes through the existing logger, bounded to one attempt per outcome per module. Preserved dedicated-credential authentication, raw-header agreement, runtime-header privacy, and session enforcement when diagnostics or logging fail. All 166 focused probe/session tests, changed-file ESLint, and whitespace checks pass. The missing hosted probe header remains under investigation; GATE-1 stays open.
+
 - `2026-09-20` - `GATE-1 production runtime diagnostics`: Allowed the read-only session probe on explicitly enabled Vercel production deployments as well as previews, retaining the dedicated credential and normal session enforcement. Extended configuration, credential, raw-header, and composed-route coverage across both targets. All 119 focused tests, changed-file ESLint, and whitespace checks pass; hosted diagnostics and restart proof remain unexecuted.
 
 - `2026-09-20` - `Trusted route-wrapper bindings`: Require direct API wrapper calls to resolve to the corresponding named import from the approved middleware module. Preserve trusted aliases, webhook path restrictions, and the session probe composition; add local/shadowed binding and untrusted-import regressions. All 131 focused route-safety, session, and probe tests, changed-file ESLint, and diff checks pass.

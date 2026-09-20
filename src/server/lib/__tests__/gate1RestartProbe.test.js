@@ -1,7 +1,12 @@
 import {
   createGate1RestartProbe,
   GATE1_RESTART_PROBE_HEADER,
+  GATE1_RESTART_DIAGNOSTIC_HEADER,
 } from '../gate1RestartProbe.js';
+import { logger as defaultLogger } from '../../../shared/logger.js';
+
+/** Keep the default-logger wiring test offline and capture only synthetic log calls. */
+jest.mock('../../../shared/logger.js', () => ({ logger: { info: jest.fn() } }));
 
 // Synthetic fixture only; hosted credentials are never used by these tests.
 const TEST_SECRET = 'a'.repeat(64);
@@ -40,6 +45,17 @@ function createExchange() {
 }
 
 /**
+ * Marks a synthetic exchange for bounded internal outcomes; the marker grants no access.
+ * @returns {object} request/response fixture with the public diagnostic marker
+ */
+function createMarkedExchange() {
+  const exchange = createExchange();
+  exchange.req.headers[GATE1_RESTART_DIAGNOSTIC_HEADER] = '1';
+  exchange.req.rawHeaders.push(GATE1_RESTART_DIAGNOSTIC_HEADER, '1');
+  return exchange;
+}
+
+/**
  * Creates a probe with observable dependency calls and explicit fake configuration.
  * @param {object} [overrides] per-case environment, randomness, or runtime reader
  * @returns {object} probe and dependency spies for lazy/failure assertions
@@ -47,13 +63,16 @@ function createExchange() {
 function createProbe(overrides = {}) {
   const randomBytesFunction = jest.fn(() => Buffer.alloc(12, 1));
   const readRuntime = jest.fn(readTestRuntime);
+  const diagnosticLogger = overrides.logger ?? { info: jest.fn() };
   return {
     randomBytesFunction,
     readRuntime,
+    diagnosticLogger,
     probe: createGate1RestartProbe({
       env: ENABLED_PREVIEW,
       randomBytesFunction,
       readRuntime,
+      logger: diagnosticLogger,
       ...overrides,
     }),
   };
@@ -312,5 +331,143 @@ describe('GATE-1 restart probe', () => {
     expect(value.processUptimeMs).toBeLessThanOrEqual(Math.floor(process.uptime() * 1_000));
     expect(typeof value.isMainThread).toBe('boolean');
     expect(value.contextId).toMatch(/^[a-f0-9]{24}$/);
+  });
+
+  /** A public marker diagnoses rejection internally and never authenticates a request. */
+  it.each([
+    ['authorization_missing', undefined, []],
+    ['authorization_format_invalid', 'invalid', []],
+    ['raw_headers_invalid', TEST_AUTHORIZATION, undefined],
+    ['raw_headers_invalid', TEST_AUTHORIZATION, ['Authorization']],
+    ['raw_headers_invalid', TEST_AUTHORIZATION, Array(258).fill('oversized')],
+    ['raw_headers_invalid', TEST_AUTHORIZATION, [null, 'private-value']],
+    ['raw_authorization_missing', TEST_AUTHORIZATION, []],
+    ['raw_header_mismatch', TEST_AUTHORIZATION, ['Authorization', `Bearer ${'b'.repeat(64)}`]],
+    ['raw_authorization_duplicate', TEST_AUTHORIZATION,
+      ['Authorization', TEST_AUTHORIZATION, 'authorization', TEST_AUTHORIZATION]],
+    ['credential_mismatch', `Bearer ${'b'.repeat(64)}`, ['Authorization', `Bearer ${'b'.repeat(64)}`]],
+  ])('records only %s for rejected marked authentication %#', (outcome, authorization, rawHeaders) => {
+    const { probe, diagnosticLogger, readRuntime, randomBytesFunction } = createProbe();
+    const { req, res } = createMarkedExchange();
+    req.headers.authorization = authorization;
+    req.rawHeaders = rawHeaders;
+    for (let attempt = 0; attempt < 20; attempt += 1) probe.attach(req, res);
+    expect(diagnosticLogger.info.mock.calls).toEqual([
+      [{ event: 'gate1_restart_probe_outcome', outcome }, 'GATE-1 restart probe diagnostic'],
+    ]);
+    expect(res.setHeader).not.toHaveBeenCalled();
+    expect(readRuntime).not.toHaveBeenCalled();
+    expect(randomBytesFunction).not.toHaveBeenCalled();
+  });
+
+  /** Unmarked, malformed-marker, disabled, and unsupported requests produce no new log traffic. */
+  it.each([undefined, '', '0', 'true', '1, 1', ['1'], '1 '])(
+    'does not log an unmarked or ambiguous request %#', (marker) => {
+      const { probe, diagnosticLogger } = createProbe();
+      const { req, res } = createExchange();
+      req.headers[GATE1_RESTART_DIAGNOSTIC_HEADER] = marker;
+      probe.attach(req, res);
+      expect(diagnosticLogger.info).not.toHaveBeenCalled();
+    }
+  );
+
+  /** Explicit disablement and method guards apply to logs as well as response observations. */
+  it.each([
+    ['false', 'GET'], [undefined, 'GET'], ['TRUE', 'GET'], ['true', 'POST'], ['true', 'HEAD'],
+  ])('stays silent when disabled or method-rejected %#', (flag, method) => {
+    const { probe, diagnosticLogger } = createProbe({
+      env: { ...ENABLED_PREVIEW, GATE1_RESTART_PROBE_ENABLED: flag },
+    });
+    const { req, res } = createMarkedExchange();
+    req.method = method;
+    probe.attach(req, res);
+    expect(diagnosticLogger.info).not.toHaveBeenCalled();
+    expect(res.setHeader).not.toHaveBeenCalled();
+  });
+
+  /** Configuration, observation, and response guards report fixed stages without values. */
+  it.each([
+    ['environment_rejected', { env: { ...ENABLED_PREVIEW, VERCEL_ENV: 'invalid' } }],
+    ['secret_format_invalid', { env: { ...ENABLED_PREVIEW, GATE1_RESTART_PROBE_SECRET: 'private-value' } }],
+    ['context_unavailable', { randomBytesFunction: jest.fn().mockReturnValue(null) }],
+    ['runtime_invalid', { readRuntime: jest.fn().mockReturnValue({ nodeVersion: 'private-value' }) }],
+  ])('records %s without leaking rejected data', (outcome, options) => {
+    const { probe, diagnosticLogger } = createProbe(options);
+    const { req, res } = createMarkedExchange();
+    probe.attach(req, res);
+    expect(diagnosticLogger.info.mock.calls).toEqual([
+      [{ event: 'gate1_restart_probe_outcome', outcome }, 'GATE-1 restart probe diagnostic'],
+    ]);
+    expect(res.setHeader).not.toHaveBeenCalled();
+  });
+
+  /** Closed responses never receive headers, and their reason remains private and bounded. */
+  it.each(['headersSent', 'writableEnded', 'finished'])('logs a closed %s response once', (property) => {
+    const { probe, diagnosticLogger } = createProbe();
+    const { req, res } = createMarkedExchange();
+    res[property] = true;
+    probe.attach(req, res);
+    probe.attach(req, res);
+    expect(diagnosticLogger.info).toHaveBeenCalledTimes(1);
+    expect(diagnosticLogger.info.mock.calls[0][0].outcome).toBe('response_unavailable');
+    expect(res.setHeader).not.toHaveBeenCalled();
+  });
+
+  /** Outcome deduplication is per kind, while a valid later request still authenticates normally. */
+  it('logs distinct outcomes once without retaining request or runtime facts', () => {
+    const { probe, diagnosticLogger } = createProbe();
+    const missing = createMarkedExchange();
+    delete missing.req.headers.authorization;
+    const valid = createMarkedExchange();
+    valid.req.headers.cookie = 'private-cookie-value';
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      probe.attach(missing.req, missing.res);
+      probe.attach(valid.req, valid.res);
+    }
+    expect(diagnosticLogger.info.mock.calls).toEqual([
+      [{ event: 'gate1_restart_probe_outcome', outcome: 'authorization_missing' }, 'GATE-1 restart probe diagnostic'],
+      [{ event: 'gate1_restart_probe_outcome', outcome: 'header_attached' }, 'GATE-1 restart probe diagnostic'],
+    ]);
+    expect(valid.headers.has(GATE1_RESTART_PROBE_HEADER.toLowerCase())).toBe(true);
+    expect(missing.headers.has(GATE1_RESTART_PROBE_HEADER.toLowerCase())).toBe(false);
+  });
+
+  /** Exceptions in the logger neither suppress valid metadata nor create repeated log attempts. */
+  it('contains and latches logger failures', () => {
+    const logFailure = jest.fn();
+    /** Throw a synthetic private error to verify that neither it nor its message escapes. */
+    function failLog() { logFailure(); throw new Error('private-logger-failure'); }
+    const { probe } = createProbe({ logger: { info: failLog } });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const { req, res, headers } = createMarkedExchange();
+      expect(() => probe.attach(req, res)).not.toThrow();
+      expect(headers.has(GATE1_RESTART_PROBE_HEADER.toLowerCase())).toBe(true);
+    }
+    expect(logFailure).toHaveBeenCalledTimes(1);
+  });
+
+  /** Runtime exceptions produce one static outcome and never expose the thrown payload. */
+  it('contains marked observation failures without logging error objects', () => {
+    /** Simulate a private provider/runtime exception behind the fixed diagnostic boundary. */
+    function failRuntime() { throw new Error('private-runtime-failure'); }
+    const { probe, diagnosticLogger } = createProbe({ readRuntime: failRuntime });
+    const { req, res } = createMarkedExchange();
+    probe.attach(req, res);
+    probe.attach(req, res);
+    expect(diagnosticLogger.info.mock.calls).toEqual([
+      [{ event: 'gate1_restart_probe_outcome', outcome: 'observation_failed' }, 'GATE-1 restart probe diagnostic'],
+    ]);
+    expect(res.setHeader).not.toHaveBeenCalled();
+  });
+
+  /** Production code uses the existing logger only after a marked request requests diagnostics. */
+  it('uses the default logger with a fixed event payload', () => {
+    defaultLogger.info.mockClear();
+    const probe = createGate1RestartProbe({ env: ENABLED_PREVIEW });
+    const { req, res } = createMarkedExchange();
+    probe.attach(req, res);
+    expect(defaultLogger.info.mock.calls).toEqual([
+      [{ event: 'gate1_restart_probe_outcome', outcome: 'header_attached' }, 'GATE-1 restart probe diagnostic'],
+    ]);
   });
 });
