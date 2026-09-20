@@ -138,6 +138,8 @@ function isSessionProbeComposition(statements, exported, relativePath) {
 /**
  * Checks the actual export instead of matching wrapper text in comments or strings.
  * Uses the Babel parser already installed with the Jest/Next toolchain; no route runs.
+ * Direct calls must resolve to a trusted named import in module scope, where the
+ * parser rejects conflicting local declarations; the session composition stays separate.
  * @param {string} content - Complete route source.
  * @param {string} relativePath - Route path for webhook and session restrictions.
  * @returns {boolean} Whether a supported wrapper is present; invalid syntax fails closed.
@@ -153,8 +155,20 @@ function hasApprovedWrapper(content, relativePath) {
     statement.type === 'ExportDefaultDeclaration'
   )?.declaration;
   if (exported?.type === 'CallExpression') {
-    return isIdentifier(exported.callee, 'withRateLimit')
-      || (isWebhookRoute(relativePath) && isIdentifier(exported.callee, 'withWebhookAuth'));
+    const approvedNames = isWebhookRoute(relativePath)
+      ? ['withRateLimit', 'withWebhookAuth'] : ['withRateLimit'];
+    const routeDirectory = path.posix.dirname(relativePath.replace(/\\/g, '/'));
+    /** Resolves the module-level callee only through relative imports from trusted modules. */
+    return statements.some((statement) => statement.type === 'ImportDeclaration'
+      && /^\.{1,2}\//.test(statement.source.value)
+      /** Requires the local binding and corresponding named export, allowing trusted aliases. */
+      && statement.specifiers.some((specifier) => specifier.type === 'ImportSpecifier'
+        && isIdentifier(exported.callee, specifier.local.name)
+        && approvedNames.includes(specifier.imported.name)
+        && path.posix.join(routeDirectory, statement.source.value)
+          === `server/middleware/${specifier.imported.name}.js`
+      )
+    );
   }
   return isSessionProbeComposition(statements, exported, relativePath);
 }
@@ -190,7 +204,88 @@ describe('API Route Safety', () => {
     ['pages/api/jobs.js', 'const text = "export default withRateLimit("; export default handler;', false],
     ['pages/api/jobs.js', 'export default withRateLimit(', false],
   ])('checks the actual direct export for %s (case %#)', (relativePath, source, approved) => {
-    expect(hasApprovedWrapper(source, relativePath)).toBe(approved);
+    const middlewarePath = relativePath === 'pages/api/jobs.js'
+      ? '../../server/middleware' : '../../../server/middleware';
+    expect(hasApprovedWrapper(`
+      import { withRateLimit } from '${middlewarePath}/withRateLimit.js';
+      import { withWebhookAuth } from '${middlewarePath}/withWebhookAuth.js';
+      ${source}
+    `, relativePath)).toBe(approved);
+  });
+
+  const wrapperCases = [
+    {
+      wrapper: 'withRateLimit',
+      route: 'pages/api/health.js',
+      source: '../../server/middleware/withRateLimit.js',
+    },
+    {
+      wrapper: 'withWebhookAuth',
+      route: 'pages/api/billing/webhook.js',
+      source: '../../../server/middleware/withWebhookAuth.js',
+    },
+  ];
+
+  /** Ensures each approved named import, including aliases, still passes for its route. */
+  it.each(wrapperCases)('accepts trusted $wrapper imports', ({ wrapper, route, source }) => {
+    expect(hasApprovedWrapper(`
+      import { ${wrapper} } from '${source}';
+      export default ${wrapper}(handler);
+    `, route)).toBe(true);
+    expect(hasApprovedWrapper(`
+      import { ${wrapper} as approvedWrapper } from '${source}';
+      export default approvedWrapper(handler);
+    `, route)).toBe(true);
+  });
+
+  /** A trusted import under another name must not approve a local lookalike binding. */
+  it.each(wrapperCases)('rejects local $wrapper bindings', ({ wrapper, route, source }) => {
+    expect(hasApprovedWrapper(`
+      import { ${wrapper} as trustedWrapper } from '${source}';
+      /** Local passthrough simulates a wrapper that provides no middleware protection. */
+      const ${wrapper} = (handler) => handler;
+      export default ${wrapper}(handler);
+    `, route)).toBe(false);
+    expect(hasApprovedWrapper(`export default ${wrapper}(handler);`, route)).toBe(false);
+  });
+
+  /** Matching imported names and filenames cannot approve an untrusted module path. */
+  it.each(wrapperCases)('rejects untrusted $wrapper imports', ({ wrapper, route }) => {
+    expect(hasApprovedWrapper(`
+      import { ${wrapper} } from './untrusted/${wrapper}.js';
+      export default ${wrapper}(handler);
+    `, route)).toBe(false);
+  });
+
+  /** The approved module must supply the corresponding named export, not a lookalike alias. */
+  it.each(wrapperCases)('rejects the wrong named import for $wrapper', ({ wrapper, route, source }) => {
+    expect(hasApprovedWrapper(`
+      import { otherWrapper as ${wrapper} } from '${source}';
+      export default ${wrapper}(handler);
+    `, route)).toBe(false);
+    expect(hasApprovedWrapper(`
+      import ${wrapper} from '${source}';
+      export default ${wrapper}(handler);
+    `, route)).toBe(false);
+  });
+
+  /** A parameter shadowing a trusted import cannot establish a protected default export. */
+  it.each(wrapperCases)('rejects shadowed $wrapper parameters', ({ wrapper, route, source }) => {
+    expect(hasApprovedWrapper(`
+      import { ${wrapper} } from '${source}';
+      /** Route-local parameter replaces the trusted wrapper binding. */
+      export default function routeHandler(${wrapper}) {
+        return ${wrapper}(handler);
+      }
+    `, route)).toBe(false);
+  });
+
+  /** Webhook authentication stays restricted by route path even when the import is aliased. */
+  it.each(['withWebhookAuth', 'withRateLimit'])('rejects webhook auth as %s on non-webhook routes', (localName) => {
+    expect(hasApprovedWrapper(`
+      import { withWebhookAuth as ${localName} } from '../../server/middleware/withWebhookAuth.js';
+      export default ${localName}(handler);
+    `, 'pages/api/health.js')).toBe(false);
   });
 
   /**
