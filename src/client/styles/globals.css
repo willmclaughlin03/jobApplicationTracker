@@ -159,21 +159,24 @@
 }
 
 @layer components {
-  .dashboard-root .dashboard-major-panel {
+  .dashboard-root .dashboard-major-panel,
+  .public-page-root .dashboard-major-panel {
     border: 1px solid var(--dash-panel-border);
     border-radius: var(--dash-radius-panel);
     background-color: rgb(var(--dash-surface) / 0.94);
     box-shadow: var(--dash-panel-glow);
   }
 
-  .dashboard-root .dashboard-raised-panel {
+  .dashboard-root .dashboard-raised-panel,
+  .public-page-root .dashboard-raised-panel {
     border: 1px solid var(--dash-panel-border);
     border-radius: var(--dash-radius-panel);
     background-color: rgb(var(--dash-surface-raised) / 0.96);
     box-shadow: var(--dash-panel-glow);
   }
 
-  .dashboard-root .dashboard-control {
+  .dashboard-root .dashboard-control,
+  .public-page-root .dashboard-control {
     border: 1px solid var(--dash-control-border);
     border-radius: var(--dash-radius-control);
     background-color: rgb(var(--dash-surface-raised) / 0.9);

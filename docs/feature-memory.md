@@ -16,6 +16,14 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-13
 
+- `2026-09-19` - `Validated billing status display`: Validate subscription status before storing the API response, route malformed non-string statuses to the unavailable UI, and display canonical no-subscription status as "Not subscribed" with checkout retained. Added regression coverage for malformed responses, loading, valid status formatting, and no-subscription behavior.
+
+- `2026-09-19` - `Red billing overflow warning`: Applied the existing red border, background, and text palette to the storage-after-cancellation warning. All 23 billing-page/state tests and diff checks pass.
+
+- `2026-09-19` - `Readable billing status labels`: Replace underscores with spaces in the displayed subscription status while preserving the `Loading...`, `Unavailable`, and `none` fallbacks. All 17 billing-page tests, 13 direct formatting/fallback checks, and diff checks pass.
+
+- `2026-09-19` - `Emerald billing pages`: Matched billing, checkout success, and checkout cancellation to the shared login shell with its dotted wave, emerald panels, themed controls, responsive layout, and clearer subscription copy. Preserved protected-page cache exports and billing action/polling guards, with focused coverage for verified success and unavailable details.
+
 - `2026-09-14` - `GATE-1 clock-based setup deadline`: Enforce the setup budget with the injected clock before every provisioning attempt and cap cooldown waits at that deadline, retaining phase-signal cancellation for live requests. Added the two-session, 1,000 ms virtual-clock regression plus exact/over-deadline build-verification coverage. All 60 focused tests, targeted ESLint, and diff checks pass.
 
 - `2026-09-14` - `GATE-1 setup pacing and provider status evidence`: Updated the operator-confirmed deployment/build pins, added cancellable 2.5-second pauses between account preparations within the setup deadline, and reported validated provider operation/HTTP status counts without messages, bodies, headers, or account identifiers. Preparation output discloses the pacing; the application cadence, load budget, cleanup, and zero-retry policy remain unchanged. All 57 focused tests and syntax checks pass. The operator's September 14 live run completed 50 distinct sessions across three cycles with 302 HTTP 200 responses, 150 identity matches, 300 private/no-store cache MISS responses, and all 50 accounts deleted. GATE-1 remains open for separate evidence review.

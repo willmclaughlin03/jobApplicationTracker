@@ -35,6 +35,11 @@ const checkoutAttemptNonce = '0123456789abcdef0123456789abcdef';
 const retryCheckoutAttemptUuid = 'fedcba98-7654-3210-fedc-ba9876543210';
 const retryCheckoutAttemptNonce = 'fedcba9876543210fedcba9876543210';
 
+/** Keep the real shared shell in page tests without invoking Next's font loader. */
+jest.mock('next/font/google', () => ({
+  Inter: jest.fn().mockReturnValue({ variable: 'mock-public-font-variable' }),
+}));
+
 jest.mock('next/router', () => ({
   useRouter: () => mockRouter,
 }));
@@ -254,6 +259,97 @@ describe('BillingPage', () => {
   });
 
   afterEach(cleanup);
+
+  /** Verify malformed API statuses cannot render details or enable billing actions. */
+  it.each([undefined, null, false, true, 0, 123, {}, []])(
+    'shows an unavailable billing state for malformed status %p',
+    async (status) => {
+      mockApiGet.mockResolvedValue(buildApiSuccess({
+        status,
+        entitled: true,
+        hasSubscription: false,
+        currentPeriodEnd: null,
+        cancelAtPeriodEnd: true,
+        hasPortalCustomer: true,
+      }));
+
+      const el = await renderBillingPage();
+
+      expect(el.querySelector('#billing-summary-heading').textContent).toBe('Billing status unavailable');
+      expect(Array.from(el.querySelectorAll('dd')).map((detail) => detail.textContent))
+        .toEqual(['Unavailable', 'Unavailable', 'Unavailable']);
+      expect(findButtonByText(el, 'Start checkout')).toBeNull();
+      expect(findButtonByText(el, 'Open billing portal')).toBeNull();
+    },
+  );
+
+  /** Keep canonical null status usable for accounts that have no subscription. */
+  it('preserves no-subscription details and checkout for canonical null status', async () => {
+    mockApiGet.mockResolvedValue(buildApiSuccess({
+      status: null,
+      entitled: false,
+      entitlement: null,
+      hasSubscription: false,
+      currentPeriodEnd: null,
+      cancelAtPeriodEnd: false,
+      hasCustomerMapping: false,
+      hasPortalCustomer: false,
+    }));
+
+    const el = await renderBillingPage();
+
+    expect(el.querySelector('#billing-summary-heading').textContent).toBe('No active subscription');
+    expect(Array.from(el.querySelectorAll('dd')).map((detail) => detail.textContent))
+      .toEqual(['Not subscribed', 'Not set', 'No']);
+    expect(findButtonByText(el, 'Start checkout').disabled).toBe(false);
+    expect(findButtonByText(el, 'Open billing portal')).toBeNull();
+  });
+
+  /** Preserve loading details until the API resolves, then format validated strings. */
+  it.each([
+    ['active', 'active'],
+    ['past_due', 'past due'],
+    ['free', 'free'],
+  ])(
+    'preserves loading and formatted status display for %s',
+    async (status, label) => {
+      const pendingStatus = createDeferred();
+      mockApiGet.mockImplementation((endpoint) => endpoint === '/api/billing/status'
+        ? pendingStatus.promise
+        : Promise.resolve(buildApiSuccess(null)));
+
+      const el = await renderBillingPage();
+
+      expect(el.querySelector('#billing-summary-heading').textContent).toBe('Loading billing status');
+      expect(Array.from(el.querySelectorAll('dd')).map((detail) => detail.textContent))
+        .toEqual(['Loading...', 'Loading...', 'Loading...']);
+
+      await act(async () => {
+        pendingStatus.resolve(buildApiSuccess({
+          status,
+          currentPeriodEnd: null,
+          cancelAtPeriodEnd: false,
+          hasPortalCustomer: false,
+        }));
+      });
+
+      expect(Array.from(el.querySelectorAll('dd')).map((detail) => detail.textContent))
+        .toEqual([label, 'Not set', 'No']);
+    },
+  );
+
+  /** Failed reads must not present false cancellation or subscription facts. */
+  it('shows unavailable details and no billing actions when verification fails', async () => {
+    mockApiGet.mockRejectedValue(new Error('billing unavailable'));
+
+    const el = await renderBillingPage();
+
+    expect(Array.from(el.querySelectorAll('dd')).map((detail) => detail.textContent))
+      .toEqual(['Unavailable', 'Unavailable', 'Unavailable']);
+    expect(findButtonByText(el, 'Start checkout')).toBeNull();
+    expect(findButtonByText(el, 'Open billing portal')).toBeNull();
+    expect(el.querySelector('[role="alert"]').textContent).toContain(ERROR_MESSAGES.SERVICE_UNAVAILABLE);
+  });
 
   it('signs out and redirects to login on shared-client 401 errors', async () => {
     const signOut = jest.fn().mockResolvedValue({ error: null });
@@ -659,7 +755,7 @@ describe('BillingPage', () => {
     expect(mockApiGet).toHaveBeenCalledWith('/api/storage/status');
     expect(mockRouter.replace).not.toHaveBeenCalled();
     expect(el.textContent).toContain('Storage details are temporarily unavailable');
-    expect(el.textContent).toContain('Local status');
+    expect(el.textContent).toContain('Subscription status');
     expect(el.textContent).not.toContain('Storage after cancellation');
     expect(el.textContent).not.toContain('Free storage archive');
   });
