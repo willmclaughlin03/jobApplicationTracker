@@ -62,6 +62,11 @@ const {
   temporarySessionCeiling,
 } = require('../../../../server/lib/temporarySessionCeiling.js');
 const {
+  createGate1RestartProbe,
+  gate1RestartProbe,
+  GATE1_RESTART_PROBE_HEADER,
+} = require('../../../../server/lib/gate1RestartProbe.js');
+const {
   sessionResponseSchema,
 } = require('../../../../testSupport/authV2ContractFixtures.js');
 
@@ -201,6 +206,9 @@ describe('/api/auth/session composed v1 route', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockLog.warn.mockReset();
+    jest.spyOn(gate1RestartProbe, 'attach').mockImplementation(
+      createGate1RestartProbe({ env: {} }).attach
+    );
     ceilingEvaluateSpy = jest
       .spyOn(temporarySessionCeiling, 'evaluate')
       .mockResolvedValue({ allowed: true });
@@ -535,5 +543,206 @@ describe('/api/auth/session composed v1 route', () => {
     expectPrivateNoStore(res);
     expectLegacyRateLimitHeadersAbsent(res);
     expectLegacyV1Body(res.body);
+  });
+
+  /**
+   * Runs the real observational probe alongside the real composed session route.
+   */
+  describe('approved preview runtime diagnostics', () => {
+    // Synthetic fixture only; no deployed credentials or process configuration are used.
+    const probeSecret = 'b'.repeat(64);
+    const authorization = `Bearer ${probeSecret}`;
+
+    /**
+     * Installs the real probe with an explicit synthetic preview environment.
+     * @param {object} [options] runtime/configuration failure seams for composed tests
+     * @returns {void} replaces only the probe dependencies, not its implementation
+     */
+    function installPreviewProbe(options = {}) {
+      gate1RestartProbe.attach.mockImplementation(createGate1RestartProbe({
+        env: {
+          VERCEL: '1',
+          VERCEL_ENV: 'preview',
+          NODE_ENV: 'production',
+          GATE1_RESTART_PROBE_ENABLED: 'true',
+          GATE1_RESTART_PROBE_SECRET: probeSecret,
+        },
+        ...options,
+      }).attach);
+    }
+
+    /**
+     * Adds the dedicated credential to a standard synthetic session request.
+     * @param {string} [method='GET'] route method under test
+     * @returns {object} request with matching raw and normalized authorization
+     */
+    function createProbeRequest(method = 'GET') {
+      const req = createMockRequest(method);
+      req.headers.authorization = authorization;
+      req.rawHeaders = ['Authorization', authorization];
+      return req;
+    }
+
+    beforeEach(installPreviewProbe);
+
+    /**
+     * A diagnostic GET still consumes exactly one shared decision and returns legacy v1.
+     */
+    it('adds runtime metadata while preserving anonymity, quota, and no-cookie behavior', async () => {
+      const req = createProbeRequest();
+      const res = createMockResponse();
+      await sessionRoute(req, res);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ data: { user: null }, error: null, message: 'Success' });
+      expect(JSON.parse(res.getHeader(GATE1_RESTART_PROBE_HEADER))).toMatchObject({
+        schemaVersion: 1,
+        contextScope: 'module',
+        nodeVersion: process.version,
+      });
+      expect(res.getHeader('Set-Cookie')).toBeUndefined();
+      expect(ceilingEvaluateSpy).toHaveBeenCalledTimes(1);
+      expect(ceilingEvaluateSpy).toHaveBeenCalledWith(req, { routeVersion: 'v1', logger: mockLog });
+      expect(ceilingEvaluateSpy.mock.invocationCallOrder[0]).toBeLessThan(
+        mockCreateApiRouteClient.mock.invocationCallOrder[0]
+      );
+      expect(mockCheckRateLimit).not.toHaveBeenCalled();
+      expectPrivateNoStore(res);
+      expectLegacyRateLimitHeadersAbsent(res);
+      expect(JSON.stringify([res.body, res.setHeader.mock.calls, mockLog.info.mock.calls,
+        mockLog.warn.mock.calls, mockLog.error.mock.calls])).not.toContain(probeSecret);
+    });
+
+    /**
+     * Diagnostics remain present on limiter failures without reaching cookies or Supabase.
+     */
+    it.each([
+      [{ allowed: false, statusCode: 429, reason: 'limit_exceeded', retryAfterSeconds: 30 }, 429],
+      [{ allowed: false, statusCode: 503, reason: 'source_unavailable' }, 503],
+    ])('preserves the ceiling decision %# and its diagnostic header', async (decision, status) => {
+      ceilingEvaluateSpy.mockResolvedValue(decision);
+      const req = createProbeRequest();
+      const cookieRead = jest.fn(() => { throw new Error('must not read cookies'); });
+      Object.defineProperty(req, 'cookies', { get: cookieRead });
+      const res = createMockResponse();
+      await sessionRoute(req, res);
+
+      expect(res.statusCode).toBe(status);
+      expect(res.body).toEqual(status === 429 ? {
+        data: null, error: 'RATE_LIMIT_EXCEEDED',
+        message: 'Rate limit exceeded. Please try again later.',
+      } : {
+        data: null, error: 'SERVICE_UNAVAILABLE',
+        message: 'Service temporarily unavailable. Please try again later.',
+      });
+      expect(res.getHeader('Retry-After')).toBe(status === 429 ? 30 : undefined);
+      expect(res.getHeader(GATE1_RESTART_PROBE_HEADER)).toEqual(expect.any(String));
+      expect(res.getHeader('Set-Cookie')).toBeUndefined();
+      expect(ceilingEvaluateSpy).toHaveBeenCalledTimes(1);
+      expect(mockCheckRateLimit).not.toHaveBeenCalled();
+      expect(mockCreateApiRouteClient).not.toHaveBeenCalled();
+      expect(cookieRead).not.toHaveBeenCalled();
+      expectPrivateNoStore(res);
+      expectLegacyRateLimitHeadersAbsent(res);
+    });
+
+    /**
+     * A provider failure still produces the ordinary retry-free unavailable response.
+     */
+    it('preserves a handler 503 after authenticated diagnostic observation', async () => {
+      mockGetUser.mockRejectedValue(new Error('provider unavailable'));
+      const res = createMockResponse();
+      await sessionRoute(createProbeRequest(), res);
+      expect(res.statusCode).toBe(503);
+      expect(res.body.error).toBe('SERVICE_UNAVAILABLE');
+      expect(res.getHeader('Retry-After')).toBeUndefined();
+      expect(res.getHeader(GATE1_RESTART_PROBE_HEADER)).toEqual(expect.any(String));
+      expectPrivateNoStore(res);
+    });
+
+    /**
+     * Existing identity and refresh cookies survive an authorized diagnostic request.
+     */
+    it('preserves authenticated identity and cookie writes from the existing session client', async () => {
+      const cookie = 'synthetic-session=fixture; HttpOnly; Secure; SameSite=Lax; Path=/';
+      mockCreateApiRouteClient.mockImplementationOnce((_req, res) => {
+        res.setHeader('Set-Cookie', [cookie]);
+        return { auth: { getUser: mockGetUser } };
+      });
+      mockGetUser.mockResolvedValue({ data: { user: mockUser }, error: null });
+      const res = createMockResponse();
+      await sessionRoute(createProbeRequest(), res);
+      expect(res.body.data.user).toEqual({
+        id: mockUser.id, email: mockUser.email, role: 'user',
+      });
+      expect(res.getHeader('Set-Cookie')).toEqual([cookie]);
+      expect(res.getHeader(GATE1_RESTART_PROBE_HEADER)).not.toContain(cookie);
+      expect(ceilingEvaluateSpy).toHaveBeenCalledTimes(1);
+      expectPrivateNoStore(res);
+    });
+
+    /**
+     * Missing/invalid probe authorization omits metadata without changing ordinary access.
+     */
+    it.each([undefined, `Bearer ${'c'.repeat(64)}`])('preserves a normal request %#', async (value) => {
+      const req = createProbeRequest();
+      req.headers.authorization = value;
+      req.rawHeaders = value === undefined ? [] : ['Authorization', value];
+      const res = createMockResponse();
+      await sessionRoute(req, res);
+      expect(res.statusCode).toBe(200);
+      expect(res.getHeader(GATE1_RESTART_PROBE_HEADER)).toBeUndefined();
+      expect(ceilingEvaluateSpy).toHaveBeenCalledTimes(1);
+      expect(mockCreateApiRouteClient).toHaveBeenCalledTimes(1);
+      expectPrivateNoStore(res);
+    });
+
+    /**
+     * The preview-only opt-in cannot emit metadata on a production deployment.
+     */
+    it('keeps the ordinary route operational with production diagnostics disabled', async () => {
+      installPreviewProbe({ env: {
+        VERCEL: '1', VERCEL_ENV: 'production', NODE_ENV: 'production',
+        GATE1_RESTART_PROBE_ENABLED: 'true', GATE1_RESTART_PROBE_SECRET: probeSecret,
+      } });
+      const res = createMockResponse();
+      await sessionRoute(createProbeRequest(), res);
+      expect(res.statusCode).toBe(200);
+      expect(res.getHeader(GATE1_RESTART_PROBE_HEADER)).toBeUndefined();
+      expect(ceilingEvaluateSpy).toHaveBeenCalledTimes(1);
+      expectPrivateNoStore(res);
+    });
+
+    /**
+     * Diagnostic authorization cannot turn unsupported methods into quota-consuming GETs.
+     */
+    it.each(['POST', 'OPTIONS', 'HEAD'])('preserves method rejection for %s', async (method) => {
+      const res = createMockResponse();
+      await sessionRoute(createProbeRequest(method), res);
+      expect(res.statusCode).toBe(405);
+      expect(res.getHeader(GATE1_RESTART_PROBE_HEADER)).toBeUndefined();
+      expect(ceilingEvaluateSpy).not.toHaveBeenCalled();
+      expect(mockCreateApiRouteClient).not.toHaveBeenCalled();
+      expectPrivateNoStore(res);
+    });
+
+    /**
+     * Observational failure cannot skip the real ceiling or turn its rejection into a 200.
+     */
+    it('retains enforcement when runtime observation throws', async () => {
+      installPreviewProbe({ readRuntime: () => { throw new Error('private probe failure'); } });
+      ceilingEvaluateSpy.mockResolvedValue({
+        allowed: false, statusCode: 429, reason: 'limit_exceeded', retryAfterSeconds: 10,
+      });
+      const res = createMockResponse();
+      await sessionRoute(createProbeRequest(), res);
+      expect(res.statusCode).toBe(429);
+      expect(res.getHeader('Retry-After')).toBe(10);
+      expect(res.getHeader(GATE1_RESTART_PROBE_HEADER)).toBeUndefined();
+      expect(ceilingEvaluateSpy).toHaveBeenCalledTimes(1);
+      expect(mockCreateApiRouteClient).not.toHaveBeenCalled();
+      expect(mockLog.error).not.toHaveBeenCalled();
+      expectPrivateNoStore(res);
+    });
   });
 });

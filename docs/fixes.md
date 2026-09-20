@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-09-20` - `GATE-1 request-level runtime visibility gap`: Existing aggregate telemetry cannot reveal the executing Node version, process age, and thread status on a particular diagnostic response. Approach: add an observational, preview-only header behind a dedicated credential. Fix: validate singleton raw/normalized authorization, emit only bounded module-scoped facts, contain observation failures, and preserve the composed v1 200/429/503, quota, cache, and cookie behavior. All 93 focused tests, changed-file ESLint, and whitespace checks pass; these observations do not establish hosted termination or replacement.
+
 - `2026-09-19` - `Malformed billing status rendering`: Non-string API statuses could reach string formatting and crash the billing page. Approach: validate status at the response boundary while preserving canonical null status for accounts without a subscription. Fix: reject malformed snapshots into the unavailable state, retain valid status formatting and checkout eligibility, display "Not subscribed" for the valid null case, and cover the affected rendering paths with regression tests.
 
 - `2026-09-19` - `Billing overflow warning color`: The storage-after-cancellation warning used amber instead of the requested red. Approach: reuse the billing page's red warning palette. Fix: updated only the overflow warning's border, background, and text classes. All 23 billing-page/state tests and diff checks pass.

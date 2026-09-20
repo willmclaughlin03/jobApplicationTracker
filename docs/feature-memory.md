@@ -14,6 +14,10 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-09-20
+
+- `2026-09-20` - `GATE-1 preview runtime probe`: Added explicitly enabled, authenticated preview diagnostics to the v1 session route for bounded module-context, process-uptime, Node-version, and thread observations. Diagnostic requests retain the normal ceiling, response, cache, and cookie contracts. All 93 focused tests, changed-file ESLint, and whitespace checks pass. Hosted diagnostics and actual restart proof remain separate, unexecuted steps; GATE-1 stays open.
+
 ### Week of 2026-09-13
 
 - `2026-09-19` - `Validated billing status display`: Validate subscription status before storing the API response, route malformed non-string statuses to the unavailable UI, and display canonical no-subscription status as "Not subscribed" with checkout retained. Added regression coverage for malformed responses, loading, valid status formatting, and no-subscription behavior.
