@@ -65,6 +65,7 @@ const {
   createGate1RestartProbe,
   gate1RestartProbe,
   GATE1_RESTART_PROBE_HEADER,
+  GATE1_RESTART_DIAGNOSTIC_HEADER,
 } = require('../../../../server/lib/gate1RestartProbe.js');
 const {
   sessionResponseSchema,
@@ -552,6 +553,7 @@ describe('/api/auth/session composed v1 route', () => {
     // Synthetic fixture only; no deployed credentials or process configuration are used.
     const probeSecret = 'b'.repeat(64);
     const authorization = `Bearer ${probeSecret}`;
+    const diagnosticLogger = { info: jest.fn() };
 
     /**
      * Installs the real probe for the current synthetic Vercel deployment target.
@@ -567,6 +569,7 @@ describe('/api/auth/session composed v1 route', () => {
           GATE1_RESTART_PROBE_ENABLED: 'true',
           GATE1_RESTART_PROBE_SECRET: probeSecret,
         },
+        logger: diagnosticLogger,
         ...options,
       }).attach);
     }
@@ -580,6 +583,17 @@ describe('/api/auth/session composed v1 route', () => {
       const req = createMockRequest(method);
       req.headers.authorization = authorization;
       req.rawHeaders = ['Authorization', authorization];
+      return req;
+    }
+
+    /**
+     * Opts one synthetic GET into outcome logs without changing probe authentication.
+     * @returns {object} request with a public marker and the normal dedicated credential
+     */
+    function createMarkedProbeRequest() {
+      const req = createProbeRequest();
+      req.headers[GATE1_RESTART_DIAGNOSTIC_HEADER] = '1';
+      req.rawHeaders.push(GATE1_RESTART_DIAGNOSTIC_HEADER, '1');
       return req;
     }
 
@@ -609,6 +623,7 @@ describe('/api/auth/session composed v1 route', () => {
       expect(mockCheckRateLimit).not.toHaveBeenCalled();
       expectPrivateNoStore(res);
       expectLegacyRateLimitHeadersAbsent(res);
+      expect(diagnosticLogger.info).not.toHaveBeenCalled();
       expect(JSON.stringify([res.body, res.setHeader.mock.calls, mockLog.info.mock.calls,
         mockLog.warn.mock.calls, mockLog.error.mock.calls])).not.toContain(probeSecret);
     });
@@ -743,6 +758,66 @@ describe('/api/auth/session composed v1 route', () => {
       expect(mockCreateApiRouteClient).not.toHaveBeenCalled();
       expect(mockLog.error).not.toHaveBeenCalled();
       expectPrivateNoStore(res);
+    });
+
+    /** Marking a request cannot grant metadata when the existing credential checks reject it. */
+    it.each(['authorization_missing', 'raw_header_mismatch', 'raw_authorization_duplicate'])(
+      'preserves ordinary access and internally records %s', async (outcome) => {
+        const req = createMarkedProbeRequest();
+        if (outcome === 'authorization_missing') delete req.headers.authorization;
+        if (outcome === 'raw_header_mismatch') req.rawHeaders[1] = `Bearer ${'c'.repeat(64)}`;
+        if (outcome === 'raw_authorization_duplicate') req.rawHeaders.push('Authorization', authorization);
+        const res = createMockResponse();
+        await sessionRoute(req, res);
+        expect(res.statusCode).toBe(200);
+        expect(res.body).toEqual({ data: { user: null }, error: null, message: 'Success' });
+        expect(res.getHeader(GATE1_RESTART_PROBE_HEADER)).toBeUndefined();
+        expect(res.getHeader('Set-Cookie')).toBeUndefined();
+        expect(ceilingEvaluateSpy).toHaveBeenCalledTimes(1);
+        expect(mockCreateApiRouteClient).toHaveBeenCalledTimes(1);
+        expect(diagnosticLogger.info.mock.calls).toEqual([
+          [{ event: 'gate1_restart_probe_outcome', outcome }, 'GATE-1 restart probe diagnostic'],
+        ]);
+        expectPrivateNoStore(res);
+      }
+    );
+
+    /** Consecutive marked observations still traverse the quota while outcome logging stays bounded. */
+    it('logs attachment once while preserving both marked session exchanges', async () => {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const res = createMockResponse();
+        await sessionRoute(createMarkedProbeRequest(), res);
+        expect(res.statusCode).toBe(200);
+        expect(res.getHeader(GATE1_RESTART_PROBE_HEADER)).toEqual(expect.any(String));
+        expect(res.getHeader('Set-Cookie')).toBeUndefined();
+        expectPrivateNoStore(res);
+      }
+      expect(ceilingEvaluateSpy).toHaveBeenCalledTimes(2);
+      expect(diagnosticLogger.info.mock.calls).toEqual([
+        [{ event: 'gate1_restart_probe_outcome', outcome: 'header_attached' }, 'GATE-1 restart probe diagnostic'],
+      ]);
+    });
+
+    /** Failed diagnostic logging cannot turn an allow, rejection, or outage into another route result. */
+    it.each([
+      [{ allowed: true }, 200],
+      [{ allowed: false, statusCode: 429, reason: 'limit_exceeded', retryAfterSeconds: 10 }, 429],
+      [{ allowed: false, statusCode: 503, reason: 'source_unavailable' }, 503],
+    ])('contains logging failure while retaining response %#', async (decision, status) => {
+      /** Simulate a logger failure without exposing its exception to the route or response. */
+      function failDiagnosticLog() { throw new Error('private-log-failure'); }
+      installDeploymentProbe({ logger: { info: failDiagnosticLog } });
+      ceilingEvaluateSpy.mockResolvedValue(decision);
+      const res = createMockResponse();
+      await sessionRoute(createMarkedProbeRequest(), res);
+      expect(res.statusCode).toBe(status);
+      expect(res.getHeader(GATE1_RESTART_PROBE_HEADER)).toEqual(expect.any(String));
+      expect(res.getHeader('Retry-After')).toBe(status === 429 ? 10 : undefined);
+      expect(res.getHeader('Set-Cookie')).toBeUndefined();
+      expect(ceilingEvaluateSpy).toHaveBeenCalledTimes(1);
+      expect(mockCreateApiRouteClient).toHaveBeenCalledTimes(status === 200 ? 1 : 0);
+      expectPrivateNoStore(res);
+      expect(JSON.stringify(res.body)).not.toContain('private-log-failure');
     });
   });
 });
