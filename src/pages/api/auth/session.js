@@ -24,6 +24,7 @@ import {
   temporarySessionCeiling,
 } from '../../../server/lib/temporarySessionCeiling.js';
 import { OPERATIONS } from '../../../shared/constants/tiers.js';
+import { gate1RestartProbe } from '../../../server/lib/gate1RestartProbe.js';
 
 /**
  * Evaluates the v1 route against the shared temporary session allowance.
@@ -108,7 +109,7 @@ async function handler(req, res) {
   }
 }
 
-export default withRateLimit(handler, {
+const sessionRoute = withRateLimit(handler, {
   requireAuth: false,
   operation: OPERATIONS.AUTH,
   allowedMethods: ['GET'],
@@ -117,3 +118,19 @@ export default withRateLimit(handler, {
   writePreRateLimitGuardResponse: writeTemporarySessionCeilingResponse,
   skipRateLimitWhen: skipLegacySessionRateLimit,
 });
+
+/**
+ * Observes approved preview requests before the unchanged composed v1 route.
+ *
+ * Why: a valid diagnostic request needs runtime metadata even when the shared
+ * ceiling returns 429/503. The probe owns no response or limiter decision;
+ * every request still traverses the method guard and normal shared ceiling.
+ *
+ * @param {import('next').NextApiRequest} req original session request
+ * @param {import('next').NextApiResponse} res route-owned no-store response
+ * @returns {Promise<object>} the existing composed route result
+ */
+export default function sessionWithRestartProbe(req, res) {
+  gate1RestartProbe.attach(req, res);
+  return sessionRoute(req, res);
+}
