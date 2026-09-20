@@ -120,7 +120,7 @@ const sessionRoute = withRateLimit(handler, {
 });
 
 /**
- * Observes approved preview requests before the unchanged composed v1 route.
+ * Observes approved preview/production requests before the composed v1 route.
  *
  * Why: a valid diagnostic request needs runtime metadata even when the shared
  * ceiling returns 429/503. The probe owns no response or limiter decision;

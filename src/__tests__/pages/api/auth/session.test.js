@@ -548,21 +548,21 @@ describe('/api/auth/session composed v1 route', () => {
   /**
    * Runs the real observational probe alongside the real composed session route.
    */
-  describe('approved preview runtime diagnostics', () => {
+  describe.each(['preview', 'production'])('approved %s runtime diagnostics', (deploymentEnvironment) => {
     // Synthetic fixture only; no deployed credentials or process configuration are used.
     const probeSecret = 'b'.repeat(64);
     const authorization = `Bearer ${probeSecret}`;
 
     /**
-     * Installs the real probe with an explicit synthetic preview environment.
+     * Installs the real probe for the current synthetic Vercel deployment target.
      * @param {object} [options] runtime/configuration failure seams for composed tests
      * @returns {void} replaces only the probe dependencies, not its implementation
      */
-    function installPreviewProbe(options = {}) {
+    function installDeploymentProbe(options = {}) {
       gate1RestartProbe.attach.mockImplementation(createGate1RestartProbe({
         env: {
           VERCEL: '1',
-          VERCEL_ENV: 'preview',
+          VERCEL_ENV: deploymentEnvironment,
           NODE_ENV: 'production',
           GATE1_RESTART_PROBE_ENABLED: 'true',
           GATE1_RESTART_PROBE_SECRET: probeSecret,
@@ -583,7 +583,7 @@ describe('/api/auth/session composed v1 route', () => {
       return req;
     }
 
-    beforeEach(installPreviewProbe);
+    beforeEach(installDeploymentProbe);
 
     /**
      * A diagnostic GET still consumes exactly one shared decision and returns legacy v1.
@@ -698,12 +698,12 @@ describe('/api/auth/session composed v1 route', () => {
     });
 
     /**
-     * The preview-only opt-in cannot emit metadata on a production deployment.
+     * Both targets must explicitly enable diagnostics even with a valid credential.
      */
-    it('keeps the ordinary route operational with production diagnostics disabled', async () => {
-      installPreviewProbe({ env: {
-        VERCEL: '1', VERCEL_ENV: 'production', NODE_ENV: 'production',
-        GATE1_RESTART_PROBE_ENABLED: 'true', GATE1_RESTART_PROBE_SECRET: probeSecret,
+    it.each([undefined, 'false', 'TRUE'])('preserves ordinary access with disabled opt-in %#', async (flag) => {
+      installDeploymentProbe({ env: {
+        VERCEL: '1', VERCEL_ENV: deploymentEnvironment, NODE_ENV: 'production',
+        GATE1_RESTART_PROBE_ENABLED: flag, GATE1_RESTART_PROBE_SECRET: probeSecret,
       } });
       const res = createMockResponse();
       await sessionRoute(createProbeRequest(), res);
@@ -730,7 +730,7 @@ describe('/api/auth/session composed v1 route', () => {
      * Observational failure cannot skip the real ceiling or turn its rejection into a 200.
      */
     it('retains enforcement when runtime observation throws', async () => {
-      installPreviewProbe({ readRuntime: () => { throw new Error('private probe failure'); } });
+      installDeploymentProbe({ readRuntime: () => { throw new Error('private probe failure'); } });
       ceilingEvaluateSpy.mockResolvedValue({
         allowed: false, statusCode: 429, reason: 'limit_exceeded', retryAfterSeconds: 10,
       });
