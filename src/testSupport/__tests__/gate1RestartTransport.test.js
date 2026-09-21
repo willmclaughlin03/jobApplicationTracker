@@ -9,12 +9,20 @@ const KEY = 'synthetic-key-never-retain';
 const ORIGIN = 'https://synthetic.upstash.io';
 const originalFetch = globalThis.fetch;
 
-/** Creates a bounded fake pipeline response without constructing a network client. */
+/**
+ * Serializes synthetic pipeline reply items into a JSON HTTP 200 Response for mocks.
+ * Returns that Response with an in-memory body; no network request occurs.
+ */
 function response(items) {
   return new Response(JSON.stringify(items), { status: 200, headers: { 'content-type': 'application/json' } });
 }
 
-/** Installs the observer around a fake backend while retaining default SDK retry/pipeline behavior. */
+/**
+ * Wraps mock fetchImpl in a guard with synthetic identity/script inputs and a 402-decision cap.
+ * Returns { guard, redis, failure } with a real SDK client and failure spy for assertions.
+ * Replaces globalThis.fetch with guard.fetch; afterEach restores the original fetch.
+ * SDK retries/pipelining stay enabled, but all sends use the injected fake backend.
+ */
 function fixture(fetchImpl) {
   const failure = jest.fn();
   const guard = createTransportGuard({ fetchImpl, origin: ORIGIN, redisKey: KEY,
@@ -32,7 +40,11 @@ function evaluate(redis) {
     now: () => performance.now(), deadlineAt: performance.now() + 3000 });
 }
 
-/** Builds the exact synthetic HTTP command shape for observer boundary cases. */
+/**
+ * Wraps command (default: the synthetic EVALSHA tuple) in a one-command pipeline.
+ * Returns POST options with a JSON body and a new 1,000 ms timeout signal for guard tests;
+ * creates that signal without sending traffic or changing globalThis.fetch.
+ */
 function options(command = ['evalsha', TEMPORARY_SESSION_REDIS_SCRIPT_SHA, 1, KEY]) {
   return { method: 'POST', body: JSON.stringify([command]), signal: AbortSignal.timeout(1000) };
 }
