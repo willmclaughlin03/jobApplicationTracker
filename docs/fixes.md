@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-09-21` - `Incomplete restart helper documentation`: Existing helper comments omitted parameter, return-value and side-effect details. Approach: document the current contracts immediately above the five declarations. Fix: describe bounded stream consumption/cancellation, transport failure latching and aborts, mock response/options construction, and global fetch setup/restoration. Targeted lint, syntax and diff checks pass; executable behavior is unchanged.
+
 - `2026-09-21` - `Restart error misclassification and silent live failure`: Invalid request URLs/JSON were labeled uncertain despite no forwarding, and the live PowerShell launcher completed successfully after Node failed. Approach: use the transport's entered state and defer the launcher's failure exit until cleanup completes. Fix: retain RestartError codes, classify pre-entry native errors as transport_contract, latch failed live trials, and exit 1 after restoring credentials. All 48 restart tests and four mocked launcher cases pass, along with targeted lint, syntax, and diff checks; warning behavior and the single-attempt policy are preserved.
 
 - `2026-09-20` - `Offline restart preparation failures returned silently`: The PowerShell offline branch returned after Node failed because native nonzero exits do not trigger its error preference. Approach: check the native exit status immediately. Fix: throw `Offline preparation failed.` when `$LASTEXITCODE` is nonzero and retain the successful return. Direct checks cover exits 0, 1, 7, and 23; PowerShell syntax validation and all 46 focused tests pass.

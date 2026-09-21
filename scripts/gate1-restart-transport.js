@@ -35,7 +35,12 @@ function failureCode(error) {
   return error instanceof RestartError ? error.code : 'protocol';
 }
 
-/** Collects a bounded response before the SDK parses it; never persists the bytes. */
+/**
+ * Reads response.body up to maxBytes before SDK parsing; resolves to a Buffer.
+ * Rejects missing bodies or oversized responses with fixed RestartError codes.
+ * Consumes the stream, then cancels its reader and releases the lock in finally;
+ * collected bytes remain in memory and are never persisted.
+ */
 async function readBounded(response, maxBytes) {
   if (!response.body) throw new RestartError('transport_contract');
   const reader = response.body.getReader();
@@ -57,10 +62,14 @@ async function readBounded(response, maxBytes) {
 }
 
 /**
- * Observes only the exact limiter commands and two separate clock reads. The SDK
- * reuses one options object on retry in the pinned build; any fetch rejection also
- * latches immediately, so a cloned options object cannot bypass the stop condition.
- * Inputs containing credentials/keys stay private and never enter snapshots.
+ * Guards pinned SDK limiter/clock requests, blocking retries and sends after uncertainty.
+ * fetchImpl sends requests; origin, redisKey, script and scriptSha pin allowed inputs.
+ * maxDecisions/maxTime cap command counts; signal cancels forwarded requests.
+ * Returns { fetch, snapshot, stop }: guarded transport, fixed counters and a stop latch.
+ * fetch consumes and rebuilds bounded responses. stop aborts active sends, blocks
+ * future forwarding and calls onFailure once. Reused SDK options or any rejection
+ * latch failure, including retries with cloned options after a rejection.
+ * Credentials and keys stay private and never enter snapshots.
  */
 function createTransportGuard({ fetchImpl, origin, redisKey, script, scriptSha,
   maxDecisions, maxTime = 1, onFailure = () => {}, signal }) {
