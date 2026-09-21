@@ -43,6 +43,7 @@ if (-not $AttestConfigAndExclusiveSource -or -not $AuthorizeChildTermination) {
 $credentialNames = @('GATE1_RESTART_LIVE_ALLOWED',
     'TEMPORARY_SESSION_CEILING_LOCAL_HMAC_SECRET', 'TEMPORARY_SESSION_CEILING_LOCAL_REDIS_SECRET')
 $previousCredentials = @{}
+$trialStopped = $false
 foreach ($credentialName in $credentialNames) {
     $previousCredentials[$credentialName] = [Environment]::GetEnvironmentVariable($credentialName, 'Process')
 }
@@ -53,6 +54,7 @@ try {
     & node $runnerPath --live --attest-config-and-exclusive-source --authorize-child-termination
     if ($LASTEXITCODE -ne 0) {
         Write-Warning 'Trial stopped. Preserve only the sanitized report; do not rerun automatically.'
+        $trialStopped = $true
     }
 } finally {
     foreach ($credentialName in $credentialNames) {
@@ -60,4 +62,7 @@ try {
     }
     $previousCredentials.Clear()
     Remove-Variable previousCredentials -ErrorAction SilentlyContinue
+}
+if ($trialStopped) {
+    exit 1
 }

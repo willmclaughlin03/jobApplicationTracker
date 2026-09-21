@@ -168,7 +168,8 @@ function createTransportGuard({ fetchImpl, origin, redisKey, script, scriptSha,
       if (stats.failure) throw new RestartError(stats.failure);
       return new Response(bytes, { status: 200, headers: response.headers });
     } catch (error) {
-      stop(error instanceof RestartError ? error.code : 'transport_uncertain');
+      stop(error instanceof RestartError ? error.code
+        : entered ? 'transport_uncertain' : 'transport_contract');
       throw new RestartError(stats.failure);
     } finally {
       if (entered) stats.active -= 1;
