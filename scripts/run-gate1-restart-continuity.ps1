@@ -31,6 +31,9 @@ if (-not $Live) {
         throw 'Live acknowledgements require the Live switch.'
     }
     & node $runnerPath
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Offline preparation failed.'
+    }
     return
 }
 if (-not $AttestConfigAndExclusiveSource -or -not $AuthorizeChildTermination) {
