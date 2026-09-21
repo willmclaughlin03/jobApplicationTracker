@@ -111,33 +111,38 @@ describe('GATE-1 retry observer with real Upstash SDK', () => {
   });
 
   it.each([
-    ['wrong origin', `${ORIGIN}.invalid/pipeline`, options()],
-    ['reset', `${ORIGIN}/pipeline`, options(['flushdb'])],
-    ['extended expiry', `${ORIGIN}/pipeline`, options(['expire', KEY, 120])],
-    ['different identity', `${ORIGIN}/pipeline`, options(['evalsha', TEMPORARY_SESSION_REDIS_SCRIPT_SHA, 1, 'different'])],
-    ['unearned EVAL', `${ORIGIN}/pipeline`, options(['eval', TEMPORARY_SESSION_REDIS_SCRIPT, 1, KEY])],
-    ['unknown script', `${ORIGIN}/pipeline`, options(['evalsha', 'unknown', 1, KEY])],
-  ])('blocks %s before forwarding', async (_name, url, init) => {
+    ['invalid URL', 'invalid-url', options(), 'transport_contract'],
+    ['invalid JSON', `${ORIGIN}/pipeline`, { ...options(), body: '{' }, 'transport_contract'],
+    ['wrong origin', `${ORIGIN}.invalid/pipeline`, options(), 'transport_contract'],
+    ['reset', `${ORIGIN}/pipeline`, options(['flushdb']), 'transport_contract'],
+    ['extended expiry', `${ORIGIN}/pipeline`, options(['expire', KEY, 120]), 'transport_contract'],
+    ['different identity', `${ORIGIN}/pipeline`, options(['evalsha', TEMPORARY_SESSION_REDIS_SCRIPT_SHA, 1, 'different']), 'transport_contract'],
+    ['unearned EVAL', `${ORIGIN}/pipeline`, options(['eval', TEMPORARY_SESSION_REDIS_SCRIPT, 1, KEY]), 'budget'],
+    ['unknown script', `${ORIGIN}/pipeline`, options(['evalsha', 'unknown', 1, KEY]), 'transport_contract'],
+  ])('blocks %s before forwarding', async (_name, url, init, code) => {
     const backend = jest.fn();
-    const { guard } = fixture(backend);
-    await expect(guard.fetch(url, init)).rejects.toThrow();
+    const { guard, failure } = fixture(backend);
+    await expect(guard.fetch(url, init)).rejects.toThrow(code);
+    await expect(guard.fetch(`${ORIGIN}/pipeline`, options())).rejects.toThrow(code);
     expect(backend).not.toHaveBeenCalled();
-    expect(guard.snapshot().failure).not.toBeNull();
+    expect(guard.snapshot()).toMatchObject({ failure: code, forwarded: 0, active: 0 });
+    expect(failure).toHaveBeenCalledTimes(1);
+    expect(failure).toHaveBeenCalledWith(code);
   });
 
   it.each([
-    ['redirect', () => new Response(null, { status: 307, headers: { location: 'https://private.invalid' } })],
-    ['oversized', () => new Response('x'.repeat(32769))],
-    ['invalid JSON', () => new Response('private-invalid-json')],
-    ['provider error', () => response([{ error: 'provider-secret-details' }])],
-    ['inexact NOSCRIPT', () => response([{ error: 'prefix NOSCRIPT private' }])],
-    ['wrong reply count', () => response([])],
-  ])('stops on %s without exposing raw data', async (_name, makeResponse) => {
+    ['redirect', () => new Response(null, { status: 307, headers: { location: 'https://private.invalid' } }), 'transport_contract'],
+    ['oversized', () => new Response('x'.repeat(32769)), 'response_size'],
+    ['invalid JSON', () => new Response('private-invalid-json'), 'transport_uncertain'],
+    ['provider error', () => response([{ error: 'provider-secret-details' }]), 'redis_error'],
+    ['inexact NOSCRIPT', () => response([{ error: 'prefix NOSCRIPT private' }]), 'redis_error'],
+    ['wrong reply count', () => response([]), 'transport_contract'],
+  ])('stops on %s without exposing raw data', async (_name, makeResponse, code) => {
     const backend = jest.fn(async () => makeResponse());
     const { guard } = fixture(backend);
-    await expect(guard.fetch(`${ORIGIN}/pipeline`, options())).rejects.toThrow();
+    await expect(guard.fetch(`${ORIGIN}/pipeline`, options())).rejects.toThrow(code);
     expect(JSON.stringify(guard.snapshot())).not.toMatch(/private|provider-secret/);
-    expect(guard.snapshot().active).toBe(0);
+    expect(guard.snapshot()).toMatchObject({ failure: code, forwarded: 1, active: 0 });
     expect(backend.mock.calls[0][1].redirect).toBe('manual');
   });
 

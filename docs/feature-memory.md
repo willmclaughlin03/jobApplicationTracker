@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-20
 
+- `2026-09-21` - `GATE-1 restart failure reporting`: Classify native request-inspection errors as transport contract failures before forwarding, preserve explicit error codes and post-entry uncertainty, and return exit status 1 from failed live launcher invocations after credential cleanup. All 48 restart tests, four mocked PowerShell success/failure and credential-restoration cases, targeted ESLint, syntax checks, and diff checks pass; no live trial ran.
+
 - `2026-09-20` - `GATE-1 offline preparation failure propagation`: Check the native Node exit code in the PowerShell launcher and throw on failure while retaining the successful early return. Direct exit-code checks, PowerShell syntax validation, and all 46 restart-continuity/transport tests pass.
 
 - `2026-09-20` - `GATE-1 controlled restart harness`: Added an offline-default supervisor, separate application-limiter workers, harness-only transport observer, and hidden-input PowerShell launcher. The bounded live profile requires 200 acknowledged allows in A, independently confirmed A exit before B starts, 200 more allows, rejection at 401 within 45 seconds, and natural recovery; retries and uncertain outcomes stop the trial. All 46 offline tests, changed-file ESLint, and JavaScript/PowerShell syntax checks pass. Application behavior and accepted evidence remain unchanged; live execution requires separate approval and GATE-1 stays open.
