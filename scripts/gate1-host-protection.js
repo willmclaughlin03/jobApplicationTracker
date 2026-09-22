@@ -215,9 +215,10 @@ function loginBuild(response) {
     const attributes = Object.create(null);
     // Remove only a separate trailing solidus; keep slashes attached to unquoted values.
     const attributeText = tag[1].replace(/\s+\/$/, '');
+    const attributeEnd = attributeText.replace(/\s+$/, '').length;
     const token = /\s+([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/gy;
     let position = 0;
-    while (attributeText.slice(position).trim()) {
+    while (position < attributeEnd) {
       token.lastIndex = position;
       const attribute = token.exec(attributeText);
       if (!attribute) return null;
