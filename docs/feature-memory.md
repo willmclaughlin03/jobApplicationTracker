@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-20
 
+- `2026-09-21` - `GATE-1 host-access diagnostic`: Added an offline-default HTTP diagnostic for a frozen inventory of 28 aliases and two immutable deployment URLs, a PowerShell launcher that saves unique sanitized reports under `.tmp`, and focused Jest coverage. Live runs require separate approval, issue at most 30 sequential anonymous login requests, and stop on unexpected or unresolved responses. Coverage remains limited to the selected login paths; GATE-1 stays open.
+
 - `2026-09-21` - `Restart helper contracts`: Expanded comments for readBounded, createTransportGuard, response, fixture and options to describe inputs, returns, stream cleanup, network forwarding and the test fixture's global fetch replacement/restoration. Documentation-only change; targeted lint, syntax and diff checks pass.
 
 - `2026-09-21` - `GATE-1 restart failure reporting`: Classify native request-inspection errors as transport contract failures before forwarding, preserve explicit error codes and post-entry uncertainty, and return exit status 1 from failed live launcher invocations after credential cleanup. All 48 restart tests, four mocked PowerShell success/failure and credential-restoration cases, targeted ESLint, syntax checks, and diff checks pass; no live trial ran.
