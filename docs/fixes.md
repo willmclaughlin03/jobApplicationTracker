@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-09-22` - `Repeated attribute-tail scans and incomplete launcher comments`: The tokenizer sliced and trimmed the remaining attributes on every iteration, and launcher helper comments omitted key contracts. Approach: calculate the scan boundary once and document existing behavior. Fix: compare the token position against the cached boundary while retaining solidus normalization; describe Runner/LiveMode, pipe draining, overdue-process termination, JSON validation, unique `.tmp` reports, and promotion of a zero exit code to 1 for stopped reports.
+
 - `2026-09-21` - `GATE-1 trailing solidus rejected login data`: The attribute tokenizer rejected otherwise recognized login scripts with a whitespace-separated trailing solidus. Approach: normalize only that terminal marker before parsing. Fix: tokenize the normalized text while retaining the existing token and duplicate-attribute checks; add positive whitespace variants and negative malformed/unquoted-value cases. All 17 offline host-protection tests, focused ESLint, and diff checks pass.
 
 - `2026-09-21` - `Host-access qualification and report capture gap`: Alias metadata alone could not establish anonymous access behavior, and long terminal reports were difficult to preserve. Approach: freeze the reviewed host inventory and classify bounded responses without following redirects or accepting generic errors as protection proof. Fix: add anonymous HTTPS checks with strict build/redirect classification, response and deadline bounds, fixed failure codes, early stop, unique JSON capture, failure exit propagation, and mocked regression tests. No application or hosting configuration changes are included.

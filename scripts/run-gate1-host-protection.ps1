@@ -2,7 +2,12 @@
 param([switch]$Live)
 $ErrorActionPreference = 'Stop'
 
-<# Run the fixed Node file, drain both pipes, and return only captured stdout and the exit code. #>
+<#
+Run the fixed Node diagnostic at Runner; LiveMode appends --live, otherwise it prepares offline.
+Drain stdout and stderr asynchronously to avoid pipe deadlocks while capturing the report.
+Terminate an overdue process after 315 seconds, wait for exit, and throw on timeout.
+Return captured stdout as Json and the process ExitCode without exposing stderr; dispose the process.
+#>
 function Invoke-Gate1HostNode([string]$Runner, [bool]$LiveMode) {
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = 'node.exe'
@@ -27,7 +32,14 @@ function Invoke-Gate1HostNode([string]$Runner, [bool]$LiveMode) {
     } finally { $process.Dispose() }
 }
 
-<# Save a valid runner report to a unique local file; never overwrite a previous observation. #>
+<#
+Run the fixed sibling diagnostic through Invoke-Gate1HostNode and save a validated report.
+LiveMode selects live execution and its expected report contract; the default is offline preparation.
+Validate the stdout size, JSON syntax, and report contract before creating a report file.
+Create .tmp if needed and write UTF-8 JSON to a unique timestamp/GUID path using CreateNew,
+so prior observations cannot be overwritten. Return Path and ExitCode for the launcher to propagate;
+preserve nonzero process codes, but change zero to 1 when the report result is stopped.
+#>
 function Invoke-Gate1HostProtection([switch]$LiveMode) {
     $runner = Join-Path $PSScriptRoot 'gate1-host-protection.js'
     $result = Invoke-Gate1HostNode -Runner $runner -LiveMode ([bool]$LiveMode)
