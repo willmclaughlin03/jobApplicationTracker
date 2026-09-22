@@ -213,11 +213,13 @@ function loginBuild(response) {
   for (const tag of response.text.matchAll(tags)) {
     if (tag[1] === undefined) continue;
     const attributes = Object.create(null);
+    // Remove only a separate trailing solidus; keep slashes attached to unquoted values.
+    const attributeText = tag[1].replace(/\s+\/$/, '');
     const token = /\s+([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/gy;
     let position = 0;
-    while (tag[1].slice(position).trim()) {
+    while (attributeText.slice(position).trim()) {
       token.lastIndex = position;
-      const attribute = token.exec(tag[1]);
+      const attribute = token.exec(attributeText);
       if (!attribute) return null;
       const key = attribute[1].toLowerCase();
       if (Object.hasOwn(attributes, key)) return null;

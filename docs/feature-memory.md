@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-20
 
+- `2026-09-21` - `GATE-1 script attribute normalization`: Recognize login data scripts with a whitespace-separated trailing solidus by normalizing attributes before tokenization. Preserve rejection of malformed attributes and unquoted identity values ending in a solidus; added regression coverage. All 17 offline host-protection tests, focused ESLint, and diff checks pass.
+
 - `2026-09-21` - `GATE-1 host-access diagnostic`: Added an offline-default HTTP diagnostic for a frozen inventory of 28 aliases and two immutable deployment URLs, a PowerShell launcher that saves unique sanitized reports under `.tmp`, and focused Jest coverage. Live runs require separate approval, issue at most 30 sequential anonymous login requests, and stop on unexpected or unresolved responses. Coverage remains limited to the selected login paths; GATE-1 stays open.
 
 - `2026-09-21` - `Restart helper contracts`: Expanded comments for readBounded, createTransportGuard, response, fixture and options to describe inputs, returns, stream cleanup, network forwarding and the test fixture's global fetch replacement/restoration. Documentation-only change; targeted lint, syntax and diff checks pass.

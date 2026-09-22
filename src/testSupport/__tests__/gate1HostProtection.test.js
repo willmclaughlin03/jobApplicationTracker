@@ -162,6 +162,39 @@ test('build checks stay scoped to their deployment and canonical page', function
   }
 });
 
+/** Recognize a final solidus separated from quoted or unquoted attributes by HTML whitespace. */
+test('login data accepts a whitespace-separated trailing solidus', function () {
+  for (const attributes of ['id="__NEXT_DATA__" type="application/json"',
+    'id=__NEXT_DATA__ type=application/json']) {
+    for (const whitespace of [' ', '\t', '\r\n']) {
+      const text = html().replace(/<script[^>]*>/, `<script ${attributes}${whitespace}/>`);
+      const receipt = runner.classify(HOSTS[0], response(200, text));
+      assert.equal(receipt.classification, 'canonical_login');
+      assert.equal(receipt.knownBuildMatch, true);
+      assert.equal(receipt.expectedPatternObserved, true);
+    }
+  }
+});
+
+/** Preserve fail-closed parsing when a solidus belongs to a value or accompanies malformed attributes. */
+test('login data rejects malformed attributes and unquoted identity values ending in a solidus', function () {
+  for (const attributes of [
+    'id="__NEXT_DATA__" type=application/json/',
+    'type="application/json" id=__NEXT_DATA__/',
+    'id="__NEXT_DATA__" type=application/json/ /',
+    'type="application/json" id=__NEXT_DATA__/ /',
+    'id="__NEXT_DATA__" type= /',
+    'id="__NEXT_DATA__" type="application/json" //',
+    'id="__NEXT_DATA__" type="application/json" / extra',
+    'id="__NEXT_DATA__" type="application/json" id="duplicate" /',
+  ]) {
+    const text = html().replace(/<script[^>]*>/, `<script ${attributes}>`);
+    const receipt = runner.classify(HOSTS[0], response(200, text));
+    assert.equal(receipt.loginBuildRecognized, false, attributes);
+    assert.equal(receipt.expectedPatternObserved, false, attributes);
+  }
+});
+
 /** Restrict recognized redirect patterns; no generic rejection or arbitrary redirect can qualify. */
 test('generic 401/403/404/redirects and deceptive destinations remain unresolved', function () {
   for (const status of [401, 403, 404, 302, 307, 500]) {

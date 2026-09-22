@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-09-21` - `GATE-1 trailing solidus rejected login data`: The attribute tokenizer rejected otherwise recognized login scripts with a whitespace-separated trailing solidus. Approach: normalize only that terminal marker before parsing. Fix: tokenize the normalized text while retaining the existing token and duplicate-attribute checks; add positive whitespace variants and negative malformed/unquoted-value cases. All 17 offline host-protection tests, focused ESLint, and diff checks pass.
+
 - `2026-09-21` - `Host-access qualification and report capture gap`: Alias metadata alone could not establish anonymous access behavior, and long terminal reports were difficult to preserve. Approach: freeze the reviewed host inventory and classify bounded responses without following redirects or accepting generic errors as protection proof. Fix: add anonymous HTTPS checks with strict build/redirect classification, response and deadline bounds, fixed failure codes, early stop, unique JSON capture, failure exit propagation, and mocked regression tests. No application or hosting configuration changes are included.
 
 - `2026-09-21` - `Incomplete restart helper documentation`: Existing helper comments omitted parameter, return-value and side-effect details. Approach: document the current contracts immediately above the five declarations. Fix: describe bounded stream consumption/cancellation, transport failure latching and aborts, mock response/options construction, and global fetch setup/restoration. Targeted lint, syntax and diff checks pass; executable behavior is unchanged.
