@@ -11,7 +11,11 @@ const { HOSTS, TARGET, CANONICAL, LIMITS, BATCHES, BATCH_SIZES, INVENTORY_ID, IN
 const launcher = path.resolve(__dirname, '../../../scripts/run-gate1-host-protection.ps1');
 const reportDirectory = path.resolve(__dirname, '../../../.tmp');
 const CANARY = 'PRIVATE_TEST_VALUE_DO_NOT_RETAIN';
+// The reviewed operator inventory is local-only; clean checkouts still exercise missing-input safety.
+const inventoryPresent = fs.existsSync(path.resolve(__dirname, '../../../scripts/gate1-host-protection-inventory.json'));
+const localTest = inventoryPresent ? test : test.skip;
 const windowsTest = process.platform === 'win32' ? test : test.skip;
+const localWindowsTest = inventoryPresent ? windowsTest : test.skip;
 jest.setTimeout(30000);
 
 /** Build transient HTML fixtures; they never come from a deployed application. */
@@ -81,7 +85,7 @@ function transport(fixtures = expectedResponse) {
 }
 
 /** Verify offline defaults, four disjoint batches, fixed target attribution and strict CLI selection. */
-test('preparation pins 102 cases while live execution requires one explicit batch', function () {
+localTest('preparation pins 102 cases while live execution requires one explicit batch', function () {
   const prepared = runner.preparation();
   assert.equal(prepared.mode, 'prepare'); assert.equal(prepared.requests, 0);
   assert.equal(prepared.hostedEvidence, 'not_executed'); assert.equal(prepared.gate1Status, 'open');
@@ -132,7 +136,7 @@ function runnerHostName(host) { return host.hostname; }
 function publicExpectation(host) { return host.expected === 'public_login'; }
 
 /** Exercise every batch independently through mocked HTTPS and verify each stops at its own boundary. */
-test('four separate mocked runs cover exactly 102 sequential anonymous requests', async function () {
+localTest('four separate mocked runs cover exactly 102 sequential anonymous requests', async function () {
   const visited = [];
   for (const batch of BATCHES) {
     const mock = transport();
@@ -167,7 +171,7 @@ test('four separate mocked runs cover exactly 102 sequential anonymous requests'
 function isFalse(value) { return value === false; }
 
 /** Require an integer batch at the live API boundary even when callers skip CLI parsing. */
-test('missing or invalid live batch cannot dispatch a request', async function () {
+localTest('missing or invalid live batch cannot dispatch a request', async function () {
   for (const batch of [undefined, null, 0, 5, -1, 1.5, '1']) {
     const mock = transport();
     await assert.rejects(runner.runLive({ batch, requestImpl: mock.requestImpl }), { code: 'arguments' });
@@ -176,7 +180,7 @@ test('missing or invalid live batch cannot dispatch a request', async function (
 });
 
 /** Collect every selected host's receipt without treating unavailable ERROR deployments as protection. */
-test('unavailable ERROR hosts do not abort traversal or qualify the selected batch', async function () {
+localTest('unavailable ERROR hosts do not abort traversal or qualify the selected batch', async function () {
   for (const batch of BATCHES) {
     const fixtures = [];
     let unavailable = 0;
@@ -209,7 +213,7 @@ test('unavailable ERROR hosts do not abort traversal or qualify the selected bat
 });
 
 /** READY hosts and unrelated ERROR-host failures must retain the existing stop-on-failure boundary. */
-test('only verified deployment unavailability on ERROR hosts permits traversal to continue', async function () {
+localTest('only verified deployment unavailability on ERROR hosts permits traversal to continue', async function () {
   const cases = [
     [1, response(404, '', { 'x-vercel-error': 'DEPLOYMENT_NOT_FOUND' }), 'deployment_unavailable'],
     [3, response(404, ''), 'unresolved_response'],
@@ -230,7 +234,7 @@ test('only verified deployment unavailability on ERROR hosts permits traversal t
 });
 
 /** A later unexpected result must stop the batch and remain its failure after a tolerated unavailable host. */
-test('unexpected public login after an unavailable ERROR host still stops immediately', async function () {
+localTest('unexpected public login after an unavailable ERROR host still stops immediately', async function () {
   const fixtures = HOSTS.slice(0, 3).map(expectedResponse);
   fixtures.push(response(404, '', { 'x-vercel-error': 'DEPLOYMENT_NOT_FOUND' }), response());
   const mock = transport(fixtures);
@@ -243,7 +247,7 @@ test('unexpected public login after an unavailable ERROR host still stops immedi
 });
 
 /** Verify unexpected alias exposure stops the scope even when it returns a valid login/build. */
-test('public alternate host stops without visiting or retrying remaining targets', async function () {
+localTest('public alternate host stops without visiting or retrying remaining targets', async function () {
   const mock = transport([response(), response()]);
   const report = await runner.runLive({ batch: 1, requestImpl: mock.requestImpl });
   assert.equal(report.result, 'stopped');
@@ -254,7 +258,7 @@ test('public alternate host stops without visiting or retrying remaining targets
 });
 
 /** Check build mismatches, older-host attribution and minimal positive canonical evidence. */
-test('build checks stay scoped to their deployment and canonical page', function () {
+localTest('build checks stay scoped to their deployment and canonical page', function () {
   assert.equal(runner.classify(HOSTS[0], response()).expectedPatternObserved, true);
   assert.equal(runner.classify(HOSTS[0], response(200, html('wrong-build'))).classification, 'build_mismatch');
   const immutable = HOSTS.find(currentImmutable);
@@ -274,7 +278,7 @@ test('build checks stay scoped to their deployment and canonical page', function
 function currentImmutable(host) { return host.hostname === TARGET.hostname; }
 
 /** Recognize a final solidus separated from quoted or unquoted attributes by HTML whitespace. */
-test('login data accepts a whitespace-separated trailing solidus', function () {
+localTest('login data accepts a whitespace-separated trailing solidus', function () {
   for (const attributes of ['id="__NEXT_DATA__" type="application/json"',
     'id=__NEXT_DATA__ type=application/json']) {
     for (const whitespace of [' ', '\t', '\r\n']) {
@@ -288,7 +292,7 @@ test('login data accepts a whitespace-separated trailing solidus', function () {
 });
 
 /** Preserve fail-closed parsing when a solidus belongs to a value or accompanies malformed attributes. */
-test('login data rejects malformed attributes and unquoted identity values ending in a solidus', function () {
+localTest('login data rejects malformed attributes and unquoted identity values ending in a solidus', function () {
   for (const attributes of [
     'id="__NEXT_DATA__" type=application/json/',
     'type="application/json" id=__NEXT_DATA__/',
@@ -307,7 +311,7 @@ test('login data rejects malformed attributes and unquoted identity values endin
 });
 
 /** Restrict recognized redirect patterns; no generic rejection or arbitrary redirect can qualify. */
-test('generic 401/403/404/redirects and deceptive destinations remain unresolved', function () {
+localTest('generic 401/403/404/redirects and deceptive destinations remain unresolved', function () {
   for (const status of [401, 403, 404, 302, 307, 500]) {
     assert.equal(runner.classify(HOSTS[1], response(status, CANARY)).expectedPatternObserved, false);
   }
@@ -323,14 +327,14 @@ test('generic 401/403/404/redirects and deceptive destinations remain unresolved
 });
 
 /** Prove the native transport does not automatically follow any redirect. */
-test('transport returns a redirect after exactly one exchange', async function () {
+localTest('transport returns a redirect after exactly one exchange', async function () {
   const mock = transport([response(307, CANARY, { location: `https://vercel.com/login?nonce=${CANARY}` })]);
   const actual = await runner.requestHost(HOSTS[1], { requestImpl: mock.requestImpl });
   assert.equal(actual.status, 307); assert.equal(mock.calls.length, 1);
 });
 
 /** Cover both response size mechanisms and malformed/ambiguous metadata using mocked byte streams. */
-test('body bounds, encoding, duplicate headers and truncation fail closed', async function () {
+localTest('body bounds, encoding, duplicate headers and truncation fail closed', async function () {
   const cases = [
     [{ ...response(), chunks: [Buffer.alloc(12), Buffer.alloc(12)] }, 'response_size'],
     [response(200, '', { 'content-length': '10000000' }), 'response_size'],
@@ -351,7 +355,7 @@ test('body bounds, encoding, duplicate headers and truncation fail closed', asyn
 });
 
 /** Exercise deadlines with noncooperative header/body streams; the runner must destroy and stop. */
-test('request timeout covers headers and body and never retries', async function () {
+localTest('request timeout covers headers and body and never retries', async function () {
   for (const fixture of [{ hang: true }, { ...response(), hangBody: true }]) {
     const mock = transport([fixture]);
     const report = await runner.runLive({ batch: 1, requestImpl: mock.requestImpl, requestMs: 20 });
@@ -364,7 +368,7 @@ test('request timeout covers headers and body and never retries', async function
 });
 
 /** Distinguish cancellation from overall deadline while excluding arbitrary abort reasons. */
-test('overall timeout and pre-aborted cancellation stop within the request budget', async function () {
+localTest('overall timeout and pre-aborted cancellation stop within the request budget', async function () {
   const stalled = transport([{ hang: true }]);
   const report = await runner.runLive({ batch: 1, requestImpl: stalled.requestImpl, overallMs: 20 });
   assert.equal(report.failure, 'overall_deadline'); assert.equal(stalled.calls.length, 1);
@@ -378,7 +382,7 @@ test('overall timeout and pre-aborted cancellation stop within the request budge
 });
 
 /** Cancel after dispatch and verify active sockets are destroyed without retaining the abort reason. */
-test('in-flight cancellation destroys the request; larger budgets are refused before dispatch', async function () {
+localTest('in-flight cancellation destroys the request; larger budgets are refused before dispatch', async function () {
   const controller = new AbortController();
   const stalled = transport([{ hang: true }]);
   const pending = runner.runLive({ batch: 1, requestImpl: stalled.requestImpl, signal: controller.signal });
@@ -395,7 +399,7 @@ test('in-flight cancellation destroys the request; larger budgets are refused be
 });
 
 /** Ensure unknown response strings and transport failures cannot leak into persistent evidence. */
-test('sanitized reports exclude bodies, headers, invalid IDs and transport errors', async function () {
+localTest('sanitized reports exclude bodies, headers, invalid IDs and transport errors', async function () {
   const mock = transport([response(401, CANARY, { 'x-vercel-id': `${CANARY}:invalid`,
     location: `https://vercel.com/login?secret=${CANARY}`, 'set-cookie': CANARY })]);
   const report = await runner.runLive({ batch: 1, requestImpl: mock.requestImpl });
@@ -427,7 +431,7 @@ function consumeReport(reportPath) {
 }
 
 /** Execute the actual launcher twice in default prepare mode and prove unique, parseable file capture. */
-windowsTest('PowerShell default saves unique offline reports without dumping JSON', function () {
+localWindowsTest('PowerShell default saves unique offline reports without dumping JSON', function () {
   const paths = [];
   for (let attempt = 0; attempt < 2; attempt++) {
     const child = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', launcher],
@@ -490,7 +494,7 @@ function mockedLauncher(report, exitCode, batch = 0, live = false, longCounters 
 }
 
 /** Exercise both integer representations at the lower and upper bounds without changing report accounting. */
-windowsTest('PowerShell accepts Int32 and Int64 counters within the selected batch limit', function () {
+localWindowsTest('PowerShell accepts Int32 and Int64 counters within the selected batch limit', function () {
   for (const longCounters of [false, true]) {
     for (const count of [0, 12]) {
       const report = { ...stoppedFixture(4, true), requests: count, responses: count,
@@ -508,7 +512,7 @@ windowsTest('PowerShell accepts Int32 and Int64 counters within the selected bat
 });
 
 /** Widening integer representation must not admit out-of-range, fractional, or coercible nonnumeric counters. */
-windowsTest('PowerShell rejects invalid counter types and out-of-range Int64 counters', function () {
+localWindowsTest('PowerShell rejects invalid counter types and out-of-range Int64 counters', function () {
   for (const [field, value, longCounters] of [
     ['requests', -1, true], ['unvisited', 13, true], ['responses', 0.5, false],
     ['expectedPatterns', '0', false], ['requests', true, false], ['unvisited', null, false],
@@ -520,7 +524,7 @@ windowsTest('PowerShell rejects invalid counter types and out-of-range Int64 cou
 });
 
 /** Check failure preservation independently from a child's occasionally incorrect zero exit status. */
-windowsTest('PowerShell preserves nonzero exit status and catches stopped reports with zero exit', function () {
+localWindowsTest('PowerShell preserves nonzero exit status and catches stopped reports with zero exit', function () {
   for (const exitCode of [7, 0]) {
     const child = mockedLauncher(stoppedFixture(), exitCode);
     assert.equal(child.status, exitCode || 1);
@@ -530,7 +534,7 @@ windowsTest('PowerShell preserves nonzero exit status and catches stopped report
 });
 
 /** The -Live path forwards exactly one batch to the mocked executor and labels its report correctly. */
-windowsTest('PowerShell live mode forwards only the selected batch and saves its bounded report', function () {
+localWindowsTest('PowerShell live mode forwards only the selected batch and saves its bounded report', function () {
   const child = mockedLauncher(stoppedFixture(4, true), 2, 4, true);
   assert.equal(child.status, 2);
   const match = /^Report: (.+)\r?\n$/.exec(child.stdout);
@@ -541,7 +545,7 @@ windowsTest('PowerShell live mode forwards only the selected batch and saves its
 });
 
 /** Persist a fully traversed non-qualifying batch and keep a nonzero exit even if its child returned zero. */
-windowsTest('PowerShell preserves all unavailable-host receipts without qualifying the batch', async function () {
+localWindowsTest('PowerShell preserves all unavailable-host receipts without qualifying the batch', async function () {
   const fixtures = Array(12).fill(response(404, '', { 'x-vercel-error': 'DEPLOYMENT_NOT_FOUND' }));
   const mock = transport(fixtures);
   const report = await runner.runLive({ batch: 4, requestImpl: mock.requestImpl });
@@ -556,7 +560,7 @@ windowsTest('PowerShell preserves all unavailable-host receipts without qualifyi
 });
 
 /** Exercise each real CLI batch argument in offline mode to detect quoting/dispatch or size regressions. */
-windowsTest('PowerShell offline selection saves exactly the requested batch with no automatic progression', function () {
+localWindowsTest('PowerShell offline selection saves exactly the requested batch with no automatic progression', function () {
   for (const batch of [1, 2, 3, 4]) {
     const child = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', launcher,
       '-Batch', String(batch)], { encoding: 'utf8', timeout: 20000, windowsHide: true });
@@ -584,7 +588,7 @@ windowsTest('PowerShell rejects live mode without a batch before process dispatc
 });
 
 /** Reject wrong-batch, excessive, or falsely completed reports before any file is saved. */
-windowsTest('PowerShell refuses cross-batch and impossible completion accounting', function () {
+localWindowsTest('PowerShell refuses cross-batch and impossible completion accounting', function () {
   const fixtures = [
     stoppedFixture(1, true),
     { ...stoppedFixture(4, true), requests: 13, unvisited: 0 },
@@ -631,7 +635,7 @@ function reloadWithManifest(value) {
 }
 
 /** A parsed-content digest survives Git line-ending conversion while preserving the approved batch scope. */
-test('manifest digest accepts equivalent LF and CRLF serialization', function () {
+localTest('manifest digest accepts equivalent LF and CRLF serialization', function () {
   const text = fs.readFileSync(path.resolve(__dirname, '../../../scripts/gate1-host-protection-inventory.json'), 'utf8');
   const loaded = reloadWithManifest(text.replace(/\r?\n/g, '\r\n'));
   assert.equal(loaded.preparation(4).inventory.length, 12);
@@ -639,7 +643,7 @@ test('manifest digest accepts equivalent LF and CRLF serialization', function ()
 });
 
 /** Reject source, order, and duplicate changes instead of silently broadening the authorized destinations. */
-test('missing, malformed, oversized or modified manifests fail before HTTP with sanitized errors', async function () {
+localTest('missing, malformed, oversized or modified manifests fail before HTTP with sanitized errors', async function () {
   const manifest = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../scripts/gate1-host-protection-inventory.json'), 'utf8'));
   const changedHost = JSON.parse(JSON.stringify(manifest));
   changedHost.batches[0].hosts[0].hostname = 'job-application-tracker-unapproved.vercel.app';
@@ -656,6 +660,25 @@ test('missing, malformed, oversized or modified manifests fail before HTTP with 
     assert.throws(prepareInvalid, { code: 'inventory', message: 'inventory' });
     await assert.rejects(loaded.runLive({ batch: 1, requestImpl: mock.requestImpl }), { code: 'inventory' });
     assert.equal(mock.calls.length, 0);
+  }
+});
+
+/** Missing operator data must fail before HTTP on every checkout, including CI without a local manifest. */
+test('missing local inventory fails closed with a sanitized zero-request failure', async function () {
+  const loaded = reloadWithManifest(new Error(CANARY));
+  const requestImpl = jest.fn();
+  /** Verify offline preparation cannot imply a valid inventory after the manifest read fails. */
+  function prepareMissing() { loaded.preparation(); }
+  assert.throws(prepareMissing, { code: 'inventory', message: 'inventory' });
+  await assert.rejects(loaded.runLive({ batch: 1, requestImpl }), { code: 'inventory', message: 'inventory' });
+  assert.equal(requestImpl.mock.calls.length, 0);
+  if (!inventoryPresent) {
+    const child = spawnSync(process.execPath, [path.resolve(__dirname, '../../../scripts/gate1-host-protection.js')],
+      { encoding: 'utf8', timeout: 10000, windowsHide: true });
+    assert.equal(child.status, 1);
+    const report = JSON.parse(child.stdout);
+    assert.equal(report.failure, 'inventory'); assert.equal(report.result, 'stopped');
+    assert.equal(report.requests, 0); assert.equal(report.receipts.length, 0);
   }
 });
 
