@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-20
 
+- `2026-09-22` - `GATE-1 host inventory batches`: Extended the diagnostic to a fixed, schema-validated manifest of 102 host cases with separate 30/30/30/12-request batches and operator-attributed deployment/build metadata. Live mode requires an explicit batch; the launcher validates batch identity and accounting and saves unique batch/mode reports. All 25 offline tests, focused lint, and syntax checks pass; live qualification remains separately authorized.
+
 - `2026-09-22` - `GATE-1 host diagnostic review follow-ups`: Precompute the trailing-whitespace boundary once before scanning script attributes, preserving trailing-solidus behavior. Expanded launcher helper comments to cover parameters, pipe draining, process deadlines, JSON validation, unique report creation, and stopped-report exit-code propagation.
 
 - `2026-09-21` - `GATE-1 script attribute normalization`: Recognize login data scripts with a whitespace-separated trailing solidus by normalizing attributes before tokenization. Preserve rejection of malformed attributes and unquoted identity values ending in a solidus; added regression coverage. All 17 offline host-protection tests, focused ESLint, and diff checks pass.

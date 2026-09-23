@@ -1,0 +1,1056 @@
+{
+  "schemaVersion": 1,
+  "inventoryId": "gate1-host-delta-e50c5e9-9fe633d-20260923",
+  "sourceArtifactSha256": "B262670685804B7D9657584F76EB42F60DF6EF062CB9B724FC1951D3742F430B",
+  "acceptedLoginArtifactSha256": "8BEBDD76784960AF85608FB470F4064B1ADE2F302F4C67766B84E90B48263E41",
+  "observedAt": "2026-09-23T00:03:19.226Z",
+  "target": {
+    "hostname": "job-application-tracker-mxlx5brml-track-the-app.vercel.app",
+    "deploymentId": "dpl_2hjZCj2WZ251FZUJsTyaRiVoq1mH",
+    "gitSha": "9fe633d48d177c4743733a78b37eaebcfce1b347",
+    "nextBuildId": "q0zlIgmPLmJWCHTAV9jpK",
+    "buildAttribution": "operator_supplied_not_yet_http_verified"
+  },
+  "batches": [
+    {
+      "id": 1,
+      "hosts": [
+        {
+          "hostname": "job-application-tracker-kappa-seven.vercel.app",
+          "deploymentId": "dpl_2hjZCj2WZ251FZUJsTyaRiVoq1mH",
+          "expected": "public_login",
+          "knownBuildId": "q0zlIgmPLmJWCHTAV9jpK",
+          "kind": "alias",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "reassigned_alias"
+        },
+        {
+          "hostname": "job-application-tracker-git-main-track-the-app.vercel.app",
+          "deploymentId": "dpl_2hjZCj2WZ251FZUJsTyaRiVoq1mH",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": "q0zlIgmPLmJWCHTAV9jpK",
+          "kind": "alias",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "reassigned_alias"
+        },
+        {
+          "hostname": "job-application-tracker-track-the-app.vercel.app",
+          "deploymentId": "dpl_2hjZCj2WZ251FZUJsTyaRiVoq1mH",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": "q0zlIgmPLmJWCHTAV9jpK",
+          "kind": "alias",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "reassigned_alias"
+        },
+        {
+          "hostname": "job-application-tracker-git-chore-gate1-ho-a72329-track-the-app.vercel.app",
+          "deploymentId": "dpl_7qvbUNLL7WUdx3VLmsp8GAJvyEwT",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "alias",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_alias"
+        },
+        {
+          "hostname": "job-application-tracker-git-fix-gate1-host-3a8855-track-the-app.vercel.app",
+          "deploymentId": "dpl_5nnGYXxKfh4vQxRAFbpvDkhBXcQg",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "alias",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_alias"
+        },
+        {
+          "hostname": "job-application-tracker-mxlx5brml-track-the-app.vercel.app",
+          "deploymentId": "dpl_2hjZCj2WZ251FZUJsTyaRiVoq1mH",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": "q0zlIgmPLmJWCHTAV9jpK",
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-3ib34o5cy-track-the-app.vercel.app",
+          "deploymentId": "dpl_AR1TZKXMjdqm47XXT1iaRwiithUQ",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-c94nfy883-track-the-app.vercel.app",
+          "deploymentId": "dpl_4E6czTcjeaCpJJ2qrzS8vrRvAfkF",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-704xx535a-track-the-app.vercel.app",
+          "deploymentId": "dpl_6gRisp5va2LHwVZ1UAsWpQyAcPPo",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-cy3xp0n5r-track-the-app.vercel.app",
+          "deploymentId": "dpl_J6LXeMHsXzunJwuuXHB1Bx7KpX3o",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-ebyku6s95-track-the-app.vercel.app",
+          "deploymentId": "dpl_4xiqiebb5ZdZ4YEFs5dS5pFSWEom",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-i81xgilqr-track-the-app.vercel.app",
+          "deploymentId": "dpl_6iavvUM2bV1SagzPJekdxqd4FARU",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-nuqbyqrs3-track-the-app.vercel.app",
+          "deploymentId": "dpl_EAM6hNFabbt9WDsGQtQkXsioQEsw",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-1u5og2es9-track-the-app.vercel.app",
+          "deploymentId": "dpl_3YVZFouJ9sJavy484DzWrwAW3qA1",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-en7rlo57j-track-the-app.vercel.app",
+          "deploymentId": "dpl_67mvmPmnq9GArtsBaTL1nc1m9TB1",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-dqstgh7gz-track-the-app.vercel.app",
+          "deploymentId": "dpl_3Zsi7JMcymUsFHT15MQixGQRLx3q",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-p1uoboyjb-track-the-app.vercel.app",
+          "deploymentId": "dpl_GfC1TyapBv2AJ4VfiPMEGkrEo8kZ",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-5i1uh010o-track-the-app.vercel.app",
+          "deploymentId": "dpl_HazriUV2MgGqNfo5Yx5WsGWqWDr4",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-f4u5xkpa6-track-the-app.vercel.app",
+          "deploymentId": "dpl_B9ThKdSR1DEgA8bPVCphA7vQiWPC",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-khdu0ff68-track-the-app.vercel.app",
+          "deploymentId": "dpl_6KASPW2rNhpXH6wGrrRE7nTeJjFQ",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-a8710rjdc-track-the-app.vercel.app",
+          "deploymentId": "dpl_7dyE4Qfc9Y6gNRJsDMywqhFJdYS2",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-fhgztxirm-track-the-app.vercel.app",
+          "deploymentId": "dpl_8rW4RXZbwLHNKTJxWNuRdT4ALaQd",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-7bxk1kx1f-track-the-app.vercel.app",
+          "deploymentId": "dpl_FXRnjJ88LmeGB2nxAgtFPtTpmn3q",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-h86zfejmh-track-the-app.vercel.app",
+          "deploymentId": "dpl_ESNTuGzrnZXCkzyukuMK48RfF63u",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-4xeot8asr-track-the-app.vercel.app",
+          "deploymentId": "dpl_FuUHLE6etTCf6wPyizjyD5oQfGuj",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-kzcxj3jz2-track-the-app.vercel.app",
+          "deploymentId": "dpl_7Ti1cU5pZDkUFGKF121TwvkDKbuC",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-k21fixw3r-track-the-app.vercel.app",
+          "deploymentId": "dpl_7QvoefzAzb5u7PATk5F4n7ARBMkz",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-n4t1p9jfj-track-the-app.vercel.app",
+          "deploymentId": "dpl_Gkz4TQi7Kp5F7PdkEbasv4suZFfU",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-boezraoae-track-the-app.vercel.app",
+          "deploymentId": "dpl_FerWhzhqKUQAEkn77yB6noQFSUxW",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-gx3z7sb8e-track-the-app.vercel.app",
+          "deploymentId": "dpl_GkjXMCqU8scRQeTFNG72w9mWWx2q",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "hosts": [
+        {
+          "hostname": "job-application-tracker-jogasupk5-track-the-app.vercel.app",
+          "deploymentId": "dpl_Er26p1fYAb1bWCEPYVM5xyHyAKxf",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-mgqpl04ka-track-the-app.vercel.app",
+          "deploymentId": "dpl_BFRe3tmAgXTJa472X4uFi3t35X4n",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-k9n89lm19-track-the-app.vercel.app",
+          "deploymentId": "dpl_4krVa79CTeyAp7WPgbct8TunrxyA",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-ix1zaq4c7-track-the-app.vercel.app",
+          "deploymentId": "dpl_DfthD698YgND7cF2g9phnt5yuWWp",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-m2ilptl33-track-the-app.vercel.app",
+          "deploymentId": "dpl_FBX1Q8rcCWHnE6eqEo3mdQXCRfcp",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "production",
+          "recordedState": "READY",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-f6yt2bl66-track-the-app.vercel.app",
+          "deploymentId": "dpl_CFvrJNGt1uWfZ2ysEPFFWYqT9xZB",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-cejtjd3tb-track-the-app.vercel.app",
+          "deploymentId": "dpl_5nnGYXxKfh4vQxRAFbpvDkhBXcQg",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-45zsd19wb-track-the-app.vercel.app",
+          "deploymentId": "dpl_Cvc3bTbEKuJGuf1rHvroTBqXcDyn",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-lxvy787d7-track-the-app.vercel.app",
+          "deploymentId": "dpl_EzRZSrtVFUm2r8RwzwNzfSZqn1en",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-4aujz7e4x-track-the-app.vercel.app",
+          "deploymentId": "dpl_7qvbUNLL7WUdx3VLmsp8GAJvyEwT",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-c6f8hee03-track-the-app.vercel.app",
+          "deploymentId": "dpl_CegBBmBeoef6E7SrzTHidcoe5YJX",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-3yae71u4r-track-the-app.vercel.app",
+          "deploymentId": "dpl_5Bu3YhiBgQFHRbpyvdFyxQwfP28k",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-p545a6mhx-track-the-app.vercel.app",
+          "deploymentId": "dpl_5xTbycf1VWFEH7jeb2bVVtWt6uSk",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-hpj3vq5fd-track-the-app.vercel.app",
+          "deploymentId": "dpl_6QRMKaYQrJJdw5asEXU79ZTufhNK",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-jznc3pyk2-track-the-app.vercel.app",
+          "deploymentId": "dpl_c76N94cCHgNoTTSRSFyGKEj9cLsk",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-kyw4i01bg-track-the-app.vercel.app",
+          "deploymentId": "dpl_4MaQVcDgk1dGJpsAaMqszS6f1Ei5",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-erc3gvoh8-track-the-app.vercel.app",
+          "deploymentId": "dpl_GuotfsqmgkoN3rHRwJHXWDi1HgQv",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-8ofiq7q5y-track-the-app.vercel.app",
+          "deploymentId": "dpl_6RwpkGfDgD3dtQZSoSrafMXYrazW",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-7df391ww6-track-the-app.vercel.app",
+          "deploymentId": "dpl_EKAy6NcPvTNv2CnbV3Fo4JvDD2qW",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-o7iy7e8f5-track-the-app.vercel.app",
+          "deploymentId": "dpl_42eBys5bGQf6K5e8ajT61kL5ejBV",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-229hanosd-track-the-app.vercel.app",
+          "deploymentId": "dpl_8zLJvK6VHT5x5g2xXUPNuc7TwDGo",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-j7xtno08v-track-the-app.vercel.app",
+          "deploymentId": "dpl_2UY3KPKFYHuotbtnJaNCbVxVbLjR",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-n0kckmdgk-track-the-app.vercel.app",
+          "deploymentId": "dpl_752ek2ZTErFeW3uywiVVnbU1nZrh",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-lzos100na-track-the-app.vercel.app",
+          "deploymentId": "dpl_C6LFdLAmDcbmgwDU8ZUrdDRfyRgS",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-e7qsfcxic-track-the-app.vercel.app",
+          "deploymentId": "dpl_6UuQLARptGkoTL4TcZrfX8Jn4bjr",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-ibvgxwtfo-track-the-app.vercel.app",
+          "deploymentId": "dpl_HeSjUVRMqBYb1Xts2fnXLkNFPaQa",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-2cvdoaetv-track-the-app.vercel.app",
+          "deploymentId": "dpl_21Y9uiHQxny5rUn14yQnbza3kbya",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-4wa6lanxf-track-the-app.vercel.app",
+          "deploymentId": "dpl_C1mAF8NfABj7FeCMPEM99yyZdBBF",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-f9vk98gu7-track-the-app.vercel.app",
+          "deploymentId": "dpl_HXncdh1bN2ugfF4ucbwYWUjzU1CQ",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-4ol9rsz72-track-the-app.vercel.app",
+          "deploymentId": "dpl_Fb63374Zucevr1Sw3rxgY8wctDK4",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "hosts": [
+        {
+          "hostname": "job-application-tracker-hkoakvsuj-track-the-app.vercel.app",
+          "deploymentId": "dpl_DVphA6Wg37jrBojZDo1xA2wiAoWB",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-nfz4x8ad0-track-the-app.vercel.app",
+          "deploymentId": "dpl_8rPt7cYiV6doX15QqTLWQGZKGdL7",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-cnk1r3tfw-track-the-app.vercel.app",
+          "deploymentId": "dpl_BzbHGxr6EmKnPtvbQep9B4suWxxk",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-lbgw08c4p-track-the-app.vercel.app",
+          "deploymentId": "dpl_5NhLJHDNM5hxzNZxzrfTzamnYsmm",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-2y57zkc9j-track-the-app.vercel.app",
+          "deploymentId": "dpl_4YBWUAbbTgeWqp76ytoCwGSMLmHp",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-98jv575r6-track-the-app.vercel.app",
+          "deploymentId": "dpl_46qqKeB418mz5JnUjnRPfo2BdimL",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-ogytmjirj-track-the-app.vercel.app",
+          "deploymentId": "dpl_5UBjJgfY2uBWFpyJUjLfNBTPe9NB",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-7g2k8wrlc-track-the-app.vercel.app",
+          "deploymentId": "dpl_AHMi9cLZNnkAyhpkv3ieL9Z2zZuz",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-c2w95e1y4-track-the-app.vercel.app",
+          "deploymentId": "dpl_9x3146VWovRnw2qNDoZ6rGECNbHW",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-jmaee39h2-track-the-app.vercel.app",
+          "deploymentId": "dpl_57Mjz3kB2MtqevPHwD8FkHiLrGTi",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-dh94iamwc-track-the-app.vercel.app",
+          "deploymentId": "dpl_F4GHsRdExXtCgqpzRPNPttdtEQT9",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-55m1w5gmi-track-the-app.vercel.app",
+          "deploymentId": "dpl_7CJgxMmkif3mECiYJB41KYrVybRc",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-m9wszzqsn-track-the-app.vercel.app",
+          "deploymentId": "dpl_At5cBLiEZhKMJToALNZJaLj6Fxx7",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-6r2blq0ty-track-the-app.vercel.app",
+          "deploymentId": "dpl_92u4DaLeDGwH3YZ8x7uDMao5S4dN",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-9rhgtk9zh-track-the-app.vercel.app",
+          "deploymentId": "dpl_FTVTaF4XvbXY273ZzHWZLtbpDJjn",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-oo3roqzt0-track-the-app.vercel.app",
+          "deploymentId": "dpl_DNRuwKwjLmHvE7bPKtJYS4BnaNqA",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-qahzdy0k0-track-the-app.vercel.app",
+          "deploymentId": "dpl_6UaXbzTARuN56bGpoNvkwauXNtZd",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-efecavzmg-track-the-app.vercel.app",
+          "deploymentId": "dpl_AwHP1o7fNdJoScwkVB8oG4myyz3Q",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-42gjsansc-track-the-app.vercel.app",
+          "deploymentId": "dpl_9UxCaenxPuYSC1gZkqiyNSbSrVx2",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-mcs9p4a32-track-the-app.vercel.app",
+          "deploymentId": "dpl_7a5vo4jEMB1xQ4U6rH3ybn9SCLn5",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-ogcmywqjy-track-the-app.vercel.app",
+          "deploymentId": "dpl_7y984uqyAW5L1yf4y5eSdNUPpjb1",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-qx7o0wniz-track-the-app.vercel.app",
+          "deploymentId": "dpl_5qVCZc8ipu38CCPcZGkfnLaHrxEP",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-e1y73x87s-track-the-app.vercel.app",
+          "deploymentId": "dpl_7h8yxGf2GyomT4JEeByzEcLRM85a",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-p6tgnpe0s-track-the-app.vercel.app",
+          "deploymentId": "dpl_ByLS13mcbkAPBqVqKRRHbtBqX3p8",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-nnfxkpl1n-track-the-app.vercel.app",
+          "deploymentId": "dpl_EbYLvmeQsyn92fbFHFJBFQkj696e",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-r8z1pxak6-track-the-app.vercel.app",
+          "deploymentId": "dpl_4RuH3SepWPqNhiDj6QCmLBFYpQV5",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-ihfqdgi1y-track-the-app.vercel.app",
+          "deploymentId": "dpl_Fb8paxiseYPBhajDKKiw1HXUXih7",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-aciawtjhq-track-the-app.vercel.app",
+          "deploymentId": "dpl_3TshrUhPqkjw19qRt188er1VuGx5",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-pnn44kpwp-track-the-app.vercel.app",
+          "deploymentId": "dpl_4Ek3Yt15ArkXsab8EZFB4k8HEEDR",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-iqocusrz4-track-the-app.vercel.app",
+          "deploymentId": "dpl_2BgTVWqrpCu85kmWFhJsJZ82N5PB",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "hosts": [
+        {
+          "hostname": "job-application-tracker-th5n5ev3q-track-the-app.vercel.app",
+          "deploymentId": "dpl_5E5cdaArF2Sucmo1huNWW8NKHfzx",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-9wprpjlf3-track-the-app.vercel.app",
+          "deploymentId": "dpl_Hc6JZpDkSWSr6kyqs4xc9E1Aykqx",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-fup44n1qj-track-the-app.vercel.app",
+          "deploymentId": "dpl_8sfYMppxBVH2iri1n6hEFGLcwzWA",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-8qfawnef8-track-the-app.vercel.app",
+          "deploymentId": "dpl_98qebFmDRyGHEVje8bXz2d5XbtPe",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-bxnarklwe-track-the-app.vercel.app",
+          "deploymentId": "dpl_2p59i4ab9daoHzLYGEWNUJQHZVwc",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-me0356y9d-track-the-app.vercel.app",
+          "deploymentId": "dpl_2ZwHBuX1PTHvhXn5PR4x9DbvTzyY",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-fj67trdnd-track-the-app.vercel.app",
+          "deploymentId": "dpl_3tnnBSjTiTnuJ4vxKbNswHQM5piK",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-dd04zrvmq-track-the-app.vercel.app",
+          "deploymentId": "dpl_2qNTk7K7xwatJN36sy9fKt8yLKE2",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-c1cer99w8-track-the-app.vercel.app",
+          "deploymentId": "dpl_255jhFwJnTxj3Jefm2rEsXi1Nzur",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-coezy3ttz-track-the-app.vercel.app",
+          "deploymentId": "dpl_CYiZgTaacFWXNpYcPikNFuG5jZNw",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-oxx6dufht-track-the-app.vercel.app",
+          "deploymentId": "dpl_4To6uyRQAhXq5g7A8eREkRZy7DUB",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        },
+        {
+          "hostname": "job-application-tracker-bryl4jnzh-track-the-app.vercel.app",
+          "deploymentId": "dpl_89DH3bxcUWkpDjHTcEc3mr8pduWA",
+          "expected": "gate_or_canonical_redirect",
+          "knownBuildId": null,
+          "kind": "generated",
+          "environment": "preview",
+          "recordedState": "ERROR",
+          "coverageReason": "new_generated_url"
+        }
+      ]
+    }
+  ]
+}
