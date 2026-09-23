@@ -412,7 +412,7 @@ function readInput(stream = process.stdin) {
     /** Parse JSON transiently and discard the raw credential buffer. */
     function end() {
       cleanup();
-      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { reject(new DiscoveryError('input')); }
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/, ''))); } catch { reject(new DiscoveryError('input')); }
       chunks.forEach((chunk) => chunk.fill(0)); chunks.length = 0;
     }
     stream.on('data', data); stream.on('end', end); stream.on('error', fail);
