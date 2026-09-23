@@ -15,6 +15,9 @@ const TEST_KEY_ID = 'session-route-key-1';
 const ENVIRONMENT_NAMES = [
   'NODE_ENV',
   'VERCEL',
+  'VERCEL_ENV',
+  'GATE1_SOURCE_PROBE_ENABLED',
+  'GATE1_SOURCE_PROBE_SECRET',
   'TEMPORARY_SESSION_CEILING_SOURCE_MODE',
   'TEMPORARY_SESSION_CEILING_SECRET_MODE',
   'TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON',
@@ -89,6 +92,9 @@ function restoreEnvironmentVariable(name, value) {
 function installProductionEnvironment() {
   process.env.NODE_ENV = 'production';
   process.env.VERCEL = '1';
+  process.env.VERCEL_ENV = 'production';
+  delete process.env.GATE1_SOURCE_PROBE_ENABLED;
+  delete process.env.GATE1_SOURCE_PROBE_SECRET;
   process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'vercel';
   process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE = 'vercel';
   process.env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON = JSON.stringify({
@@ -273,6 +279,79 @@ describe('/api/auth/session production/Vercel composition', () => {
     }
     jest.restoreAllMocks();
   });
+
+  /** Parallel requests keep source observations and response writers separate. */
+  it('isolates concurrent authenticated probe requests with different canonical families', async () => {
+    process.env.GATE1_SOURCE_PROBE_ENABLED = 'true';
+    process.env.GATE1_SOURCE_PROBE_SECRET = 'a'.repeat(64);
+    const route = loadSessionRoute();
+    const outputs = await Promise.all([TEST_SOURCE, '2001:db8::1'].map(async (address, index) => {
+      const { req } = createMockRequest({ normalizedSource: address, rawHeaders: ['x-vercel-forwarded-for', address] });
+      const marker = `gate1-source-${String(index).repeat(32)}`;
+      const auth = `Bearer ${'a'.repeat(64)}`;
+      Object.assign(req.headers, { authorization: auth, 'x-gate1-source-diagnostic': '1', 'user-agent': marker });
+      req.rawHeaders.push('Authorization', auth, 'X-Gate1-Source-Diagnostic', '1', 'User-Agent', marker);
+      const res = createMockResponse();
+      await route(req, res);
+      return { status: res.statusCode, facts: JSON.parse(res.getHeader('X-Gate1-Source-Probe')) };
+    }));
+    expect(outputs.map((item) => item.status)).toEqual([200, 200]);
+    expect(outputs.map((item) => item.facts.canonicalFamily)).toEqual([4, 6]);
+    expect(outputs.map((item) => item.facts.marker)).toEqual([
+      `gate1-source-${'0'.repeat(32)}`, `gate1-source-${'1'.repeat(32)}`,
+    ]);
+    expect(mockRedisEvalsha).toHaveBeenCalledTimes(2);
+    expect(mockRedisEvalsha.mock.calls[0][1]).not.toEqual(mockRedisEvalsha.mock.calls[1][1]);
+    expectSensitiveValuesAbsentFromLogs(['2001:db8::1', 'a'.repeat(64)]);
+  });
+
+  /** Proves opt-in observations come through the real route/limiter with unchanged response and key. */
+  it.each(['allowed', 'rejected_source', 'rate_limited', 'invalid_mode', 'secret_failure'])(
+    'observes %s after real enforcement without changing cache/body/downstream boundaries', async (scenario) => {
+      const probeSecret = 'a'.repeat(64);
+      process.env.GATE1_SOURCE_PROBE_SECRET = probeSecret;
+      const route = loadSessionRoute();
+      if (scenario === 'rate_limited') mockRedisEvalsha.mockResolvedValue([1, 1, 17]);
+      if (scenario === 'invalid_mode') process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'local';
+      if (scenario === 'secret_failure') process.env.TEMPORARY_SESSION_CEILING_UPSTASH_JSON = '{}';
+      const responses = [];
+      for (const enabled of ['false', 'true']) {
+        process.env.GATE1_SOURCE_PROBE_ENABLED = enabled;
+        const { req, cookieRead } = createMockRequest(scenario === 'rejected_source'
+          ? { normalizedSource: TEST_SOURCE, rawHeaders: ['x-vercel-forwarded-for', TEST_SOURCE, 'X-Vercel-Forwarded-For', TEST_SOURCE] }
+          : {});
+        Object.assign(req.headers, { authorization: `Bearer ${probeSecret}`,
+          'x-gate1-source-diagnostic': '1', 'user-agent': `gate1-source-${'b'.repeat(32)}` });
+        req.rawHeaders.push('Authorization', req.headers.authorization, 'X-Gate1-Source-Diagnostic', '1',
+          'User-Agent', req.headers['user-agent']);
+        const res = createMockResponse();
+        await route(req, res);
+        responses.push(res);
+        expect(res.getHeader('Cache-Control')).toBe('private, no-store');
+        if (scenario !== 'allowed') expect(cookieRead).not.toHaveBeenCalled();
+      }
+      expect(responses[0].getHeader('X-Gate1-Source-Probe')).toBeUndefined();
+      const facts = JSON.parse(responses[1].getHeader('X-Gate1-Source-Probe'));
+      expect(facts.sourceAgreement).toBe('not_evaluated');
+      expect(facts.effectiveMode).toBe(scenario === 'invalid_mode' ? 'invalid' : 'vercel');
+      expect(facts.sourceResolution).toBe(scenario === 'invalid_mode' ? 'not_attempted'
+        : scenario === 'rejected_source' ? 'rejected' : 'accepted');
+      expect(responses[1].statusCode).toBe(responses[0].statusCode);
+      expect(responses[1].statusCode).toBe(scenario === 'allowed' ? 200 : scenario === 'rate_limited' ? 429 : 503);
+      if (scenario === 'rate_limited') expect(responses[1].getHeader('Retry-After')).toBe(17);
+      expect(responses[1].body).toEqual(responses[0].body);
+      expect(responses[1].getHeader('Retry-After')).toEqual(responses[0].getHeader('Retry-After'));
+      expect(responses[1].getHeader('X-Gate1-Source-Probe')).not.toContain(TEST_SOURCE);
+      expect(responses[1].getHeader('X-Gate1-Source-Probe')).not.toContain(probeSecret);
+      if (['allowed', 'rate_limited'].includes(scenario)) {
+        expect(mockRedisEvalsha).toHaveBeenCalledTimes(2);
+        expect(mockRedisEvalsha.mock.calls[0][1]).toEqual(mockRedisEvalsha.mock.calls[1][1]);
+      } else {
+        expect(mockRedisEvalsha).not.toHaveBeenCalled();
+      }
+      expectSensitiveValuesAbsentFromLogs([probeSecret]);
+    }
+  );
 
   /**
    * A singleton Vercel source must traverse the complete production composition.

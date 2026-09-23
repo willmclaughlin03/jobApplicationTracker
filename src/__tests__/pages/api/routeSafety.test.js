@@ -84,9 +84,55 @@ function forwardsRequestAndResponse(node) {
 }
 
 /**
+ * Removes parser location/comment metadata for exact syntax-template comparisons.
+ * @param {unknown} node parsed syntax or a nested field; never executed
+ * @returns {unknown} deterministic syntax tree retaining every executable field
+ */
+function comparableSyntax(node) {
+  if (Array.isArray(node)) return node.map(comparableSyntax);
+  if (node === null || typeof node !== 'object') return node;
+  const metadata = new Set(['start', 'end', 'loc', 'leadingComments', 'trailingComments', 'innerComments', 'extra']);
+  return Object.fromEntries(Object.keys(node).sort().filter((key) => !metadata.has(key))
+    .map((key) => [key, comparableSyntax(node[key])]));
+}
+
+/**
+ * Recognizes only the authenticated source-observer setup and unconditional
+ * awaited delegation with cleanup. An exact AST template rejects added returns,
+ * catches, branches, substitutions and finally overrides without relaxing the
+ * existing trusted middleware/import checks.
+ * @param {object[]} statements parsed module declarations
+ * @param {object} exported session wrapper with original req/res parameters
+ * @returns {boolean} whether the approved source-observation composition matches
+ */
+function isSourceObservationBody(statements, exported) {
+  const trustedProbe = statements.some((statement) => statement.type === 'ImportDeclaration'
+    && statement.source.value === '../../../server/lib/gate1SourceProbe.js'
+    && statement.specifiers.some((specifier) => specifier.type === 'ImportSpecifier'
+      && isIdentifier(specifier.imported, 'gate1SourceProbe') && isIdentifier(specifier.local, 'gate1SourceProbe')));
+  const privateObservers = statements.some((statement) => statement.type === 'VariableDeclaration'
+    && statement.kind === 'const' && statement.declarations.some((declaration) =>
+      isIdentifier(declaration.id, 'sourceObservers') && declaration.init?.type === 'NewExpression'
+      && isIdentifier(declaration.init.callee, 'WeakMap') && declaration.init.arguments.length === 0));
+  if (!exported.async || !trustedProbe || !privateObservers) return false;
+  const template = parse(`async function expected(req, res) {
+    gate1RestartProbe.attach(req, res);
+    const observer = gate1SourceProbe.createObserver(req, res);
+    if (observer) sourceObservers.set(req, observer);
+    try {
+      return await sessionRoute(req, res);
+    } finally {
+      sourceObservers.delete(req);
+    }
+  }`).program.body[0].body;
+  return JSON.stringify(comparableSyntax(exported.body)) === JSON.stringify(comparableSyntax(template));
+}
+
+/**
  * Recognizes only the session route's observational probe followed by its limiter.
- * Requires trusted imports, an immutable top-level limiter binding, and exactly two
- * wrapper statements so an early return, shadowed binding, or branch cannot bypass it.
+ * Requires trusted imports, an immutable top-level limiter binding, and either
+ * the original two statements or the exact source-observer setup/cleanup template.
+ * Neither composition permits an early return, shadowed limiter or conditional delegation.
  * @param {object[]} statements - Parsed module statements; comments are excluded.
  * @param {object} exported - Actual default-export declaration.
  * @param {string} relativePath - Route path, scoped to pages/api/auth/session.js.
@@ -99,8 +145,7 @@ function isSessionProbeComposition(statements, exported, relativePath) {
     || exported.generator
     || exported.params.length !== 2
     || !isIdentifier(exported.params[0], 'req')
-    || !isIdentifier(exported.params[1], 'res')
-    || exported.body.body.length !== 2) return false;
+    || !isIdentifier(exported.params[1], 'res')) return false;
 
   const hasTrustedImports = [
     ['withRateLimit', '../../../server/middleware/withRateLimit.js'],
@@ -121,6 +166,8 @@ function isSessionProbeComposition(statements, exported, relativePath) {
       && declaration.init.arguments[1].type === 'ObjectExpression'
     )
   );
+  if (!hasTrustedImports || !hasWrappedRoute) return false;
+  if (exported.body.body.length !== 2) return isSourceObservationBody(statements, exported);
   const [observation, delegation] = exported.body.body;
   const probeCall = observation.expression;
   return hasTrustedImports && hasWrappedRoute
@@ -188,6 +235,56 @@ describe('API Route Safety', () => {
       return sessionRoute(req, res);
     }
   `;
+
+  const sourceObservationSource = `
+    import { withRateLimit } from '../../../server/middleware/withRateLimit.js';
+    import { gate1RestartProbe } from '../../../server/lib/gate1RestartProbe.js';
+    import { gate1SourceProbe } from '../../../server/lib/gate1SourceProbe.js';
+    const sourceObservers = new WeakMap();
+    const sessionRoute = withRateLimit(handler, {});
+    export default async function sessionWithRestartProbe(req, res) {
+      gate1RestartProbe.attach(req, res);
+      const observer = gate1SourceProbe.createObserver(req, res);
+      if (observer) sourceObservers.set(req, observer);
+      try {
+        return await sessionRoute(req, res);
+      } finally {
+        sourceObservers.delete(req);
+      }
+    }
+  `;
+
+  /** The real async observer composition remains scoped to the session route. */
+  it('accepts the exact source observation wrapper without making it a general bypass', () => {
+    expect(hasApprovedWrapper(sourceObservationSource, 'pages/api/auth/session.js')).toBe(true);
+    expect(hasApprovedWrapper(sourceObservationSource, 'pages\\api\\auth\\session.js')).toBe(true);
+    expect(hasApprovedWrapper(sourceObservationSource, 'pages/api/jobs.js')).toBe(false);
+    expect(hasApprovedWrapper(sourceObservationSource.replace('try {', '// explanation\ntry {'),
+      'pages/api/auth/session.js')).toBe(true);
+  });
+
+  /** Exact syntax matching must reject every observed path around normal enforcement. */
+  it.each([
+    ['untrusted observer import', '../../../server/lib/gate1SourceProbe.js', './fake.js'],
+    ['mutable association', 'const sourceObservers', 'let sourceObservers'],
+    ['wrong association', 'new WeakMap()', 'new Map()'],
+    ['early return', 'const observer =', 'return handler(req, res); const observer ='],
+    ['substituted request', 'await sessionRoute(req, res)', 'await sessionRoute({}, res)'],
+    ['conditional delegation', 'await sessionRoute(req, res)', 'req.query.skip ? handler(req, res) : await sessionRoute(req, res)'],
+    ['handler delegation', 'await sessionRoute(req, res)', 'await handler(req, res)'],
+    ['shadowed limiter', 'try {', 'const sessionRoute = handler; try {'],
+    ['missing await', 'return await sessionRoute', 'return sessionRoute'],
+    ['finally override', 'sourceObservers.delete(req);', 'return handler(req, res);'],
+    ['extra finally return', 'sourceObservers.delete(req);', 'sourceObservers.delete(req); return {};'],
+    ['catch bypass', '} finally {', '} catch { return handler(req, res); } finally {'],
+    ['wrong cleanup request', 'sourceObservers.delete(req)', 'sourceObservers.delete({})'],
+    ['missing middleware', 'withRateLimit(handler, {})', 'handler'],
+    ['untrusted middleware', '../../../server/middleware/withRateLimit.js', './fake.js'],
+    ['untrusted restart probe', '../../../server/lib/gate1RestartProbe.js', './fake.js'],
+  ])('rejects source observation composition with %s', (_case, before, after) => {
+    expect(sourceObservationSource).toContain(before);
+    expect(hasApprovedWrapper(sourceObservationSource.replace(before, after), 'pages/api/auth/session.js')).toBe(false);
+  });
 
   /**
    * Keeps the direct export and webhook path rules while ignoring formatting.
