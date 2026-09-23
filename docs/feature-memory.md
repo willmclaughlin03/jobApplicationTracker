@@ -16,6 +16,12 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-20
 
+- `2026-09-22` - `Local-only GATE-1 host inventory`: Removed the operator inventory JSON from version control while preserving a local copy under the existing scripts ignore rule. Inventory-dependent diagnostic tests run only when that file exists; missing-inventory and invalid-argument safety checks remain active on clean checkouts. Validation on Windows: 31 tests pass with the inventory, and 4 pass with 27 intentional skips without it; focused ESLint and diff checks pass.
+
+- `2026-09-22` - `GATE-1 host inventory review fixes`: Continue collecting batch receipts after verified unavailable deployments recorded as ERROR, retaining non-qualifying receipts and nonzero exit status while other failures still stop immediately. The launcher accepts Int32 and Int64 counters with the existing bounds checks. All 30 offline tests, focused ESLint, PowerShell syntax, and diff checks pass; no live diagnostic ran.
+
+- `2026-09-22` - `GATE-1 host inventory batches`: Extended the diagnostic to a fixed, schema-validated manifest of 102 host cases with separate 30/30/30/12-request batches and operator-attributed deployment/build metadata. Live mode requires an explicit batch; the launcher validates batch identity and accounting and saves unique batch/mode reports. All 25 offline tests, focused lint, and syntax checks pass; live qualification remains separately authorized.
+
 - `2026-09-22` - `GATE-1 host diagnostic review follow-ups`: Precompute the trailing-whitespace boundary once before scanning script attributes, preserving trailing-solidus behavior. Expanded launcher helper comments to cover parameters, pipe draining, process deadlines, JSON validation, unique report creation, and stopped-report exit-code propagation.
 
 - `2026-09-21` - `GATE-1 script attribute normalization`: Recognize login data scripts with a whitespace-separated trailing solidus by normalizing attributes before tokenization. Preserve rejection of malformed attributes and unquoted identity values ending in a solidus; added regression coverage. All 17 offline host-protection tests, focused ESLint, and diff checks pass.
