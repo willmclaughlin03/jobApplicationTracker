@@ -175,16 +175,71 @@ test('missing or invalid live batch cannot dispatch a request', async function (
   }
 });
 
-/** A management ERROR state cannot turn a 404 into protection evidence or skip a failed batch. */
-test('failed preview response stops its selected batch and preserves untouched batches', async function () {
-  const mock = transport([response(404, '', { 'x-vercel-error': 'DEPLOYMENT_NOT_FOUND' })]);
-  const report = await runner.runLive({ batch: 4, requestImpl: mock.requestImpl });
-  assert.equal(BATCHES[3].hosts[0].recordedState, 'ERROR');
-  assert.equal(report.result, 'stopped'); assert.equal(report.failure, 'deployment_unavailable');
-  assert.equal(report.requests, 1); assert.equal(report.unvisited, 11);
-  assert.equal(report.expectedPatterns, 0); assert.equal(report.outsideSelectedBatch, 90);
-  assert.equal(mock.calls.length, 1);
-  assert.equal(report.receipts[0].hostname, BATCHES[3].hosts[0].hostname);
+/** Collect every selected host's receipt without treating unavailable ERROR deployments as protection. */
+test('unavailable ERROR hosts do not abort traversal or qualify the selected batch', async function () {
+  for (const batch of BATCHES) {
+    const fixtures = [];
+    let unavailable = 0;
+    for (const host of batch.hosts) {
+      if (host.recordedState === 'ERROR') {
+        unavailable++;
+        fixtures.push(response(404, CANARY, { 'x-vercel-error': 'DEPLOYMENT_NOT_FOUND' }));
+      } else fixtures.push(expectedResponse(host));
+    }
+    assert.ok(unavailable > 0);
+    const mock = transport(fixtures);
+    const report = await runner.runLive({ batch: batch.id, requestImpl: mock.requestImpl });
+    assert.equal(report.result, 'stopped'); assert.equal(report.failure, 'deployment_unavailable');
+    assert.equal(report.requests, batch.hosts.length); assert.equal(report.unvisited, 0);
+    assert.equal(report.responses, batch.hosts.length);
+    assert.equal(report.expectedPatterns, batch.hosts.length - unavailable);
+    assert.equal(report.outsideSelectedBatch, 102 - batch.hosts.length);
+    assert.deepEqual(mock.calls.map(runnerHostName), batch.hosts.map(runnerHostName));
+    assert.deepEqual(report.receipts.map(runnerHostName), batch.hosts.map(runnerHostName));
+    assert.equal(mock.maxActive, 1); assert.equal(mock.active, 0);
+    for (const [index, host] of batch.hosts.entries()) {
+      if (host.recordedState !== 'ERROR') continue;
+      assert.equal(report.receipts[index].classification, 'deployment_unavailable');
+      assert.equal(report.receipts[index].status, 404);
+      assert.equal(report.receipts[index].expectedPatternObserved, false);
+    }
+    assert.equal(report.gate1Status, 'open'); assert.equal(report.hostedEvidence, 'requires_review');
+    assert.equal(JSON.stringify(report).includes(CANARY), false);
+  }
+});
+
+/** READY hosts and unrelated ERROR-host failures must retain the existing stop-on-failure boundary. */
+test('only verified deployment unavailability on ERROR hosts permits traversal to continue', async function () {
+  const cases = [
+    [1, response(404, '', { 'x-vercel-error': 'DEPLOYMENT_NOT_FOUND' }), 'deployment_unavailable'],
+    [3, response(404, ''), 'unresolved_response'],
+    [3, response(404, '', { 'x-vercel-error': 'DEPLOYMENT_NOT_FOUND', server: 'unknown' }), 'unresolved_response'],
+    [3, response(404, '', { 'x-vercel-error': 'DEPLOYMENT_NOT_FOUND', 'x-vercel-id': 'invalid' }), 'unresolved_response'],
+    [3, response(), 'unexpected_public_login'],
+  ];
+  for (const [index, fixture, failure] of cases) {
+    const fixtures = HOSTS.slice(0, index).map(expectedResponse);
+    fixtures.push(fixture);
+    const mock = transport(fixtures);
+    const report = await runner.runLive({ batch: 1, requestImpl: mock.requestImpl });
+    assert.equal(report.result, 'stopped'); assert.equal(report.failure, failure);
+    assert.equal(report.requests, index + 1); assert.equal(report.unvisited, 29 - index);
+    assert.equal(report.expectedPatterns, index); assert.equal(mock.calls.length, index + 1);
+    assert.equal(report.receipts[index].expectedPatternObserved, false);
+  }
+});
+
+/** A later unexpected result must stop the batch and remain its failure after a tolerated unavailable host. */
+test('unexpected public login after an unavailable ERROR host still stops immediately', async function () {
+  const fixtures = HOSTS.slice(0, 3).map(expectedResponse);
+  fixtures.push(response(404, '', { 'x-vercel-error': 'DEPLOYMENT_NOT_FOUND' }), response());
+  const mock = transport(fixtures);
+  const report = await runner.runLive({ batch: 1, requestImpl: mock.requestImpl });
+  assert.equal(report.result, 'stopped'); assert.equal(report.failure, 'unexpected_public_login');
+  assert.equal(report.requests, 5); assert.equal(report.unvisited, 25);
+  assert.equal(report.expectedPatterns, 3); assert.equal(mock.calls.length, 5);
+  assert.equal(report.receipts[3].classification, 'deployment_unavailable');
+  assert.equal(report.receipts[4].classification, 'unexpected_public_login');
 });
 
 /** Verify unexpected alias exposure stops the scope even when it returns a valid login/build. */
@@ -397,14 +452,28 @@ function stoppedFixture(batch = null, live = false) {
 }
 
 /**
- * Replace only the PowerShell Node executor and validate dispatch arguments. All live-mode tests
+ * Replace the PowerShell Node executor and validate dispatch arguments. All live-mode tests
  * use this replacement, so saving/validation/exit behavior is exercised without any HTTP.
+ * longCounters simulates Int64 JSON counters on Windows PowerShell, whose parser produces Int32.
  */
-function mockedLauncher(report, exitCode, batch = 0, live = false) {
+function mockedLauncher(report, exitCode, batch = 0, live = false, longCounters = false) {
   const json = typeof report === 'string' ? report : JSON.stringify(report);
   const liveValue = live ? '$true' : '$false';
   return powershell([
     '. ' + psLiteral(launcher),
+    ...(longCounters ? [
+      '# Preserve real JSON parsing while simulating Int64 counters for launcher validation.',
+      'function ConvertFrom-Json {',
+      '  param([Parameter(ValueFromPipeline = $true)][string]$InputObject)',
+      '  process {',
+      '    $parsed = Microsoft.PowerShell.Utility\\ConvertFrom-Json -InputObject $InputObject',
+      '    foreach ($field in @(\'requests\', \'responses\', \'expectedPatterns\', \'unvisited\')) {',
+      '      $parsed.$field = [long]$parsed.$field',
+      '    }',
+      '    return $parsed',
+      '  }',
+      '}',
+    ] : []),
     '# Return only a test fixture and check the selected fixed runner/batch before report handling.',
     'function Invoke-Gate1HostNode([string]$Runner, [bool]$LiveMode, [int]$BatchId = 0) {',
     '  if ($BatchId -ne ' + batch + ' -or $LiveMode -ne ' + liveValue +
@@ -419,6 +488,36 @@ function mockedLauncher(report, exitCode, batch = 0, live = false) {
     '} catch { Write-Output "invalid_report"; exit 9 }',
   ].join('\n'));
 }
+
+/** Exercise both integer representations at the lower and upper bounds without changing report accounting. */
+windowsTest('PowerShell accepts Int32 and Int64 counters within the selected batch limit', function () {
+  for (const longCounters of [false, true]) {
+    for (const count of [0, 12]) {
+      const report = { ...stoppedFixture(4, true), requests: count, responses: count,
+        expectedPatterns: count, unvisited: 12 - count };
+      const child = mockedLauncher(report, 0, 4, true, longCounters);
+      assert.equal(child.status, 1);
+      const match = /^Report: (.+)\r?\n$/.exec(child.stdout);
+      assert.ok(match);
+      const saved = consumeReport(match[1]);
+      for (const field of ['requests', 'responses', 'expectedPatterns', 'unvisited']) {
+        assert.equal(saved[field], report[field]);
+      }
+    }
+  }
+});
+
+/** Widening integer representation must not admit out-of-range, fractional, or coercible nonnumeric counters. */
+windowsTest('PowerShell rejects invalid counter types and out-of-range Int64 counters', function () {
+  for (const [field, value, longCounters] of [
+    ['requests', -1, true], ['unvisited', 13, true], ['responses', 0.5, false],
+    ['expectedPatterns', '0', false], ['requests', true, false], ['unvisited', null, false],
+  ]) {
+    const report = { ...stoppedFixture(4, true), [field]: value };
+    const child = mockedLauncher(report, 0, 4, true, longCounters);
+    assert.equal(child.status, 9); assert.equal(child.stdout.trim(), 'invalid_report');
+  }
+});
 
 /** Check failure preservation independently from a child's occasionally incorrect zero exit status. */
 windowsTest('PowerShell preserves nonzero exit status and catches stopped reports with zero exit', function () {
@@ -439,6 +538,21 @@ windowsTest('PowerShell live mode forwards only the selected batch and saves its
   const report = consumeReport(match[1]);
   assert.equal(report.mode, 'live'); assert.equal(report.batch, 4);
   assert.equal(report.limits.maxRequests, 12);
+});
+
+/** Persist a fully traversed non-qualifying batch and keep a nonzero exit even if its child returned zero. */
+windowsTest('PowerShell preserves all unavailable-host receipts without qualifying the batch', async function () {
+  const fixtures = Array(12).fill(response(404, '', { 'x-vercel-error': 'DEPLOYMENT_NOT_FOUND' }));
+  const mock = transport(fixtures);
+  const report = await runner.runLive({ batch: 4, requestImpl: mock.requestImpl });
+  const child = mockedLauncher(report, 0, 4, true);
+  assert.equal(child.status, 1);
+  const match = /^Report: (.+)\r?\n$/.exec(child.stdout);
+  assert.ok(match);
+  const saved = consumeReport(match[1]);
+  assert.equal(saved.requests, 12); assert.equal(saved.unvisited, 0);
+  assert.equal(saved.expectedPatterns, 0); assert.equal(saved.failure, 'deployment_unavailable');
+  assert.deepEqual(saved.receipts, report.receipts); assert.equal(saved.receipts.length, 12);
 });
 
 /** Exercise each real CLI batch argument in offline mode to detect quoting/dispatch or size regressions. */

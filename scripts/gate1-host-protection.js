@@ -336,7 +336,8 @@ function preparation(batch = null) {
 function rounded(value) { return Math.round(value * 1000) / 1000; }
 
 /**
- * Traverse one frozen batch sequentially and stop on the first unresolved or unexpected result.
+ * Traverse one frozen batch sequentially; unavailable ERROR hosts retain non-qualifying receipts
+ * without stopping collection. Other unresolved or unexpected results stop the batch immediately.
  * Tests inject HTTPS rather than bypassing the transport. No automatic retries or re-runs exist.
  */
 async function runLive({ batch, requestImpl = https.request, signal,
@@ -372,6 +373,10 @@ async function runLive({ batch, requestImpl = https.request, signal,
         const receipt = classify(host, response);
         receipt.durationMs = rounded(performance.now() - before);
         report.receipts.push(receipt);
+        if (host.recordedState === 'ERROR' && receipt.classification === 'deployment_unavailable') {
+          report.failure = 'deployment_unavailable';
+          continue;
+        }
         if (!receipt.expectedPatternObserved) throw new HostError(receipt.classification);
         report.expectedPatterns++;
       } catch (error) {
@@ -385,7 +390,8 @@ async function runLive({ batch, requestImpl = https.request, signal,
         throw safeError;
       }
     }
-    report.result = 'completed';
+    // A fully visited batch with unavailable deployments still cannot claim successful qualification.
+    if (report.failure === null) report.result = 'completed';
   } catch (error) { report.failure = error instanceof HostError ? error.code : 'internal_error'; }
   finally {
     clearTimeout(timer);

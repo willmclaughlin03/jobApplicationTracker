@@ -74,7 +74,8 @@ function Invoke-Gate1HostProtection([switch]$LiveMode, [int]$BatchId = 0) {
         ($BatchId -gt 0 -and $report.batch -ne $BatchId)) { throw 'Diagnostic batch did not match.' }
     foreach ($field in @('requests', 'responses', 'expectedPatterns', 'unvisited')) {
         $value = $report.$field
-        if ($value -isnot [int] -or $value -lt 0 -or $value -gt $expectedRequests) {
+        if (($value -isnot [int] -and $value -isnot [long]) -or
+            $value -lt 0 -or $value -gt $expectedRequests) {
             throw 'Diagnostic request accounting failed.'
         }
     }
