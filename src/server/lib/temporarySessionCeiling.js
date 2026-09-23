@@ -157,9 +157,10 @@ export function createTemporarySessionCeiling(options = {}) {
    *
    * @param {object} req Next.js request-like object
    * @param {object} [context] bounded route/logger context
+   * @param {object|null} observation internal primitive-only capture, never caller-owned
    * @returns {Promise<object>} allow, bounded 429, or sanitized 503
    */
-  async function evaluate(req, context = {}) {
+  async function evaluateDecision(req, context, observation) {
     const startedAt = now();
     if (!Number.isFinite(startedAt) || startedAt < 0) {
       return { allowed: false, statusCode: 503, reason: TEMPORARY_SESSION_FAILURE_REASONS.INTERNAL_FAILURE };
@@ -181,6 +182,7 @@ export function createTemporarySessionCeiling(options = {}) {
     }
 
     const sourceMode = readSourceMode();
+    if (observation) observation.effectiveMode = sourceMode ?? 'invalid';
     if (!sourceMode) {
       return unavailable(TEMPORARY_SESSION_FAILURE_REASONS.SOURCE_MODE_INVALID, startedAt);
     }
@@ -190,6 +192,13 @@ export function createTemporarySessionCeiling(options = {}) {
       source = resolveSource(req, sourceMode);
     } catch {
       source = null;
+    }
+    if (observation) {
+      invokeTelemetrySafely(() => {
+        const family = source?.family;
+        observation.canonicalFamily = family === 4 ? 4 : family === 6 ? 6 : null;
+        observation.sourceResolution = source ? 'accepted' : 'rejected';
+      });
     }
     if (!source) {
       return unavailable(TEMPORARY_SESSION_FAILURE_REASONS.SOURCE_UNAVAILABLE, startedAt);
@@ -304,6 +313,36 @@ export function createTemporarySessionCeiling(options = {}) {
       TEMPORARY_SESSION_FAILURE_REASONS.SCRIPT_RESULT_INVALID
     );
     return unavailable(TEMPORARY_SESSION_FAILURE_REASONS.SCRIPT_RESULT_INVALID, startedAt);
+  }
+
+  /**
+   * Delivers a primitive-only source snapshot after enforcement has completed.
+   * Why: observers cannot mutate canonical bytes, select identity or run inside
+   * the limiter deadline. No parser is rerun; exceptions cannot change a result.
+   * @param {object} req original request passed through unchanged
+   * @param {object} [context] route/logger context and optional synchronous observer
+   * @returns {Promise<object>} original allow, 429 or unavailable decision
+   */
+  async function evaluate(req, context = {}) {
+    let observer;
+    try {
+      observer = context?.observeSource;
+    } catch {
+      observer = undefined;
+    }
+    if (typeof observer !== 'function') return evaluateDecision(req, context, null);
+    const observation = {
+      effectiveMode: 'not_observed',
+      sourceResolution: 'not_attempted',
+      canonicalFamily: null,
+    };
+    const decision = await evaluateDecision(req, context, observation);
+    invokeTelemetrySafely(() => {
+      const pending = observer(Object.freeze(observation));
+      // The route observer is synchronous; contain an accidental async rejection too.
+      if (pending && typeof pending.then === 'function') Promise.resolve(pending).catch(() => {});
+    });
+    return decision;
   }
 
   /**
