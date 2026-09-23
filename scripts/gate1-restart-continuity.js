@@ -4,7 +4,7 @@
  * This supervisor retains acknowledgements and OS exit events independently of A.
  * It neither sends hosted application traffic nor qualifies a Vercel restart.
  */
-const { fork, execFileSync } = require('node:child_process');
+const childProcess = require('node:child_process');
 const { createHash, randomBytes } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -13,7 +13,8 @@ const { z } = require('zod');
 const { RestartError, failureCode, statsSchema, FAILURE_CODES } = require('./gate1-restart-transport.js');
 
 const ROOT = path.resolve(__dirname, '..');
-const APP_BASE = '0c9646521d9444871431cb788d91e121e5fbb815';
+// Reviewed source-observer/logger changes; the hosted reference below is historical.
+const APP_BASE = 'eebe47f091aa1f522a8e18f7b2c916dc5e1de677';
 const HOSTED_REFERENCE = Object.freeze({ deploymentId: 'dpl_AaGEjVjtrjaiLbHqAyCKYfdFraU6',
   gitSha: 'ba8c398c5d0af2dba9c75305397b774f946b6b1e', nextBuildId: 'VjEJE3geVJngqDN7JymXV' });
 const LIMITS = Object.freeze({ decisions: 402, concurrency: 4, clockReads: 2,
@@ -24,15 +25,16 @@ const APP_FILES = Object.freeze(['temporarySessionCeiling', 'temporarySessionRed
   'temporarySessionTelemetry', 'redis'].map((name) => `src/server/lib/${name}.js`)
   .concat(['src/shared/logger.js', 'package.json', 'package-lock.json']));
 // Normalized source hashes make correspondence independent of Git history depth/CRLF.
+// Source changes require review and an explicit APP_BASE/hash update; never regenerate at runtime.
 const APP_HASHES = Object.freeze({
-  'src/server/lib/temporarySessionCeiling.js': '02a9e149eb72211b1d1b66c05ebeed4823ab463de6324bdaba1fcda8c1e72233',
+  'src/server/lib/temporarySessionCeiling.js': 'd0eab0bc84f2d00709fc244296ae4986551e780c09234ccb1fc76f57b2d2e11b',
   'src/server/lib/temporarySessionRedisScript.js': '0432f292da4425472c15f81b8849406a89f35fb097c98f7d99047b929dc70e34',
   'src/server/lib/temporarySessionSecrets.js': '96f69368d3ba8f5c9bcd79a3c53efb1dd888a75ef92cbd5f68967a963e6d4d81',
   'src/server/lib/temporarySessionSource.js': '6b48f9d33eb4489de6aeabe739f62e12ec98c38d2ace21d42a915664b4bcb264',
   'src/server/lib/temporarySessionIdentity.js': 'bc41b44c8f206ec6f34acd2b7044d0ae913bc4e5dcaefada83cab8ec86f31ec0',
   'src/server/lib/temporarySessionTelemetry.js': 'ca3b16153accd047f5b4bf97c6ac8791296c70f0c7d5cf85e8ff0ba93854b6be',
   'src/server/lib/redis.js': '9218793a298873a6b75dc17926ca444793eccce4efee5a2c4769bcd304abd789',
-  'src/shared/logger.js': 'a761bea853b22de294eb813ff43a0c0792d8c7047e0603c57ae14bb6e79b9de6',
+  'src/shared/logger.js': '1e34fe6fcef3e23366a63095cc5299062015b5175a02db4670038f05716116b2',
   'package.json': 'b8964e0aa37caae2feef32cf99a1773d615c652f4eb273df456eae227d04a16a',
   'package-lock.json': 'f6af332dffbbbcbd8aca4b816201fa5756e25d2e7249e1cd2c0cd9c3343b9f1a',
 });
@@ -64,51 +66,83 @@ const replySchema = z.discriminatedUnion('kind', [
 const fatalSchema = z.object({ type: z.literal('fatal'), code: z.enum(FAILURE_CODES),
   stats: statsSchema.nullable() }).strict();
 
+/** Keeps attribution failures actionable without retaining raw filesystem/Git errors or source bytes. */
+class AttributionError extends RestartError {
+  /** Adds only an allowlisted check and public filename; the IPC/report failure code stays attribution. */
+  constructor(check, file) {
+    super('attribution');
+    const safeCheck = ['runtime', 'source_hash', 'tracked_harness', 'clean_tree',
+      'file_read', 'sdk_resolution', 'sdk_hash', 'sdk_version', 'git_revision'].includes(check)
+      ? check : 'unavailable';
+    const safeFile = APP_FILES.includes(file) || HARNESS_FILES.includes(file)
+      || Object.hasOwn(SDK_HASHES, file);
+    this.diagnostic = Object.freeze({ check: safeCheck, ...(safeFile ? { file } : {}) });
+    this.message = `attribution: ${safeCheck}${safeFile ? ` (${file})` : ''}`;
+  }
+}
+
 /** Hashes public source/dependency bytes for attribution, never secret material. */
 function sha256(value) { return createHash('sha256').update(value).digest('hex'); }
 
 /** Executes fixed read-only Git queries, suppressing raw command errors. */
 function git(args) {
-  try { return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', windowsHide: true,
+  try { return childProcess.execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', windowsHide: true,
     stdio: ['ignore', 'pipe', 'ignore'], timeout: 10000 }).trim(); }
   catch { throw new RestartError('attribution'); }
 }
 
 /** Pins source correspondence and exact SDK implementation; live also needs a clean reviewed commit. */
 function collectAttribution({ requireClean = false } = {}) {
+  let check = 'runtime';
+  let file;
   try {
     if (!/^v22\./.test(process.version)) throw new RestartError('attribution');
     for (const [name, expected] of Object.entries(APP_HASHES)) {
+      check = 'source_hash';
+      file = name;
       if (sha256(fs.readFileSync(path.join(ROOT, name), 'utf8').replace(/\r\n/g, '\n')) !== expected) {
         throw new RestartError('attribution');
       }
     }
     if (requireClean) {
+      check = 'tracked_harness';
+      file = undefined;
       git(['ls-files', '--error-unmatch', '--', ...HARNESS_FILES]);
+      check = 'clean_tree';
       if (git(['status', '--porcelain', '--', ...APP_FILES, ...HARNESS_FILES])) {
         throw new RestartError('attribution');
       }
     }
     const files = {};
     for (const name of [...APP_FILES, ...HARNESS_FILES]) {
+      check = 'file_read';
+      file = name;
       files[name] = sha256(fs.readFileSync(path.join(ROOT, name)));
     }
+    check = 'sdk_resolution';
+    file = undefined;
     const sdkDirectory = path.dirname(require.resolve('@upstash/redis'));
     for (const [name, expected] of Object.entries(SDK_HASHES)) {
+      check = 'sdk_hash';
+      file = name;
       if (sha256(fs.readFileSync(path.join(sdkDirectory, name))) !== expected) {
         throw new RestartError('attribution');
       }
     }
+    check = 'sdk_version';
+    file = 'package-lock.json';
     const lock = JSON.parse(fs.readFileSync(path.join(ROOT, 'package-lock.json'), 'utf8'));
     if (lock.packages['node_modules/@upstash/redis'].version !== '1.36.2') {
       throw new RestartError('attribution');
     }
+    check = 'git_revision';
+    file = undefined;
     const gitSha = git(['rev-parse', 'HEAD']);
     if (!/^[a-f0-9]{40}$/.test(gitSha)) throw new RestartError('attribution');
     return { gitSha, appBase: APP_BASE, runtime: process.version, sdkVersion: '1.36.2',
       execution: 'native_source_modules', files, digest: sha256(JSON.stringify(files)),
-      hostedReference: HOSTED_REFERENCE, hostedCorrespondence: 'reviewed_source_only' };
-  } catch { throw new RestartError('attribution'); }
+      hostedReference: HOSTED_REFERENCE, hostedCorrespondence: 'not_verified' };
+  } catch { throw new AttributionError(check, file); }
 }
 
 /** Creates one immutable child configuration; excludes inherited logging, preload and hosted credentials. */
@@ -157,7 +191,7 @@ function bounded(promise, ms, code) {
  * event plus stream closure, never PID existence or kill() return value, confirms death.
  * Source/log streams are discarded; strictly validated IPC is the evidence channel.
  */
-function createPeer(label, env, digest, signal, { spawnChild = fork } = {}) {
+function createPeer(label, env, digest, signal, { spawnChild = childProcess.fork } = {}) {
   const child = spawnChild(path.join(__dirname, 'gate1-restart-worker.mjs'), ['--worker', label], {
     cwd: ROOT, env: { ...env, GATE1_RESTART_DIGEST: digest }, execArgv: [],
     stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true,
@@ -449,7 +483,8 @@ if (require.main === module) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     if (report.result === 'stopped') process.exitCode = 1;
   }).catch((error) => {
-    process.stderr.write(`${JSON.stringify({ result: 'stopped', failure: failureCode(error), gate1Status: 'open' })}\n`);
+    process.stderr.write(`${JSON.stringify({ result: 'stopped', failure: failureCode(error), gate1Status: 'open',
+      ...(error instanceof AttributionError ? { attribution: error.diagnostic } : {}) })}\n`);
     process.exitCode = 1;
   });
 }

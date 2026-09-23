@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-20
 
+- `2026-09-23` - `GATE-1 restart attribution baseline`: Pin the reviewed source-observation commit and updated limiter/logger hashes, retain integrity and live preflight checks, and mark historical hosted correspondence as unverified. Added sanitized check/file diagnostics and 22 attribution regressions. With branch-locked dependencies, all 126 CI test suites pass (2,343 tests passed; 27 existing inventory-dependent skips); lint and diff checks pass.
+
 - `2026-09-23` - `GATE-1 source observation`: Added an opt-in, separately authenticated session probe that reports bounded facts from the limiter's actual source resolution after enforcement, plus header-value/raw-header redaction. Added preparation-only CLI/PowerShell helpers, local wire/response/budget fixtures, and strict route-composition coverage. Independent WAF source agreement remains unqualified; deployment and live discovery require separate approval.
 
 - `2026-09-22` - `Local-only GATE-1 host inventory`: Removed the operator inventory JSON from version control while preserving a local copy under the existing scripts ignore rule. Inventory-dependent diagnostic tests run only when that file exists; missing-inventory and invalid-argument safety checks remain active on clean checkouts. Validation on Windows: 31 tests pass with the inventory, and 4 pass with 27 intentional skips without it; focused ESLint and diff checks pass.
