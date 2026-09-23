@@ -2,72 +2,53 @@
 
 // Operator diagnostic only. Live use requires separate operator approval.
 const https = require('node:https');
+const fs = require('node:fs');
+const path = require('node:path');
+const { createHash } = require('node:crypto');
 const { performance } = require('node:perf_hooks');
 const { z } = require('zod');
 
 const LIMITS = Object.freeze({ maxRequests: 30, concurrency: 1, requestMs: 10000,
   overallMs: 300000, responseBytes: 1048576, headerBytes: 16384 });
 const TARGET = Object.freeze({
-  hostname: 'job-application-tracker-2us07txao-track-the-app.vercel.app',
-  deploymentId: 'dpl_4YgmSZxMSs98BNqsx4Ncv27jPTpR',
-  gitSha: 'e50c5e9046a2f9fa27b611d0c871739e851f9a77',
-  nextBuildId: 'BFz2LBQGfVz3-Nkqc41GH',
+  hostname: 'job-application-tracker-mxlx5brml-track-the-app.vercel.app',
+  deploymentId: 'dpl_2hjZCj2WZ251FZUJsTyaRiVoq1mH',
+  gitSha: '9fe633d48d177c4743733a78b37eaebcfce1b347',
+  nextBuildId: 'q0zlIgmPLmJWCHTAV9jpK',
   buildAttribution: 'operator_supplied_not_yet_http_verified',
 });
 const CANONICAL = 'job-application-tracker-kappa-seven.vercel.app';
-// Authenticated GET /v4/aliases, 2026-09-21: 28 entries, pagination.next null.
-// Only this canonical hostname is expected to expose the public login page.
-const ALIASES = [
-  [CANONICAL, TARGET.deploymentId],
-  ['job-application-tracker-track-the-app.vercel.app', TARGET.deploymentId],
-  ['job-application-tracker-git-main-track-the-app.vercel.app', TARGET.deploymentId],
-  ['job-application-tracker-git-docs-gate1-res-647e64-track-the-app.vercel.app', 'dpl_5Bu3YhiBgQFHRbpyvdFyxQwfP28k'],
-  ['job-application-tracker-git-fix-gate1-rest-79cdad-track-the-app.vercel.app', 'dpl_6QRMKaYQrJJdw5asEXU79ZTufhNK'],
-  ['job-application-tracker-git-chore-gate1-re-23ae02-track-the-app.vercel.app', 'dpl_GuotfsqmgkoN3rHRwJHXWDi1HgQv'],
-  ['job-application-tracker-git-fix-gate1-prob-622e20-track-the-app.vercel.app', 'dpl_EKAy6NcPvTNv2CnbV3Fo4JvDD2qW'],
-  ['job-application-tracker-git-fix-gate1-prod-82351f-track-the-app.vercel.app', 'dpl_8zLJvK6VHT5x5g2xXUPNuc7TwDGo'],
-  ['job-application-tracker-git-chore-gate1-re-7e5bf4-track-the-app.vercel.app', 'dpl_6UuQLARptGkoTL4TcZrfX8Jn4bjr'],
-  ['job-application-tracker-git-fix-billing-st-0345aa-track-the-app.vercel.app', 'dpl_21Y9uiHQxny5rUn14yQnbza3kbya'],
-  ['job-application-tracker-git-agent-billing-501301-track-the-app.vercel.app', 'dpl_DVphA6Wg37jrBojZDo1xA2wiAoWB'],
-  ['job-application-tracker-git-chore-gate1-re-f1e169-track-the-app.vercel.app', 'dpl_BzbHGxr6EmKnPtvbQep9B4suWxxk'],
-  ['job-application-tracker-git-chore-gate1-re-20d833-track-the-app.vercel.app', 'dpl_4YBWUAbbTgeWqp76ytoCwGSMLmHp'],
-  ['job-application-tracker-git-fix-gate1-setu-965ee3-track-the-app.vercel.app', 'dpl_5UBjJgfY2uBWFpyJUjLfNBTPe9NB'],
-  ['job-application-tracker-git-fix-gate1-setu-5517e8-track-the-app.vercel.app', 'dpl_9x3146VWovRnw2qNDoZ6rGECNbHW'],
-  ['job-application-tracker-git-chore-gate1-sh-7a7360-track-the-app.vercel.app', 'dpl_92u4DaLeDGwH3YZ8x7uDMao5S4dN'],
-  ['job-application-tracker-git-fix-applicatio-03a983-track-the-app.vercel.app', 'dpl_DNRuwKwjLmHvE7bPKtJYS4BnaNqA'],
-  ['job-application-tracker-git-fix-royal-blue-f161bd-track-the-app.vercel.app', 'dpl_AwHP1o7fNdJoScwkVB8oG4myyz3Q'],
-  ['job-application-tracker-git-fix-activity-c-95fd80-track-the-app.vercel.app', 'dpl_7a5vo4jEMB1xQ4U6rH3ybn9SCLn5'],
-  ['job-application-tracker-git-fix-protected-b33cc1-track-the-app.vercel.app', 'dpl_EbYLvmeQsyn92fbFHFJBFQkj696e'],
-  ['job-application-tracker-git-fix-protected-4fecff-track-the-app.vercel.app', 'dpl_3TshrUhPqkjw19qRt188er1VuGx5'],
-  ['job-application-tracker-git-fix-protected-dc642a-track-the-app.vercel.app', 'dpl_5E5cdaArF2Sucmo1huNWW8NKHfzx'],
-  ['job-application-tracker-git-fix-chunk6-cac-fb4427-track-the-app.vercel.app', 'dpl_8sfYMppxBVH2iri1n6hEFGLcwzWA'],
-  ['job-application-tracker-git-fix-chunk6-cac-ef9fb1-track-the-app.vercel.app', 'dpl_2p59i4ab9daoHzLYGEWNUJQHZVwc'],
-  ['job-application-tracker-git-fix-vercel-dom-f34bc5-track-the-app.vercel.app', 'dpl_3tnnBSjTiTnuJ4vxKbNswHQM5piK'],
-  ['job-application-tracker-git-fix-deployed-a-31d988-track-the-app.vercel.app', 'dpl_CYiZgTaacFWXNpYcPikNFuG5jZNw'],
-  ['job-application-tracker-git-staging-track-the-app.vercel.app', 'dpl_4To6uyRQAhXq5g7A8eREkRZy7DUB'],
-  ['job-application-tracker-git-fix-upstash-no-4452ba-track-the-app.vercel.app', 'dpl_89DH3bxcUWkpDjHTcEc3mr8pduWA'],
-];
+const INVENTORY_ID = 'gate1-host-delta-e50c5e9-9fe633d-20260923';
+// Hash parsed JSON serialization so a Git LF/CRLF conversion does not change the fixed scope.
+const INVENTORY_SHA256 = '716bde62775672217440fd52dc765fe712730128c64be985ae5da299d38d76bb';
+const BATCH_SIZES = Object.freeze([30, 30, 30, 12]);
+const TOTAL_HOSTS = 102;
 const hostSchema = z.object({
   hostname: z.string().max(253).regex(/^job-application-tracker-[a-z0-9-]+\.vercel\.app$/),
   deploymentId: z.string().regex(/^dpl_[A-Za-z0-9]+$/),
   expected: z.enum(['public_login', 'gate_or_canonical_redirect']),
   knownBuildId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).nullable(),
+  kind: z.enum(['alias', 'generated']),
+  environment: z.enum(['production', 'preview']),
+  recordedState: z.enum(['READY', 'ERROR']),
+  coverageReason: z.enum(['new_alias', 'new_generated_url', 'reassigned_alias']),
 }).strict();
-
-/** Convert fixed API alias metadata into immutable expectations; no external host input is accepted. */
-function aliasTarget([hostname, deploymentId]) {
-  return Object.freeze(hostSchema.parse({ hostname, deploymentId,
-    expected: hostname === CANONICAL ? 'public_login' : 'gate_or_canonical_redirect',
-    knownBuildId: deploymentId === TARGET.deploymentId ? TARGET.nextBuildId : null }));
-}
-const HOSTS = Object.freeze([
-  ...ALIASES.map(aliasTarget),
-  Object.freeze(hostSchema.parse({ hostname: TARGET.hostname, deploymentId: TARGET.deploymentId,
-    expected: 'gate_or_canonical_redirect', knownBuildId: TARGET.nextBuildId })),
-  Object.freeze(hostSchema.parse({ hostname: 'job-application-tracker-crnzr0il1-track-the-app.vercel.app',
-    deploymentId: 'dpl_AaGEjVjtrjaiLbHqAyCKYfdFraU6', expected: 'gate_or_canonical_redirect',
-    knownBuildId: 'VjEJE3geVJngqDN7JymXV' })),
-]);
+const inventorySchema = z.object({
+  schemaVersion: z.literal(1),
+  inventoryId: z.literal(INVENTORY_ID),
+  sourceArtifactSha256: z.literal('B262670685804B7D9657584F76EB42F60DF6EF062CB9B724FC1951D3742F430B'),
+  acceptedLoginArtifactSha256: z.literal('8BEBDD76784960AF85608FB470F4064B1ADE2F302F4C67766B84E90B48263E41'),
+  observedAt: z.literal('2026-09-23T00:03:19.226Z'),
+  target: z.object({
+    hostname: z.literal(TARGET.hostname), deploymentId: z.literal(TARGET.deploymentId),
+    gitSha: z.literal(TARGET.gitSha), nextBuildId: z.literal(TARGET.nextBuildId),
+    buildAttribution: z.literal(TARGET.buildAttribution),
+  }).strict(),
+  batches: z.array(z.object({
+    id: z.number().int().min(1).max(4),
+    hosts: z.array(hostSchema).min(1).max(LIMITS.maxRequests),
+  }).strict()).length(4),
+}).strict();
 const CODES = new Set(['arguments', 'inventory', 'request_timeout', 'overall_deadline', 'cancelled',
   'transport_error', 'response_size', 'response_headers', 'response_encoding', 'response_incomplete',
   'build_mismatch', 'unexpected_public_login', 'unexpected_public_response', 'unresolved_response',
@@ -79,17 +60,62 @@ class HostError extends Error {
   constructor(code) { super(CODES.has(code) ? code : 'internal_error'); this.code = this.message; }
 }
 
-/** Reject any caller-supplied target, including a copy with changed expectations, before dispatch. */
+/**
+ * Read only the fixed sibling manifest and freeze its reviewed batches. Schema/digest failures
+ * become an empty inventory, so preparation/CLI can report a sanitized failure before any HTTP.
+ */
+function loadBatches() {
+  try {
+    const text = fs.readFileSync(path.join(__dirname, 'gate1-host-protection-inventory.json'), 'utf8');
+    if (Buffer.byteLength(text) > 65536) return Object.freeze([]);
+    const decoded = JSON.parse(text);
+    if (createHash('sha256').update(JSON.stringify(decoded)).digest('hex') !== INVENTORY_SHA256) {
+      return Object.freeze([]);
+    }
+    const parsed = inventorySchema.safeParse(decoded);
+    if (!parsed.success) return Object.freeze([]);
+    for (const batch of parsed.data.batches) {
+      batch.hosts.forEach(Object.freeze);
+      Object.freeze(batch.hosts);
+      Object.freeze(batch);
+    }
+    return Object.freeze(parsed.data.batches);
+  } catch { return Object.freeze([]); }
+}
+
+/** Extract a frozen batch's hosts when constructing the complete allowlist. */
+function batchHosts(batch) { return batch.hosts; }
+const BATCHES = loadBatches();
+const HOSTS = Object.freeze(BATCHES.flatMap(batchHosts));
+
+/** Reject caller-supplied destinations, including cloned objects, before transport dispatch. */
 function validateHost(host) {
   if (!HOSTS.includes(host)) throw new HostError('inventory');
   return host;
 }
 
-/** Validate the complete frozen scope before either preparation or live work. */
+/** Validate disjoint fixed batches and the sole public build expectation before any work. */
 function validateInventory() {
-  if (HOSTS.length !== LIMITS.maxRequests || new Set(HOSTS.map(hostnameOf)).size !== HOSTS.length) {
-    throw new HostError('inventory');
+  if (BATCHES.length !== 4 || HOSTS.length !== TOTAL_HOSTS
+    || new Set(HOSTS.map(hostnameOf)).size !== TOTAL_HOSTS) throw new HostError('inventory');
+  for (let index = 0; index < BATCHES.length; index++) {
+    if (BATCHES[index].id !== index + 1 || BATCHES[index].hosts.length !== BATCH_SIZES[index]) {
+      throw new HostError('inventory');
+    }
   }
+  for (const host of HOSTS) {
+    if ((host.expected === 'public_login') !== (host.hostname === CANONICAL)
+      || host.knownBuildId !== (host.deploymentId === TARGET.deploymentId ? TARGET.nextBuildId : null)) {
+      throw new HostError('inventory');
+    }
+  }
+  if (HOSTS[0].hostname !== CANONICAL) throw new HostError('inventory');
+}
+
+/** Select one integer batch; missing/invalid selection cannot start a live traversal. */
+function selectBatch(batch) {
+  if (!Number.isInteger(batch) || batch < 1 || batch > BATCH_SIZES.length) throw new HostError('arguments');
+  return BATCHES[batch - 1];
 }
 
 /** Extract the reviewed hostname when counting unique inventory entries. */
@@ -282,27 +308,43 @@ function classify(host, response) {
   return receipt;
 }
 
-/** Build the fixed report envelope; preparation does not contact application hosts. */
-function preparation() {
-  validateInventory();
-  return { schemaVersion: 1, scope: 'selected_login_host_access_only', mode: 'prepare', result: 'prepared',
-    gate1Status: 'open', hostedEvidence: 'not_executed', target: TARGET, limits: LIMITS,
-    inventory: HOSTS, inventorySource: 'authenticated_alias_api_2026_09_21_plus_two_immutable_hosts',
+/**
+ * Build a safe report even when the manifest cannot load. A null selection is an offline overview;
+ * batch receipts never claim the other three batches ran or that this inventory closes GATE-1.
+ */
+function reportEnvelope(selected = null) {
+  const inventory = selected ? selected.hosts : [];
+  return { schemaVersion: 2, scope: 'selected_login_host_access_only', mode: 'prepare', result: 'prepared',
+    gate1Status: 'open', hostedEvidence: 'not_executed', target: TARGET,
+    limits: { ...LIMITS, maxRequests: selected ? inventory.length : 0 },
+    inventoryId: INVENTORY_ID, inventorySha256: INVENTORY_SHA256,
+    batch: selected ? selected.id : null, batchSizes: BATCH_SIZES, totalInventoryHosts: TOTAL_HOSTS,
+    outsideSelectedBatch: TOTAL_HOSTS - inventory.length,
+    inventory, inventorySource: 'authenticated_management_inventory_2026_09_23_delta_from_2026_09_22_login',
     coverage: { allHistoricalGeneratedUrls: false, allPreviews: false, sourceAndWafAgreement: false },
-    requests: 0, responses: 0, expectedPatterns: 0, unvisited: HOSTS.length,
+    requests: 0, responses: 0, expectedPatterns: 0, unvisited: inventory.length,
     receipts: [], failure: null, startedAt: null, finishedAt: null, elapsedMs: 0 };
+}
+
+/** Prepare only the overview or explicitly selected batch; no network or automatic progression. */
+function preparation(batch = null) {
+  validateInventory();
+  return reportEnvelope(batch === null ? null : selectBatch(batch));
 }
 
 /** Round monotonic durations for sanitized reports. */
 function rounded(value) { return Math.round(value * 1000) / 1000; }
 
 /**
- * Traverse the frozen inventory sequentially and stop on the first unresolved or unexpected result.
+ * Traverse one frozen batch sequentially; unavailable ERROR hosts retain non-qualifying receipts
+ * without stopping collection. Other unresolved or unexpected results stop the batch immediately.
  * Tests inject HTTPS rather than bypassing the transport. No automatic retries or re-runs exist.
  */
-async function runLive({ requestImpl = https.request, signal,
+async function runLive({ batch, requestImpl = https.request, signal,
   requestMs = LIMITS.requestMs, overallMs = LIMITS.overallMs } = {}) {
-  const report = preparation();
+  validateInventory();
+  const selected = selectBatch(batch);
+  const report = preparation(batch);
   report.mode = 'live'; report.result = 'stopped'; report.hostedEvidence = 'requires_review';
   report.startedAt = new Date().toISOString();
   const start = performance.now();
@@ -317,10 +359,10 @@ async function runLive({ requestImpl = https.request, signal,
     /** Cancel an in-flight request at the overall bound. */
     function deadline() { controller.abort(); }
     timer = setTimeout(deadline, overallMs);
-    for (const host of HOSTS) {
+    for (const host of selected.hosts) {
       if (controller.signal.aborted || performance.now() - start >= overallMs) throw new HostError('overall_deadline');
       if (combined.aborted) throw new HostError('cancelled');
-      if (report.requests >= LIMITS.maxRequests) throw new HostError('request_budget');
+      if (report.requests >= report.limits.maxRequests) throw new HostError('request_budget');
       const before = performance.now();
       report.requests++; report.unvisited--;
       try {
@@ -331,6 +373,10 @@ async function runLive({ requestImpl = https.request, signal,
         const receipt = classify(host, response);
         receipt.durationMs = rounded(performance.now() - before);
         report.receipts.push(receipt);
+        if (host.recordedState === 'ERROR' && receipt.classification === 'deployment_unavailable') {
+          report.failure = 'deployment_unavailable';
+          continue;
+        }
         if (!receipt.expectedPatternObserved) throw new HostError(receipt.classification);
         report.expectedPatterns++;
       } catch (error) {
@@ -344,7 +390,8 @@ async function runLive({ requestImpl = https.request, signal,
         throw safeError;
       }
     }
-    report.result = 'completed';
+    // A fully visited batch with unavailable deployments still cannot claim successful qualification.
+    if (report.failure === null) report.result = 'completed';
   } catch (error) { report.failure = error instanceof HostError ? error.code : 'internal_error'; }
   finally {
     clearTimeout(timer);
@@ -354,25 +401,36 @@ async function runLive({ requestImpl = https.request, signal,
   return report;
 }
 
-/** Accept only the explicit live flag; arbitrary hosts, paths, credentials and overrides are forbidden. */
+/**
+ * Accept only --batch 1..4 and optional --live, once each. No flags prepares the overview;
+ * --live without an explicit batch is rejected and never means "run all".
+ */
 function parseArguments(args) {
-  if (args.length === 0) return false;
-  if (args.length === 1 && args[0] === '--live') return true;
-  throw new HostError('arguments');
+  let live = false, batch = null;
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === '--live' && !live) live = true;
+    else if (args[index] === '--batch' && batch === null && /^[1-4]$/.test(args[index + 1] || '')) {
+      batch = Number(args[++index]);
+    } else throw new HostError('arguments');
+  }
+  if (live && batch === null) throw new HostError('arguments');
+  return { live, batch };
 }
 
-/** Emit only the report, including fixed failure codes for CLI errors; stdout is safe to persist. */
+/** Emit only fixed report fields/codes, including manifest/argument failures, without raw exceptions. */
 async function main(args) {
   let report;
-  try { report = parseArguments(args) ? await runLive() : preparation(); }
-  catch (error) {
-    report = preparation(); report.result = 'stopped';
+  try {
+    const options = parseArguments(args);
+    report = options.live ? await runLive({ batch: options.batch }) : preparation(options.batch);
+  } catch (error) {
+    report = reportEnvelope(); report.result = 'stopped';
     report.failure = error instanceof HostError ? error.code : 'internal_error';
   }
-  process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  process.stdout.write(JSON.stringify(report, null, 2) + '\n');
   process.exitCode = report.result === 'stopped' ? 1 : 0;
 }
 
-module.exports = { LIMITS, TARGET, CANONICAL, HOSTS, HostError, validateInventory,
-  requestHost, classify, preparation, runLive, parseArguments };
+module.exports = { LIMITS, TARGET, CANONICAL, HOSTS, BATCHES, BATCH_SIZES, INVENTORY_ID, INVENTORY_SHA256,
+  HostError, validateInventory, requestHost, classify, preparation, runLive, parseArguments };
 if (require.main === module) void main(process.argv.slice(2));
