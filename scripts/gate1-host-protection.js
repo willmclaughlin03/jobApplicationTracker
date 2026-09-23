@@ -432,5 +432,5 @@ async function main(args) {
 }
 
 module.exports = { LIMITS, TARGET, CANONICAL, HOSTS, BATCHES, BATCH_SIZES, INVENTORY_ID, INVENTORY_SHA256,
-  HostError, validateInventory, requestHost, classify, preparation, runLive, parseArguments };
+  HostError, validateInventory, requestHost, classify, preparation, runLive, parseArguments, loginBuild };
 if (require.main === module) void main(process.argv.slice(2));
