@@ -26,6 +26,18 @@ export const REDACT_CONFIG = {
     'refresh_token',
     'err.config.headers.authorization',
     'err.config.headers.cookie',
+    // Diagnostic requests can contain arbitrary casing and duplicate raw pairs.
+    // Redact every header value, plus raw arrays, at supported log locations.
+    'req.headers.*',
+    'req.rawHeaders',
+    'headers.*',
+    'rawHeaders',
+    'err.headers.*',
+    'err.rawHeaders',
+    'err.request.headers.*',
+    'err.request.rawHeaders',
+    'err.config.headers.*',
+    'err.config.rawHeaders',
   ],
   censor: '[REDACTED]',
 };

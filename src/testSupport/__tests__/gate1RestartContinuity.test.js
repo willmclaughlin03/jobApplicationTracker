@@ -1,12 +1,133 @@
 /** Offline supervisor contracts plus a real OS child with a network-free fetch preload. */
 const { EventEmitter } = require('node:events');
 const { fork } = require('node:child_process');
-const { LIMITS, LIVE_FLAGS, collectAttribution, freezeChildEnvironment, createPeer,
+const childProcess = require('node:child_process');
+const { createHash } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const { LIMITS, LIVE_FLAGS, ROOT, APP_FILES, HARNESS_FILES, collectAttribution, freezeChildEnvironment, createPeer,
   runTrial, runCli } = require('../../../scripts/gate1-restart-continuity.js');
-const { RestartError } = require('../../../scripts/gate1-restart-transport.js');
+const { RestartError, failureCode } = require('../../../scripts/gate1-restart-transport.js');
 
 const DIGEST = 'a'.repeat(64);
 const ATTRIBUTION = { digest: DIGEST, gitSha: 'b'.repeat(40) };
+
+/** Mutates only reads of one public attribution file via transform; no files are written. */
+function mockAttributionFile(filename, transform) {
+  const read = fs.readFileSync;
+  return jest.spyOn(fs, 'readFileSync').mockImplementation((name, ...args) => {
+    const value = read(name, ...args);
+    return name === filename ? transform(value) : value;
+  });
+}
+
+/** Supplies bounded Git metadata for live preflight tests without staging files or launching children. */
+function mockAttributionGit({ tracked = true, status = '', revision = ATTRIBUTION.gitSha } = {}) {
+  return jest.spyOn(childProcess, 'execFileSync').mockImplementation((command, args) => {
+    expect(command).toBe('git');
+    if (args[0] === 'ls-files' && tracked) return HARNESS_FILES.join('\n');
+    if (args[0] === 'status') return status;
+    if (args[0] === 'rev-parse') return revision;
+    throw new Error('private Git failure details');
+  });
+}
+
+describe('GATE-1 reviewed source attribution', () => {
+  afterEach(() => { jest.restoreAllMocks(); });
+
+  it('attributes the reviewed observer/redaction baseline without claiming historical hosted correspondence', () => {
+    const attribution = collectAttribution();
+    expect(attribution).toMatchObject({
+      appBase: 'eebe47f091aa1f522a8e18f7b2c916dc5e1de677',
+      sdkVersion: '1.36.2', execution: 'native_source_modules',
+      hostedReference: { gitSha: 'ba8c398c5d0af2dba9c75305397b774f946b6b1e' },
+      hostedCorrespondence: 'not_verified',
+    });
+    expect(attribution.gitSha).toMatch(/^[a-f0-9]{40}$/);
+    expect(Object.keys(attribution.files)).toEqual([...APP_FILES, ...HARNESS_FILES]);
+    expect(attribution.files['src/server/lib/temporarySessionCeiling.js']).toBe(createHash('sha256')
+      .update(fs.readFileSync(path.join(ROOT, 'src/server/lib/temporarySessionCeiling.js'))).digest('hex'));
+    expect(attribution.digest).toBe(createHash('sha256').update(JSON.stringify(attribution.files)).digest('hex'));
+  });
+
+  it.each(APP_FILES)('rejects changed pinned bytes in %s before any live child can start', async (name) => {
+    mockAttributionFile(path.join(ROOT, name), (value) => `${value}\nchanged-source`);
+    const spawn = jest.spyOn(childProcess, 'fork');
+    const expected = expect.objectContaining({ code: 'attribution',
+      diagnostic: { check: 'source_hash', file: name }, message: `attribution: source_hash (${name})` });
+    expect(() => collectAttribution()).toThrow(expected);
+    await expect(runCli(LIVE_FLAGS, { GATE1_RESTART_LIVE_ALLOWED: '1' })).rejects.toThrow(expected);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it.each(['nodejs.js', 'nodejs.mjs'])('rejects a changed SDK implementation in %s', (name) => {
+    const sdkDirectory = path.dirname(require.resolve('@upstash/redis'));
+    mockAttributionFile(path.join(sdkDirectory, name), (value) => Buffer.concat([value, Buffer.from('changed-sdk')]));
+    expect(() => collectAttribution()).toThrow(expect.objectContaining({ code: 'attribution',
+      diagnostic: { check: 'sdk_hash', file: name } }));
+  });
+
+  it.each(['\n', '\r\n'])('accepts the reviewed source with %j line endings', (ending) => {
+    mockAttributionFile(path.join(ROOT, 'src/server/lib/temporarySessionCeiling.js'), (value) => {
+      const source = value.toString().replace(/\r\n/g, '\n').replace(/\n/g, ending);
+      return Buffer.isBuffer(value) ? Buffer.from(source) : source;
+    });
+    expect(collectAttribution().digest).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('rejects unsupported runtimes with a bounded diagnostic', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'version');
+    Object.defineProperty(process, 'version', { ...descriptor, value: 'v20.0.0' });
+    try {
+      expect(() => collectAttribution()).toThrow(expect.objectContaining({ code: 'attribution',
+        diagnostic: { check: 'runtime' } }));
+    } finally { Object.defineProperty(process, 'version', descriptor); }
+  });
+
+  it('does not retain raw filesystem errors in attribution failures', () => {
+    mockAttributionFile(path.join(ROOT, APP_FILES[0]), () => { throw new Error('private filesystem details'); });
+    let failure;
+    try { collectAttribution(); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(RestartError);
+    expect(failureCode(failure)).toBe('attribution');
+    expect(failure.diagnostic).toEqual({ check: 'source_hash', file: APP_FILES[0] });
+    expect(`${failure.stack} ${JSON.stringify(failure)}`).not.toContain('private filesystem details');
+    expect(failure.cause).toBeUndefined();
+  });
+
+  it('reports failed Git lookups without retaining command output', () => {
+    jest.spyOn(childProcess, 'execFileSync').mockImplementation(() => { throw new Error('private Git details'); });
+    expect(() => collectAttribution()).toThrow(expect.objectContaining({ code: 'attribution',
+      message: 'attribution: git_revision', diagnostic: { check: 'git_revision' } }));
+  });
+
+  it('rejects malformed revision output without echoing it', () => {
+    mockAttributionGit({ revision: 'private malformed Git output' });
+    expect(() => collectAttribution()).toThrow(expect.objectContaining({ code: 'attribution',
+      message: 'attribution: git_revision', diagnostic: { check: 'git_revision' } }));
+  });
+
+  it.each([
+    [{ tracked: false }, 'tracked_harness'],
+    [{ status: ' M scripts/gate1-restart-worker.mjs' }, 'clean_tree'],
+  ])('keeps live execution blocked for Git state %j', async (state, check) => {
+    mockAttributionGit(state);
+    const spawn = jest.spyOn(childProcess, 'fork');
+    await expect(runCli(LIVE_FLAGS, { GATE1_RESTART_LIVE_ALLOWED: '1' })).rejects.toThrow(
+      expect.objectContaining({ code: 'attribution', diagnostic: { check } }));
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('requires tracked harness files and a clean tree when requested', () => {
+    const git = mockAttributionGit();
+    expect(collectAttribution({ requireClean: true }).gitSha).toBe(ATTRIBUTION.gitSha);
+    expect(git.mock.calls.map(([, args]) => args)).toEqual([
+      ['ls-files', '--error-unmatch', '--', ...HARNESS_FILES],
+      ['status', '--porcelain', '--', ...APP_FILES, ...HARNESS_FILES],
+      ['rev-parse', 'HEAD'],
+    ]);
+  });
+});
 
 /** Builds a deterministic process/clock model; no Redis or application HTTP calls occur. */
 function fixture(options = {}) {

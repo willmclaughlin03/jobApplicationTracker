@@ -149,7 +149,7 @@ describe('Logger redaction config', () => {
     expect(output.err.config.headers.cookie).toBe('[REDACTED]');
   });
 
-  it('should preserve non-sensitive sibling fields', () => {
+  it('preserves non-header sibling fields while redacting every header value', () => {
     logger.info({
       password: 'secret',
       username: 'testuser',
@@ -177,15 +177,29 @@ describe('Logger redaction config', () => {
     expect(output.username).toBe('testuser');
     expect(output.req.headers.authorization).toBe('[REDACTED]');
     expect(output.req.headers['stripe-signature']).toBe('[REDACTED]');
-    expect(output.req.headers['content-type']).toBe('application/json');
+    expect(output.req.headers['content-type']).toBe('[REDACTED]');
     expect(output.headers['stripe-signature']).toBe('[REDACTED]');
-    expect(output.headers['content-length']).toBe('123');
+    expect(output.headers['content-length']).toBe('[REDACTED]');
     expect(output.err.headers['stripe-signature']).toBe('[REDACTED]');
-    expect(output.err.headers['content-type']).toBe('application/json');
+    expect(output.err.headers['content-type']).toBe('[REDACTED]');
     expect(output.err.request.headers['stripe-signature']).toBe('[REDACTED]');
-    expect(output.err.request.headers.accept).toBe('application/json');
+    expect(output.err.request.headers.accept).toBe('[REDACTED]');
     expect(output.err.body).toBe('[REDACTED]');
     expect(output.err.rawBody).toBe('[REDACTED]');
     expect(output.err.type).toBe('StripeSignatureVerificationError');
+  });
+
+  /** Header casing/duplicates must not expose probe credentials or transient source data. */
+  it('redacts diagnostic headers and raw pairs at every supported log location', () => {
+    const sentinel = 'PRIVATE_SOURCE_PROBE_TEST_VALUE';
+    const sensitive = { headers: { Authorization: sentinel, 'X-Vercel-Forwarded-For': sentinel,
+      'x-gate1-source-probe': sentinel, 'X-Gate1-Source-Diagnostic': sentinel },
+    rawHeaders: ['AUTHORIZATION', sentinel, 'x-vercel-forwarded-for', sentinel] };
+    logger.info({ ...sensitive, req: sensitive,
+      err: { ...sensitive, request: sensitive, config: sensitive } }, 'test');
+    const output = getOutput();
+    expect(JSON.stringify(output)).not.toContain(sentinel);
+    expect(output.req.rawHeaders).toBe('[REDACTED]');
+    expect(output.req.headers.Authorization).toBe('[REDACTED]');
   });
 });
