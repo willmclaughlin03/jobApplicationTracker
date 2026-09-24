@@ -16,6 +16,10 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-20
 
+- `2026-09-24` - `GATE-1 provider dispatch failure classification`: Preserve dispatch deadline, cancellation, and authority/budget guard codes through the shared transport's error normalization. Added a regression proving deadline expiry inside dispatch reports `deadline` with zero provider requests. All 173 provider-access/discovery tests, focused ESLint, and whitespace checks pass.
+
+- `2026-09-24` - `GATE-1 provider-only metrics access diagnostic`: Added an offline-default runner and hidden-token PowerShell launcher for one bounded Vercel metrics query with zero application requests. Approval binds the fixed team/project, preceding-minute window, limits, and executable script bytes. Reports retain only allowlisted error codes and response-shape facts; unexpected rows, redirects, unsafe responses, and expired approvals stop execution without retries. All 102 new tests and 70 existing discovery tests pass, along with focused lint, syntax, and whitespace checks. Metrics access and GATE-1 remain unqualified; each live trial requires separate approval.
+
 - `2026-09-23` - `GATE-1 discovery BOM regression coverage`: Prefix the existing valid stdin test payload with U+FEFF while preserving its decoded-object assertion and malformed/oversized input checks. The targeted test and diff check pass.
 
 - `2026-09-23` - `GATE-1 discovery BOM-compatible stdin`: Strip one leading UTF-8 BOM from decoded stdin before JSON parsing, preserving BOM-free input and byte limits. All 70 discovery tests, 10 focused parser checks, syntax and diff checks pass.

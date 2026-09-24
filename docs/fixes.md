@@ -15,6 +15,10 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-09-24` - `GATE-1 dispatch guard failures reported as transport errors`: The shared exchange helper normalized synchronous dispatch guard exceptions to `transport`, hiding their actual failure codes. Approach: retain local guard failures for the outer report catch. Fix: capture errors from deadline/cancellation and authority/budget checks before request counting, while preserving native transport classification. The new deadline regression failed before the fix and passes with zero provider requests; all 173 provider-access/discovery tests, focused ESLint, and whitespace checks pass.
+
+- `2026-09-24` - `GATE-1 metrics denial lacked a provider-only investigation path`: The discovery runner stopped at a metrics 403 after application traffic and omitted the provider error details. Approach: reuse its bounded HTTPS/query helpers in a separately approved local diagnostic. Fix: add a fixed-scope, single-query runner and hidden-input launcher with zero application requests, strict profile/approval validation, and sanitized error-code/shape reporting. All 102 new tests and 70 existing discovery tests pass, with focused lint, syntax, and whitespace checks. This provides diagnostic tooling; it does not resolve provider permissions or qualify WAF source agreement.
+
 - `2026-09-23` - `Missing BOM-prefixed stdin regression`: The existing valid-input test did not exercise leading BOM handling. Approach: use a BOM-prefixed payload in the existing case. Fix: prepend U+FEFF to the JSON fixture, retaining the expected object and malformed/oversized input checks. The targeted test and diff check pass.
 
 - `2026-09-23` - `GATE-1 discovery rejected BOM-prefixed JSON`: Valid stdin JSON with a leading UTF-8 BOM failed parsing. Approach: normalize only the leading decoded BOM. Fix: remove it immediately before JSON.parse while preserving embedded BOMs, BOM-free input, and byte limits. All 70 discovery tests, 10 focused parser checks, syntax and diff checks pass.
