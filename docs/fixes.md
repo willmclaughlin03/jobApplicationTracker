@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-09-23` - `Missing BOM-prefixed stdin regression`: The existing valid-input test did not exercise leading BOM handling. Approach: use a BOM-prefixed payload in the existing case. Fix: prepend U+FEFF to the JSON fixture, retaining the expected object and malformed/oversized input checks. The targeted test and diff check pass.
+
 - `2026-09-23` - `GATE-1 discovery rejected BOM-prefixed JSON`: Valid stdin JSON with a leading UTF-8 BOM failed parsing. Approach: normalize only the leading decoded BOM. Fix: remove it immediately before JSON.parse while preserving embedded BOMs, BOM-free input, and byte limits. All 70 discovery tests, 10 focused parser checks, syntax and diff checks pass.
 
 - `2026-09-23` - `Missing bounded WAF discovery transport`: The source-observation helpers supported preparation and fixtures but could not perform the separately approved minimal discovery trial. Approach: add a standalone counted HTTPS runner and reuse the existing login-build parser. Fix: separate provider/probe credentials, validate before/after attribution, cap requests and deadlines, reject redirects/partial replies/ambiguous aggregates, and save sanitized local reports without claiming source agreement. All 70 discovery tests and 48 related helper/host tests pass; 27 inventory-dependent tests remain intentionally skipped. Focused lint and syntax checks pass; hosted execution remains unexecuted and separately approved.

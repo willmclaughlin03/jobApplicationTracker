@@ -335,7 +335,7 @@ describe('GATE-1 native transport and bounded input', () => {
   });
 
   it('bounds stdin and rejects malformed envelopes without retaining contents', async () => {
-    const valid = new PassThrough(); const decoded = readInput(valid); valid.end('{"fixture":true}');
+    const valid = new PassThrough(); const decoded = readInput(valid); valid.end('\uFEFF{"fixture":true}');
     expect(await decoded).toEqual({ fixture: true });
     for (const text of ['invalid-private-json', 'x'.repeat(LIMITS.inputBytes + 1)]) {
       const stream = new PassThrough(); const pending = readInput(stream); stream.end(text);
