@@ -1,6 +1,7 @@
 /** Offline Log receipt lifecycle tests; native HTTPS is independently denied. */
 const { EventEmitter } = require('node:events');
 const { spawnSync } = require('node:child_process');
+const { runInNewContext } = require('node:vm');
 const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -723,6 +724,38 @@ describe('cleanup reconciliation for each mutation', () => {
 });
 
 describe('strictly bounded native transport and cancellation', () => {
+  it.each(['SIGINT', 'SIGTERM'])('retains repeated %s handling until the trial settles and then removes both listeners', async (signalName) => {
+    const cliProcess = new EventEmitter();
+    cliProcess.stdout = { write: jest.fn() }; cliProcess.stderr = { write: jest.fn() };
+    let finishTrial, startTrial;
+    const pendingTrial = new Promise((resolve) => { finishTrial = resolve; });
+    const trialStarted = new Promise((resolve) => { startTrial = resolve; });
+    // Load the real CLI with isolated process events and mocked stdin; the pending
+    // runner models cleanup without sending OS signals, network requests or writes.
+    const context = { module: { exports: {} }, process: cliProcess, AbortController, Buffer,
+      require: (name) => name === './gate1-source-discovery'
+        ? { readInput: jest.fn(async () => ({})) } : require(name) };
+    const main = runInNewContext(`${fs.readFileSync(CLI, 'utf8')}\nmain;`, context);
+    context.runReceipt = jest.fn((_input, { signal }) => { startTrial(signal); return pendingTrial; });
+    const pending = main(['--live']);
+    try {
+      const signal = await trialStarted;
+      expect(context.runReceipt).toHaveBeenCalledTimes(1);
+      const aborted = jest.fn(); signal.addEventListener('abort', aborted);
+      for (let count = 0; count < 3; count += 1) {
+        expect(cliProcess.emit(signalName)).toBe(true);
+        expect(signal.aborted).toBe(true);
+        expect(aborted).toHaveBeenCalledTimes(1);
+        expect(cliProcess.listenerCount('SIGINT')).toBe(1);
+        expect(cliProcess.listenerCount('SIGTERM')).toBe(1);
+      }
+    } finally { finishTrial({ result: 'stopped' }); await pending; }
+    expect(cliProcess.listenerCount('SIGINT')).toBe(0);
+    expect(cliProcess.listenerCount('SIGTERM')).toBe(0);
+    expect(cliProcess.stderr.write).not.toHaveBeenCalled();
+    expect(cliProcess.exitCode).toBe(1);
+  });
+
   it.each([
     ['redirect', { status: 302, headers: { location: 'https://unapproved.example.test' }, body: '' }],
     ['oversized body', { status: 200, headers: {}, body: 'x'.repeat(LIMITS.appBytes + 1) }],

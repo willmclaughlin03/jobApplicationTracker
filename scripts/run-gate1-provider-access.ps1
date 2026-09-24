@@ -101,8 +101,8 @@ function Test-Gate1AccessReview($Prepared, $Profile) {
         if ($null -ne $Prepared.limits.rowLimit -or $null -ne $Prepared.query -or
             $Prepared.logActionCoverage -cne 'not_evaluated') { return $false }
         $expectedParameters = @{ projectId = $Profile.projectId; teamId = $Profile.teamId; hosts = $Profile.hostname;
-            startTimestamp = [DateTimeOffset]::Parse($Profile.queryWindow.start, [Globalization.CultureInfo]::InvariantCulture).ToUnixTimeMilliseconds();
-            endTimestamp = [DateTimeOffset]::Parse($Profile.queryWindow.end, [Globalization.CultureInfo]::InvariantCulture).ToUnixTimeMilliseconds() }
+            startTimestamp = ([DateTimeOffset]$Profile.queryWindow.start).ToUnixTimeMilliseconds();
+            endTimestamp = ([DateTimeOffset]$Profile.queryWindow.end).ToUnixTimeMilliseconds() }
         if (@($Prepared.queryParameters.PSObject.Properties).Count -ne $expectedParameters.Count) { return $false }
         foreach ($key in $expectedParameters.Keys) {
             if ($Prepared.queryParameters.$key -cne $expectedParameters[$key]) { return $false }

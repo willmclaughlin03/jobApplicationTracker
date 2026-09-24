@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-20
 
+- `2026-09-24` - `GATE-1 timestamp and graceful cancellation review fixes`: Preserve query-window instants with direct PowerShell DateTimeOffset casts, and retain SIGINT/SIGTERM listeners until the Log receipt trial and cleanup settle. Added mocked repeated-signal coverage for idempotent cancellation and final listener removal. Focused offline suites, 21 timestamp checks, syntax checks, and whitespace checks pass.
+
 - `2026-09-24` - `GATE-1 Firewall Events and configuration diagnostics`: Added a one-GET Events access mode, a standalone ordinary Log receipt runner with one application attempt and eleven provider attempts including verified cleanup, and an isolated one-GET configuration check with sanitized field/type validation facts. Hidden-token launchers bind each mode to fresh approval and enforce separate request budgets. Added a tracked evidence/next-agent handoff; source agreement and GATE-1 remain open. Live Events access returned an empty HTTP 200; the operator's receipt trial stopped at its first configuration GET before any mutation or application request. The new configuration check has not run live.
 
 - `2026-09-24` - `GATE-1 provider dispatch failure classification`: Preserve dispatch deadline, cancellation, and authority/budget guard codes through the shared transport's error normalization. Added a regression proving deadline expiry inside dispatch reports `deadline` with zero provider requests. All 173 provider-access/discovery tests, focused ESLint, and whitespace checks pass.

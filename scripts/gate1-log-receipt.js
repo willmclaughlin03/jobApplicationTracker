@@ -677,7 +677,7 @@ async function main(args) {
     const controller = new AbortController();
     /** Request graceful main cancellation; never abort the independent cleanup reserve. */
     function cancel() { controller.abort(); }
-    process.once('SIGINT', cancel); process.once('SIGTERM', cancel);
+    process.on('SIGINT', cancel); process.on('SIGTERM', cancel);
     let report;
     try {
       const input = await readInput();
