@@ -1,10 +1,10 @@
 <#
-Offline by default: -Template creates an unapproved profile; -ProfilePath reviews
-it. Separately approved -Live -Approval permits one provider query, zero app
+Offline by default: -Template creates a metrics profile; -EventsTemplate creates
+an Events profile. -ProfilePath reviews either. Separately approved -Live -Approval permits one provider query, zero app
 requests. Enter only the Vercel API token, through the hidden prompt.
 #>
 [CmdletBinding()]
-param([switch]$Template, [string]$ProfilePath, [switch]$Live, [string]$Approval)
+param([switch]$Template, [switch]$EventsTemplate, [string]$ProfilePath, [switch]$Live, [string]$Approval)
 $ErrorActionPreference = 'Stop'
 
 <#
@@ -13,7 +13,7 @@ never print raw stderr. The 45-second child deadline includes input delivery;
 the runner separately bounds its single HTTP request and execution time.
 #>
 function Invoke-Gate1AccessNode([string]$Mode, [string]$InputJson = '') {
-    if ($Mode -notin @('--prepare', '--template', '--review', '--live') -or
+    if ($Mode -notin @('--prepare', '--template', '--events-template', '--review', '--live') -or
         [Text.Encoding]::UTF8.GetByteCount($InputJson) -gt 16384) { throw 'Invalid diagnostic input.' }
     $runner = Join-Path $PSScriptRoot 'gate1-provider-access.js'
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
@@ -71,15 +71,58 @@ function Read-Gate1AccessToken {
 }
 
 <#
+Check the reviewed operation against the selected profile before secret entry.
+Only the two metrics modes or the exact Events GET and fixed limits are accepted;
+Events has no server row limit. This helper performs no network or file writes.
+#>
+function Test-Gate1AccessReview($Prepared, $Profile) {
+    if ($Profile.queryMode -cnotin @('discovery_shape', 'action_control', 'events_access') -or
+        $Prepared.queryMode -cne $Profile.queryMode -or $Prepared.schemaVersion -ne 2 -or
+        $Prepared.profile.queryMode -cne $Profile.queryMode -or $Prepared.mode -cne 'prepare' -or
+        $Prepared.liveApproved -isnot [bool] -or $Prepared.liveApproved -ne $false -or
+        $Prepared.appRequests -ne 0 -or $Prepared.providerRequests -ne 0) { return $false }
+    $events = $Profile.queryMode -ceq 'events_access'
+    $expectedScope = if ($events) { 'provider_firewall_events_access_only' } else { 'provider_metrics_access_only' }
+    $expectedEndpoint = if ($events) { 'https://api.vercel.com/v1/security/firewall/events' } else { 'https://api.vercel.com/metrics/v1' }
+    $expectedMethod = if ($events) { 'GET' } else { 'POST' }
+    if ($Prepared.scope -cne $expectedScope -or $Prepared.endpoint -cne $expectedEndpoint -or
+        $Prepared.method -cne $expectedMethod) { return $false }
+    $expectedLimits = @{ maxAppRequests = 0; maxProviderRequests = 1; maxWafQueries = 1;
+        concurrency = 1; requestMs = 10000; overallMs = 15000; providerBytes = 262144;
+        headerBytes = 16384; inputBytes = 16384; reportBytes = 8192; queryWindowMs = 60000;
+        profileAgeMs = 900000 }
+    if (@($Prepared.limits.PSObject.Properties).Count -ne ($expectedLimits.Count + 1)) { return $false }
+    foreach ($key in $expectedLimits.Keys) {
+        $actual = $Prepared.limits.$key
+        if (($actual -isnot [int] -and $actual -isnot [long]) -or $actual -ne $expectedLimits[$key]) { return $false }
+    }
+    if ($null -eq $Prepared.limits.PSObject.Properties['rowLimit']) { return $false }
+    if ($events) {
+        if ($null -ne $Prepared.limits.rowLimit -or $null -ne $Prepared.query -or
+            $Prepared.logActionCoverage -cne 'not_evaluated') { return $false }
+        $expectedParameters = @{ projectId = $Profile.projectId; teamId = $Profile.teamId; hosts = $Profile.hostname;
+            startTimestamp = [DateTimeOffset]::Parse($Profile.queryWindow.start, [Globalization.CultureInfo]::InvariantCulture).ToUnixTimeMilliseconds();
+            endTimestamp = [DateTimeOffset]::Parse($Profile.queryWindow.end, [Globalization.CultureInfo]::InvariantCulture).ToUnixTimeMilliseconds() }
+        if (@($Prepared.queryParameters.PSObject.Properties).Count -ne $expectedParameters.Count) { return $false }
+        foreach ($key in $expectedParameters.Keys) {
+            if ($Prepared.queryParameters.$key -cne $expectedParameters[$key]) { return $false }
+        }
+    } elseif ($Prepared.limits.rowLimit -ne 2) { return $false }
+    return $true
+}
+
+<#
 Validate/review the local profile before prompting. Live approval must match the
 exact current runner/profile; Node checks again. No deployment/probe credential
 is requested. Only the runner's sanitized report is returned and saved locally.
 #>
 function Invoke-Gate1ProviderAccess {
-    if ($args.Count -ne 0 -or ($Template -and ($ProfilePath -or $Live -or $Approval)) -or
+    if ($args.Count -ne 0 -or ($Template -and ($EventsTemplate -or $ProfilePath -or $Live -or $Approval)) -or
+        ($EventsTemplate -and ($ProfilePath -or $Live -or $Approval)) -or
         ($Live -and (-not $ProfilePath -or $Approval -cnotmatch '^[a-f0-9]{64}$')) -or
         (-not $Live -and $Approval)) { throw 'Invalid provider diagnostic mode.' }
     if ($Template) { return Invoke-Gate1AccessNode -Mode '--template' }
+    if ($EventsTemplate) { return Invoke-Gate1AccessNode -Mode '--events-template' }
     if (-not $ProfilePath) { return Invoke-Gate1AccessNode -Mode '--prepare' }
     $file = Get-Item -LiteralPath $ProfilePath
     if ($file.PSIsContainer -or $file.Extension -ine '.json' -or $file.Length -gt 8192 -or
@@ -91,9 +134,7 @@ function Invoke-Gate1ProviderAccess {
     if ($review.ExitCode -ne 0) { throw 'Profile review failed.' }
     if (-not $Live) { return $review }
     $prepared = $review.Json | ConvertFrom-Json
-    if ($prepared.mode -ne 'prepare' -or $prepared.scope -ne 'provider_metrics_access_only' -or
-        $prepared.liveApproved -ne $false -or $prepared.approvalId -cne $Approval -or
-        $prepared.limits.maxAppRequests -ne 0 -or $prepared.limits.maxProviderRequests -ne 1) {
+    if ($prepared.approvalId -cne $Approval -or -not (Test-Gate1AccessReview -Prepared $prepared -Profile $profile)) {
         throw 'Approval must match the reviewed profile and runner.'
     }
     $token = $null
