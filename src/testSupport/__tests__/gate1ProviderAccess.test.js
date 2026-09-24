@@ -292,6 +292,22 @@ describe('bounded transport, cancellation and deadlines', () => {
     expect(report.failure).toBe('cancelled'); expect(calls).toHaveLength(0); expectPrivate(report);
   });
 
+  /** Exercise the real exchange catch: a dispatch deadline must survive transport normalization. */
+  it('retains a deadline that expires inside dispatch without a provider request', async () => {
+    let ticks = 0, elapsed = 0;
+    /** Expire at dispatch after the start, preflight and exchange timeout clock reads. */
+    function now() {
+      elapsed = ++ticks < 4 ? 0 : LIMITS.overallMs;
+      return elapsed;
+    }
+    /** Keep wall time aligned so this fixture exercises elapsed-time expiry only. */
+    function wall() { return START + elapsed; }
+    const { report, calls, requestImpl } = await trial(emptyReply, { deps: { now, wall } });
+    expect(report).toMatchObject({ result: 'stopped', failure: 'deadline',
+      stoppedPhase: 'metricsAccess', providerRequests: 0 });
+    expect(requestImpl).not.toHaveBeenCalled(); expect(calls).toHaveLength(0); expectPrivate(report);
+  });
+
   it('cancels an in-flight request and tolerates late raw transport errors', async () => {
     const controller = new AbortController(), wire = transport(() => ({ hang: true })), value = profile();
     const pending = runAccess({ profile: value, approval: approvalId(value), credentials: { providerToken: TOKEN } },

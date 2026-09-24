@@ -143,6 +143,8 @@ async function runAccess(input, deps = {}) {
     failure: null, stoppedPhase: 'validation' };
   const now = deps.now || (() => performance.now()), wall = deps.wall || Date.now;
   let started, wallStart, previous, phase = 'validation';
+  // exchange normalizes dispatch exceptions to transport; retain local guard codes separately.
+  let guardFailure = null;
   try {
     started = now(); previous = started; wallStart = wall();
     if (!Number.isFinite(started) || started < 0 || !Number.isFinite(wallStart)
@@ -173,10 +175,15 @@ async function runAccess(input, deps = {}) {
     const body = metricsQuery(profile, marker, profile.queryWindow);
     /** Count actual dispatches and capture status only; no caller-selected host or follow-up is allowed. */
     function dispatch(options, receive) {
-      remaining();
-      if (report.providerRequests >= LIMITS.maxProviderRequests || options.hostname !== 'api.vercel.com'
-        || options.protocol !== 'https:' || options.port !== 443 || options.method !== 'POST'
-        || options.path !== API_PATH) throw new AccessError('request_budget');
+      try {
+        remaining();
+        if (report.providerRequests >= LIMITS.maxProviderRequests || options.hostname !== 'api.vercel.com'
+          || options.protocol !== 'https:' || options.port !== 443 || options.method !== 'POST'
+          || options.path !== API_PATH) throw new AccessError('request_budget');
+      } catch (error) {
+        guardFailure = error instanceof AccessError ? error : new AccessError('internal');
+        throw guardFailure;
+      }
       report.providerRequests += 1;
       return (deps.requestImpl || https.request)(options, (incoming) => {
         if (Number.isInteger(incoming.statusCode) && incoming.statusCode >= 100 && incoming.statusCode <= 599) {
@@ -198,7 +205,7 @@ async function runAccess(input, deps = {}) {
     if (report.response.failure) throw new AccessError(report.response.failure);
     report.result = 'completed'; report.stoppedPhase = null;
   } catch (error) {
-    report.failure = error instanceof AccessError ? error.code
+    report.failure = guardFailure ? guardFailure.code : error instanceof AccessError ? error.code
       : CODES.has(error?.message) ? error.message : 'internal';
     report.stoppedPhase = phase;
   }
