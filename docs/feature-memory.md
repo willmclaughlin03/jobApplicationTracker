@@ -16,6 +16,12 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-20
 
+- `2026-09-23` - `GATE-1 discovery BOM regression coverage`: Prefix the existing valid stdin test payload with U+FEFF while preserving its decoded-object assertion and malformed/oversized input checks. The targeted test and diff check pass.
+
+- `2026-09-23` - `GATE-1 discovery BOM-compatible stdin`: Strip one leading UTF-8 BOM from decoded stdin before JSON parsing, preserving BOM-free input and byte limits. All 70 discovery tests, 10 focused parser checks, syntax and diff checks pass.
+
+- `2026-09-23` - `Bounded GATE-1 WAF discovery runner`: Added an offline-default runner and hidden-input PowerShell launcher for one marked session request, two login/build checks, and at most six counted provider calls. Local profile approval binds the target, limits, and runner bytes; reports retain only sanitized observations and explicitly unqualified aggregate dispositions. Added 70 passing discovery tests; the related helper/host suites pass 48 tests with 27 existing inventory-dependent skips. Focused lint and syntax checks pass. No hosted discovery ran; GATE-1 remains open and live execution requires separate approval.
+
 - `2026-09-23` - `GATE-1 restart attribution baseline`: Pin the reviewed source-observation commit and updated limiter/logger hashes, retain integrity and live preflight checks, and mark historical hosted correspondence as unverified. Added sanitized check/file diagnostics and 22 attribution regressions. With branch-locked dependencies, all 126 CI test suites pass (2,343 tests passed; 27 existing inventory-dependent skips); lint and diff checks pass.
 
 - `2026-09-23` - `GATE-1 source observation`: Added an opt-in, separately authenticated session probe that reports bounded facts from the limiter's actual source resolution after enforcement, plus header-value/raw-header redaction. Added preparation-only CLI/PowerShell helpers, local wire/response/budget fixtures, and strict route-composition coverage. Independent WAF source agreement remains unqualified; deployment and live discovery require separate approval.
