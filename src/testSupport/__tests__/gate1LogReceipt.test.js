@@ -6,12 +6,13 @@ const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const https = require('node:https');
-const { LIMITS, CONFIG_LIMITS, TARGET, profileTemplate, parseProfile, approvalId, preparation,
-  diagnosticRule, reviewEvents, reviewConfigResponse, runReceipt, runConfigCheck } = require('../../../scripts/gate1-log-receipt');
+const { LIMITS, CONFIG_LIMITS, TARGET, RECOVERY_TRIAL_ID, profileTemplate, parseProfile, approvalId, preparation,
+  diagnosticRule, reviewEvents, reviewConfigResponse, runReceipt, runConfigCheck, runRecoveryInspection } = require('../../../scripts/gate1-log-receipt');
 
 const START = Date.parse('2026-09-24T12:00:00.000Z');
 const TOKEN = 'synthetic_log_receipt_provider_token';
 const PRIVATE = 'private-log-receipt-fixture-sentinel';
+const PROJECT_KEY = 'opaque-fixture-project-key';
 const ADDRESS = '192.0.2.117';
 const RULE_ID = 'rule_fixture_owned_log_receipt';
 const CLI = path.resolve(__dirname, '../../../scripts/gate1-log-receipt.js');
@@ -32,10 +33,10 @@ function profile(time = START, mode) {
   return result;
 }
 
-/** Preserve an unrelated existing policy across insertion and targeted removal. */
+/** Preserve unrelated policy with an opaque provider key distinct from the requested project ID. */
 function baseline() {
   return { firewallEnabled: true, id: 'icfg_fixture_baseline', ownerId: TARGET.teamId,
-    projectKey: TARGET.projectId, ips: [], changes: [], updatedAt: new Date(START).toISOString(),
+    projectKey: PROJECT_KEY, ips: [], changes: [], updatedAt: new Date(START).toISOString(),
     version: 3, rules: [{ id: 'rule_fixture_existing', name: PRIVATE, active: true, valid: true,
       conditionGroup: [{ conditions: [{ type: 'raw_path', op: 'eq', value: '/api/auth/session' },
         { type: 'method', op: 'eq', value: 'GET' }] }],
@@ -164,10 +165,224 @@ async function configTrial(options = {}, changes = {}) {
   return { ...wire, report };
 }
 
+/** Execute only the new recovery sequencer against synthetic configuration, with optional boundary faults. */
+async function recoveryTrial(options = {}, changes = {}) {
+  const wire = fixture(options), selected = profile(START, 'recovery_inspection');
+  const input = { profile: selected, approval: approvalId(selected),
+    credentials: { providerToken: TOKEN }, ...changes.input };
+  const report = await runRecoveryInspection(input, { ...wire.deps, ...changes.deps });
+  return { ...wire, report };
+}
+
+/** Model a possible staged candidate without claiming its synthetic marker represents the lost live marker. */
+function recoveryState() {
+  const active = baseline(), value = diagnosticRule(RECOVERY_TRIAL_ID, `gate1-log-${'a'.repeat(48)}`);
+  const rule = { ...copy(value), id: RULE_ID, valid: true };
+  return { active, draft: { ...copy(active), id: 'icfg_fixture_draft',
+    rules: [...copy(active.rules), rule], changes: [{ action: 'rules.insert', id: RULE_ID, value }] } };
+}
+
+/** Require unresolved historical ownership, privacy and zero write/probe budgets for every inspection result. */
+function expectRecovery(result) {
+  expect(result.report).toMatchObject({ scope: 'provider_firewall_recovery_inspection_only',
+    queryMode: 'recovery_inspection', failedTrialId: RECOVERY_TRIAL_ID, appRequests: 0,
+    eventsQueries: 0, configMutations: 0, cleanup: { status: 'cleanup_unresolved', restorationVerified: false },
+    recoveryInspection: { basis: 'current_snapshot_only', ownership: 'unverified', restorationVerified: false,
+      originalBaselineComparison: 'unavailable', originalMarkerComparison: 'unavailable' } });
+  expect(result.report.providerRequests).toBeLessThanOrEqual(1);
+  expect(result.state.labels.every((label) => label === 'config')).toBe(true);
+  expect(result.sleep).not.toHaveBeenCalled(); expectConfigPrivate(result.report); expectPrivate(result.report);
+  expect(JSON.stringify(result.report)).not.toContain(`gate1-log-${'a'.repeat(48)}`);
+  expect(Buffer.byteLength(`${JSON.stringify(result.report, null, 2)}\n`)).toBeLessThanOrEqual(CONFIG_LIMITS.reportBytes);
+}
+
+describe('isolated recovery inspection', () => {
+  it('binds the fixed failed trial, operation and budgets to a distinct fresh approval', () => {
+    const template = profileTemplate(START, 'recovery_inspection');
+    expect(template.failedTrialId).toBe(RECOVERY_TRIAL_ID);
+    expect(Object.values(template.attestations)).toEqual([false, false, false, false, false]);
+    const selected = profile(START, 'recovery_inspection'), prepared = preparation(selected, START);
+    expect(prepared).toMatchObject({ scope: 'provider_firewall_recovery_inspection_only',
+      queryMode: 'recovery_inspection', failedTrialId: RECOVERY_TRIAL_ID, liveApproved: false,
+      limits: CONFIG_LIMITS, application: null, rule: null, method: 'GET', appRequests: 0, providerRequests: 0 });
+    expect(approvalId(selected)).not.toBe(approvalId(profile()));
+    expect(approvalId(selected)).not.toBe(approvalId(profile(START, 'config_check')));
+  });
+
+  it.each(['sourceCodeReviewed', 'credentialLoggingReviewed', 'noConcurrentWafEdits',
+    'includedUsageHeadroom', 'recoveryProcedureReviewed'])('requires the recovery %s attestation', async (key) => {
+    const selected = profile(START, 'recovery_inspection'); selected.attestations[key] = false;
+    const result = await recoveryTrial({}, { input: { profile: selected } });
+    expect(result.calls).toHaveLength(0); expectRecovery(result);
+  });
+
+  it('inspects a single staged candidate without mutating or establishing ownership', async () => {
+    const state = recoveryState(), before = copy(state), result = await recoveryTrial({ state });
+    expect(result.report.result).toBe('completed'); expect(result.calls).toHaveLength(1);
+    expect(result.state.active).toEqual(before.active); expect(result.state.draft).toEqual(before.draft);
+    expect(result.calls[0].options).toMatchObject({ method: 'GET', hostname: 'api.vercel.com',
+      path: `/v1/security/firewall/config?projectId=${TARGET.projectId}&teamId=${TARGET.teamId}`,
+      agent: false, rejectUnauthorized: true, protocol: 'https:', port: 443 });
+    expect(result.calls[0].body).toBeUndefined();
+    expect(result.report.receipts).toEqual([{ phase: 'recoveryInspection', httpStatus: 200 }]);
+    expect(result.report.recoveryInspection).toMatchObject({ active: { count: 0 }, draft: { count: 1,
+      exactStructureCount: 1, hostMatchCount: 1, methodMatchCount: 1, pathMatchCount: 1, markerFormatCount: 1,
+      ordinaryLogActionCount: 1, validTrueCount: 1, additionalRuleFieldsCount: 0 },
+      draftVsActive: { policyEqual: false, nonCandidatePolicyEqual: true, candidateRulesEqual: false,
+        sharedCandidateIdCount: 0, draftChangeClassification: 'single_candidate_insert' } });
+    expectRecovery(result);
+  });
+
+  it.each(['absent', 'active_only', 'both', 'multiple', 'unrelated_name', 'empty_draft'])('reports %s candidates without guessing ownership', async (kind) => {
+    const state = recoveryState();
+    if (kind === 'absent') state.draft = null;
+    if (kind === 'active_only') { state.active = copy(state.draft); state.draft = null; }
+    if (kind === 'both') state.active = copy(state.draft);
+    if (kind === 'multiple') state.draft.rules.push({ ...copy(state.draft.rules[1]), id: 'rule_fixture_second' });
+    if (kind === 'unrelated_name') state.draft.rules[1].name += '-foreign';
+    if (kind === 'empty_draft') state.draft = copy(state.active);
+    const result = await recoveryTrial({ state });
+    expect(result.report.result).toBe('completed');
+    const facts = result.report.recoveryInspection;
+    if (['absent', 'active_only'].includes(kind)) { expect(facts.draft).toBeNull(); expect(facts.draftVsActive).toBeNull(); }
+    if (kind === 'active_only') expect(facts.active.count).toBe(1);
+    if (kind === 'both') expect(facts.draftVsActive.sharedCandidateIdCount).toBe(1);
+    if (kind === 'multiple') { expect(facts.draft.count).toBe(2); expect(facts.draftVsActive.draftChangeClassification).toBe('other_or_ambiguous'); }
+    if (kind === 'unrelated_name') { expect(facts.draft.count).toBe(0); expect(facts.draftVsActive.nonCandidatePolicyEqual).toBe(false); }
+    if (kind === 'empty_draft') expect(facts.draftVsActive).toMatchObject({ policyEqual: true, draftChangeClassification: 'empty' });
+    expectRecovery(result);
+  });
+
+  it.each(['project_key', 'unrelated_rule', 'rule_order', 'unknown_policy', 'ips'])('detects an unrelated %s difference without returning its value', async (kind) => {
+    const state = recoveryState();
+    if (kind === 'project_key') state.draft.projectKey = PROJECT_KEY.toUpperCase();
+    if (kind === 'unrelated_rule') state.draft.rules[0].active = false;
+    if (kind === 'rule_order') {
+      const extra = { ...copy(state.active.rules[0]), id: 'rule_fixture_another' };
+      state.active.rules.push(copy(extra)); state.draft.rules.unshift(copy(extra));
+    }
+    if (kind === 'unknown_policy') state.draft[PRIVATE] = { secret: TOKEN };
+    if (kind === 'ips') state.draft.ips.push({ ip: ADDRESS });
+    const result = await recoveryTrial({ state });
+    expect(result.report.recoveryInspection.draftVsActive.nonCandidatePolicyEqual).toBe(false);
+    expectRecovery(result);
+  });
+
+  it.each([
+    ['host', 'hostMatchCount'], ['method', 'methodMatchCount'], ['raw_path', 'pathMatchCount'],
+    ['user_agent', 'markerFormatCount'],
+  ])('rejects a wrong %s condition while retaining only count facts', async (type, fact) => {
+    const state = recoveryState();
+    state.draft.rules[1].conditionGroup[0].conditions.find((condition) => condition.type === type).value = PRIVATE;
+    const result = await recoveryTrial({ state });
+    expect(result.report.recoveryInspection.draft).toMatchObject({ [fact]: 0, exactStructureCount: 0 });
+    expectRecovery(result);
+  });
+
+  it.each(['extra_field', 'validation_errors', 'valid_missing', 'rate_action', 'extra_condition',
+    'extra_group', 'duplicate_condition', 'malformed_group', 'disabled'])('describes %s without weakening full-trial matching', async (kind) => {
+    const state = recoveryState(), rule = state.draft.rules[1];
+    if (kind === 'extra_field') rule[PRIVATE] = { ip: ADDRESS, token: TOKEN };
+    if (kind === 'validation_errors') rule.validationErrors = [{ [PRIVATE]: TOKEN }];
+    if (kind === 'valid_missing') delete rule.valid;
+    if (kind === 'rate_action') rule.action = copy(state.active.rules[0].action);
+    if (kind === 'extra_condition') rule.conditionGroup[0].conditions.push({ type: PRIVATE, value: ADDRESS });
+    if (kind === 'extra_group') rule.conditionGroup.push(copy(rule.conditionGroup[0]));
+    if (kind === 'duplicate_condition') rule.conditionGroup[0].conditions.push(copy(rule.conditionGroup[0].conditions[0]));
+    if (kind === 'malformed_group') rule.conditionGroup = [null];
+    if (kind === 'disabled') rule.active = false;
+    const result = await recoveryTrial({ state });
+    expect(result.report.recoveryInspection.draft.exactStructureCount).toBe(0);
+    if (kind === 'extra_field') expect(result.report.recoveryInspection.draft.additionalRuleFieldsCount).toBe(1);
+    if (kind === 'validation_errors') expect(result.report.recoveryInspection.draft.validationErrorsAbsentOrEmptyCount).toBe(0);
+    expectRecovery(result);
+  });
+
+  it.each(['other_change', 'multiple_changes', 'extra_change_key', 'different_value'])('reports %s in the draft history independently of policy equality', async (kind) => {
+    const state = recoveryState(), change = state.draft.changes[0];
+    if (kind === 'other_change') change.action = 'rules.remove';
+    if (kind === 'multiple_changes') state.draft.changes.push(copy(change));
+    if (kind === 'extra_change_key') change[PRIVATE] = ADDRESS;
+    if (kind === 'different_value') change.value = { private: TOKEN };
+    const result = await recoveryTrial({ state });
+    expect(result.report.recoveryInspection.draftVsActive).toMatchObject({ nonCandidatePolicyEqual: true,
+      draftChangeClassification: 'other_or_ambiguous' });
+    expectRecovery(result);
+  });
+
+  it.each(['active_null', 'draft_invalid', 'duplicate_ids', 'unknown_envelope'])('keeps %s schema failures separate from unperformed candidate comparisons', async (kind) => {
+    const state = recoveryState();
+    if (kind === 'active_null') state.active = null;
+    if (kind === 'draft_invalid') state.draft.projectKey = null;
+    if (kind === 'duplicate_ids') state.draft.rules[1].id = state.draft.rules[0].id;
+    const result = await recoveryTrial({ state, after: kind === 'unknown_envelope'
+      ? () => jsonReply({ ...state, versions: [], [PRIVATE]: TOKEN }) : undefined });
+    expect(result.report).toMatchObject({ result: 'stopped', failure: 'provider_schema',
+      recoveryInspection: { active: null, draft: null, draftVsActive: null } });
+    expectRecovery(result);
+  });
+
+  it.each(['log_receipt', 'config_check'])('rejects %s profiles/approvals in both directions before dispatch', async (mode) => {
+    const selected = profile(START, mode), recovered = profile(START, 'recovery_inspection');
+    const first = await recoveryTrial({}, { input: { profile: selected, approval: approvalId(selected) } });
+    const second = await recoveryTrial({}, { input: { approval: approvalId(selected) } });
+    const reverse = mode === 'config_check' ? configTrial : trial;
+    const third = await reverse({}, { input: { profile: recovered, approval: approvalId(recovered) } });
+    for (const result of [first, second, third]) expect(result.calls).toHaveLength(0);
+    expectRecovery(first); expectRecovery(second);
+  });
+
+  it.each(['wrong_trial', 'missing_trial', 'stale', 'future', 'changed_approval', 'extra_input'])('refuses %s before dispatch', async (kind) => {
+    const selected = profile(START, 'recovery_inspection'), input = {};
+    if (kind === 'wrong_trial') selected.failedTrialId = 'b'.repeat(32);
+    if (kind === 'missing_trial') delete selected.failedTrialId;
+    if (kind === 'stale') selected.reviewedAt = new Date(START - 900001).toISOString();
+    if (kind === 'future') selected.reviewedAt = new Date(START + 1).toISOString();
+    if (kind === 'changed_approval') input.approval = '0'.repeat(64);
+    if (kind === 'extra_input') input.endpoint = 'https://unapproved.example.test';
+    const result = await recoveryTrial({}, { input: { profile: selected, ...input } });
+    expect(result.calls).toHaveLength(0); expectRecovery(result);
+  });
+
+  it.each([
+    ['denied', jsonReply({ error: { message: `${TOKEN} ${ADDRESS}` } }, 403)],
+    ['throttled', jsonReply({ error: { message: PRIVATE } }, 429)],
+    ['server_error', jsonReply({ error: PRIVATE }, 500)],
+    ['redirect', { status: 307, headers: { location: `https://unapproved.example.test/${PRIVATE}` }, body: '' }],
+    ['oversized_body', { status: 200, headers: {}, body: 'x'.repeat(CONFIG_LIMITS.providerBytes + 1) }],
+    ['oversized_headers', { status: 200, rawHeaders: ['x-private', PRIVATE.repeat(1024)], body: '' }],
+    ['encoded', { status: 200, headers: { 'content-encoding': 'gzip' }, body: PRIVATE }],
+    ['incomplete', { earlyClose: true }], ['transport', { error: true }],
+    ['bad_json', { status: 200, headers: { 'content-type': 'application/json' }, body: PRIVATE }],
+  ])('stops %s without retries, cleanup or payload retention', async (_kind, reply) => {
+    const result = await recoveryTrial({ after: () => reply });
+    expect(result.calls).toHaveLength(1); expect(result.report.result).toBe('stopped'); expectRecovery(result);
+  });
+
+  it.each(['before', 'during', 'timeout', 'overall'])('bounds %s cancellation/deadline without follow-up calls', async (kind) => {
+    const controller = new AbortController();
+    jest.useFakeTimers();
+    try {
+      if (kind === 'before') controller.abort(PRIVATE);
+      const pending = recoveryTrial({ after: (reply, _call, state) => {
+        if (kind === 'overall') { state.elapsed = 15001; return reply; }
+        return { hang: true };
+      } }, { deps: { signal: controller.signal } });
+      await jest.advanceTimersByTimeAsync(1);
+      if (kind === 'during') controller.abort(PRIVATE);
+      if (kind === 'timeout') await jest.advanceTimersByTimeAsync(10001);
+      const result = await pending;
+      expect(result.calls).toHaveLength(kind === 'before' ? 0 : 1);
+      expect(result.report.result).toBe('stopped'); expectRecovery(result);
+    } finally { jest.useRealTimers(); }
+  });
+});
+
 /** Assert reports never persist provider payloads, IPs, credentials, or trial marker values. */
 function expectPrivate(report, wire) {
   const encoded = JSON.stringify(report);
-  for (const value of [TOKEN, PRIVATE, ADDRESS, 'Bearer ', '"public_ip"', '"conditionGroup"']) expect(encoded).not.toContain(value);
+  for (const value of [TOKEN, PRIVATE, PROJECT_KEY, PROJECT_KEY.toUpperCase(), ADDRESS,
+    'Bearer ', '"public_ip"', '"conditionGroup"']) expect(encoded).not.toContain(value);
   const marker = wire?.state.rule?.conditionGroup?.[0]?.conditions?.find((condition) => condition.type === 'user_agent')?.value;
   if (marker) expect(encoded).not.toContain(marker);
   expect(Buffer.byteLength(encoded)).toBeLessThan(LIMITS.reportBytes);
@@ -177,7 +392,7 @@ function expectPrivate(report, wire) {
 /** Permit fixed schema field labels while rejecting provider values, unknown keys, and verbose validation errors. */
 function expectConfigPrivate(value) {
   const encoded = JSON.stringify(value);
-  for (const secret of [TOKEN, PRIVATE, ADDRESS, RULE_ID, 'Bearer ', '"public_ip"',
+  for (const secret of [TOKEN, PRIVATE, PROJECT_KEY, ADDRESS, RULE_ID, 'Bearer ', '"public_ip"',
     'ZodError', 'invalid_type', 'unrecognized_keys', 'icfg_fixture_baseline', 'rule_fixture_existing']) {
     expect(encoded).not.toContain(secret);
   }
@@ -222,6 +437,17 @@ describe('separately bounded configuration check', () => {
     expect(result.report).toMatchObject({ result: 'completed', scope: 'provider_firewall_config_check_only',
       appRequests: 0, providerRequests: 1, configMutations: 0, eventsQueries: 0,
       configurationCheck: { schemaCompatible: true }, gate1Status: 'open', sourceAgreement: 'not_evaluated' });
+    expectConfigPrivate(result.report);
+  });
+
+  it.each(['k', 'k'.repeat(512), TARGET.projectId])('accepts a bounded opaque project key in read-only mode (%#)', async (projectKey) => {
+    const result = await configTrial({ state: { active: { ...baseline(), projectKey } } });
+    expect(result.state.labels).toEqual(['config']);
+    expect(result.state.active.projectKey).toBe(projectKey);
+    expect(result.report).toMatchObject({ result: 'completed', providerRequests: 1,
+      appRequests: 0, eventsQueries: 0, configMutations: 0,
+      configurationCheck: { schemaCompatible: true, validationStage: 'compatible',
+        active: { fields: { projectKey: { type: 'string', valid: true } } } } });
     expectConfigPrivate(result.report);
   });
 
@@ -345,7 +571,7 @@ describe('allowlisted configuration schema facts', () => {
 
   it.each([
     ['id', null, 'null'], ['version', '3', 'string'], ['updatedAt', 1790251200000, 'number'],
-    ['ownerId', PRIVATE, 'string'], ['projectKey', PRIVATE, 'string'],
+    ['ownerId', PRIVATE, 'string'], ['projectKey', 'k'.repeat(513), 'string'],
     ['firewallEnabled', false, 'boolean'], ['firewallEnabled', 'true', 'string'],
     ['changes', {}, 'object'], ['ips', null, 'null'], ['rules', {}, 'object'],
   ])('distinguishes the type from strict compatibility for %s (%#)', (key, value, type) => {
@@ -357,11 +583,11 @@ describe('allowlisted configuration schema facts', () => {
   });
 
   it('checks an existing draft independently without treating it as permission to mutate', async () => {
-    const draft = { ...baseline(), projectKey: PRIVATE };
+    const draft = { ...baseline(), projectKey: null };
     const result = await configTrial({ state: { draft } });
     expect(result.state.labels).toEqual(['config']); expect(result.state.draft).toEqual(draft);
     expect(result.report.configurationCheck).toMatchObject({ schemaCompatible: false, validationStage: 'draft_config',
-      draft: { fields: { projectKey: { type: 'string', valid: false } } } });
+      draft: { fields: { projectKey: { type: 'null', valid: false } } } });
     expectConfigPrivate(result.report);
   });
 
@@ -506,6 +732,8 @@ describe('one marked request and targeted cleanup', () => {
     expect(JSON.parse(result.calls.find((call) => call.label === 'rules.remove').body))
       .toEqual({ action: 'rules.remove', id: RULE_ID, value: null });
     expect(result.state.active.rules).toEqual(baseline().rules);
+    expect(result.state.active.projectKey).toBe(PROJECT_KEY);
+    expect(PROJECT_KEY).not.toBe(TARGET.projectId);
     expect(result.state.draft).toBeNull();
     expect(result.state.versions).toHaveLength(2);
     expect(result.report).toMatchObject({ result: 'completed', appRequests: 1, providerRequests: 11,
@@ -547,10 +775,58 @@ describe('preflight ownership and concurrent configuration changes', () => {
   it.each([
     { active: null }, { active: { ...baseline(), firewallEnabled: false } },
     { active: { ...baseline(), ownerId: 'team_wrong' } },
-    { active: { ...baseline(), projectKey: 'prj_wrong' } },
   ])('does not mutate an invalid or different baseline (%#)', async (state) => {
     const result = await trial({ state });
     expect(result.state.labels).toEqual(['config']); expect(result.state.appCount).toBe(0);
+    expectPrivate(result.report, result);
+  });
+
+  it.each([
+    ['missing', undefined], ['null', null], ['number', 123], ['array', []],
+    ['empty', ''], ['oversized', 'k'.repeat(513)],
+  ])('rejects a %s project key before mutations in both modes', async (_label, projectKey) => {
+    const options = { state: { active: { ...baseline(), projectKey } } };
+    const receipt = await trial(options), config = await configTrial(options);
+    for (const result of [receipt, config]) {
+      expect(result.state.labels).toEqual(['config']);
+      expect(result.state.rule).toBeNull(); expect(result.state.draft).toBeNull();
+      expect(result.report).toMatchObject({ result: 'stopped', failure: 'provider_schema',
+        appRequests: 0, providerRequests: 1, eventsQueries: 0 });
+      expectPrivate(result.report, result);
+    }
+    expect(receipt.report.cleanup).toMatchObject({ status: 'not_needed', restorationVerified: false });
+    expect(config.report.configMutations).toBe(0);
+  });
+
+  it.each([
+    [2, 'active', 'verifyDraft'], [2, 'draft', 'verifyDraft'], [3, 'active', 'verifyActive'],
+    [4, 'active', 'inspectCleanup'], [5, 'active', 'verifyRemoval'],
+    [5, 'draft', 'verifyRemoval'], [6, 'active', 'verifyRestoration'],
+  ])('refuses project-key drift on read %i in %s at %s', async (read, field, stoppedPhase) => {
+    const result = await trial({ before: (call, state) => {
+      if (call.label === 'config' && state.labels.filter((label) => label === 'config').length === read) {
+        state[field].projectKey = PROJECT_KEY.toUpperCase();
+      }
+    } });
+    expect(result.report).toMatchObject({ result: 'stopped', stoppedPhase, failure: 'configuration_drift',
+      cleanup: { status: 'cleanup_unresolved', failure: 'configuration_drift', restorationVerified: false } });
+    expect(result.state.appCount).toBe(read < 4 ? 0 : 1);
+    expect(result.state.labels.filter((label) => label === 'activate')).toHaveLength(read === 2 ? 0 : read === 6 ? 2 : 1);
+    expect(result.state.labels.filter((label) => label === 'rules.remove')).toHaveLength(read < 5 ? 0 : 1);
+    expect(result.state.providerCount).toBeLessThanOrEqual(LIMITS.maxProviderRequests);
+    expectPrivate(result.report, result);
+  });
+
+  it('does not claim restoration if a project key changes after discarding an owned draft', async () => {
+    const result = await trial({ after: (reply, call, state) => {
+      if (call.label === 'rules.insert') return { error: true };
+      if (call.label === 'discard') state.active.projectKey = PROJECT_KEY.toUpperCase();
+      return reply;
+    } });
+    expect(result.state.labels).toEqual(['config', 'rules.insert', 'config', 'discard', 'config']);
+    expect(result.state.appCount).toBe(0); expect(result.state.draft).toBeNull();
+    expect(result.report.cleanup).toMatchObject({ status: 'cleanup_unresolved',
+      failure: 'configuration_drift', restorationVerified: false });
     expectPrivate(result.report, result);
   });
 
@@ -893,7 +1169,7 @@ function launcherFixture(options = {}) {
   const directory = path.resolve(__dirname, '../../../.tmp');
   fs.mkdirSync(directory, { recursive: true });
   const file = path.join(directory, `log-receipt-launcher-fixture-${randomUUID()}.json`);
-  const selected = profile(Date.now(), options.configCheck ? 'config_check' : undefined), digest = approvalId(selected);
+  const selected = profile(Date.now(), options.recovery ? 'recovery_inspection' : options.configCheck ? 'config_check' : undefined), digest = approvalId(selected);
   const prepared = { ...preparation(selected), ...options.reviewChanges };
   if (options.limitChanges) prepared.limits = { ...prepared.limits, ...options.limitChanges };
   fs.writeFileSync(file, JSON.stringify(selected), { flag: 'wx' });
@@ -920,7 +1196,7 @@ function launcherFixture(options = {}) {
     "  Assert-FixtureCondition (($script:sequence -join ',') -ceq 'review')",
     "  $script:sequence.Add('confirmation')",
     `  return ${psLiteral(options.confirmation === undefined
-      ? options.configCheck ? 'RUN CONFIG CHECK ONCE' : 'RUN LOG RECEIPT ONCE' : options.confirmation)}`,
+      ? options.recovery ? 'RUN RECOVERY INSPECTION ONCE' : options.configCheck ? 'RUN CONFIG CHECK ONCE' : 'RUN LOG RECEIPT ONCE' : options.confirmation)}`,
     '}',
     '<# Intercept both child modes and validate credential isolation in the stdin envelope. #>',
     'function Invoke-Gate1ReceiptNode([string]$Mode, [string]$InputJson) {',
@@ -1038,6 +1314,81 @@ describe('offline CLI and guarded PowerShell launcher', () => {
   });
 });
 
+describe('recovery CLI and hidden-input launcher separation', () => {
+  it.each(['--recovery-template', '--recovery-prepare', '--review'])('keeps %s preparation offline and tied to the failed trial', (mode) => {
+    const selected = profile(Date.now(), 'recovery_inspection');
+    const child = offlineCli([mode], mode === '--review' ? JSON.stringify(selected) : undefined);
+    expect(child.error).toBeUndefined(); expect(child.status).toBe(0); expect(child.stderr).toBe('');
+    const output = JSON.parse(child.stdout);
+    expect(output).toMatchObject({ failedTrialId: RECOVERY_TRIAL_ID, queryMode: 'recovery_inspection' });
+    if (mode === '--recovery-template') expect(Object.values(output.attestations)).toEqual([false, false, false, false, false]);
+    else expect(output).toMatchObject({ mode: 'prepare', scope: 'provider_firewall_recovery_inspection_only',
+      liveApproved: false, appRequests: 0, providerRequests: 0, eventsQueries: 0, configMutations: 0 });
+    expectConfigPrivate(output);
+  });
+
+  it('routes live recovery input to its isolated sequencer before rejecting an invalid approval', () => {
+    const child = offlineCli(['--live'], JSON.stringify({ profile: profile(Date.now(), 'recovery_inspection'),
+      approval: '0'.repeat(64), credentials: { providerToken: TOKEN } }));
+    expect(child.error).toBeUndefined(); expect(child.status).toBe(1); expect(child.stderr).toBe('');
+    expect(JSON.parse(child.stdout)).toMatchObject({ scope: 'provider_firewall_recovery_inspection_only',
+      failure: 'approval', providerRequests: 0, appRequests: 0 });
+    expectConfigPrivate(JSON.parse(child.stdout));
+  });
+
+  (process.platform === 'win32' ? it.each : it.skip.each)([
+    [['-RecoveryTemplate'], '--recovery-template'], [['-RecoveryInspection'], '--recovery-prepare'],
+  ])('selects %j without child traffic or prompts', (args, mode) => {
+    const child = launcherSelectorFixture(args);
+    expect(child.error).toBeUndefined(); expect(child.status).toBe(0); expect(child.stderr).toBe('');
+    expect(JSON.parse(child.stdout)).toEqual({ modes: [mode], prompted: false, threw: false });
+  });
+
+  (process.platform === 'win32' ? it.each : it.skip.each)([
+    ['-RecoveryInspection', '-Template'], ['-RecoveryTemplate', '-ConfigTemplate'],
+    ['-RecoveryInspection', '-ConfigCheck'], ['-RecoveryTemplate', '-RecoveryInspection'],
+    ['-RecoveryInspection', '-Live'], ['-RecoveryTemplate', '-ProfilePath', 'fixture.json'],
+    ['-RecoveryInspection', '-Approval', '0'.repeat(64)],
+  ].map((args) => [args]))('refuses conflicting recovery selectors %j before launching a child', (args) => {
+    const child = launcherSelectorFixture(args);
+    expect(child.error).toBeUndefined(); expect(child.status).toBe(0); expect(child.stderr).toBe('');
+    expect(JSON.parse(child.stdout)).toEqual({ modes: [], prompted: false, threw: true });
+  });
+
+  (process.platform === 'win32' ? it : it.skip)('requires recovery confirmation before hidden stdin credentials', () => {
+    const child = launcherFixture({ recovery: true });
+    expect(child.error).toBeUndefined(); expect(child.status).toBe(0); expect(child.stderr).toBe('');
+    expect(JSON.parse(child.stdout)).toEqual({ sequence: ['review', 'confirmation', 'hidden_token', 'live_stdin'],
+      threw: false, fixtureViolation: false, liveEnvelopeValidated: true, returnedExitCode: 13 });
+    expect(child.stdout + child.stderr).not.toContain(TOKEN);
+  });
+
+  (process.platform === 'win32' ? it.each : it.skip.each)([
+    'RUN LOG RECEIPT ONCE', 'RUN CONFIG CHECK ONCE', '', 'run recovery inspection once',
+  ])('refuses a non-recovery confirmation (%#) before token entry', (confirmation) => {
+    const child = launcherFixture({ recovery: true, confirmation });
+    expect(child.error).toBeUndefined(); expect(child.status).toBe(0); expect(child.stderr).toBe('');
+    expect(JSON.parse(child.stdout)).toMatchObject({ sequence: ['review', 'confirmation'], threw: true,
+      fixtureViolation: false, liveEnvelopeValidated: false });
+  });
+
+  (process.platform === 'win32' ? it.each : it.skip.each)([
+    { reviewChanges: { failedTrialId: 'b'.repeat(32) } },
+    { reviewChanges: { queryMode: 'config_check' } },
+    { reviewChanges: { scope: 'ordinary_log_receipt_trial_only' } },
+    { reviewChanges: { method: 'DELETE' } },
+    { reviewChanges: { endpoint: 'https://api.vercel.com/v1/security/firewall/config/draft' } },
+    { limitChanges: { maxAppRequests: 1 } }, { limitChanges: { maxProviderRequests: 2 } },
+    { limitChanges: { maxEventsQueries: 1 } }, { limitChanges: { maxConfigMutations: 1 } },
+    { limitChanges: { cleanupProviderRequests: 5 } },
+  ])('rejects mismatched or expanded recovery review (%#) before confirmation', (options) => {
+    const child = launcherFixture({ ...options, recovery: true });
+    expect(child.error).toBeUndefined(); expect(child.status).toBe(0); expect(child.stderr).toBe('');
+    expect(JSON.parse(child.stdout)).toMatchObject({ sequence: ['review'], threw: true,
+      fixtureViolation: false, liveEnvelopeValidated: false });
+  });
+});
+
 describe('read-only config CLI and hidden-input launcher separation', () => {
   (process.platform === 'win32' ? it.each : it.skip.each)([
     [['-ConfigTemplate'], '--config-template'], [['-ConfigCheck'], '--config-prepare'],
@@ -1116,7 +1467,7 @@ describe('read-only config CLI and hidden-input launcher separation', () => {
  * the same closed fixture transport, so production persistence paths can be
  * tested without creating evidence files or contacting Vercel.
  */
-function durableFixture(wire, failRename = () => false) {
+function durableFixture(wire, failRename = () => false, mode = 'log_receipt') {
   const records = new Map(), descriptors = new Map(), writes = [], spies = [];
   const openRead = fs.openSync.bind(fs), closeRead = fs.closeSync.bind(fs);
   let nextDescriptor = 50000;
@@ -1145,8 +1496,8 @@ function durableFixture(wire, failRename = () => false) {
   nativeGuard.mockImplementation(wire.requestImpl);
   /** Exercise production persistence with an in-memory network fixture and fixed clocks. */
   async function run() {
-    const selected = profile();
-    return runReceipt({ profile: selected, approval: approvalId(selected), credentials: { providerToken: TOKEN } },
+    const selected = profile(START, mode), runner = mode === 'recovery_inspection' ? runRecoveryInspection : runReceipt;
+    return runner({ profile: selected, approval: approvalId(selected), credentials: { providerToken: TOKEN } },
       { ...wire.deps, requestImpl: undefined });
   }
   /** Restore all file mocks and reinstate the suite's independent native-network denial. */
@@ -1159,6 +1510,31 @@ function durableFixture(wire, failRename = () => false) {
 }
 
 describe('durable approval and recovery evidence', () => {
+  it('consumes a recovery approval once and checkpoints only sanitized unresolved inspection facts', async () => {
+    const wire = fixture({ state: recoveryState() }), storage = durableFixture(wire, undefined, 'recovery_inspection');
+    try {
+      const first = await storage.run();
+      expect(first).toMatchObject({ result: 'completed', providerRequests: 1,
+        cleanup: { status: 'cleanup_unresolved', restorationVerified: false } });
+      expect(nativeGuard).toHaveBeenCalledTimes(1);
+      const second = await storage.run();
+      expect(second).toMatchObject({ result: 'stopped', failure: 'approval_consumed', providerRequests: 0 });
+      expect(nativeGuard).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(storage.records.get(first.reportPath))).toMatchObject({ result: 'completed',
+        recoveryInspection: { ownership: 'unverified' } });
+      for (const encoded of storage.writes) expectRecovery({ ...wire, report: JSON.parse(encoded) });
+    } finally { storage.restore(); }
+  });
+
+  it('refuses recovery dispatch if the checkpoint cannot be saved', async () => {
+    const wire = fixture({ state: recoveryState() }), storage = durableFixture(wire, () => true, 'recovery_inspection');
+    try {
+      const report = await storage.run();
+      expect(report).toMatchObject({ failure: 'local_evidence', providerRequests: 0 });
+      expect(nativeGuard).not.toHaveBeenCalled(); expectRecovery({ ...wire, report });
+    } finally { storage.restore(); }
+  });
+
   it('consumes one approval exclusively and persists only sanitized recovery facts', async () => {
     const wire = fixture(), storage = durableFixture(wire);
     try {

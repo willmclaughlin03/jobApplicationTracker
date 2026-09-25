@@ -7,6 +7,8 @@
  * transport; credentials, configurations and event payloads remain transient.
  * A separate config-check profile permits only one read-only configuration GET
  * with sanitized validation facts; it cannot enter the rule lifecycle.
+ * Recovery inspection uses the same one-GET boundary with a separate approval;
+ * candidate similarity never establishes ownership or restoration.
  */
 const https = require('node:https');
 const fs = require('node:fs');
@@ -30,6 +32,9 @@ const CONFIG_LIMITS = Object.freeze({ maxAppRequests: 0, maxProviderRequests: 1,
   reportBytes: 8192, profileAgeMs: 900000 });
 const SCOPE = 'ordinary_log_receipt_trial_only';
 const CONFIG_SCOPE = 'provider_firewall_config_check_only';
+const RECOVERY_SCOPE = 'provider_firewall_recovery_inspection_only';
+const RECOVERY_TRIAL_ID = '447e9964d04241e92885614852a7bf3f';
+const RECOVERY_NAME = `gate1-log-receipt-${RECOVERY_TRIAL_ID}`;
 const CONFIG_PATH = `/v1/security/firewall/config?projectId=${TARGET.projectId}&teamId=${TARGET.teamId}`;
 const DRAFT_PATH = `/v1/security/firewall/config/draft?projectId=${TARGET.projectId}&teamId=${TARGET.teamId}`;
 const ACTIVATE_PATH = `/v1/security/firewall/config/draft/activate?projectId=${TARGET.projectId}&teamId=${TARGET.teamId}`;
@@ -45,7 +50,11 @@ const receiptProfileSchema = z.object({ ...profileFields,
 const configProfileSchema = z.object({ ...profileFields, queryMode: z.literal('config_check'),
   attestations: z.object(Object.fromEntries(CONFIG_ATTESTATIONS.map((key) => [key, z.literal(true)]))).strict(),
 }).strict();
-const profileSchema = z.union([receiptProfileSchema, configProfileSchema]);
+const recoveryProfileSchema = z.object({ ...profileFields, queryMode: z.literal('recovery_inspection'),
+  failedTrialId: z.literal(RECOVERY_TRIAL_ID),
+  attestations: z.object(Object.fromEntries(ATTESTATIONS.map((key) => [key, z.literal(true)]))).strict(),
+}).strict();
+const profileSchema = z.union([receiptProfileSchema, configProfileSchema, recoveryProfileSchema]);
 const envelopeSchema = z.object({ profile: profileSchema, approval: z.string().regex(/^[a-f0-9]{64}$/),
   credentials: z.object({ providerToken: z.string().min(20).max(512).regex(/^[A-Za-z0-9_-]+$/) }).strict(),
 }).strict();
@@ -53,8 +62,10 @@ const ruleIdSchema = z.string().regex(/^rule_[A-Za-z0-9_-]{1,128}$/);
 const existingRuleSchema = z.object({ id: z.string().min(1).max(512), active: z.boolean(),
   name: z.string().max(4096), conditionGroup: z.array(z.unknown()) }).passthrough();
 // Unknown policy fields are preserved for equality, never omitted by projection.
+// The API scopes requests by projectId/teamId; projectKey is opaque provider metadata.
+// Bound it without coercion and retain its exact baseline value in policy comparisons.
 const configSchema = z.object({ id: z.string().min(1).max(512), version: z.number().int().nonnegative(),
-  updatedAt: z.string().max(128), ownerId: z.literal(TARGET.teamId), projectKey: z.literal(TARGET.projectId),
+  updatedAt: z.string().max(128), ownerId: z.literal(TARGET.teamId), projectKey: z.string().min(1).max(512),
   firewallEnabled: z.literal(true), changes: z.array(z.unknown()), ips: z.array(z.unknown()),
   rules: z.array(existingRuleSchema),
 }).passthrough();
@@ -91,9 +102,11 @@ class ReceiptError extends Error {
 
 /** Create an unapproved profile with only the attestations needed for the selected fixed operation. */
 function profileTemplate(now = Date.now(), queryMode = 'log_receipt') {
-  if (!z.enum(['log_receipt', 'config_check']).safeParse(queryMode).success) throw new ReceiptError('profile');
+  if (!z.enum(['log_receipt', 'config_check', 'recovery_inspection']).safeParse(queryMode).success) throw new ReceiptError('profile');
   const config = queryMode === 'config_check';
-  return { schemaVersion: 1, ...(config ? { queryMode } : {}), ...TARGET, reviewedAt: new Date(now).toISOString(),
+  const recovery = queryMode === 'recovery_inspection';
+  return { schemaVersion: 1, ...(config || recovery ? { queryMode } : {}),
+    ...(recovery ? { failedTrialId: RECOVERY_TRIAL_ID } : {}), ...TARGET, reviewedAt: new Date(now).toISOString(),
     attestations: Object.fromEntries((config ? CONFIG_ATTESTATIONS : ATTESTATIONS).map((key) => [key, false])) };
 }
 
@@ -113,8 +126,9 @@ function requireFresh(profile, now) {
 /** Bind a single profile to exact code, imported executable dependencies and budgets. */
 function approvalId(value) {
   const profile = parseProfile(value);
-  const operation = profile.queryMode === 'config_check'
-    ? { scope: CONFIG_SCOPE, limits: CONFIG_LIMITS, method: 'GET', path: CONFIG_PATH, hostname: 'api.vercel.com' }
+  const operation = profile.queryMode
+    ? { scope: profile.queryMode === 'config_check' ? CONFIG_SCOPE : RECOVERY_SCOPE,
+      limits: CONFIG_LIMITS, method: 'GET', path: CONFIG_PATH, hostname: 'api.vercel.com' }
     : { scope: SCOPE, limits: LIMITS };
   const hash = createHash('sha256').update(JSON.stringify({ profile, ...operation }));
   for (const file of FILES) hash.update(file).update('\0').update(fs.readFileSync(path.join(__dirname, file))).update('\0');
@@ -123,11 +137,14 @@ function approvalId(value) {
 
 /** Supply concrete offline review and manual recovery boundaries before live approval. */
 function preparation(value = null, now = Date.now(), queryMode = 'log_receipt') {
-  if (!z.enum(['log_receipt', 'config_check']).safeParse(queryMode).success) throw new ReceiptError('profile');
+  if (!z.enum(['log_receipt', 'config_check', 'recovery_inspection']).safeParse(queryMode).success) throw new ReceiptError('profile');
   const profile = value === null ? null : parseProfile(value);
   if (profile) requireFresh(profile, now);
   const config = profile ? profile.queryMode === 'config_check' : queryMode === 'config_check';
-  if (config) return { schemaVersion: 1, mode: 'prepare', scope: CONFIG_SCOPE, queryMode: 'config_check',
+  const recovery = profile ? profile.queryMode === 'recovery_inspection' : queryMode === 'recovery_inspection';
+  if (config || recovery) return { schemaVersion: 1, mode: 'prepare',
+    scope: recovery ? RECOVERY_SCOPE : CONFIG_SCOPE, queryMode: recovery ? 'recovery_inspection' : 'config_check',
+    ...(recovery ? { failedTrialId: RECOVERY_TRIAL_ID } : {}),
     liveApproved: false, target: TARGET, profile, approvalId: profile ? approvalId(profile) : null,
     limits: CONFIG_LIMITS, appRequests: 0, providerRequests: 0, eventsQueries: 0, configMutations: 0,
     gate1Status: 'open', sourceAgreement: 'not_evaluated', correlation: 'unqualified', completeness: 'unqualified',
@@ -136,7 +153,10 @@ function preparation(value = null, now = Date.now(), queryMode = 'log_receipt') 
     queryParameters: { projectId: TARGET.projectId, teamId: TARGET.teamId },
     limitations: ['configuration_read_only', 'current_trial_reader_contract_only',
       'schema_compatibility_is_not_write_authorization', 'no_log_action_or_source_evidence',
-      'no_raw_configuration_or_validation_messages', 'no_retries_or_pagination'],
+      'no_raw_configuration_or_validation_messages', 'no_retries_or_pagination',
+      ...(recovery ? ['original_baseline_and_marker_unavailable', 'candidate_similarity_is_not_ownership',
+        'current_snapshot_does_not_explain_historical_failure', 'cleanup_remains_unresolved',
+        'keep_existing_waf_edit_freeze', 'no_automatic_cleanup_or_trial'] : [])],
     nextStep: profile ? 'obtain_separate_live_approval' : 'complete_local_profile' };
   return { schemaVersion: 1, mode: 'prepare', scope: SCOPE, liveApproved: false,
     target: TARGET, profile, approvalId: profile ? approvalId(profile) : null, limits: LIMITS,
@@ -167,7 +187,7 @@ function diagnosticRule(trialId, marker) {
   ] }], action: { mitigate: { action: 'log' } } };
 }
 
-/** Compare all configuration policy fields, retaining unknown fields and nested metadata/order. */
+/** Compare full policy, including the exact opaque projectKey, unknown fields and nested metadata/order. */
 function policy(config) {
   const { id: _id, version: _version, updatedAt: _updatedAt, changes: _changes, ...rest } = config;
   return rest;
@@ -238,7 +258,7 @@ function ruleFacts(value) {
   return result;
 }
 
-/** Report fixed field types and acceptance by the unchanged strict trial reader, never provider values. */
+/** Report fixed field types and acceptance by the current bounded trial reader, never provider values. */
 function configFacts(value) {
   if (valueType(value) !== 'object') return null;
   const fields = {};
@@ -251,9 +271,9 @@ function configFacts(value) {
 
 /**
  * Separate transport/JSON/schema stages and preserve only fixed diagnostic facts.
- * The parsed snapshot is returned solely to the internal mutation guard; it is
- * never attached to reports. This does not relax nullable, scalar or identity
- * prerequisites merely because the provider SDK has a more permissive parser.
+ * The parsed snapshot stays internal to guards and recovery comparisons; it is
+ * never attached to reports. Opaque projectKey parsing does not relax the fixed
+ * request target, owner equality, enabled-firewall requirement or scalar types.
  */
 function inspectConfigResponse(response) {
   const facts = { basis: 'current_trial_reader_contract', jsonContentType: false, jsonValid: false,
@@ -289,7 +309,88 @@ function inspectConfigResponse(response) {
 /** Public diagnostic projection deliberately excludes the internal parsed configuration. */
 function reviewConfigResponse(response) { return inspectConfigResponse(response).facts; }
 
-/** Validate the unchanged full-trial prerequisites, optionally recording sanitized initial-read facts. */
+/** Count fixed structural checks for exact-name candidates; all rule/marker values stay transient. */
+function recoveryCandidates(config) {
+  const candidates = config.rules.filter((rule) => rule.name === RECOVERY_NAME);
+  const facts = { count: candidates.length, ruleIdValidCount: 0, enabledCount: 0, ordinaryLogActionCount: 0,
+    hostMatchCount: 0, methodMatchCount: 0, pathMatchCount: 0, markerFormatCount: 0,
+    exactConditionSetCount: 0, validTrueCount: 0, validationErrorsAbsentOrEmptyCount: 0,
+    additionalRuleFieldsCount: 0, exactStructureCount: 0 };
+  for (const rule of candidates) {
+    const group = rule.conditionGroup.length === 1 ? rule.conditionGroup[0] : null;
+    const conditions = ownValue(group, 'conditions');
+    const list = Array.isArray(conditions) ? conditions : [];
+    /** Check one expected condition without accepting duplicates, extra keys or coercion. */
+    function conditionMatches(type, value) {
+      const selected = list.filter((condition) => ownValue(condition, 'type') === type);
+      return selected.length === 1 && isDeepStrictEqual(selected[0], { type, op: 'eq', value });
+    }
+    const markers = list.filter((condition) => ownValue(condition, 'type') === 'user_agent');
+    const marker = markers.length === 1 ? ownValue(markers[0], 'value') : null;
+    const markerValid = typeof marker === 'string' && /^gate1-log-[a-f0-9]{48}$/.test(marker);
+    const errorsClear = rule.validationErrors === undefined || rule.validationErrors === null
+      || (Array.isArray(rule.validationErrors) && rule.validationErrors.length === 0);
+    const expected = markerValid ? diagnosticRule(RECOVERY_TRIAL_ID, marker) : null;
+    const checks = { ruleIdValidCount: ruleIdSchema.safeParse(rule.id).success,
+      enabledCount: rule.active === true,
+      ordinaryLogActionCount: isDeepStrictEqual(rule.action, { mitigate: { action: 'log' } }),
+      hostMatchCount: conditionMatches('host', TARGET.hostname), methodMatchCount: conditionMatches('method', 'GET'),
+      pathMatchCount: conditionMatches('raw_path', '/api/auth/session'),
+      markerFormatCount: markerValid && conditionMatches('user_agent', marker),
+      exactConditionSetCount: expected !== null && isDeepStrictEqual(rule.conditionGroup, expected.conditionGroup),
+      validTrueCount: rule.valid === true, validationErrorsAbsentOrEmptyCount: errorsClear,
+      additionalRuleFieldsCount: Object.keys(rule).some((key) =>
+        !['id', 'name', 'active', 'conditionGroup', 'action', 'valid', 'validationErrors'].includes(key)),
+      exactStructureCount: expected !== null && matchesRule(rule, expected) };
+    for (const [key, passed] of Object.entries(checks)) if (passed) facts[key] += 1;
+  }
+  return facts;
+}
+
+/** Compare current policies excluding name candidates, preserving unknown fields and other rule order. */
+function nonCandidatePolicy(config) {
+  return { ...policy(config), rules: config.rules.filter((rule) => rule.name !== RECOVERY_NAME) };
+}
+
+/** Classify draft change metadata only; a candidate insertion entry never proves who created it. */
+function recoveryChangeList(draft) {
+  if (draft.changes.length === 0) return 'empty';
+  if (draft.changes.length !== 1) return 'other_or_ambiguous';
+  const change = draft.changes[0], candidates = draft.rules.filter((rule) => rule.name === RECOVERY_NAME);
+  if (valueType(change) !== 'object' || candidates.length !== 1
+    || !isDeepStrictEqual(Object.keys(change).sort(), ['action', 'id', 'value'])
+    || change.action !== 'rules.insert' || (change.id !== null && change.id !== candidates[0].id)) return 'other_or_ambiguous';
+  const { id: _id, valid: _valid, validationErrors: _errors, ...ruleValue } = candidates[0];
+  return isDeepStrictEqual(change.value, ruleValue) || isDeepStrictEqual(change.value, candidates[0])
+    ? 'single_candidate_insert' : 'other_or_ambiguous';
+}
+
+/** Project current snapshot facts only; missing historical evidence always prevents ownership/restoration claims. */
+function recoveryFacts(current) {
+  const facts = { basis: 'current_snapshot_only', originalBaselineComparison: 'unavailable',
+    originalMarkerComparison: 'unavailable', ownership: 'unverified', restorationVerified: false,
+    active: null, draft: null, draftVsActive: null };
+  if (!current) return facts;
+  facts.active = recoveryCandidates(current.active);
+  if (current.draft === null) return facts;
+  facts.draft = recoveryCandidates(current.draft);
+  const activeCandidates = current.active.rules.filter((rule) => rule.name === RECOVERY_NAME);
+  const draftCandidates = current.draft.rules.filter((rule) => rule.name === RECOVERY_NAME);
+  facts.draftVsActive = {
+    policyEqual: isDeepStrictEqual(policy(current.active), policy(current.draft)),
+    nonCandidatePolicyEqual: isDeepStrictEqual(nonCandidatePolicy(current.active), nonCandidatePolicy(current.draft)),
+    candidateRulesEqual: isDeepStrictEqual(activeCandidates, draftCandidates),
+    sharedCandidateIdCount: draftCandidates.filter((rule) => activeCandidates.some((active) => active.id === rule.id)).length,
+    configurationIdEqual: current.active.id === current.draft.id,
+    versionEqual: current.active.version === current.draft.version,
+    updatedAtEqual: current.active.updatedAt === current.draft.updatedAt,
+    changeListsEqual: isDeepStrictEqual(current.active.changes, current.draft.changes),
+    draftChangeCount: current.draft.changes.length, draftChangeClassification: recoveryChangeList(current.draft),
+  };
+  return facts;
+}
+
+/** Validate full-trial prerequisites, optionally recording sanitized initial-read facts. */
 function snapshot(response, report) {
   const reviewed = inspectConfigResponse(response);
   if (report) report.baselineCheck = reviewed.facts;
@@ -528,7 +629,7 @@ async function runReceipt(input, deps = {}) {
     const parsed = envelopeSchema.safeParse(input);
     if (!parsed.success) throw new ReceiptError('input');
     const profile = parseProfile(parsed.data.profile);
-    if (profile.queryMode === 'config_check') throw new ReceiptError('profile');
+    if (profile.queryMode !== undefined) throw new ReceiptError('profile');
     requireFresh(profile, wall());
     token = parsed.data.credentials.providerToken;
     if (JSON.stringify(profile).includes(token) || parsed.data.approval.includes(token)) throw new ReceiptError('credentials');
@@ -593,14 +694,26 @@ function failureCode(error) { return CODES.has(error?.code) ? error.code : CODES
  * even a compatible configuration ends the check without entering runReceipt.
  */
 async function runConfigCheck(input, deps = {}) {
+  return runReadOnlyConfig(input, deps, 'config_check');
+}
+
+/** Run the isolated inspection for the known failed trial; no lifecycle or cleanup calls are reachable. */
+async function runRecoveryInspection(input, deps = {}) {
+  return runReadOnlyConfig(input, deps, 'recovery_inspection');
+}
+
+/** Share bounded GET transport between fixed wrappers; expectedMode is internal, never caller-selected input. */
+async function runReadOnlyConfig(input, deps, expectedMode) {
+  const recovery = expectedMode === 'recovery_inspection';
   const report = { schemaVersion: 1, mode: deps.requestImpl ? 'fixture' : 'live',
-    scope: CONFIG_SCOPE, queryMode: 'config_check', result: 'stopped',
+    scope: recovery ? RECOVERY_SCOPE : CONFIG_SCOPE, queryMode: expectedMode, result: 'stopped',
+    ...(recovery ? { failedTrialId: RECOVERY_TRIAL_ID, recoveryInspection: recoveryFacts() } : {}),
     gate1Status: 'open', sourceAgreement: 'not_evaluated', correlation: 'unqualified', completeness: 'unqualified',
     hostedEvidence: deps.requestImpl ? 'not_executed' : 'requires_review', target: TARGET,
     limits: CONFIG_LIMITS, approvalId: null, appRequests: 0, providerRequests: 0,
     eventsQueries: 0, configMutations: 0, endpoint: 'https://api.vercel.com/v1/security/firewall/config',
     method: 'GET', receipts: [], configurationCheck: null,
-    cleanup: { status: 'not_needed', failure: null, restorationVerified: false },
+    cleanup: { status: recovery ? 'cleanup_unresolved' : 'not_needed', failure: null, restorationVerified: false },
     failure: null, stoppedPhase: 'validation' };
   const now = deps.now || (() => performance.now()), wall = deps.wall || Date.now;
   let started, wallStart, previous, file, guardFailure, phase = 'validation';
@@ -619,14 +732,14 @@ async function runConfigCheck(input, deps = {}) {
     const parsed = envelopeSchema.safeParse(input);
     if (!parsed.success) throw new ReceiptError('input');
     const profile = parseProfile(parsed.data.profile);
-    if (profile.queryMode !== 'config_check') throw new ReceiptError('profile');
+    if (profile.queryMode !== expectedMode) throw new ReceiptError('profile');
     requireFresh(profile, wall());
     const { approval, credentials } = parsed.data;
     if (JSON.stringify(profile).includes(credentials.providerToken) || approval.includes(credentials.providerToken)) throw new ReceiptError('credentials');
     if (approval !== approvalId(profile)) throw new ReceiptError('approval');
     report.approvalId = approval; report.startedAt = new Date(wallStart).toISOString();
     if (!deps.requestImpl) file = reserveTrial(report);
-    phase = 'configCheck'; report.stoppedPhase = phase;
+    phase = recovery ? 'recoveryInspection' : 'configCheck'; report.stoppedPhase = phase;
     checkpoint(file, report);
     const headers = { Accept: 'application/json', 'Accept-Encoding': 'identity', Authorization: `Bearer ${credentials.providerToken}` };
     const receipt = { phase, httpStatus: null };
@@ -649,7 +762,9 @@ async function runConfigCheck(input, deps = {}) {
       bytes: CONFIG_LIMITS.providerBytes, headers },
     { requestImpl: dispatch, signal: deps.signal, timeoutMs: Math.min(CONFIG_LIMITS.requestMs, remaining()) });
     remaining();
-    report.configurationCheck = reviewConfigResponse(response);
+    const reviewed = inspectConfigResponse(response);
+    report.configurationCheck = reviewed.facts;
+    if (recovery) report.recoveryInspection = recoveryFacts(reviewed.value);
     if (report.configurationCheck.failure) throw new ReceiptError(report.configurationCheck.failure);
     remaining(); report.result = 'completed'; report.stoppedPhase = null;
   } catch (error) {
@@ -666,11 +781,14 @@ async function runConfigCheck(input, deps = {}) {
 /** CLI input is bounded stdin only, offline by default; signal cancellation still reserves cleanup time. */
 async function main(args) {
   try {
-    if (args.length > 1 || (args.length && !['--prepare', '--template', '--config-prepare', '--config-template', '--review', '--live'].includes(args[0]))) throw new ReceiptError('arguments');
+    if (args.length > 1 || (args.length && !['--prepare', '--template', '--config-prepare', '--config-template',
+      '--recovery-prepare', '--recovery-template', '--review', '--live'].includes(args[0]))) throw new ReceiptError('arguments');
     if (args[0] !== '--live') {
       const value = args[0] === '--template' ? profileTemplate()
         : args[0] === '--config-template' ? profileTemplate(Date.now(), 'config_check')
         : args[0] === '--config-prepare' ? preparation(null, Date.now(), 'config_check')
+        : args[0] === '--recovery-template' ? profileTemplate(Date.now(), 'recovery_inspection')
+        : args[0] === '--recovery-prepare' ? preparation(null, Date.now(), 'recovery_inspection')
         : args[0] === '--review' ? preparation(await readInput()) : preparation();
       process.stdout.write(`${JSON.stringify(value, null, 2)}\n`); return;
     }
@@ -681,7 +799,9 @@ async function main(args) {
     let report;
     try {
       const input = await readInput();
-      report = await (input?.profile?.queryMode === 'config_check' ? runConfigCheck : runReceipt)(input, { signal: controller.signal });
+      const runner = input?.profile?.queryMode === 'recovery_inspection' ? runRecoveryInspection
+        : input?.profile?.queryMode === 'config_check' ? runConfigCheck : runReceipt;
+      report = await runner(input, { signal: controller.signal });
     }
     finally { process.removeListener('SIGINT', cancel); process.removeListener('SIGTERM', cancel); }
     process.stdout.write(encodeReport(report));
@@ -692,6 +812,6 @@ async function main(args) {
   }
 }
 
-module.exports = { LIMITS, CONFIG_LIMITS, TARGET, profileTemplate, parseProfile, approvalId, preparation,
-  diagnosticRule, reviewEvents, reviewConfigResponse, runReceipt, runConfigCheck };
+module.exports = { LIMITS, CONFIG_LIMITS, TARGET, RECOVERY_TRIAL_ID, profileTemplate, parseProfile, approvalId, preparation,
+  diagnosticRule, reviewEvents, reviewConfigResponse, runReceipt, runConfigCheck, runRecoveryInspection };
 if (require.main === module) void main(process.argv.slice(2));
