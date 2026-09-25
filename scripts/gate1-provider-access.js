@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Local, offline-by-default GATE-1 metrics-access diagnostic. Separate live
+ * Local, offline-by-default GATE-1 provider-access diagnostic. Separate live
  * approval permits one provider query and zero application requests. This does
  * not call runDiscovery, qualify WAF data, or recover the earlier trial marker.
  */
@@ -19,14 +19,39 @@ const LIMITS = Object.freeze({ maxAppRequests: 0, maxProviderRequests: 1, maxWaf
   concurrency: 1, requestMs: 10000, overallMs: 15000, providerBytes: 262144,
   headerBytes: 16384, inputBytes: 16384, reportBytes: 8192, queryWindowMs: 60000,
   profileAgeMs: 900000, rowLimit: 2 });
+// Events has no documented row-limit parameter; transport bytes bound its collection instead.
+const EVENTS_LIMITS = Object.freeze({ ...LIMITS, rowLimit: null });
 const API_PATH = `/metrics/v1?teamId=${TARGET.teamId}`;
+const EVENTS_PATH = '/v1/security/firewall/events';
+const queryModeSchema = z.enum(['discovery_shape', 'action_control', 'events_access']);
 const timestamp = z.string().max(24).datetime();
-const profileSchema = z.object({ schemaVersion: z.literal(1),
+const profileSchema = z.object({ schemaVersion: z.literal(2),
+  queryMode: queryModeSchema,
   projectId: z.literal(TARGET.projectId), teamId: z.literal(TARGET.teamId),
   hostname: z.literal(TARGET.hostname), reviewedAt: timestamp,
   queryWindow: z.object({ start: timestamp, end: timestamp }).strict(),
   attestations: z.object({ sourceCodeReviewed: z.literal(true),
     credentialLoggingReviewed: z.literal(true) }).strict() }).strict();
+const actionResponseSchema = z.object({ summary: z.array(z.object({
+  dimensions: z.object({ wafAction: z.string().min(1).max(64) }).strict(),
+  values: z.object({ value: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER) }).strict(),
+}).strict()).max(LIMITS.rowLimit), series: z.array(z.unknown()).length(0).optional(),
+sampled: z.boolean().optional(), truncated: z.boolean().optional() }).strict();
+// The REST examples quote scalars, while the SDK accepts native types and strings.
+// Accept only canonical string forms, never SDK defaults for missing/null values.
+// Contract: vercel.com/docs/rest-api/security/read-firewall-actions-by-project;
+// vercel/sdk src/models/getsecurityfirewalleventsop.ts and src/types/primitives.ts.
+const eventCountSchema = z.union([z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  z.string().max(16).regex(/^(0|[1-9][0-9]*)$/)
+    .pipe(z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER))]);
+const eventStringSchema = z.string().max(4096);
+const eventsResponseSchema = z.object({ actions: z.array(z.object({
+  action: eventStringSchema, action_type: eventStringSchema, count: eventCountSchema,
+  endTime: eventStringSchema, host: eventStringSchema,
+  isActive: z.union([z.boolean(), z.enum(['true', 'false'])]),
+  public_ip: eventStringSchema, ruleId: eventStringSchema.nullable(),
+  ruleName: eventStringSchema.nullable(), startTime: eventStringSchema,
+}).strict()) }).strict();
 const envelopeSchema = z.object({ profile: profileSchema,
   approval: z.string().regex(/^[a-f0-9]{64}$/),
   credentials: z.object({ providerToken: z.string().min(20).max(512)
@@ -40,6 +65,15 @@ const CODES = new Set(['arguments', 'input', 'profile', 'approval', 'credentials
 // Only exact literals are retained. CLI-derived status labels are not provider causes.
 const ERROR_CODES = new Map(['forbidden', 'unauthorized', 'bad_request', 'payment_required', 'rate_limited']
   .flatMap((code) => [[code, code], [code.toUpperCase(), code]]));
+const MESSAGE_HINT_BYTES = 2048;
+// Fixed vocabulary detects mentions only, including negated statements; it cannot establish a cause.
+const MESSAGE_HINT_PATTERNS = Object.freeze({
+  permissionMentioned: /\b(?:permissions?|forbidden|unauthori[sz]ed|authori[sz]ation|access[ \t]+denied|not[ \t]+authori[sz]ed)\b/i,
+  scopeOrRoleMentioned: /\b(?:scope[ds]?|teams?|membership|roles?)\b/i,
+  queryDimensionsMentioned: /\b(?:dimensions?|group[ \t]*by|clientIp|clientUserAgent|requestHostname|requestPath)\b/i,
+  retentionMentioned: /\b(?:retention|retained|time[ \t]+range|time[ \t]+window|too[ \t]+old)\b/i,
+  planOrSubscriptionMentioned: /\b(?:plans?|subscriptions?|observability|upgrade|entitlements?)\b/i,
+});
 
 /** Carry fixed failure codes only; arbitrary exception messages never reach output. */
 class AccessError extends Error {
@@ -47,10 +81,11 @@ class AccessError extends Error {
   constructor(code) { super(CODES.has(code) ? code : 'internal'); this.code = this.message; }
 }
 
-/** Create an unapproved offline template with a fixed preceding minute; now is a test seam. */
-function profileTemplate(now = Date.now()) {
+/** Create an unapproved explicit-mode template with a fixed minute; defaults remain metrics action-control. */
+function profileTemplate(now = Date.now(), queryMode = 'action_control') {
+  if (!queryModeSchema.safeParse(queryMode).success) throw new AccessError('profile');
   const end = Math.floor(now / 1000) * 1000;
-  return { schemaVersion: 1, ...TARGET, reviewedAt: new Date(now).toISOString(),
+  return { schemaVersion: 2, queryMode, ...TARGET, reviewedAt: new Date(now).toISOString(),
     queryWindow: { start: new Date(end - LIMITS.queryWindowMs).toISOString(), end: new Date(end).toISOString() },
     attestations: { sourceCodeReviewed: false, credentialLoggingReviewed: false } };
 }
@@ -73,57 +108,168 @@ function requireFresh(profile, wall) {
   if (!Number.isFinite(wall) || age < 0 || age > LIMITS.profileAgeMs) throw new AccessError('profile');
 }
 
-/** Hash normalized scope/window, bounds and executable script dependencies; reads code only, never auth files. */
+/**
+ * Derive the only permitted provider operation from a validated profile. Events
+ * timestamps are epoch milliseconds and hosts is one scalar, matching Vercel's
+ * fetchFirewallPersistentActions implementation in CLI 59.20.0 (verified
+ * 2026-09-24). No arbitrary URLs or paging.
+ */
+function operationFor(profile) {
+  if (profile?.queryMode !== 'events_access') {
+    return { scope: 'provider_metrics_access_only', endpoint: 'https://api.vercel.com/metrics/v1',
+      method: 'POST', path: API_PATH, limits: LIMITS };
+  }
+  const queryParameters = { projectId: profile.projectId, teamId: profile.teamId,
+    startTimestamp: Date.parse(profile.queryWindow.start), endTimestamp: Date.parse(profile.queryWindow.end),
+    hosts: profile.hostname };
+  return { scope: 'provider_firewall_events_access_only', endpoint: `https://api.vercel.com${EVENTS_PATH}`,
+    method: 'GET', path: `${EVENTS_PATH}?${new URLSearchParams(queryParameters)}`,
+    limits: EVENTS_LIMITS, queryParameters };
+}
+
+/** Hash the exact operation, normalized profile, bounds and executable dependencies; never read auth files. */
 function approvalId(profile) {
-  const digest = createHash('sha256').update(JSON.stringify({ profile: parseProfile(profile), limits: LIMITS }));
+  const normalized = parseProfile(profile);
+  const digest = createHash('sha256').update(JSON.stringify({ profile: normalized, operation: operationFor(normalized) }));
   for (const name of FILES) {
     digest.update(name).update('\0').update(fs.readFileSync(path.join(__dirname, name))).update('\0');
   }
   return digest.digest('hex');
 }
 
+/** Build the fixed action-only control for this profile; host/path filters remain, with no marker or app traffic. */
+function actionQuery(profile) {
+  return JSON.stringify({ scope: { ownerId: profile.teamId, projectIds: [profile.projectId] },
+    timeRange: profile.queryWindow,
+    metrics: { value: { metric: 'vercel.firewall_action.count', aggregation: 'count' } },
+    outputs: ['value'], groupBy: ['wafAction'],
+    filter: `(requestHostname:"${profile.hostname}") AND (requestPath:"/api/auth/session")`,
+    rowLimit: LIMITS.rowLimit, orderBy: [{ metric: 'value', direction: 'desc' }] });
+}
+
 /** Return offline review facts and an approval identifier; preparation does not grant live permission. */
 function preparation(value = null, now = Date.now()) {
   const profile = value === null ? null : parseProfile(value);
   if (profile) requireFresh(profile, now);
-  return { schemaVersion: 1, mode: 'prepare', scope: 'provider_metrics_access_only',
+  const control = profile?.queryMode === 'action_control';
+  const events = profile?.queryMode === 'events_access', operation = operationFor(profile);
+  return { schemaVersion: 2, mode: 'prepare', scope: operation.scope,
     liveApproved: false, gate1Status: 'open', appRequests: 0, providerRequests: 0,
-    target: TARGET, profile, approvalId: profile ? approvalId(profile) : null, limits: LIMITS,
-    endpoint: 'https://api.vercel.com/metrics/v1', method: 'POST',
+    target: TARGET, profile, approvalId: profile ? approvalId(profile) : null, limits: operation.limits,
+    queryMode: profile?.queryMode ?? null, query: control ? JSON.parse(actionQuery(profile)) : null,
+    endpoint: operation.endpoint, method: operation.method,
+    ...(events ? { queryParameters: operation.queryParameters, logActionCoverage: 'not_evaluated' } : {}),
     sourceAgreement: 'not_evaluated', correlation: 'unqualified', completeness: 'unqualified',
     nextStep: profile ? 'obtain_separate_live_approval' : 'complete_local_profile',
-    limitations: ['query_access_only', 'fresh_marker_has_no_application_request',
-      'unknown_errors_remain_unclassified', 'no_deployment_attribution_checks'] };
+    limitations: ['query_access_only',
+      ...(events ? ['log_action_coverage_unverified', 'action_summaries_are_not_request_traces',
+        'no_server_row_limit', 'response_processing_bounded_by_bytes', 'no_pagination']
+        : control ? ['action_control_is_not_the_detailed_query', 'action_rows_do_not_establish_source_agreement',
+        'not_an_exact_replay_of_the_prior_cli_query']
+        : profile ? ['fresh_marker_has_no_application_request'] : []),
+      'unknown_errors_remain_unclassified', 'message_hints_are_not_a_diagnosis',
+      'missing_authorization_fields_are_inconclusive', 'no_deployment_attribution_checks'] };
 }
 
 /**
- * Project transient provider JSON to bounded facts. Only exact allowlisted codes
- * survive; messages and unknown codes never do. An empty 200 establishes query
- * access only, and unexpected rows for the unused marker stop the diagnostic.
+ * Project a transient error message to fixed mention flags for response review.
+ * Non-string/oversized inputs are not scanned or coerced; unknown text stays
+ * unclassified. No text, matches, provider keys or instructions escape this helper.
+ */
+function reviewMessageHints(message) {
+  const hints = { basis: 'message_terms_only', classification: 'not_evaluated',
+    permissionMentioned: false, scopeOrRoleMentioned: false, queryDimensionsMentioned: false,
+    retentionMentioned: false, planOrSubscriptionMentioned: false };
+  if (typeof message !== 'string') return hints;
+  if (Buffer.byteLength(message, 'utf8') > MESSAGE_HINT_BYTES) {
+    hints.classification = 'too_large';
+    return hints;
+  }
+  hints.classification = 'unclassified';
+  for (const [key, pattern] of Object.entries(MESSAGE_HINT_PATTERNS)) {
+    hints[key] = pattern.test(message);
+    if (hints[key]) hints.classification = 'recognized_terms';
+  }
+  return hints;
+}
+
+/** Project one own boolean field without coercion; absent and invalid types are distinct from false. */
+function reviewBooleanField(value, field) {
+  if (!Object.hasOwn(value, field)) return 'absent';
+  if (value[field] === true) return 'true';
+  return value[field] === false ? 'false' : 'invalid_type';
+}
+
+/** Retain only typed CLI-relevant authorization signals and team equality; no provider text or IDs escape. */
+function reviewAuthorizationHints(error = {}) {
+  return { basis: 'structured_error_fields_only', saml: reviewBooleanField(error, 'saml'),
+    enforced: reviewBooleanField(error, 'enforced'),
+    teamId: !Object.hasOwn(error, 'teamId') ? 'absent' : typeof error.teamId !== 'string' ? 'invalid_type'
+      : error.teamId === TARGET.teamId ? 'matches_target' : 'different_target' };
+}
+
+/** Validate bounded action summaries and discard their labels/counts; sampling never establishes completeness. */
+function reviewActionResponse(value) {
+  const parsed = actionResponseSchema.safeParse(value);
+  if (!parsed.success) throw new AccessError('provider_schema');
+  return parsed.data.summary.length === 0 ? 'empty' : 'nonempty';
+}
+
+/**
+ * Validate the bounded Events wire schema, then discard all action values,
+ * including sources and rule names. Empty/nonempty establishes API access only.
+ */
+function reviewEventsResponse(value) {
+  const parsed = eventsResponseSchema.safeParse(value);
+  if (!parsed.success) throw new AccessError('provider_schema');
+  return parsed.data.actions.length === 0 ? 'empty' : 'nonempty';
+}
+
+/**
+ * Project transient provider JSON to bounded facts: exact allowlisted codes and
+ * structured/wording hints, never text or unknown codes. Action rows establish
+ * access only; detailed-query rows for the unused marker still stop the diagnostic.
  */
 function reviewResponse(response, profile, marker) {
   const facts = { jsonContentType: /^application\/json(?:\s*;|$)/i.test(response.headers['content-type'] || ''),
     jsonValid: false, errorObjectPresent: false, errorCodePresent: false, errorMessagePresent: false,
-    errorCode: null, queryAccepted: false, rows: 'not_evaluated',
+    errorCode: null, errorMessageHints: reviewMessageHints(), queryAccepted: false, rows: 'not_evaluated',
+    authorizationHints: reviewAuthorizationHints(),
+    ...(profile.queryMode === 'events_access' ? { schemaCompatible: false } : {}),
     failure: response.status === 200 ? 'provider_schema' : 'provider_status' };
   let value;
   try { value = JSON.parse(response.body); facts.jsonValid = true; } catch { return facts; }
   if (!facts.jsonContentType || !value || typeof value !== 'object' || Array.isArray(value)) return facts;
   const error = value.error;
-  if (error && typeof error === 'object' && !Array.isArray(error)) {
-    facts.errorObjectPresent = true;
-    facts.errorCodePresent = Object.hasOwn(error, 'code');
-    facts.errorMessagePresent = Object.hasOwn(error, 'message');
-    facts.errorCode = facts.errorCodePresent ? ERROR_CODES.get(error.code) || 'unrecognized' : null;
+  if (Object.hasOwn(value, 'error')) {
+    if (error && typeof error === 'object' && !Array.isArray(error)) {
+      facts.errorObjectPresent = true;
+      facts.errorCodePresent = Object.hasOwn(error, 'code');
+      facts.errorMessagePresent = Object.hasOwn(error, 'message');
+      facts.errorCode = facts.errorCodePresent ? ERROR_CODES.get(error.code) || 'unrecognized' : null;
+      if (facts.errorMessagePresent) facts.errorMessageHints = reviewMessageHints(error.message);
+      facts.authorizationHints = reviewAuthorizationHints(error);
+    }
     return facts;
   }
   if (response.status !== 200) return facts;
   try {
-    const metrics = reviewMetrics(value, profile, marker);
-    facts.queryAccepted = true;
-    facts.rows = metrics.rows === 0 ? 'empty' : 'unexpected';
-    facts.failure = metrics.rows !== 0 ? 'unexpected_rows'
-      : metrics.availability === 'no_rows' ? null : 'provider_ambiguous';
+    if (profile.queryMode === 'events_access') {
+      facts.rows = reviewEventsResponse(value);
+      facts.schemaCompatible = true;
+      facts.queryAccepted = true;
+      facts.failure = null;
+    } else if (profile.queryMode === 'action_control') {
+      facts.rows = reviewActionResponse(value);
+      facts.queryAccepted = true;
+      facts.failure = null;
+    } else {
+      const metrics = reviewMetrics(value, profile, marker);
+      facts.queryAccepted = true;
+      facts.rows = metrics.rows === 0 ? 'empty' : 'unexpected';
+      facts.failure = metrics.rows !== 0 ? 'unexpected_rows'
+        : metrics.availability === 'no_rows' ? null : 'provider_ambiguous';
+    }
   } catch { facts.failure = 'provider_schema'; }
   return facts;
 }
@@ -134,11 +280,11 @@ function reviewResponse(response, profile, marker) {
  * production uses native HTTPS without retries, proxy settings or redirects.
  */
 async function runAccess(input, deps = {}) {
-  const report = { schemaVersion: 1, mode: deps.requestImpl ? 'fixture' : 'live',
+  const report = { schemaVersion: 2, mode: deps.requestImpl ? 'fixture' : 'live',
     scope: 'provider_metrics_access_only', result: 'stopped', gate1Status: 'open',
     sourceAgreement: 'not_evaluated', correlation: 'unqualified', completeness: 'unqualified',
     hostedEvidence: deps.requestImpl ? 'not_executed' : 'requires_review',
-    target: TARGET, queryWindow: null, approvalId: null, limits: LIMITS,
+    target: TARGET, queryMode: null, queryWindow: null, approvalId: null, limits: LIMITS,
     appRequests: 0, providerRequests: 0, httpStatus: null, response: null,
     failure: null, stoppedPhase: 'validation' };
   const now = deps.now || (() => performance.now()), wall = deps.wall || Date.now;
@@ -169,17 +315,24 @@ async function runAccess(input, deps = {}) {
       || approval.includes(credentials.providerToken)) throw new AccessError('credentials');
     if (approval !== approvalId(profile)) throw new AccessError('approval');
     requireFresh(profile, wall());
+    const operation = operationFor(profile);
+    const events = profile.queryMode === 'events_access';
+    report.scope = operation.scope; report.limits = operation.limits;
+    report.endpoint = operation.endpoint; report.method = operation.method;
+    if (events) report.logActionCoverage = 'not_evaluated';
+    report.queryMode = profile.queryMode;
     report.queryWindow = profile.queryWindow; report.approvalId = approval;
     // This value is only a provider query filter: no corresponding app request exists.
-    const marker = `gate1-source-${randomBytes(16).toString('hex')}`;
-    const body = metricsQuery(profile, marker, profile.queryWindow);
+    const marker = profile.queryMode === 'discovery_shape' ? `gate1-source-${randomBytes(16).toString('hex')}` : null;
+    const body = events ? undefined : profile.queryMode === 'action_control' ? actionQuery(profile)
+      : metricsQuery(profile, marker, profile.queryWindow);
     /** Count actual dispatches and capture status only; no caller-selected host or follow-up is allowed. */
     function dispatch(options, receive) {
       try {
         remaining();
         if (report.providerRequests >= LIMITS.maxProviderRequests || options.hostname !== 'api.vercel.com'
-          || options.protocol !== 'https:' || options.port !== 443 || options.method !== 'POST'
-          || options.path !== API_PATH) throw new AccessError('request_budget');
+          || options.protocol !== 'https:' || options.port !== 443 || options.method !== operation.method
+          || options.path !== operation.path) throw new AccessError('request_budget');
       } catch (error) {
         guardFailure = error instanceof AccessError ? error : new AccessError('internal');
         throw guardFailure;
@@ -192,11 +345,11 @@ async function runAccess(input, deps = {}) {
         receive(incoming);
       });
     }
-    phase = 'metricsAccess';
-    const response = await exchange({ hostname: 'api.vercel.com', path: API_PATH, method: 'POST',
+    phase = events ? 'eventsAccess' : 'metricsAccess';
+    const response = await exchange({ hostname: 'api.vercel.com', path: operation.path, method: operation.method,
       bytes: LIMITS.providerBytes, body, headers: { Accept: 'application/json', 'Accept-Encoding': 'identity',
-        Authorization: `Bearer ${credentials.providerToken}`, 'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body) } },
+        Authorization: `Bearer ${credentials.providerToken}`,
+        ...(events ? {} : { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }) } },
     { requestImpl: dispatch, signal: deps.signal, timeoutMs: Math.min(LIMITS.requestMs, remaining()) });
     remaining();
     if (report.httpStatus === null) throw new AccessError('provider_schema');
@@ -233,11 +386,12 @@ function saveReport(report) {
 /** CLI modes are exact and offline by default; the live envelope and token are read from bounded stdin only. */
 async function main(args) {
   try {
-    if (args.length > 1 || (args.length && !['--prepare', '--template', '--review', '--live'].includes(args[0]))) {
+    if (args.length > 1 || (args.length && !['--prepare', '--template', '--events-template', '--review', '--live'].includes(args[0]))) {
       throw new AccessError('arguments');
     }
     if (args[0] !== '--live') {
       const value = args[0] === '--template' ? profileTemplate()
+        : args[0] === '--events-template' ? profileTemplate(Date.now(), 'events_access')
         : args[0] === '--review' ? preparation(await readInput()) : preparation();
       process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
       return;
@@ -258,5 +412,5 @@ async function main(args) {
   }
 }
 
-module.exports = { LIMITS, TARGET, profileTemplate, parseProfile, approvalId, preparation, reviewResponse, runAccess };
+module.exports = { LIMITS, EVENTS_LIMITS, TARGET, profileTemplate, parseProfile, approvalId, preparation, reviewResponse, runAccess };
 if (require.main === module) void main(process.argv.slice(2));
