@@ -193,7 +193,7 @@ function expectRecovery(result) {
   expect(result.state.labels.every((label) => label === 'config')).toBe(true);
   expect(result.sleep).not.toHaveBeenCalled(); expectConfigPrivate(result.report); expectPrivate(result.report);
   expect(JSON.stringify(result.report)).not.toContain(`gate1-log-${'a'.repeat(48)}`);
-  expect(Buffer.byteLength(`${JSON.stringify(result.report, null, 2)}\n`)).toBeLessThanOrEqual(CONFIG_LIMITS.reportBytes);
+  expect(Buffer.byteLength(`${JSON.stringify(result.report, null, 1)}\n`)).toBeLessThanOrEqual(CONFIG_LIMITS.reportBytes);
 }
 
 describe('isolated recovery inspection', () => {
@@ -375,6 +375,322 @@ describe('isolated recovery inspection', () => {
       expect(result.calls).toHaveLength(kind === 'before' ? 0 : 1);
       expect(result.report.result).toBe('stopped'); expectRecovery(result);
     } finally { jest.useRealTimers(); }
+  });
+});
+
+describe('recovery difference diagnostics', () => {
+  it('explains the observed combination using synthetic differences without reconstructing the lost baseline', async () => {
+    const state = recoveryState(), before = copy(state);
+    state.draft.id = state.active.id;
+    state.draft.version += 1; state.draft.updatedAt = new Date(START + 1000).toISOString();
+    state.draft.projectKey = PROJECT_KEY.toUpperCase();
+    state.draft.rules[0].validationErrors = [];
+    state.draft.changes[0][PRIVATE] = { token: TOKEN, address: ADDRESS };
+    const input = copy(state), result = await recoveryTrial({ state });
+    expect(result.report.result).toBe('completed');
+    expect(result.state.active).toEqual(before.active); expect(result.state.draft).toEqual(input.draft);
+    expect(result.report.recoveryInspection).toMatchObject({ draft: { count: 1, exactStructureCount: 1 },
+      draftVsActive: { nonCandidatePolicyEqual: false, configurationIdEqual: true,
+        versionEqual: false, updatedAtEqual: false, draftChangeClassification: 'other_or_ambiguous',
+        configurationFields: { projectKey: { activeType: 'string', draftType: 'string', equal: false } },
+        nonCandidateRules: { changed: 1, changedFields: { validationErrors: 1 }, sharedOrderEqual: true },
+        draftChangeDetails: { singleEntry: true, singleCandidate: true, entryType: 'object',
+          fields: { action: 'string', id: 'string', value: 'object' }, extraFieldCount: 1,
+          action: 'rules_insert', idRelationship: 'candidate', valueEqualsInput: true } } });
+    expectRecovery(result);
+  });
+
+  it('separates policy differences from excluded root metadata and candidate additions', async () => {
+    const state = recoveryState();
+    state.draft.version += 1; state.draft.updatedAt = new Date(START + 1000).toISOString();
+    const result = await recoveryTrial({ state }), facts = result.report.recoveryInspection.draftVsActive;
+    expect(facts.nonCandidatePolicyEqual).toBe(true);
+    expect(facts.configurationFields).toEqual({
+      id: { activeType: 'string', draftType: 'string', equal: false },
+      version: { activeType: 'number', draftType: 'number', equal: false },
+      updatedAt: { activeType: 'string', draftType: 'string', equal: false },
+      ownerId: { activeType: 'string', draftType: 'string', equal: true },
+      projectKey: { activeType: 'string', draftType: 'string', equal: true },
+      firewallEnabled: { activeType: 'boolean', draftType: 'boolean', equal: true },
+      changes: { activeType: 'array', draftType: 'array', equal: false },
+      ips: { activeType: 'array', draftType: 'array', equal: true },
+      rules: { activeType: 'array', draftType: 'array', equal: false },
+    });
+    expect(facts.nonCandidateRules).toMatchObject({ added: 0, removed: 0, changed: 0,
+      orderEqual: true, sharedOrderEqual: true });
+    expectRecovery(result);
+  });
+
+  it.each([
+    ['added_null', undefined, null, { activeCount: 0, draftCount: 1, added: 1, removed: 0, changed: 0, typeChanged: 0 }],
+    ['removed_null', null, undefined, { activeCount: 1, draftCount: 0, added: 0, removed: 1, changed: 0, typeChanged: 0 }],
+    ['equal_null', null, null, { activeCount: 1, draftCount: 1, added: 0, removed: 0, changed: 0, typeChanged: 0 }],
+    ['type_change', null, [], { activeCount: 1, draftCount: 1, added: 0, removed: 0, changed: 1, typeChanged: 1 }],
+    ['nested_change', { data: TOKEN }, { data: ADDRESS }, { activeCount: 1, draftCount: 1, added: 0, removed: 0, changed: 1, typeChanged: 0 }],
+    ['array_order', [TOKEN, ADDRESS], [ADDRESS, TOKEN], { activeCount: 1, draftCount: 1, added: 0, removed: 0, changed: 1, typeChanged: 0 }],
+  ])('aggregates unknown configuration fields for %s without exposing names', async (_label, active, draft, expected) => {
+    const state = recoveryState();
+    if (active !== undefined) state.active[PRIVATE] = active;
+    if (draft !== undefined) state.draft[PRIVATE] = draft;
+    const result = await recoveryTrial({ state });
+    expect(result.report.recoveryInspection.draftVsActive.unknownFields).toEqual(expected);
+    expect(result.report.recoveryInspection.draftVsActive.nonCandidatePolicyEqual)
+      .toBe(expected.added + expected.removed + expected.changed === 0);
+    expectRecovery(result);
+  });
+
+  it('counts added, removed and changed rule identities separately from reordered surviving rules', async () => {
+    const state = recoveryState(), original = copy(state.active.rules[0]);
+    const second = { ...copy(original), id: 'rule_fixture_second' };
+    const removed = { ...copy(original), id: 'rule_fixture_removed' };
+    const added = { ...copy(original), id: 'rule_fixture_added' };
+    state.active.rules.push(second, removed);
+    state.draft.rules = [added, state.draft.rules[1], { ...copy(second), active: false }, copy(original)];
+    const result = await recoveryTrial({ state });
+    expect(result.report.recoveryInspection.draftVsActive.nonCandidateRules).toEqual({
+      activeCount: 3, draftCount: 3, added: 1, removed: 1, changed: 1, orderEqual: false, sharedOrderEqual: false,
+      changedFields: { active: 1, name: 0, conditions: 0, action: 0, valid: 0, validationErrors: 0, unknown: 0 },
+    });
+    expectRecovery(result);
+  });
+
+  it('does not report surviving-rule reordering solely because another rule was added', async () => {
+    const state = recoveryState();
+    state.draft.rules.unshift({ ...copy(state.active.rules[0]), id: 'rule_fixture_added' });
+    const result = await recoveryTrial({ state });
+    expect(result.report.recoveryInspection.draftVsActive.nonCandidateRules).toMatchObject({
+      added: 1, removed: 0, changed: 0, orderEqual: false, sharedOrderEqual: true });
+    expectRecovery(result);
+  });
+
+  it.each([
+    ['active', false, 'active'], ['name', 'different-private-rule-name', 'name'],
+    ['conditionGroup', [], 'conditions'], ['action', { private: TOKEN }, 'action'],
+    ['valid', undefined, 'valid'], ['validationErrors', null, 'validationErrors'],
+    ['validationErrors', [], 'validationErrors'], [PRIVATE, null, 'unknown'],
+  ])('counts non-candidate %s differences including missing metadata (%#)', async (key, value, label) => {
+    const state = recoveryState();
+    if (value === undefined) delete state.draft.rules[0][key]; else state.draft.rules[0][key] = value;
+    const result = await recoveryTrial({ state }), facts = result.report.recoveryInspection.draftVsActive;
+    expect(facts.nonCandidatePolicyEqual).toBe(false);
+    expect(facts.nonCandidateRules).toMatchObject({ changed: 1, changedFields: { [label]: 1 } });
+    expectRecovery(result);
+  });
+
+  it('retains equality for identical unknown metadata without making unknown metadata a mutation exception', async () => {
+    const state = recoveryState();
+    state.active[PRIVATE] = { nested: TOKEN }; state.draft[PRIVATE] = copy(state.active[PRIVATE]);
+    state.active.rules[0][PRIVATE] = null; state.draft.rules[0][PRIVATE] = null;
+    const result = await recoveryTrial({ state });
+    expect(result.report.recoveryInspection.draftVsActive).toMatchObject({ nonCandidatePolicyEqual: true,
+      unknownFields: { activeCount: 1, draftCount: 1, changed: 0 },
+      nonCandidateRules: { changed: 0, changedFields: { unknown: 0 } } });
+    expectRecovery(result);
+  });
+
+  it.each([[null, 'null'], [[], 'array'], [TOKEN, 'string'], [1, 'number'], [false, 'boolean']])(
+    'explains a non-object change entry without emitting it (%#)', async (entry, type) => {
+      const state = recoveryState(); state.draft.changes = [entry];
+      const result = await recoveryTrial({ state }), facts = result.report.recoveryInspection.draftVsActive;
+      expect(facts.draftChangeClassification).toBe('other_or_ambiguous');
+      expect(facts.draftChangeDetails).toMatchObject({ entryType: type,
+        fields: { action: 'missing', id: 'missing', value: 'missing' },
+        extraFieldCount: null, action: 'not_evaluated', idRelationship: 'not_evaluated', valueEqualsInput: null,
+        metadataFieldTypes: null, unknownExtraFieldCount: null });
+      expectRecovery(result);
+    });
+
+  it.each(['action', 'id', 'value'])('identifies the missing required change field %s', async (key) => {
+    const state = recoveryState(); delete state.draft.changes[0][key];
+    const result = await recoveryTrial({ state }), facts = result.report.recoveryInspection.draftVsActive;
+    expect(facts.draftChangeClassification).toBe('other_or_ambiguous');
+    expect(facts.draftChangeDetails).toMatchObject({ fields: { [key]: 'missing' }, extraFieldCount: 0 });
+    if (key === 'id') expect(facts.draftChangeDetails.idRelationship).toBe('missing');
+    expectRecovery(result);
+  });
+
+  it.each([
+    ['action', null, 'null'], ['action', {}, 'object'], ['id', false, 'boolean'],
+    ['id', [], 'array'], ['value', null, 'null'], ['value', TOKEN, 'string'],
+  ])('identifies required field types without coercion (%#)', async (key, value, type) => {
+    const state = recoveryState(); state.draft.changes[0][key] = value;
+    const result = await recoveryTrial({ state }), facts = result.report.recoveryInspection.draftVsActive;
+    expect(facts.draftChangeClassification).toBe('other_or_ambiguous');
+    expect(facts.draftChangeDetails.fields[key]).toBe(type);
+    expectRecovery(result);
+  });
+
+  it.each([
+    ['rules.insert', 'rules_insert', 'single_candidate_insert'],
+    ['rules.remove', 'rules_remove', 'other_or_ambiguous'],
+    [PRIVATE, 'other', 'other_or_ambiguous'],
+  ])('uses only fixed action labels for %s', async (action, label, classification) => {
+    const state = recoveryState(); state.draft.changes[0].action = action;
+    const result = await recoveryTrial({ state });
+    expect(result.report.recoveryInspection.draftVsActive).toMatchObject({
+      draftChangeClassification: classification, draftChangeDetails: { action: label } });
+    expectRecovery(result);
+  });
+
+  it.each([[null, 'null'], [RULE_ID, 'candidate'], [PRIVATE, 'other']])(
+    'reports only the change ID relationship (%#)', async (id, relationship) => {
+      const state = recoveryState(); state.draft.changes[0].id = id;
+      const result = await recoveryTrial({ state });
+      expect(result.report.recoveryInspection.draftVsActive.draftChangeDetails.idRelationship).toBe(relationship);
+      expectRecovery(result);
+    });
+
+  it.each(['input', 'rule', 'same_shape_different_value', 'extra_field', 'missing_field'])('separates value and top-level shape comparisons for %s', async (kind) => {
+    const state = recoveryState(), entry = state.draft.changes[0];
+    if (kind === 'rule') entry.value = copy(state.draft.rules[1]);
+    if (kind === 'same_shape_different_value') entry.value.conditionGroup[0].conditions[0].value = PRIVATE;
+    if (kind === 'extra_field') entry.value[PRIVATE] = ADDRESS;
+    if (kind === 'missing_field') delete entry.value.active;
+    const result = await recoveryTrial({ state }), facts = result.report.recoveryInspection.draftVsActive;
+    expect(facts.draftChangeDetails).toMatchObject({ valueEqualsInput: kind === 'input', valueEqualsRule: kind === 'rule',
+      valueTopLevelShapeMatchesInput: ['input', 'same_shape_different_value'].includes(kind),
+      valueTopLevelShapeMatchesRule: kind === 'rule' });
+    expect(facts.draftChangeClassification).toBe(['input', 'rule'].includes(kind) ? 'single_candidate_insert' : 'other_or_ambiguous');
+    expectRecovery(result);
+  });
+
+  it.each(['zero_entries', 'multiple_entries', 'zero_candidates', 'multiple_candidates'])('leaves inapplicable comparisons unevaluated for %s', async (kind) => {
+    const state = recoveryState();
+    if (kind === 'zero_entries') state.draft.changes = [];
+    if (kind === 'multiple_entries') state.draft.changes.push(null);
+    if (kind === 'zero_candidates') state.draft.rules.pop();
+    if (kind === 'multiple_candidates') state.draft.rules.push({ ...copy(state.draft.rules[1]), id: 'rule_fixture_second' });
+    const result = await recoveryTrial({ state }), details = result.report.recoveryInspection.draftVsActive.draftChangeDetails;
+    expect(details.valueEqualsInput).toBeNull(); expect(details.valueEqualsRule).toBeNull();
+    expect(details.valueTopLevelShapeMatchesInput).toBeNull(); expect(details.valueTopLevelShapeMatchesRule).toBeNull();
+    if (kind.endsWith('entries')) expect(details).toMatchObject({ singleEntry: false, entryType: 'not_evaluated', fields: null,
+      metadataFieldTypes: null, unknownExtraFieldCount: null });
+    else expect(details).toMatchObject({ singleCandidate: false, idRelationship: 'not_evaluated' });
+    expectRecovery(result);
+  });
+
+  it('does not convert incompatible missing/null configuration fields into equality facts', async () => {
+    for (const value of [undefined, null]) {
+      const state = recoveryState();
+      if (value === undefined) delete state.draft.projectKey; else state.draft.projectKey = value;
+      const result = await recoveryTrial({ state });
+      expect(result.report).toMatchObject({ failure: 'provider_schema',
+        configurationCheck: { draft: { fields: { projectKey: { type: value === null ? 'null' : 'missing', valid: false } } } },
+        recoveryInspection: { draftVsActive: null } });
+      expectRecovery(result);
+    }
+  });
+});
+
+describe('recovery metadata investigation', () => {
+  it('distinguishes literal key relationships and history field types from compatibility or ownership', async () => {
+    const state = recoveryState();
+    state.active.projectKey = `${TARGET.projectId}#3#active`;
+    state.draft.version = 4; state.draft.projectKey = `${TARGET.projectId}#4#draft`;
+    Object.assign(state.draft.changes[0], { createdAt: new Date(START).toISOString(), userId: TOKEN, username: PRIVATE });
+    const before = copy(state), result = await recoveryTrial({ state });
+    expect(result.report).toMatchObject({ result: 'completed', providerRequests: 1,
+      recoveryInspection: { draftVsActive: { nonCandidatePolicyEqual: false,
+        projectKeyDetails: { basis: 'literal_comparison_only',
+          active: { projectIdRelation: 'prefix', versionTokenPresent: true, activeTokenPresent: true, draftTokenPresent: false },
+          draft: { projectIdRelation: 'prefix', versionTokenPresent: true, activeTokenPresent: false, draftTokenPresent: true } },
+        draftChangeClassification: 'other_or_ambiguous',
+        draftChangeDetails: { extraFieldCount: 3, unknownExtraFieldCount: 0,
+          metadataFieldTypes: { createdAt: 'string', updatedAt: 'missing', userId: 'string', username: 'string' } } } } });
+    expect(result.state.active).toEqual(before.active); expect(result.state.draft).toEqual(before.draft);
+    expectRecovery(result);
+  });
+
+  it.each([
+    [TARGET.projectId, 'exact', false, false, false],
+    [`${TARGET.projectId}#3`, 'prefix', true, false, false],
+    [`3/${TARGET.projectId}`, 'suffix', true, false, false],
+    [`active:${TARGET.projectId}:draft`, 'interior', false, true, true],
+    ['wrong-project#3#draft', 'absent', true, false, true],
+    [`${TARGET.projectId}x#3`, 'prefix', true, false, false],
+    [`${TARGET.projectId}#33`, 'prefix', false, false, false],
+    [`${TARGET.projectId}#v3`, 'prefix', false, false, false],
+    [`${TARGET.projectId}#3active#predraft`, 'prefix', false, false, false],
+    [`${TARGET.projectId}#3#ACTIVE#DRAFT`, 'prefix', true, false, false],
+    [`${TARGET.projectId}#3|active|draft`, 'prefix', false, false, false],
+    [`${TARGET.projectId}#3_active/draft`, 'prefix', true, true, true],
+    ['active-3.draft', 'absent', true, true, true],
+    [`dra${TARGET.projectId}ft`, 'interior', false, false, false],
+    [`a${TARGET.projectId}ctive`, 'interior', false, false, false],
+  ])('reports bounded literal facts for synthetic key case %#', async (key, relation, version, active, draft) => {
+    const state = recoveryState(); state.draft.projectKey = key;
+    const result = await recoveryTrial({ state });
+    const facts = result.report.recoveryInspection.draftVsActive;
+    expect(facts.projectKeyDetails.draft).toEqual({ projectIdRelation: relation,
+      versionTokenPresent: version, activeTokenPresent: active, draftTokenPresent: draft });
+    expect(facts.nonCandidatePolicyEqual).toBe(false);
+    expectRecovery(result);
+  });
+
+  it.each([
+    [0, `${TARGET.projectId}#0#draft`, true],
+    [5, `${TARGET.projectId}#3`, false],
+    [7, TARGET.projectId, false],
+    [12, `1${TARGET.projectId}2`, false],
+  ])('compares against the owning config version without treating project ID characters as tokens (%#)', async (version, key, present) => {
+    const state = recoveryState(); state.draft.version = version; state.draft.projectKey = key;
+    const result = await recoveryTrial({ state });
+    expect(result.report.recoveryInspection.draftVsActive.projectKeyDetails.draft.versionTokenPresent).toBe(present);
+    expectRecovery(result);
+  });
+
+  it.each(['createdAt', 'updatedAt', 'userId', 'username'])('reports presence and types for %s without interpreting its value', async (key) => {
+    for (const [value, type] of [[undefined, 'missing'], [null, 'null'], [TOKEN, 'string'],
+      [7, 'number'], [false, 'boolean'], [[ADDRESS], 'array'], [{ [PRIVATE]: TOKEN }, 'object']]) {
+      const state = recoveryState();
+      if (value !== undefined) state.draft.changes[0][key] = value;
+      const result = await recoveryTrial({ state }), facts = result.report.recoveryInspection.draftVsActive;
+      expect(facts.draftChangeDetails).toMatchObject({ extraFieldCount: value === undefined ? 0 : 1,
+        unknownExtraFieldCount: 0, metadataFieldTypes: { [key]: type } });
+      expect(facts.draftChangeClassification).toBe(value === undefined ? 'single_candidate_insert' : 'other_or_ambiguous');
+      expectRecovery(result);
+    }
+  });
+
+  it('counts unknown and lookalike field names without exposing them or confusing them with metadata candidates', async () => {
+    const state = recoveryState(), change = state.draft.changes[0];
+    for (const key of ['CreatedAt', 'userid', `${PRIVATE}-${TOKEN}`, 'constructor', 'toString', '__proto__']) {
+      Object.defineProperty(change, key, { value: { [ADDRESS]: TOKEN }, enumerable: true });
+    }
+    const result = await recoveryTrial({ state }), facts = result.report.recoveryInspection.draftVsActive;
+    expect(facts.draftChangeDetails).toMatchObject({ extraFieldCount: 6, unknownExtraFieldCount: 6,
+      metadataFieldTypes: { createdAt: 'missing', updatedAt: 'missing', userId: 'missing', username: 'missing' } });
+    expect(facts.draftChangeClassification).toBe('other_or_ambiguous');
+    const encoded = JSON.stringify(result.report);
+    for (const name of Object.keys(change).filter((key) => !['action', 'id', 'value'].includes(key))) expect(encoded).not.toContain(name);
+    expectRecovery(result);
+  });
+
+  it('leaves key comparisons unavailable without a draft and confines metadata diagnostics to recovery mode', async () => {
+    const state = recoveryState(); state.draft = null;
+    const recovered = await recoveryTrial({ state });
+    expect(recovered.report.recoveryInspection.draftVsActive).toBeNull(); expectRecovery(recovered);
+    const checked = await configTrial({ state: recoveryState() });
+    expect(checked.report.result).toBe('completed');
+    expect(checked.report).not.toHaveProperty('recoveryInspection');
+    expect(JSON.stringify(checked.report)).not.toContain('projectKeyDetails');
+    expectConfigPrivate(checked.report);
+  });
+
+  it.each(['project_key', 'history_metadata'])('retains full-trial drift rejection and refuses cleanup for %s', async (kind) => {
+    const result = await trial({ after: (reply, call, state) => {
+      if (call.label === 'rules.insert') {
+        if (kind === 'project_key') state.draft.projectKey = `${TARGET.projectId}#3#draft`;
+        else Object.assign(state.draft.changes[0], { createdAt: new Date(START).toISOString(), userId: TOKEN, username: PRIVATE });
+      }
+      return reply;
+    } });
+    expect(result.report).toMatchObject({ result: 'stopped', failure: 'configuration_drift', stoppedPhase: 'verifyDraft',
+      appRequests: 0, eventsQueries: 0, providerRequests: 4,
+      cleanup: { status: 'cleanup_unresolved', failure: 'configuration_drift', restorationVerified: false } });
+    expect(result.state.labels).toEqual(['config', 'rules.insert', 'config', 'config']);
+    expect(result.state.active).toEqual(baseline()); expect(result.state.draft).not.toBeNull();
+    expectPrivate(result.report, result);
   });
 });
 
@@ -1509,7 +1825,74 @@ function durableFixture(wire, failRename = () => false, mode = 'log_receipt') {
   return { records, writes, run, restore };
 }
 
+/** Run the real CLI encoder with a supplied synthetic recovery report; input, process and sequencer are mocked. */
+async function renderRecoveryReport(report) {
+  const cliProcess = new EventEmitter();
+  cliProcess.stdout = { write: jest.fn() }; cliProcess.stderr = { write: jest.fn() };
+  const context = { module: { exports: {} }, process: cliProcess, AbortController, Buffer,
+    require: (name) => name === './gate1-source-discovery'
+      ? { readInput: jest.fn(async () => ({ profile: { queryMode: 'recovery_inspection' } })) } : require(name) };
+  const main = runInNewContext(`${fs.readFileSync(CLI, 'utf8')}\nmain;`, context);
+  context.runRecoveryInspection = jest.fn(async () => report);
+  await main(['--live']);
+  return { stdout: cliProcess.stdout.write.mock.calls.map(([text]) => text).join(''),
+    stderr: cliProcess.stderr.write.mock.calls.map(([text]) => text).join(''), exitCode: cliProcess.exitCode };
+}
+
 describe('durable approval and recovery evidence', () => {
+  it('keeps detailed recovery facts bounded and private for many provider fields, rules and value differences', async () => {
+    const state = recoveryState(), template = copy(state.active.rules[0]);
+    for (let index = 0; index < 100; index += 1) {
+      state.active[`${PRIVATE}-${index}`] = { token: TOKEN };
+      state.draft[`${PRIVATE}-${index}`] = { address: ADDRESS };
+      const rule = { ...copy(template), id: `rule_fixture_bulk_${index}`, [PRIVATE]: null };
+      state.active.rules.push(rule);
+      state.draft.rules.unshift({ ...copy(rule), active: false, valid: false, validationErrors: [],
+        name: `${PRIVATE}-${index}`, conditionGroup: [], action: null, [PRIVATE]: { token: TOKEN } });
+    }
+    state.draft.changes[0].value = copy(state.draft.rules.find((rule) => rule.id === RULE_ID));
+    state.draft.changes[0].value[PRIVATE] = { address: ADDRESS };
+    state.draft.changes[0][PRIVATE] = TOKEN;
+    Object.assign(state.draft.changes[0], { createdAt: { [PRIVATE]: TOKEN }, updatedAt: [ADDRESS], userId: TOKEN, username: PRIVATE });
+    state.active.projectKey = `${PRIVATE}#${TARGET.projectId}#3#active`;
+    state.draft.projectKey = `${PRIVATE}#${TARGET.projectId}#3#draft`;
+    expect(Buffer.byteLength(JSON.stringify({ ...state, versions: [] }))).toBeLessThan(CONFIG_LIMITS.providerBytes);
+    const wire = fixture({ state }), storage = durableFixture(wire, undefined, 'recovery_inspection');
+    try {
+      const report = await storage.run();
+      expect(report).toMatchObject({ result: 'completed', providerRequests: 1,
+        recoveryInspection: { draftVsActive: {
+          unknownFields: { activeCount: 100, draftCount: 100, changed: 100 },
+          nonCandidateRules: { changed: 100, sharedOrderEqual: false, changedFields: { unknown: 100 } },
+          projectKeyDetails: { basis: 'literal_comparison_only', active: { activeTokenPresent: true }, draft: { draftTokenPresent: true } },
+          draftChangeDetails: { extraFieldCount: 5, unknownExtraFieldCount: 1,
+            metadataFieldTypes: { createdAt: 'object', updatedAt: 'array', userId: 'string', username: 'string' },
+            valueEqualsRule: false, valueTopLevelShapeMatchesRule: false },
+        } } });
+      expect(nativeGuard).toHaveBeenCalledTimes(1);
+      const { reportPath, ...savedFacts } = report;
+      expect(JSON.parse(storage.records.get(reportPath))).toEqual(savedFacts);
+      expectRecovery({ ...wire, report });
+      for (const encoded of storage.writes) {
+        expect(Buffer.byteLength(encoded)).toBeLessThanOrEqual(CONFIG_LIMITS.reportBytes);
+        expectRecovery({ ...wire, report: JSON.parse(encoded) });
+      }
+      const printed = await renderRecoveryReport(report);
+      expect(printed.exitCode).toBe(0); expect(printed.stderr).toBe('');
+      expect(Buffer.byteLength(printed.stdout)).toBeLessThanOrEqual(CONFIG_LIMITS.reportBytes);
+      expect(JSON.parse(printed.stdout)).toEqual(report);
+      expectConfigPrivate(JSON.parse(printed.stdout));
+    } finally { storage.restore(); }
+  });
+
+  it('continues to reject oversized recovery CLI output after reducing indentation', async () => {
+    const result = await recoveryTrial({ state: recoveryState() });
+    const printed = await renderRecoveryReport({ ...result.report, padding: TOKEN.repeat(CONFIG_LIMITS.reportBytes) });
+    expect(printed.exitCode).toBe(1); expect(printed.stdout).toBe('');
+    expect(printed.stderr).toContain('Do not rerun'); expect(printed.stderr).not.toContain(TOKEN);
+    expectRecovery(result);
+  });
+
   it('consumes a recovery approval once and checkpoints only sanitized unresolved inspection facts', async () => {
     const wire = fixture({ state: recoveryState() }), storage = durableFixture(wire, undefined, 'recovery_inspection');
     try {
