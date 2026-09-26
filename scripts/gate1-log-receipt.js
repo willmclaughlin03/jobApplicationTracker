@@ -35,6 +35,8 @@ const CONFIG_SCOPE = 'provider_firewall_config_check_only';
 const RECOVERY_SCOPE = 'provider_firewall_recovery_inspection_only';
 const RECOVERY_TRIAL_ID = '447e9964d04241e92885614852a7bf3f';
 const RECOVERY_NAME = `gate1-log-receipt-${RECOVERY_TRIAL_ID}`;
+// Investigation candidates only: their presence is not a supported change-entry contract.
+const RECOVERY_HISTORY_FIELDS = Object.freeze(['createdAt', 'updatedAt', 'userId', 'username']);
 const CONFIG_PATH = `/v1/security/firewall/config?projectId=${TARGET.projectId}&teamId=${TARGET.teamId}`;
 const DRAFT_PATH = `/v1/security/firewall/config/draft?projectId=${TARGET.projectId}&teamId=${TARGET.teamId}`;
 const ACTIVATE_PATH = `/v1/security/firewall/config/draft/activate?projectId=${TARGET.projectId}&teamId=${TARGET.teamId}`;
@@ -352,6 +354,102 @@ function nonCandidatePolicy(config) {
   return { ...policy(config), rules: config.rules.filter((rule) => rule.name !== RECOVERY_NAME) };
 }
 
+/** Compare own fields in current snapshots; the fixed missing type also records absence without values. */
+function comparisonField(active, draft, key) {
+  const before = ownValue(active, key), after = ownValue(draft, key);
+  return { activeType: valueType(before), draftType: valueType(after), equal: isDeepStrictEqual(before, after) };
+}
+
+/**
+ * Classify a validated config's opaque key without emitting it or changing policy equality.
+ * Project-ID positions are literal substring facts, not identity validation. Treat the fixed
+ * ID and # : / . _ - as boundaries to compare exact, case-sensitive tokens against
+ * this config's version and active/draft labels. No observed encoding is presumed valid.
+ */
+function recoveryProjectKeyFacts(config) {
+  const key = config.projectKey;
+  const tokens = key.split(TARGET.projectId).flatMap((part) => part.split(/[#:/._-]/));
+  return { projectIdRelation: key === TARGET.projectId ? 'exact'
+    : key.startsWith(TARGET.projectId) ? 'prefix' : key.endsWith(TARGET.projectId) ? 'suffix'
+      : key.includes(TARGET.projectId) ? 'interior' : 'absent',
+  versionTokenPresent: tokens.includes(String(config.version)),
+  activeTokenPresent: tokens.includes('active'), draftTokenPresent: tokens.includes('draft') };
+}
+
+/** Count differences outside caller-fixed known fields; provider-selected names and values stay transient. */
+function unknownFieldChanges(active, draft, known) {
+  const before = Object.keys(active).filter((key) => !known.includes(key));
+  const after = Object.keys(draft).filter((key) => !known.includes(key));
+  const shared = after.filter((key) => Object.hasOwn(active, key));
+  return { activeCount: before.length, draftCount: after.length,
+    added: after.filter((key) => !Object.hasOwn(active, key)).length,
+    removed: before.filter((key) => !Object.hasOwn(draft, key)).length,
+    changed: shared.filter((key) => !isDeepStrictEqual(active[key], draft[key])).length,
+    typeChanged: shared.filter((key) => valueType(active[key]) !== valueType(draft[key])).length };
+}
+
+/** Count current non-candidate rule differences by unique ID, preserving metadata and relative shared order. */
+function recoveryRuleChanges(active, draft) {
+  const before = active.rules.filter((rule) => rule.name !== RECOVERY_NAME);
+  const after = draft.rules.filter((rule) => rule.name !== RECOVERY_NAME);
+  const beforeById = new Map(before.map((rule) => [rule.id, rule]));
+  const afterById = new Map(after.map((rule) => [rule.id, rule]));
+  const shared = after.filter((rule) => beforeById.has(rule.id));
+  const fields = { active: 'active', name: 'name', conditions: 'conditionGroup', action: 'action',
+    valid: 'valid', validationErrors: 'validationErrors' };
+  const changedFields = Object.fromEntries(Object.entries(fields).map(([label, key]) => [label,
+    shared.filter((rule) => !comparisonField(beforeById.get(rule.id), rule, key).equal).length]));
+  changedFields.unknown = shared.filter((rule) => {
+    const changes = unknownFieldChanges(beforeById.get(rule.id), rule, ['id', ...Object.values(fields)]);
+    return changes.added + changes.removed + changes.changed > 0;
+  }).length;
+  return { activeCount: before.length, draftCount: after.length,
+    added: after.length - shared.length, removed: before.length - shared.length,
+    changed: shared.filter((rule) => !isDeepStrictEqual(beforeById.get(rule.id), rule)).length,
+    orderEqual: isDeepStrictEqual(before.map((rule) => rule.id), after.map((rule) => rule.id)),
+    sharedOrderEqual: isDeepStrictEqual(before.filter((rule) => afterById.has(rule.id)).map((rule) => rule.id),
+      shared.map((rule) => rule.id)), changedFields };
+}
+
+/** Compare only top-level own keys and value types, never treating matching shape as value equality or ownership. */
+function topLevelShapeEqual(value, expected) {
+  if (valueType(value) !== 'object') return false;
+  const keys = Object.keys(expected);
+  return isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort())
+    && keys.every((key) => valueType(value[key]) === valueType(expected[key]));
+}
+
+/** Explain the strict single-entry classifier with fixed facts; multiple entries are counted, not sampled. */
+function recoveryChangeFacts(draft) {
+  const candidates = draft.rules.filter((rule) => rule.name === RECOVERY_NAME);
+  const facts = { singleEntry: draft.changes.length === 1, singleCandidate: candidates.length === 1,
+    entryType: 'not_evaluated', fields: null, extraFieldCount: null, action: 'not_evaluated',
+    idRelationship: 'not_evaluated', valueEqualsInput: null, valueEqualsRule: null,
+    valueTopLevelShapeMatchesInput: null, valueTopLevelShapeMatchesRule: null,
+    metadataFieldTypes: null, unknownExtraFieldCount: null };
+  if (!facts.singleEntry) return facts;
+  const change = draft.changes[0];
+  facts.entryType = valueType(change);
+  facts.fields = Object.fromEntries(['action', 'id', 'value'].map((key) => [key, valueType(ownValue(change, key))]));
+  if (facts.entryType !== 'object') return facts;
+  facts.extraFieldCount = Object.keys(change).filter((key) => !['action', 'id', 'value'].includes(key)).length;
+  // Missing records absence; candidate labels never authorize extra fields in requireChange().
+  facts.metadataFieldTypes = Object.fromEntries(RECOVERY_HISTORY_FIELDS.map((key) => [key, valueType(ownValue(change, key))]));
+  facts.unknownExtraFieldCount = Object.keys(change)
+    .filter((key) => !['action', 'id', 'value', ...RECOVERY_HISTORY_FIELDS].includes(key)).length;
+  const action = ownValue(change, 'action'), id = ownValue(change, 'id'), value = ownValue(change, 'value');
+  facts.action = action === 'rules.insert' ? 'rules_insert' : action === 'rules.remove' ? 'rules_remove' : 'other';
+  facts.idRelationship = id === undefined ? 'missing' : id === null ? 'null'
+    : !facts.singleCandidate ? 'not_evaluated' : id === candidates[0].id ? 'candidate' : 'other';
+  if (!facts.singleCandidate) return facts;
+  const { id: _id, valid: _valid, validationErrors: _errors, ...input } = candidates[0];
+  facts.valueEqualsInput = isDeepStrictEqual(value, input);
+  facts.valueEqualsRule = isDeepStrictEqual(value, candidates[0]);
+  facts.valueTopLevelShapeMatchesInput = topLevelShapeEqual(value, input);
+  facts.valueTopLevelShapeMatchesRule = topLevelShapeEqual(value, candidates[0]);
+  return facts;
+}
+
 /** Classify draft change metadata only; a candidate insertion entry never proves who created it. */
 function recoveryChangeList(draft) {
   if (draft.changes.length === 0) return 'empty';
@@ -386,6 +484,13 @@ function recoveryFacts(current) {
     updatedAtEqual: current.active.updatedAt === current.draft.updatedAt,
     changeListsEqual: isDeepStrictEqual(current.active.changes, current.draft.changes),
     draftChangeCount: current.draft.changes.length, draftChangeClassification: recoveryChangeList(current.draft),
+    configurationFields: Object.fromEntries(Object.keys(configSchema.shape).map((key) =>
+      [key, comparisonField(current.active, current.draft, key)])),
+    projectKeyDetails: { basis: 'literal_comparison_only',
+      active: recoveryProjectKeyFacts(current.active), draft: recoveryProjectKeyFacts(current.draft) },
+    unknownFields: unknownFieldChanges(current.active, current.draft, Object.keys(configSchema.shape)),
+    nonCandidateRules: recoveryRuleChanges(current.active, current.draft),
+    draftChangeDetails: recoveryChangeFacts(current.draft),
   };
   return facts;
 }
@@ -437,9 +542,9 @@ function delay(ms, signal) {
   });
 }
 
-/** Encode only runner-owned facts and bound every durable recovery/report checkpoint. */
+/** Keep recovery's expanded facts readable with one-space indentation; bound both durable and CLI encodings. */
 function encodeReport(report) {
-  const encoded = `${JSON.stringify(report, null, 2)}\n`;
+  const encoded = `${JSON.stringify(report, null, report.scope === RECOVERY_SCOPE ? 1 : 2)}\n`;
   if (Buffer.byteLength(encoded) > LIMITS.reportBytes) throw new ReceiptError('local_evidence');
   return encoded;
 }
