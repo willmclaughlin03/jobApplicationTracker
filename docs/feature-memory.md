@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-20
 
+- `2026-09-26` - `GATE-1 recovery comparison diagnostics`: Added sanitized configuration-field comparisons, unknown-field counts, non-candidate rule changes/order, and single-entry history details to the existing one-GET recovery inspection. Literal project-key relationships and four candidate metadata-field types remain observations only; ownership and restoration stay unverified. Expanded mocked privacy, request-boundary, drift-rejection and report-size coverage; recovery JSON uses one-space indentation within the existing 8 KB cap. This change generates no live evidence and GATE-1 remains open.
+
 - `2026-09-24` - `GATE-1 read-only recovery inspection`: Added a separately approved one-GET inspection tied to the failed Log trial, with sanitized candidate/condition/validation counts and current active/draft comparisons. It permits zero application requests, Events queries or WAF mutations, and never establishes ownership or restoration. The same push accepts bounded opaque projectKey strings while preserving exact policy comparisons. Removed the tracked Firewall evidence handoff at the user's request. All 759 focused tests, lint, syntax and diff checks pass; recovery has not run live and GATE-1 remains open.
 
 - `2026-09-24` - `GATE-1 timestamp and graceful cancellation review fixes`: Preserve query-window instants with direct PowerShell DateTimeOffset casts, and retain SIGINT/SIGTERM listeners until the Log receipt trial and cleanup settle. Added mocked repeated-signal coverage for idempotent cancellation and final listener removal. Focused offline suites, 21 timestamp checks, syntax checks, and whitespace checks pass.
