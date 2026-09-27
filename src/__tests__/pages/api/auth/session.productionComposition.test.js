@@ -18,6 +18,8 @@ const ENVIRONMENT_NAMES = [
   'VERCEL_ENV',
   'GATE1_SOURCE_PROBE_ENABLED',
   'GATE1_SOURCE_PROBE_SECRET',
+  'GATE1_SECRETS_PROBE_ENABLED',
+  'GATE1_SECRETS_PROBE_SECRET',
   'TEMPORARY_SESSION_CEILING_SOURCE_MODE',
   'TEMPORARY_SESSION_CEILING_SECRET_MODE',
   'TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON',
@@ -95,6 +97,8 @@ function installProductionEnvironment() {
   process.env.VERCEL_ENV = 'production';
   delete process.env.GATE1_SOURCE_PROBE_ENABLED;
   delete process.env.GATE1_SOURCE_PROBE_SECRET;
+  delete process.env.GATE1_SECRETS_PROBE_ENABLED;
+  delete process.env.GATE1_SECRETS_PROBE_SECRET;
   process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'vercel';
   process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE = 'vercel';
   process.env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON = JSON.stringify({
@@ -251,6 +255,26 @@ function expectGenericRateLimitHeadersAbsent(res) {
   }
 }
 
+/** Installs a synthetic dedicated Preview probe credential; cleanup restores env. */
+function installPreviewSecretsProbe() {
+  process.env.VERCEL_ENV = 'preview';
+  process.env.GATE1_SECRETS_PROBE_ENABLED = 'true';
+  process.env.GATE1_SECRETS_PROBE_SECRET = 'e'.repeat(64);
+}
+
+/** Marks a synthetic request with matching raw/normalized probe headers. */
+function markSecretsRequest(req, marker = 'a'.repeat(32)) {
+  const headers = { authorization: `Bearer ${'e'.repeat(64)}`,
+    'x-gate1-secrets-diagnostic': '1', 'user-agent': `gate1-secrets-${marker}` };
+  Object.assign(req.headers, headers);
+  req.rawHeaders.push(...Object.entries(headers).flat());
+}
+
+/** Parses only the test response's sanitized observation header. */
+function secretsObservation(res) {
+  return JSON.parse(res.getHeader('X-Gate1-Secrets-Probe'));
+}
+
 describe('/api/auth/session production/Vercel composition', () => {
   let originalEnvironment;
 
@@ -279,6 +303,149 @@ describe('/api/auth/session production/Vercel composition', () => {
     }
     jest.restoreAllMocks();
   });
+
+  it.each([
+    ['both missing', undefined, undefined, 'hmac', 'missing', 'missing'],
+    ['HMAC malformed', '{malformed-hmac-sentinel', 'valid', 'hmac', 'present', 'present'],
+    ['Redis missing', 'valid', undefined, 'redis', 'present', 'missing'],
+    ['Redis malformed', 'valid', '{malformed-redis-sentinel', 'redis', 'present', 'present'],
+  ])('observes %s then cached failure on the real route before downstream work', async (
+    _label, hmac, redis, stage, hmacInput, redisInput
+  ) => {
+    installPreviewSecretsProbe();
+    if (hmac !== 'valid') restoreEnvironmentVariable('TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON', hmac);
+    if (redis !== 'valid') restoreEnvironmentVariable('TEMPORARY_SESSION_CEILING_UPSTASH_JSON', redis);
+    const route = loadSessionRoute();
+    const observations = [];
+    for (const marker of ['a'.repeat(32), 'b'.repeat(32)]) {
+      const { req, cookieRead } = createMockRequest();
+      markSecretsRequest(req, marker);
+      const res = createMockResponse();
+      await route(req, res);
+      expect(res.statusCode).toBe(503);
+      expect(res.body).toMatchObject({ error: 'SERVICE_UNAVAILABLE' });
+      expect(res.getHeader('Cache-Control')).toBe('private, no-store');
+      expect(res.getHeader('Retry-After')).toBeUndefined();
+      expect(res.getHeader('Set-Cookie')).toBeUndefined();
+      expect(cookieRead).not.toHaveBeenCalled();
+      const observation = secretsObservation(res);
+      expect(observation).toMatchObject({ scope: 'secret_loader_observation_only',
+        sourceResolution: 'accepted', effectiveMode: 'vercel', loaderReached: true,
+        identityAttempted: false, redisAttempted: false, scriptAttempted: false,
+        allowed: false, reason: 'secret_unavailable',
+        loader: { effectiveMode: 'vercel', validationAttempts: 1, validationStage: stage,
+          hmacInput, redisInput, hasCachedPair: false, permanentFailure: true } });
+      observations.push(observation);
+      for (const sentinel of [TEST_HMAC_KEY, TEST_KEY_ID, TEST_REDIS_TOKEN, TEST_REDIS_URL,
+        TEST_SOURCE, 'e'.repeat(64), 'malformed-hmac-sentinel', 'malformed-redis-sentinel']) {
+        expect(JSON.stringify({ body: res.body, observation })).not.toContain(sentinel);
+      }
+    }
+    expect(observations[0].loader.loaderId).toMatch(/^[a-f0-9]{32}$/);
+    expect(observations[1].loader).toEqual(observations[0].loader);
+    expect(observations[0].loaderStateBefore).toEqual({ hasCachedPair: false, permanentFailure: false });
+    expect(observations[1].loaderStateBefore).toEqual({ hasCachedPair: false, permanentFailure: true });
+    expect(mockRedisConstructor).not.toHaveBeenCalled();
+    expect(mockRedisEvalsha).not.toHaveBeenCalled();
+    expect(mockCreateServerClient).not.toHaveBeenCalled();
+    expect(mockSupabaseGetUser).not.toHaveBeenCalled();
+    expectSensitiveValuesAbsentFromLogs(['e'.repeat(64), 'malformed-hmac-sentinel', 'malformed-redis-sentinel']);
+  });
+
+  it('distinguishes a source rejection from a loader configuration failure', async () => {
+    installPreviewSecretsProbe();
+    delete process.env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON;
+    const route = loadSessionRoute();
+    const { req, cookieRead } = createMockRequest({ normalizedSource: undefined, rawHeaders: [] });
+    markSecretsRequest(req);
+    const res = createMockResponse();
+    await route(req, res);
+    expect(res.statusCode).toBe(503);
+    expect(secretsObservation(res)).toMatchObject({ sourceResolution: 'rejected',
+      reason: 'source_unavailable', loaderReached: false, loader: null, loaderStateBefore: null });
+    expect(require('../../../../server/lib/temporarySessionSecrets.js').temporarySessionSecrets.getSnapshot())
+      .toEqual({ hasCachedPair: false, permanentFailure: false });
+    expect(cookieRead).not.toHaveBeenCalled();
+    expect(mockRedisConstructor).not.toHaveBeenCalled();
+    expect(mockCreateServerClient).not.toHaveBeenCalled();
+  });
+
+  it('keeps concurrent marked requests isolated while preserving the real success path', async () => {
+    installPreviewSecretsProbe();
+    const route = loadSessionRoute();
+    const requests = [createMockRequest(), createMockRequest({ normalizedSource: '2001:db8::1',
+      rawHeaders: ['X-Vercel-Forwarded-For', '2001:db8::1'] })];
+    const responses = [createMockResponse(), createMockResponse()];
+    requests.forEach(({ req }, i) => markSecretsRequest(req, (i ? 'b' : 'a').repeat(32)));
+    await Promise.all(requests.map(({ req }, i) => route(req, responses[i])));
+    const observations = responses.map(secretsObservation);
+    expect(observations.map((facts) => facts.canonicalFamily)).toEqual([4, 6]);
+    expect(observations.map((facts) => facts.marker)).toEqual(['gate1-secrets-' + 'a'.repeat(32), 'gate1-secrets-' + 'b'.repeat(32)]);
+    for (let i = 0; i < 2; i += 1) {
+      expect(responses[i].statusCode).toBe(200);
+      expect(observations[i]).toMatchObject({ allowed: true, reason: null,
+        identityAttempted: true, redisAttempted: true, scriptAttempted: true,
+        loader: { validationStage: 'complete', validationAttempts: 1, hasCachedPair: true, permanentFailure: false } });
+    }
+    expect(observations[0].loader.loaderId).toBe(observations[1].loader.loaderId);
+    expect(observations[0].loaderStateBefore.hasCachedPair).toBe(false);
+    expect(observations[1].loaderStateBefore.hasCachedPair).toBe(true);
+    expectSensitiveValuesAbsentFromLogs(['e'.repeat(64), '2001:db8::1']);
+  });
+
+  it('identifies contradictory secret mode separately from missing payloads', async () => {
+    installPreviewSecretsProbe();
+    process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE = 'local';
+    const route = loadSessionRoute();
+    const { req } = createMockRequest();
+    markSecretsRequest(req);
+    const res = createMockResponse();
+    await route(req, res);
+    expect(res.statusCode).toBe(503);
+    expect(secretsObservation(res)).toMatchObject({ sourceResolution: 'accepted',
+      reason: 'secret_unavailable', loader: { effectiveMode: 'invalid', validationStage: 'mode',
+        hmacInput: 'not_read', redisInput: 'not_read' } });
+    expect(mockRedisConstructor).not.toHaveBeenCalled();
+  });
+
+  it('cleans up request-local authorization after the response', async () => {
+    installPreviewSecretsProbe();
+    delete process.env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON;
+    const route = loadSessionRoute();
+    const { req } = createMockRequest();
+    markSecretsRequest(req);
+    const first = createMockResponse();
+    await route(req, first);
+    expect(first.getHeader('X-Gate1-Secrets-Probe')).toBeDefined();
+    delete req.headers.authorization;
+    const second = createMockResponse();
+    await route(req, second);
+    expect(second.statusCode).toBe(503);
+    expect(second.getHeader('X-Gate1-Secrets-Probe')).toBeUndefined();
+    expect(first.setHeader.mock.calls.filter(([name]) => name === 'X-Gate1-Secrets-Probe')).toHaveLength(1);
+  });
+
+  it.each(['production', 'disabled', 'wrong credential', 'duplicate credential'])(
+    'does not expose loader metadata for %s', async (variant) => {
+      installPreviewSecretsProbe();
+      delete process.env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON;
+      if (variant === 'production') process.env.VERCEL_ENV = 'production';
+      if (variant === 'disabled') process.env.GATE1_SECRETS_PROBE_ENABLED = 'false';
+      const route = loadSessionRoute();
+      const { req } = createMockRequest();
+      markSecretsRequest(req);
+      if (variant === 'wrong credential') {
+        req.headers.authorization = `Bearer ${'f'.repeat(64)}`;
+        req.rawHeaders = Object.entries(req.headers).flat();
+      }
+      if (variant === 'duplicate credential') req.rawHeaders.push('Authorization', req.headers.authorization);
+      const res = createMockResponse();
+      await route(req, res);
+      expect(res.statusCode).toBe(503);
+      expect(res.getHeader('X-Gate1-Secrets-Probe')).toBeUndefined();
+      expect(mockRedisConstructor).not.toHaveBeenCalled();
+      expect(mockCreateServerClient).not.toHaveBeenCalled();
+    });
 
   /** Parallel requests keep source observations and response writers separate. */
   it('isolates concurrent authenticated probe requests with different canonical families', async () => {

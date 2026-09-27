@@ -237,3 +237,81 @@ describe('temporarySessionSecrets instance cache', () => {
     }
   });
 });
+
+describe('temporarySessionSecrets value-free diagnostics', () => {
+  it.each([
+    ['both missing', { TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON: undefined,
+      TEMPORARY_SESSION_CEILING_UPSTASH_JSON: undefined }, 'hmac', 'missing', 'missing'],
+    ['HMAC missing', { TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON: undefined }, 'hmac', 'missing', 'present'],
+    ['HMAC malformed', { TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON: '{' }, 'hmac', 'present', 'present'],
+    ['Redis missing', { TEMPORARY_SESSION_CEILING_UPSTASH_JSON: undefined }, 'redis', 'present', 'missing'],
+    ['Redis malformed', { TEMPORARY_SESSION_CEILING_UPSTASH_JSON: '{' }, 'redis', 'present', 'present'],
+  ])('attributes %s and preserves failure facts without reparsing', async (_name, overrides, stage, hmacInput, redisInput) => {
+    const env = vercelEnvironment(overrides);
+    const readHmac = jest.fn(() => env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON);
+    const readRedis = jest.fn(() => env.TEMPORARY_SESSION_CEILING_UPSTASH_JSON);
+    const loaderEnv = { ...env };
+    Object.defineProperty(loaderEnv, 'TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON', { get: readHmac });
+    Object.defineProperty(loaderEnv, 'TEMPORARY_SESSION_CEILING_UPSTASH_JSON', { get: readRedis });
+    const randomBytesFunction = jest.fn(() => Buffer.alloc(16, 7));
+    const onEvent = jest.fn();
+    const loader = createTemporarySessionSecrets({ env: loaderEnv, onEvent, randomBytesFunction });
+    await expect(loader.getRuntimePair()).rejects.toThrow('temporary session secrets are unavailable');
+    expect(randomBytesFunction).not.toHaveBeenCalled();
+    const first = loader.getDiagnosticSnapshot();
+    expect(first).toEqual({
+      loaderId: '07'.repeat(16), validationAttempts: 1, effectiveMode: 'vercel',
+      validationStage: stage, hmacInput, redisInput, hasCachedPair: false, permanentFailure: true,
+    });
+    env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON = JSON.stringify(hmacSecret());
+    env.TEMPORARY_SESSION_CEILING_UPSTASH_JSON = JSON.stringify(redisSecret());
+    await expect(loader.getRuntimePair()).rejects.toThrow('temporary session secrets are unavailable');
+    expect(loader.getDiagnosticSnapshot()).toEqual(first);
+    expect(readHmac).toHaveBeenCalledTimes(1);
+    expect(readRedis).toHaveBeenCalledTimes(1);
+    expect(onEvent.mock.calls).toEqual([['configurationFailed']]);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(randomBytesFunction).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps successful facts stable, contains no payloads and changes attribution at reset', async () => {
+    const randomBytesFunction = jest.fn().mockReturnValueOnce(Buffer.alloc(16, 3))
+      .mockReturnValueOnce(Buffer.alloc(16, 4));
+    const loader = createTemporarySessionSecrets({ env: vercelEnvironment(), onEvent: jest.fn(), randomBytesFunction });
+    const pair = await loader.getRuntimePair();
+    const first = loader.getDiagnosticSnapshot();
+    expect(await loader.getRuntimePair()).toBe(pair);
+    expect(loader.getDiagnosticSnapshot()).toEqual(first);
+    expect(first).toMatchObject({ validationAttempts: 1, validationStage: 'complete',
+      hasCachedPair: true, permanentFailure: false });
+    for (const sentinel of [KEY_ONE, 'gate1-key-1', 'synthetic-token-one', 'https://synthetic-gate1.upstash.io']) {
+      expect(JSON.stringify(first)).not.toContain(sentinel);
+    }
+    loader.reset();
+    const reset = loader.getDiagnosticSnapshot();
+    expect(reset.loaderId).not.toBe(first.loaderId);
+    expect(reset).toMatchObject({ validationAttempts: 0, validationStage: 'not_attempted',
+      effectiveMode: 'not_attempted', hmacInput: 'not_read', redisInput: 'not_read',
+      hasCachedPair: false, permanentFailure: false });
+  });
+
+  it('distinguishes mode rejection from payload validation', async () => {
+    const loader = createTemporarySessionSecrets({ env: vercelEnvironment({
+      TEMPORARY_SESSION_CEILING_SECRET_MODE: 'local',
+    }), onEvent: jest.fn() });
+    await expect(loader.getRuntimePair()).rejects.toThrow();
+    expect(loader.getDiagnosticSnapshot()).toMatchObject({ effectiveMode: 'invalid',
+      validationStage: 'mode', hmacInput: 'not_read', redisInput: 'not_read', permanentFailure: true });
+  });
+
+  it.each([() => { throw new Error('random sentinel'); }, () => Buffer.alloc(15), () => 'wrong'])(
+    'omits unavailable attribution without changing success or retrying randomness (%#)', async (randomBytesFunction) => {
+      const random = jest.fn(randomBytesFunction);
+      const loader = createTemporarySessionSecrets({ env: vercelEnvironment(), onEvent: jest.fn(), randomBytesFunction: random });
+      const pair = await loader.getRuntimePair();
+      expect(loader.getDiagnosticSnapshot().loaderId).toBeNull();
+      expect(loader.getDiagnosticSnapshot().loaderId).toBeNull();
+      expect(await loader.getRuntimePair()).toBe(pair);
+      expect(random).toHaveBeenCalledTimes(1);
+    });
+});

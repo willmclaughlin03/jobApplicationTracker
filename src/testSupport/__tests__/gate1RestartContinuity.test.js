@@ -35,10 +35,10 @@ function mockAttributionGit({ tracked = true, status = '', revision = ATTRIBUTIO
 describe('GATE-1 reviewed source attribution', () => {
   afterEach(() => { jest.restoreAllMocks(); });
 
-  it('attributes the reviewed observer/redaction baseline without claiming historical hosted correspondence', () => {
+  it('attributes the reviewed source/secret-observer baseline without claiming historical hosted correspondence', () => {
     const attribution = collectAttribution();
     expect(attribution).toMatchObject({
-      appBase: 'eebe47f091aa1f522a8e18f7b2c916dc5e1de677',
+      appBase: 'ad3843dd21abbc787f8e28fc4934735ba59de4a1',
       sdkVersion: '1.36.2', execution: 'native_source_modules',
       hostedReference: { gitSha: 'ba8c398c5d0af2dba9c75305397b774f946b6b1e' },
       hostedCorrespondence: 'not_verified',
