@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-20
 
+- `2026-09-27` - `GATE-1 Preview secret canary runner`: Added an offline-default runner and hidden-input PowerShell launcher for a separately approved four-request Preview missing-both-secrets trial. Code-bound approval, deployment/case reservations shared across worktrees, bounded responses and atomic sanitized reports prevent widening or automatic replay. Validation requires initial HMAC-stage rejection followed by cached failure in the same loader. All 124 new tests pass; four focused suites pass 189 tests with 27 existing inventory-dependent skips. Syntax, lint and whitespace checks pass. No live trial ran; GATE-1 remains open.
+
 - `2026-09-27` - `GATE-1 restart attribution baseline`: Updated the reviewed baseline and two pinned source hashes for the secret-observer changes, with matching attribution expectations. All 162 tests across five focused suites, syntax and diff checks pass; source-integrity and hosted-correspondence guards remain unchanged.
 
 - `2026-09-27` - `GATE-1 Preview secret observations`: Added a dedicated, authenticated Preview-only session probe reporting bounded source/loader stages, cache state, validation attempts and random loader attribution after enforcement. Missing/malformed configuration and cached failures are distinguishable without exposing values or bypassing guards. Added privacy, concurrency, composition and exact route-safety coverage; 532 focused tests across ten suites, changed-file lint and diff checks pass. Deployment/configuration and live testing remain separately approved; GATE-1 stays open.
