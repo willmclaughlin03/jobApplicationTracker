@@ -989,8 +989,11 @@ async function runRecoveryDiscard(input, deps = {}) {
     const method = index === 1 ? 'DELETE' : 'GET', endpoint = index === 1 ? DRAFT_PATH : CONFIG_PATH;
     const headers = { Accept: 'application/json', 'Accept-Encoding': 'identity', Authorization: `Bearer ${token}` };
     const receipt = { phase, httpStatus: null };
-    checkpoint(file, report);
-    /** Enforce transport shape, sequence and actual-attempt budgets; checkpoint failure forbids dispatch. */
+    if (index === 2) {
+      try { checkpoint(file, report); }
+      catch { report.evidenceFailure = 'local_evidence'; }
+    } else checkpoint(file, report);
+    /** Enforce transport shape, sequence and actual-attempt budgets; mutation intent must persist before DELETE. */
     function dispatch(options, receive) {
       try {
         remaining();
@@ -1002,7 +1005,11 @@ async function runRecoveryDiscard(input, deps = {}) {
           || options.protocol !== 'https:' || options.port !== 443 || options.rejectUnauthorized !== true
           || options.agent !== false || !isDeepStrictEqual(options.headers, headers)) throw new ReceiptError('request_budget');
         // Persist possible-write intent before native dispatch; counts track dispatched attempts only.
-        if (index === 1) { report.pendingMutation = 'discardDraft'; checkpoint(file, report); }
+        if (index === 1) {
+          report.pendingMutation = 'discardDraft';
+          try { checkpoint(file, report); }
+          catch (error) { report.pendingMutation = null; throw error; }
+        }
         report.providerRequests += 1;
         if (index === 1) report.configMutations += 1;
         report.receipts.push(receipt);

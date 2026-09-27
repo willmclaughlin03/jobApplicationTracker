@@ -2110,14 +2110,45 @@ describe('durable approval and recovery evidence', () => {
     } finally { storage.restore(); }
   });
 
-  it('refuses DELETE if mutation intent cannot be persisted', async () => {
+  /** Fail each pre-mutation checkpoint to verify persistence still blocks initial GET or DELETE dispatch. */
+  it.each([1, 2, 3])('blocks dispatch when pre-mutation checkpoint %s cannot be persisted', async (failedSave) => {
     const wire = fixture({ state: discardState() });
     let saves = 0;
-    const storage = durableFixture(wire, () => ++saves === 3, 'recovery_discard');
+    /** Reject only the selected save so the final failure report can still be persisted. */
+    const storage = durableFixture(wire, () => ++saves === failedSave, 'recovery_discard');
     try {
       const result = await storage.run();
-      expect(result).toMatchObject({ result: 'stopped', failure: 'local_evidence', providerRequests: 1, configMutations: 0 });
-      expect(wire.state.labels).toEqual(['config']); expect(wire.state.draft).not.toBeNull();
+      expect(result).toMatchObject({ result: 'stopped', failure: 'local_evidence', providerRequests: failedSave === 1 ? 0 : 1,
+        configMutations: 0, pendingMutation: null });
+      const { reportPath, ...savedFacts } = result;
+      expect(JSON.parse(storage.records.get(reportPath))).toEqual(savedFacts);
+      expect(nativeGuard).toHaveBeenCalledTimes(failedSave === 1 ? 0 : 1);
+      expect(wire.state.labels).toEqual(failedSave === 1 ? [] : ['config']); expect(wire.state.draft).not.toBeNull();
+    } finally { storage.restore(); }
+  });
+
+  /** Preserve readback after acknowledged or uncertain DELETE despite transient or persistent evidence failures. */
+  it.each([[false, false], [true, false], [false, true], [true, true]])(
+    'reads final recovery state despite checkpoint failure (uncertain=%s, persistent=%s)', async (uncertain, persistent) => {
+    const wire = fixture({ state: discardState(),
+      /** Optionally lose the DELETE acknowledgement after the fixture has discarded its draft. */
+      after: (reply, call) => uncertain && call.label === 'discard' ? { error: true } : reply });
+    let saves = 0;
+    /** Fail the readback checkpoint and optionally all later saves, after durable mutation intent exists. */
+    const storage = durableFixture(wire, () => ++saves === 4 || (persistent && saves > 4), 'recovery_discard');
+    try {
+      const result = await storage.run();
+      expect(result).toMatchObject({ result: persistent ? 'stopped' : 'completed', failure: null,
+        evidenceFailure: 'local_evidence', providerRequests: 3, configMutations: 1, pendingMutation: null,
+        recovery: { discardAcknowledged: !uncertain, activeUnchanged: true, draftAbsent: true,
+          currentStateRecoveryVerified: true }, cleanup: { status: 'current_state_recovered', restorationVerified: false } });
+      expect(nativeGuard).toHaveBeenCalledTimes(3);
+      expect(wire.state.labels).toEqual(['config', 'discard', 'config']);
+      expect(wire.state.draft).toBeNull();
+      if (!persistent) {
+        const { reportPath, ...savedFacts } = result;
+        expect(JSON.parse(storage.records.get(reportPath))).toEqual(savedFacts);
+      }
     } finally { storage.restore(); }
   });
 

@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-20
 
+- `2026-09-27` - `GATE-1 recovery checkpoint handling`: Clear pending discard intent when its pre-dispatch checkpoint fails, and retain the final recovery read after a checkpoint failure while recording `local_evidence`. Earlier checkpoints still block dispatch. Mocked regressions cover saved reports, all pre-mutation checkpoints, and acknowledged/uncertain deletion with transient/persistent evidence failures; all 493 focused tests pass.
+
 - `2026-09-26` - `GATE-1 bounded owner recovery`: Added an offline-default recovery mode with a separate owner exception, code-bound approval and hidden-token confirmation. It permits only GET/DELETE-draft/GET, at most one mutation, zero application or Events requests, and no retries or activation. Exact candidate/history/key checks preserve unrelated policy; final readback verifies only current-state recovery while historical ownership/restoration stay unverified. All 924 mocked diagnostic tests pass. Live recovery remains separately approved and GATE-1 stays open.
 
 - `2026-09-26` - `GATE-1 recovery comparison diagnostics`: Added sanitized configuration-field comparisons, unknown-field counts, non-candidate rule changes/order, and single-entry history details to the existing one-GET recovery inspection. Literal project-key relationships and four candidate metadata-field types remain observations only; ownership and restoration stay unverified. Expanded mocked privacy, request-boundary, drift-rejection and report-size coverage; recovery JSON uses one-space indentation within the existing 8 KB cap. This change generates no live evidence and GATE-1 remains open.
