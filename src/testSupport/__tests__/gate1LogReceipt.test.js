@@ -6,8 +6,10 @@ const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const https = require('node:https');
-const { LIMITS, CONFIG_LIMITS, DISCARD_LIMITS, TARGET, RECOVERY_TRIAL_ID, profileTemplate, parseProfile, approvalId, preparation,
-  diagnosticRule, reviewEvents, reviewConfigResponse, runReceipt, runConfigCheck, runRecoveryInspection, runRecoveryDiscard } = require('../../../scripts/gate1-log-receipt');
+const { LIMITS, CONFIG_LIMITS, DISCARD_LIMITS, FOLLOWUP_LIMITS, FOLLOWUP_SOURCE, TARGET, RECOVERY_TRIAL_ID,
+  profileTemplate, parseProfile, approvalId, preparation,
+  diagnosticRule, reviewEvents, reviewConfigResponse, runReceipt, runConfigCheck, runRecoveryInspection, runRecoveryDiscard,
+  runReceiptFollowup } = require('../../../scripts/gate1-log-receipt');
 
 const START = Date.parse('2026-09-24T12:00:00.000Z');
 const TOKEN = 'synthetic_log_receipt_provider_token';
@@ -17,6 +19,7 @@ const ADDRESS = '192.0.2.117';
 const RULE_ID = 'rule_fixture_owned_log_receipt';
 const CLI = path.resolve(__dirname, '../../../scripts/gate1-log-receipt.js');
 const LAUNCHER = path.resolve(__dirname, '../../../scripts/run-gate1-log-receipt.ps1');
+const FOLLOWUP_NOW = Date.parse(FOLLOWUP_SOURCE.queryWindow.end) + 60000;
 let nativeGuard;
 
 beforeAll(() => { nativeGuard = jest.spyOn(https, 'request').mockImplementation(() => { throw new Error('Native HTTPS forbidden'); }); });
@@ -176,6 +179,234 @@ async function configTrial(options = {}, changes = {}) {
   const report = await runConfigCheck(input, { ...wire.deps, ...changes.deps });
   return { ...wire, report };
 }
+
+/** Model a later Events lookup with synthetic private data and the reviewed public rule/window identifiers. */
+function followupFixture(options = {}) {
+  const wire = fixture({ ...options, after: (reply, call, state) => {
+    const historical = call.label === 'events' ? jsonReply({ actions: [event(state, {
+      ruleId: FOLLOWUP_SOURCE.ruleId, ruleName: null, startTime: FOLLOWUP_SOURCE.queryWindow.start,
+      endTime: FOLLOWUP_SOURCE.queryWindow.end,
+    })] }) : reply;
+    return options.after?.(historical, call, state) || historical;
+  } });
+  wire.deps.wall = () => FOLLOWUP_NOW + wire.state.elapsed;
+  return wire;
+}
+
+/** Exercise the isolated follow-up with synthetic transport; never read or modify saved hosted reports. */
+async function followupTrial(options = {}, changes = {}) {
+  const wire = followupFixture(options), selected = profile(FOLLOWUP_NOW, 'receipt_followup');
+  const report = await runReceiptFollowup({ profile: selected, approval: approvalId(selected),
+    credentials: { providerToken: TOKEN }, ...changes.input }, { ...wire.deps, ...changes.deps });
+  return { ...wire, report };
+}
+
+/** Assert zero app/config work, bounded sanitized output and deliberately unqualified evidence. */
+function expectFollowup(result) {
+  expect(result.report).toMatchObject({ scope: 'ordinary_log_receipt_followup_only',
+    sourceEvidence: FOLLOWUP_SOURCE, appRequests: 0, configMutations: 0, gate1Status: 'open',
+    sourceAgreement: 'not_evaluated', correlation: 'unqualified', completeness: 'unqualified' });
+  expect(result.report.providerRequests).toBeLessThanOrEqual(1);
+  expect(result.report.eventsQueries).toBe(result.report.providerRequests);
+  expect(result.state.labels.every((label) => label === 'events')).toBe(true);
+  expect(result.sleep).not.toHaveBeenCalled(); expectPrivate(result.report);
+  expect(Buffer.byteLength(JSON.stringify(result.report, null, 2))).toBeLessThanOrEqual(FOLLOWUP_LIMITS.reportBytes);
+}
+
+describe('historical receipt follow-up', () => {
+  it('pins a separate fresh approval to the reviewed digest, identifiers, exact window and zero-write budget', () => {
+    const selected = profile(FOLLOWUP_NOW, 'receipt_followup'), prepared = preparation(selected, FOLLOWUP_NOW);
+    expect(Object.values(profileTemplate(FOLLOWUP_NOW, 'receipt_followup').attestations)).toEqual([false, false, false]);
+    expect(prepared).toMatchObject({ scope: 'ordinary_log_receipt_followup_only', queryMode: 'receipt_followup',
+      liveApproved: false, application: null, rule: null, sourceEvidence: FOLLOWUP_SOURCE,
+      endpoint: 'https://api.vercel.com/v1/security/firewall/events', method: 'GET', limits: {
+        maxAppRequests: 0, maxProviderRequests: 1, maxEventsQueries: 1, maxConfigMutations: 0,
+        requestMs: 10000, overallMs: 15000, reportBytes: 8192,
+      } });
+    expect(prepared.queryParameters).toEqual({ projectId: TARGET.projectId, teamId: TARGET.teamId, hosts: TARGET.hostname,
+      startTimestamp: Date.parse(FOLLOWUP_SOURCE.queryWindow.start), endTimestamp: Date.parse(FOLLOWUP_SOURCE.queryWindow.end) });
+    expect(prepared.approvalId).not.toBe(FOLLOWUP_SOURCE.approvalId);
+    expect(prepared.approvalId).not.toBe(approvalId(profile(FOLLOWUP_NOW)));
+  });
+
+  it.each([
+    ['sha256', '0'.repeat(64)], ['approvalId', '0'.repeat(64)], ['trialId', 'a'.repeat(32)],
+    ['ruleId', RULE_ID], ['queryWindow', { ...FOLLOWUP_SOURCE.queryWindow, start: new Date(START).toISOString() }],
+    ['queryWindow', { ...FOLLOWUP_SOURCE.queryWindow, end: new Date(FOLLOWUP_NOW).toISOString() }],
+    ['reportPath', PRIVATE], ['endpoint', 'https://unapproved.example.test'],
+  ])('refuses altered source evidence %s before dispatch', async (key, value) => {
+    const selected = profile(FOLLOWUP_NOW, 'receipt_followup'); selected.sourceEvidence[key] = value;
+    expect(() => parseProfile(selected)).toThrow();
+    const result = await followupTrial({}, { input: { profile: selected } });
+    expect(result.report.result).toBe('stopped'); expect(result.calls).toHaveLength(0); expectFollowup(result);
+  });
+
+  it.each([
+    { hostname: 'other.example.test' }, { teamId: 'team_wrong' }, { projectId: 'prj_wrong' },
+    { queryWindow: FOLLOWUP_SOURCE.queryWindow }, { method: 'DELETE' }, { retry: true },
+    { reviewedAt: new Date(FOLLOWUP_NOW + 1).toISOString() },
+    { reviewedAt: new Date(FOLLOWUP_NOW - FOLLOWUP_LIMITS.profileAgeMs - 1).toISOString() },
+    { attestations: { sourceCodeReviewed: true, credentialLoggingReviewed: true, includedUsageHeadroom: false } },
+  ])('refuses invalid profile fields before dispatch (%#)', async (fields) => {
+    const selected = { ...profile(FOLLOWUP_NOW, 'receipt_followup'), ...fields };
+    const result = await followupTrial({}, { input: { profile: selected } });
+    expect(result.report.result).toBe('stopped'); expect(result.calls).toHaveLength(0); expectFollowup(result);
+  });
+
+  it('rejects the previous trial approval and cross-mode approvals without consuming traffic', async () => {
+    for (const approval of [FOLLOWUP_SOURCE.approvalId, approvalId(profile(FOLLOWUP_NOW, 'config_check'))]) {
+      const result = await followupTrial({}, { input: { approval } });
+      expect(result.report.failure).toBe('approval'); expect(result.calls).toHaveLength(0); expectFollowup(result);
+    }
+  });
+
+  it.each(['log_receipt', 'config_check', 'recovery_inspection', 'recovery_discard'])(
+    'cannot run a %s profile through the follow-up sequencer', async (mode) => {
+      const selected = profile(FOLLOWUP_NOW, mode);
+      const result = await followupTrial({}, { input: { profile: selected, approval: approvalId(selected) } });
+      expect(result.report.failure).toBe('profile'); expect(result.calls).toHaveLength(0); expectFollowup(result);
+    });
+
+  it('cannot send a follow-up profile into any configuration or application sequencer', async () => {
+    const selected = profile(FOLLOWUP_NOW, 'receipt_followup');
+    for (const runner of [runReceipt, runConfigCheck, runRecoveryInspection, runRecoveryDiscard]) {
+      const wire = followupFixture();
+      const report = await runner({ profile: selected, approval: approvalId(selected), credentials: { providerToken: TOKEN } }, wire.deps);
+      expect(report.failure).toBe('profile'); expect(wire.calls).toHaveLength(0);
+    }
+  });
+
+  it('issues only the exact historical GET and accepts a null deleted-rule name without qualifying attribution', async () => {
+    const result = await followupTrial();
+    expect(result.report).toMatchObject({ result: 'completed', failure: null, providerRequests: 1, eventsQueries: 1,
+      observation: { receipt: 'matching_log_summary_observed', matchingRows: 1, count: 1, timingQualified: false } });
+    expect(result.calls).toHaveLength(1);
+    const call = result.calls[0], url = new URL(call.options.path, 'https://api.vercel.com');
+    expect(call.options).toMatchObject({ hostname: 'api.vercel.com', method: 'GET', port: 443,
+      protocol: 'https:', rejectUnauthorized: true, agent: false });
+    expect(call.body).toBeUndefined(); expect(url.pathname).toBe('/v1/security/firewall/events');
+    expect(Object.fromEntries(url.searchParams)).toEqual({ projectId: TARGET.projectId, teamId: TARGET.teamId,
+      hosts: TARGET.hostname, startTimestamp: String(Date.parse(FOLLOWUP_SOURCE.queryWindow.start)),
+      endTimestamp: String(Date.parse(FOLLOWUP_SOURCE.queryWindow.end)) });
+    expectFollowup(result);
+  });
+
+  it.each([[], [event({ elapsed: 1 })]].map((actions) => [actions]))('keeps empty or unrelated Events inconclusive (%#)', async (actions) => {
+    const result = await followupTrial({ after: () => jsonReply({ actions }) });
+    expect(result.report).toMatchObject({ result: 'completed', observation: {
+      matchingRows: 0, receipt: 'not_observed_in_followup', timingQualified: false } });
+    expectFollowup(result);
+  });
+
+  it.each([{ count: 2 }, { host: 'other.example.test' }, { action: 'deny' }, { startTime: 'unknown' },
+    { startTime: new Date(START).toISOString(), endTime: new Date(START + 1).toISOString() }])(
+    'keeps conflicting summary facts ambiguous (%#)', async (fields) => {
+      const result = await followupTrial({ after: (reply) => {
+        const value = JSON.parse(reply.body); Object.assign(value.actions[0], fields); return jsonReply(value);
+      } });
+      expect(result.report.observation).toMatchObject({ receipt: 'ambiguous', timingQualified: false }); expectFollowup(result);
+    });
+
+  it.each([
+    ['transport', { error: true }], ['provider_status', jsonReply({ error: TOKEN }, 403)],
+    ['provider_schema', jsonReply({ actions: [], [PRIVATE]: TOKEN })],
+    ['provider_schema', { status: 200, headers: { 'content-type': 'application/json' }, body: PRIVATE }],
+    ['redirect', { status: 302, headers: { location: `https://unapproved.example.test/${PRIVATE}` } }],
+    ['response_size', { status: 200, body: PRIVATE.repeat(30000) }],
+    ['response_headers', { status: 200, rawHeaders: ['x-private', PRIVATE.repeat(2000)] }],
+    ['response_encoding', { status: 200, headers: { 'content-encoding': 'gzip' } }],
+    ['cookie_contract', { status: 200, headers: { 'set-cookie': TOKEN } }],
+    ['response_incomplete', { status: 200, earlyClose: true }],
+  ])('stops on %s with one attempt and no retry or cleanup (%#)', async (failure, replacement) => {
+    const result = await followupTrial({ after: () => replacement });
+    expect(result.report).toMatchObject({ result: 'stopped', failure, providerRequests: 1, observation: null });
+    expect(result.calls).toHaveLength(1); expectFollowup(result);
+  });
+
+  it('times out a stalled provider response and does not start another request', async () => {
+    jest.useFakeTimers();
+    try {
+      const pending = followupTrial({ after: () => ({ hang: true }) });
+      await jest.advanceTimersByTimeAsync(FOLLOWUP_LIMITS.requestMs + 1);
+      const result = await pending;
+      expect(result.report.failure).toBe('deadline'); expect(result.calls).toHaveLength(1);
+      expect(result.requests[0].destroy).toHaveBeenCalled(); expectFollowup(result);
+    } finally { jest.useRealTimers(); }
+  });
+
+  it('honors cancellation before dispatch and during the one request', async () => {
+    const early = new AbortController(); early.abort(PRIVATE);
+    const stopped = await followupTrial({}, { deps: { signal: early.signal } });
+    expect(stopped.calls).toHaveLength(0); expect(stopped.report.failure).toBe('cancelled'); expectFollowup(stopped);
+    const active = new AbortController();
+    const result = await followupTrial({ before: () => { active.abort(PRIVATE); return { hang: true }; } },
+      { deps: { signal: active.signal } });
+    expect(result.report.failure).toBe('cancelled'); expect(result.calls).toHaveLength(1); expectFollowup(result);
+  });
+
+  it('rejects a response that exceeds the overall deadline', async () => {
+    const result = await followupTrial({ after: (reply, _call, state) => { state.elapsed += 15001; return reply; } });
+    expect(result.report.failure).toBe('deadline'); expect(result.report.observation).toBeNull(); expectFollowup(result);
+  });
+
+  it.each([
+    { method: 'PATCH' }, { method: 'POST' }, { method: 'DELETE' }, { hostname: TARGET.hostname },
+    { path: '/v1/security/firewall/config' }, { port: 80 }, { rejectUnauthorized: false }, { headers: {} },
+  ])('rejects altered native dispatch options before any attempt (%#)', async (fault) => {
+    const dispatched = jest.fn();
+    const context = { module: { exports: {} }, __dirname: path.dirname(CLI), Buffer,
+      require: (name) => name === './gate1-source-discovery' ? {
+        /** Model a broken transport so the sequencer's independent exact-operation guard is exercised. */
+        exchange: async (spec, { requestImpl }) => {
+          requestImpl({ protocol: 'https:', hostname: spec.hostname, path: spec.path, method: spec.method,
+            port: 443, agent: false, rejectUnauthorized: true, headers: spec.headers, ...fault }, () => {});
+          return jsonReply({ actions: [] });
+        },
+      } : require(name) };
+    const runner = runInNewContext(`${fs.readFileSync(CLI, 'utf8')}\nrunReceiptFollowup;`, context);
+    const selected = profile(FOLLOWUP_NOW, 'receipt_followup');
+    const report = await runner({ profile: selected, approval: approvalId(selected), credentials: { providerToken: TOKEN } },
+      { requestImpl: dispatched, now: () => 0, wall: () => FOLLOWUP_NOW });
+    expect(report).toMatchObject({ result: 'stopped', failure: 'request_budget', providerRequests: 0, appRequests: 0, configMutations: 0 });
+    expect(dispatched).not.toHaveBeenCalled(); expectPrivate(report);
+  });
+
+  it('blocks a transport attempting a second physical GET', async () => {
+    const dispatched = jest.fn();
+    const context = { module: { exports: {} }, __dirname: path.dirname(CLI), Buffer,
+      require: (name) => name === './gate1-source-discovery' ? {
+        /** Attempt an illicit retry at the native boundary; the runner must count and reject it. */
+        exchange: async (spec, { requestImpl }) => {
+          const options = { protocol: 'https:', hostname: spec.hostname, path: spec.path, method: spec.method,
+            port: 443, agent: false, rejectUnauthorized: true, headers: spec.headers };
+          requestImpl(options, () => {}); requestImpl(options, () => {});
+          return jsonReply({ actions: [] });
+        },
+      } : require(name) };
+    const runner = runInNewContext(`${fs.readFileSync(CLI, 'utf8')}\nrunReceiptFollowup;`, context);
+    const selected = profile(FOLLOWUP_NOW, 'receipt_followup');
+    const report = await runner({ profile: selected, approval: approvalId(selected), credentials: { providerToken: TOKEN } },
+      { requestImpl: dispatched, now: () => 0, wall: () => FOLLOWUP_NOW });
+    expect(report).toMatchObject({ result: 'stopped', failure: 'request_budget', providerRequests: 1, eventsQueries: 1 });
+    expect(dispatched).toHaveBeenCalledTimes(1); expectPrivate(report);
+  });
+
+  it('routes live follow-up CLI input only to the isolated follow-up runner', async () => {
+    const cliProcess = new EventEmitter();
+    cliProcess.stdout = { write: jest.fn() }; cliProcess.stderr = { write: jest.fn() };
+    const context = { module: { exports: {} }, process: cliProcess, AbortController, Buffer,
+      require: (name) => name === './gate1-source-discovery'
+        ? { readInput: async () => ({ profile: { queryMode: 'receipt_followup' } }) } : require(name) };
+    const main = runInNewContext(`${fs.readFileSync(CLI, 'utf8')}\nmain;`, context);
+    context.runReceiptFollowup = jest.fn(async () => ({ result: 'completed' }));
+    for (const name of ['runReceipt', 'runConfigCheck', 'runRecoveryInspection', 'runRecoveryDiscard']) {
+      context[name] = jest.fn(() => { throw new Error('Wrong sequencer'); });
+    }
+    await main(['--live']);
+    expect(context.runReceiptFollowup).toHaveBeenCalledTimes(1); expect(cliProcess.exitCode).toBe(0);
+    for (const name of ['runReceipt', 'runConfigCheck', 'runRecoveryInspection', 'runRecoveryDiscard']) expect(context[name]).not.toHaveBeenCalled();
+  });
+});
 
 /** Execute only the new recovery sequencer against synthetic configuration, with optional boundary faults. */
 async function recoveryTrial(options = {}, changes = {}) {
@@ -1887,7 +2118,8 @@ function launcherFixture(options = {}) {
   const directory = path.resolve(__dirname, '../../../.tmp');
   fs.mkdirSync(directory, { recursive: true });
   const file = path.join(directory, `log-receipt-launcher-fixture-${randomUUID()}.json`);
-  const selected = profile(Date.now(), options.discard ? 'recovery_discard' : options.recovery ? 'recovery_inspection' : options.configCheck ? 'config_check' : undefined), digest = approvalId(selected);
+  const selected = profile(Date.now(), options.followup ? 'receipt_followup' : options.discard ? 'recovery_discard'
+    : options.recovery ? 'recovery_inspection' : options.configCheck ? 'config_check' : undefined), digest = approvalId(selected);
   const prepared = { ...preparation(selected), ...options.reviewChanges };
   if (options.limitChanges) prepared.limits = { ...prepared.limits, ...options.limitChanges };
   fs.writeFileSync(file, JSON.stringify(selected), { flag: 'wx' });
@@ -1914,7 +2146,8 @@ function launcherFixture(options = {}) {
     "  Assert-FixtureCondition (($script:sequence -join ',') -ceq 'review')",
     "  $script:sequence.Add('confirmation')",
     `  return ${psLiteral(options.confirmation === undefined
-      ? options.discard ? 'DISCARD REVIEWED GATE1 DRAFT ONCE' : options.recovery ? 'RUN RECOVERY INSPECTION ONCE' : options.configCheck ? 'RUN CONFIG CHECK ONCE' : 'RUN LOG RECEIPT ONCE' : options.confirmation)}`,
+      ? options.followup ? 'RUN RECEIPT FOLLOWUP ONCE' : options.discard ? 'DISCARD REVIEWED GATE1 DRAFT ONCE'
+        : options.recovery ? 'RUN RECOVERY INSPECTION ONCE' : options.configCheck ? 'RUN CONFIG CHECK ONCE' : 'RUN LOG RECEIPT ONCE' : options.confirmation)}`,
     '}',
     '<# Intercept both child modes and validate credential isolation in the stdin envelope. #>',
     'function Invoke-Gate1ReceiptNode([string]$Mode, [string]$InputJson) {',
@@ -2030,6 +2263,70 @@ describe('offline CLI and guarded PowerShell launcher', () => {
     expect(JSON.parse(child.stdout)).toMatchObject({ sequence: ['review', 'confirmation', 'hidden_token'], threw: true,
       fixtureViolation: false, liveEnvelopeValidated: false });
   });
+});
+
+describe('historical follow-up CLI and launcher', () => {
+  it.each(['--followup-template', '--followup-prepare', '--review'])('prepares %s without network or credentials', (mode) => {
+    const child = offlineCli([mode], mode === '--review' ? JSON.stringify(profile(Date.now(), 'receipt_followup')) : undefined);
+    expect(child.error).toBeUndefined(); expect(child.status).toBe(0); expect(child.stderr).toBe('');
+    const output = JSON.parse(child.stdout);
+    expect(output.queryMode).toBe('receipt_followup');
+    expect(output.sourceEvidence).toEqual(FOLLOWUP_SOURCE);
+    if (mode === '--followup-template') expect(Object.values(output.attestations)).toEqual([false, false, false]);
+    else expect(output).toMatchObject({ liveApproved: false, appRequests: 0, providerRequests: 0,
+      limits: { maxAppRequests: 0, maxProviderRequests: 1, maxEventsQueries: 1, maxConfigMutations: 0 } });
+  });
+
+  (process.platform === 'win32' ? it.each : it.skip.each)([
+    [['-FollowupTemplate'], '--followup-template'], [['-ReceiptFollowup'], '--followup-prepare'],
+  ])('selects only offline %j', (args, mode) => {
+    const child = launcherSelectorFixture(args);
+    expect(child.error).toBeUndefined(); expect(child.status).toBe(0); expect(child.stderr).toBe('');
+    expect(JSON.parse(child.stdout)).toEqual({ modes: [mode], prompted: false, threw: false });
+  });
+
+  (process.platform === 'win32' ? it.each : it.skip.each)([
+    ['-ReceiptFollowup', '-RecoveryDiscard'], ['-FollowupTemplate', '-ConfigCheck'],
+    ['-ReceiptFollowup', '-Live'], ['-FollowupTemplate', '-ProfilePath', 'fixture.json'],
+    ['-FollowupTemplate', '-Approval', 'a'.repeat(64)],
+  ].map((args) => [args]))('rejects conflicting %j before a child or prompt', (args) => {
+    const child = launcherSelectorFixture(args);
+    expect(child.error).toBeUndefined(); expect(child.status).toBe(0);
+    expect(JSON.parse(child.stdout)).toEqual({ modes: [], prompted: false, threw: true });
+  });
+
+  (process.platform === 'win32' ? it : it.skip)('confirms the historical-only scope before hidden token stdin', () => {
+    const child = launcherFixture({ followup: true });
+    expect(child.error).toBeUndefined(); expect(child.status).toBe(0); expect(child.stderr).toBe('');
+    expect(JSON.parse(child.stdout)).toEqual({ sequence: ['review', 'confirmation', 'hidden_token', 'live_stdin'],
+      threw: false, fixtureViolation: false, liveEnvelopeValidated: true, returnedExitCode: 13 });
+    expect(child.stdout + child.stderr).not.toContain(TOKEN);
+  });
+
+  (process.platform === 'win32' ? it.each : it.skip.each)([
+    { wrongApproval: true }, { reviewChanges: { method: 'DELETE' } },
+    { reviewChanges: { endpoint: 'https://api.vercel.com/v1/security/firewall/config' } },
+    { reviewChanges: { sourceEvidence: { ...FOLLOWUP_SOURCE, sha256: '0'.repeat(64) } } },
+    { reviewChanges: { sourceEvidence: { ...FOLLOWUP_SOURCE, ruleId: RULE_ID } } },
+    { reviewChanges: { sourceEvidence: { ...FOLLOWUP_SOURCE, queryWindow: { start: 'wrong', end: 'wrong' } } } },
+    { reviewChanges: { queryParameters: { projectId: TARGET.projectId, teamId: TARGET.teamId, hosts: TARGET.hostname,
+      startTimestamp: START, endTimestamp: FOLLOWUP_NOW } } },
+    { reviewChanges: { application: { method: 'GET' } } }, { limitChanges: { maxAppRequests: 1 } },
+    { limitChanges: { maxProviderRequests: 2 } }, { limitChanges: { maxConfigMutations: 1 } },
+  ])('rejects widened follow-up review before confirmation or credentials (%#)', (options) => {
+    const child = launcherFixture({ ...options, followup: true });
+    expect(child.error).toBeUndefined(); expect(child.status).toBe(0); expect(child.stderr).toBe('');
+    expect(JSON.parse(child.stdout)).toMatchObject({ sequence: ['review'], threw: true,
+      fixtureViolation: false, liveEnvelopeValidated: false });
+  });
+
+  (process.platform === 'win32' ? it.each : it.skip.each)(['RUN LOG RECEIPT ONCE', 'RUN CONFIG CHECK ONCE', ''])(
+    'rejects the wrong confirmation %j before token entry', (confirmation) => {
+      const child = launcherFixture({ followup: true, confirmation });
+      expect(child.error).toBeUndefined(); expect(child.status).toBe(0);
+      expect(JSON.parse(child.stdout)).toMatchObject({ sequence: ['review', 'confirmation'], threw: true,
+        fixtureViolation: false, liveEnvelopeValidated: false });
+    });
 });
 
 describe('owner recovery CLI and launcher', () => {
@@ -2274,8 +2571,9 @@ function durableFixture(wire, failRename = () => false, mode = 'log_receipt') {
   }));
   nativeGuard.mockImplementation(wire.requestImpl);
   /** Exercise production persistence with an in-memory network fixture and fixed clocks. */
-  async function run() {
-    const selected = profile(START, mode), runner = mode === 'recovery_discard' ? runRecoveryDiscard
+  async function run(profileTime = mode === 'receipt_followup' ? FOLLOWUP_NOW : START) {
+    const selected = profile(profileTime, mode), runner = mode === 'receipt_followup' ? runReceiptFollowup
+      : mode === 'recovery_discard' ? runRecoveryDiscard
       : mode === 'recovery_inspection' ? runRecoveryInspection : runReceipt;
     return runner({ profile: selected, approval: approvalId(selected), credentials: { providerToken: TOKEN } },
       { ...wire.deps, requestImpl: undefined });
@@ -2304,6 +2602,47 @@ async function renderRecoveryReport(report) {
 }
 
 describe('durable approval and recovery evidence', () => {
+  it('reserves follow-up once per source even with a refreshed profile and persists only sanitized facts', async () => {
+    const wire = followupFixture(), storage = durableFixture(wire, undefined, 'receipt_followup');
+    try {
+      const first = await storage.run();
+      expect(first).toMatchObject({ result: 'completed', providerRequests: 1 });
+      expect(path.basename(first.reportPath)).toBe(`gate1-log-followup-${FOLLOWUP_SOURCE.sha256}.json`);
+      wire.state.elapsed += 1;
+      const second = await storage.run(FOLLOWUP_NOW + 1);
+      expect(second.approvalId).not.toBe(first.approvalId);
+      expect(second).toMatchObject({ result: 'stopped', failure: 'approval_consumed', providerRequests: 0 });
+      expect(wire.calls).toHaveLength(1);
+      expect(JSON.parse(storage.records.get(first.reportPath))).toMatchObject({ result: 'completed',
+        sourceEvidence: FOLLOWUP_SOURCE, providerRequests: 1, eventsQueries: 1, appRequests: 0, configMutations: 0 });
+      expect([...storage.records.keys()].some((key) => key.endsWith(`gate1-log-receipt-${FOLLOWUP_SOURCE.approvalId}.json`))).toBe(false);
+      for (const encoded of storage.writes) {
+        expectPrivate(JSON.parse(encoded)); expect(Buffer.byteLength(encoded)).toBeLessThanOrEqual(8192);
+      }
+    } finally { storage.restore(); }
+  });
+
+  it('fails before follow-up dispatch if the evidence checkpoint fails and preserves its consumed reservation', async () => {
+    const wire = followupFixture(), storage = durableFixture(wire, () => true, 'receipt_followup');
+    try {
+      const first = await storage.run();
+      expect(first).toMatchObject({ result: 'stopped', failure: 'local_evidence', providerRequests: 0 });
+      const second = await storage.run();
+      expect(second.failure).toBe('approval_consumed'); expect(wire.calls).toHaveLength(0);
+    } finally { storage.restore(); }
+  });
+
+  it('reports final follow-up evidence-write failure without another provider attempt', async () => {
+    const wire = followupFixture();
+    const storage = durableFixture(wire, () => wire.calls.length > 0, 'receipt_followup');
+    try {
+      const report = await storage.run();
+      expect(report).toMatchObject({ result: 'stopped', evidenceFailure: 'local_evidence', providerRequests: 1 });
+      expectFollowup({ ...wire, report });
+      expect((await storage.run()).failure).toBe('approval_consumed'); expect(wire.calls).toHaveLength(1);
+    } finally { storage.restore(); }
+  });
+
   it('consumes a discard approval once and preserves private-data-free mutation intent and current-state results', async () => {
     const wire = fixture({ state: discardState() }), storage = durableFixture(wire, undefined, 'recovery_discard');
     try {

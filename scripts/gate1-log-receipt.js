@@ -11,10 +11,13 @@
  * candidate similarity never establishes ownership or restoration.
  * Owner recovery is a separate GET/DELETE/GET exception; it never qualifies
  * historical restoration or enters the ordinary receipt lifecycle.
+ * Receipt follow-up is a separate single historical Events GET, pinned to the
+ * reviewed report's digest/facts; it cannot enter any configuration operation.
  */
 const https = require('node:https');
 const fs = require('node:fs');
 const path = require('node:path');
+const { URLSearchParams } = require('node:url');
 const { createHash, randomBytes } = require('node:crypto');
 const { performance } = require('node:perf_hooks');
 const { isDeepStrictEqual } = require('node:util');
@@ -32,6 +35,21 @@ const CONFIG_LIMITS = Object.freeze({ maxAppRequests: 0, maxProviderRequests: 1,
   maxEventsQueries: 0, maxConfigMutations: 0, concurrency: 1, requestMs: 10000,
   overallMs: 15000, providerBytes: 262144, headerBytes: 16384, inputBytes: 16384,
   reportBytes: 8192, profileAgeMs: 900000 });
+const FOLLOWUP_LIMITS = Object.freeze({ ...CONFIG_LIMITS, maxEventsQueries: 1 });
+const FOLLOWUP_SCOPE = 'ordinary_log_receipt_followup_only';
+// Facts transcribed from the hash-verified, reviewed September 27 report. These
+// identify that evidence; no caller-selected report path or provider query is read.
+const FOLLOWUP_SOURCE = Object.freeze({
+  approvalId: '717111935cb517bb273dfd76e77462987b909408cf2a60f053c90b612b7cf09c',
+  sha256: '4403d08daef40c4aeed403a221f3c1948c505404c5bee8677c474eab34fa5581',
+  trialId: '3a4ee48060b1b2562857b38077e4a799',
+  ruleId: 'rule_gate1_log_receipt_3a4ee48060b1b2562857b38077e4a799_VcUuC5',
+  queryWindow: Object.freeze({ start: '2026-09-27T16:42:07.926Z', end: '2026-09-27T16:42:39.357Z' }),
+});
+const FOLLOWUP_QUERY = Object.freeze({ projectId: TARGET.projectId, teamId: TARGET.teamId,
+  startTimestamp: Date.parse(FOLLOWUP_SOURCE.queryWindow.start),
+  endTimestamp: Date.parse(FOLLOWUP_SOURCE.queryWindow.end), hosts: TARGET.hostname });
+const FOLLOWUP_PATH = `/v1/security/firewall/events?${new URLSearchParams(FOLLOWUP_QUERY)}`;
 const SCOPE = 'ordinary_log_receipt_trial_only';
 const CONFIG_SCOPE = 'provider_firewall_config_check_only';
 const RECOVERY_SCOPE = 'provider_firewall_recovery_inspection_only';
@@ -66,7 +84,14 @@ const discardProfileSchema = z.object({ ...profileFields, queryMode: z.literal('
   failedTrialId: z.literal(RECOVERY_TRIAL_ID),
   attestations: z.object(Object.fromEntries(DISCARD_ATTESTATIONS.map((key) => [key, z.literal(true)]))).strict(),
 }).strict();
-const profileSchema = z.union([receiptProfileSchema, configProfileSchema, recoveryProfileSchema, discardProfileSchema]);
+const followupProfileSchema = z.object({ ...profileFields, queryMode: z.literal('receipt_followup'),
+  sourceEvidence: z.object({ approvalId: z.literal(FOLLOWUP_SOURCE.approvalId), sha256: z.literal(FOLLOWUP_SOURCE.sha256),
+    trialId: z.literal(FOLLOWUP_SOURCE.trialId), ruleId: z.literal(FOLLOWUP_SOURCE.ruleId),
+    queryWindow: z.object({ start: z.literal(FOLLOWUP_SOURCE.queryWindow.start),
+      end: z.literal(FOLLOWUP_SOURCE.queryWindow.end) }).strict() }).strict(),
+  attestations: z.object(Object.fromEntries(CONFIG_ATTESTATIONS.map((key) => [key, z.literal(true)]))).strict(),
+}).strict();
+const profileSchema = z.union([receiptProfileSchema, configProfileSchema, recoveryProfileSchema, discardProfileSchema, followupProfileSchema]);
 const envelopeSchema = z.object({ profile: profileSchema, approval: z.string().regex(/^[a-f0-9]{64}$/),
   credentials: z.object({ providerToken: z.string().min(20).max(512).regex(/^[A-Za-z0-9_-]+$/) }).strict(),
 }).strict();
@@ -114,13 +139,15 @@ class ReceiptError extends Error {
 
 /** Create an unapproved profile with only the attestations needed for the selected fixed operation. */
 function profileTemplate(now = Date.now(), queryMode = 'log_receipt') {
-  if (!z.enum(['log_receipt', 'config_check', 'recovery_inspection', 'recovery_discard']).safeParse(queryMode).success) throw new ReceiptError('profile');
+  if (!z.enum(['log_receipt', 'config_check', 'recovery_inspection', 'recovery_discard', 'receipt_followup']).safeParse(queryMode).success) throw new ReceiptError('profile');
   const config = queryMode === 'config_check';
+  const followup = queryMode === 'receipt_followup';
   const discard = queryMode === 'recovery_discard';
   const recovery = queryMode === 'recovery_inspection' || discard;
-  return { schemaVersion: 1, ...(config || recovery ? { queryMode } : {}),
+  return { schemaVersion: 1, ...(config || recovery || followup ? { queryMode } : {}),
+    ...(followup ? { sourceEvidence: JSON.parse(JSON.stringify(FOLLOWUP_SOURCE)) } : {}),
     ...(recovery ? { failedTrialId: RECOVERY_TRIAL_ID } : {}), ...TARGET, reviewedAt: new Date(now).toISOString(),
-    attestations: Object.fromEntries((discard ? DISCARD_ATTESTATIONS : config ? CONFIG_ATTESTATIONS : ATTESTATIONS).map((key) => [key, false])) };
+    attestations: Object.fromEntries((discard ? DISCARD_ATTESTATIONS : config || followup ? CONFIG_ATTESTATIONS : ATTESTATIONS).map((key) => [key, false])) };
 }
 
 /** Validate and detach the fixed target and required operator attestations. */
@@ -139,7 +166,9 @@ function requireFresh(profile, now) {
 /** Bind a single profile to exact code, imported executable dependencies and budgets. */
 function approvalId(value) {
   const profile = parseProfile(value);
-  const operation = profile.queryMode === 'recovery_discard'
+  const operation = profile.queryMode === 'receipt_followup'
+    ? { scope: FOLLOWUP_SCOPE, limits: FOLLOWUP_LIMITS, method: 'GET', path: FOLLOWUP_PATH, hostname: 'api.vercel.com' }
+    : profile.queryMode === 'recovery_discard'
     ? { scope: DISCARD_SCOPE, limits: DISCARD_LIMITS, hostname: 'api.vercel.com',
       operations: [['GET', CONFIG_PATH], ['DELETE', DRAFT_PATH], ['GET', CONFIG_PATH]] }
     : profile.queryMode
@@ -153,9 +182,23 @@ function approvalId(value) {
 
 /** Supply concrete offline review and manual recovery boundaries before live approval. */
 function preparation(value = null, now = Date.now(), queryMode = 'log_receipt') {
-  if (!z.enum(['log_receipt', 'config_check', 'recovery_inspection', 'recovery_discard']).safeParse(queryMode).success) throw new ReceiptError('profile');
+  if (!z.enum(['log_receipt', 'config_check', 'recovery_inspection', 'recovery_discard', 'receipt_followup']).safeParse(queryMode).success) throw new ReceiptError('profile');
   const profile = value === null ? null : parseProfile(value);
   if (profile) requireFresh(profile, now);
+  if ((profile ? profile.queryMode : queryMode) === 'receipt_followup') return {
+    schemaVersion: 1, mode: 'prepare', scope: FOLLOWUP_SCOPE, queryMode: 'receipt_followup',
+    liveApproved: false, target: TARGET, profile, sourceEvidence: FOLLOWUP_SOURCE,
+    approvalId: profile ? approvalId(profile) : null, limits: FOLLOWUP_LIMITS,
+    appRequests: 0, providerRequests: 0, eventsQueries: 0, configMutations: 0,
+    gate1Status: 'open', sourceAgreement: 'not_evaluated', correlation: 'unqualified', completeness: 'unqualified',
+    application: null, rule: null, providerOrigin: 'https://api.vercel.com',
+    endpoint: 'https://api.vercel.com/v1/security/firewall/events', method: 'GET', queryParameters: FOLLOWUP_QUERY,
+    limitations: ['reviewed_digest_and_facts_pinned_in_code_not_file_revalidation',
+      'one_lookup_per_source_report_in_this_worktree', 'no_retries_pagination_or_wider_window',
+      'no_rule_recreation_or_configuration_reads', 'retention_and_delivery_semantics_unqualified',
+      'empty_result_inconclusive', 'aggregate_is_not_per_request_trace', 'no_new_cleanup_verification'],
+    nextStep: profile ? 'obtain_separate_live_approval' : 'complete_local_profile',
+  };
   if ((profile ? profile.queryMode : queryMode) === 'recovery_discard') return {
     schemaVersion: 1, mode: 'prepare', scope: DISCARD_SCOPE, queryMode: 'recovery_discard',
     failedTrialId: RECOVERY_TRIAL_ID, liveApproved: false, target: TARGET, profile,
@@ -614,7 +657,11 @@ function encodeReport(report) {
 function reserveTrial(report) {
   const directory = path.resolve(__dirname, '../.tmp');
   fs.mkdirSync(directory, { recursive: true });
-  const file = path.join(directory, `gate1-log-receipt-${report.approvalId}.json`);
+  // Follow-up reservation is per reviewed source, so a new profile/code approval
+  // cannot replay it in this worktree. The original report is never overwritten.
+  const name = report.scope === FOLLOWUP_SCOPE ? `gate1-log-followup-${FOLLOWUP_SOURCE.sha256}`
+    : `gate1-log-receipt-${report.approvalId}`;
+  const file = path.join(directory, `${name}.json`);
   try { fs.writeFileSync(file, encodeReport(report), { flag: 'wx', mode: 0o600 }); }
   catch (error) { throw new ReceiptError(error.code === 'EEXIST' ? 'approval_consumed' : 'local_evidence'); }
   return file;
@@ -945,6 +992,82 @@ async function runReadOnlyConfig(input, deps, expectedMode) {
 }
 
 /**
+ * Execute one historical Events GET for the pinned reviewed trial. Input carries
+ * a fresh code-bound approval and hidden token; deps supplies offline transport/
+ * clock seams. Reserve once per source report, retain only sanitized facts, and
+ * never call the ordinary rule lifecycle, configuration reader or cleanup.
+ */
+async function runReceiptFollowup(input, deps = {}) {
+  const report = { schemaVersion: 1, mode: deps.requestImpl ? 'fixture' : 'live',
+    scope: FOLLOWUP_SCOPE, queryMode: 'receipt_followup', result: 'stopped',
+    gate1Status: 'open', sourceAgreement: 'not_evaluated', correlation: 'unqualified', completeness: 'unqualified',
+    hostedEvidence: deps.requestImpl ? 'not_executed' : 'requires_review', target: TARGET,
+    limits: FOLLOWUP_LIMITS, sourceEvidence: FOLLOWUP_SOURCE, approvalId: null,
+    appRequests: 0, providerRequests: 0, eventsQueries: 0, configMutations: 0,
+    receipts: [], observation: null, failure: null, stoppedPhase: 'validation' };
+  const now = deps.now || (() => performance.now()), wall = deps.wall || Date.now;
+  let started, wallStart, previous, file, guardFailure, phase = 'validation';
+  /** Enforce cancellation, monotonic time and the overall deadline around every asynchronous boundary. */
+  function remaining() {
+    if (deps.signal?.aborted) throw new ReceiptError('cancelled');
+    const current = now(), currentWall = wall(), elapsed = current - started;
+    if (![current, currentWall, elapsed].every(Number.isFinite) || current < previous || elapsed < 0
+      || elapsed >= FOLLOWUP_LIMITS.overallMs || Math.abs((currentWall - wallStart) - elapsed) > 5000) throw new ReceiptError('deadline');
+    previous = current;
+    return FOLLOWUP_LIMITS.overallMs - elapsed;
+  }
+  try {
+    started = now(); previous = started; wallStart = wall(); remaining();
+    const parsed = envelopeSchema.safeParse(input);
+    if (!parsed.success) throw new ReceiptError('input');
+    const { profile, approval, credentials } = parsed.data;
+    if (profile.queryMode !== 'receipt_followup') throw new ReceiptError('profile');
+    requireFresh(profile, wall());
+    if (wallStart <= FOLLOWUP_QUERY.endTimestamp) throw new ReceiptError('profile');
+    if (JSON.stringify(profile).includes(credentials.providerToken) || approval.includes(credentials.providerToken)) throw new ReceiptError('credentials');
+    if (approval !== approvalId(profile)) throw new ReceiptError('approval');
+    report.approvalId = approval; report.startedAt = new Date(wallStart).toISOString();
+    if (!deps.requestImpl) file = reserveTrial(report);
+    phase = 'historicalEvents'; report.stoppedPhase = phase;
+    checkpoint(file, report);
+    const headers = { Accept: 'application/json', 'Accept-Encoding': 'identity', Authorization: `Bearer ${credentials.providerToken}` };
+    const receipt = { phase, httpStatus: null };
+    /** Count physical attempts; reject every destination, method or query except the single pinned GET. */
+    function dispatch(options, receive) {
+      try {
+        remaining();
+        if (report.providerRequests >= 1 || report.eventsQueries >= 1
+          || options.hostname !== 'api.vercel.com' || options.path !== FOLLOWUP_PATH || options.method !== 'GET'
+          || options.protocol !== 'https:' || options.port !== 443 || options.rejectUnauthorized !== true
+          || options.agent !== false || !isDeepStrictEqual(options.headers, headers)) throw new ReceiptError('request_budget');
+        report.providerRequests += 1; report.eventsQueries += 1; report.receipts.push(receipt);
+      } catch (error) { guardFailure = error; throw error; }
+      return (deps.requestImpl || https.request)(options, (incoming) => {
+        if (Number.isInteger(incoming.statusCode) && incoming.statusCode >= 100 && incoming.statusCode <= 599) receipt.httpStatus = incoming.statusCode;
+        receive(incoming);
+      });
+    }
+    const response = await exchange({ hostname: 'api.vercel.com', path: FOLLOWUP_PATH, method: 'GET',
+      bytes: FOLLOWUP_LIMITS.providerBytes, headers },
+    { requestImpl: dispatch, signal: deps.signal, timeoutMs: Math.min(FOLLOWUP_LIMITS.requestMs, remaining()) });
+    remaining();
+    report.observation = reviewEvents(providerJson(response), FOLLOWUP_SOURCE.ruleId,
+      { start: FOLLOWUP_QUERY.startTimestamp, end: FOLLOWUP_QUERY.endTimestamp });
+    // This is a later lookup of the original trial, not a new application trial.
+    if (report.observation.receipt === 'not_observed_in_trial') report.observation.receipt = 'not_observed_in_followup';
+    remaining(); report.result = 'completed'; report.stoppedPhase = null;
+  } catch (error) {
+    report.failure = failureCode(guardFailure || error); report.stoppedPhase = phase;
+  }
+  const elapsed = now() - started;
+  if (Number.isFinite(elapsed) && elapsed >= 0) report.elapsedMs = Math.round(elapsed * 1000) / 1000;
+  try { checkpoint(file, report); }
+  catch { report.evidenceFailure = 'local_evidence'; report.result = 'stopped'; }
+  if (file) report.reportPath = file;
+  return report;
+}
+
+/**
  * Admit only the observed candidate/history shape under an explicit owner exception.
  * Both full keys must be projectId + the same single separator + active/draft.
  * This local precondition is not a provider encoding contract or proof of ownership.
@@ -1102,7 +1225,8 @@ async function runRecoveryDiscard(input, deps = {}) {
 async function main(args) {
   try {
     if (args.length > 1 || (args.length && !['--prepare', '--template', '--config-prepare', '--config-template',
-      '--recovery-prepare', '--recovery-template', '--discard-prepare', '--discard-template', '--review', '--live'].includes(args[0]))) throw new ReceiptError('arguments');
+      '--recovery-prepare', '--recovery-template', '--discard-prepare', '--discard-template',
+      '--followup-prepare', '--followup-template', '--review', '--live'].includes(args[0]))) throw new ReceiptError('arguments');
     if (args[0] !== '--live') {
       const value = args[0] === '--template' ? profileTemplate()
         : args[0] === '--config-template' ? profileTemplate(Date.now(), 'config_check')
@@ -1111,6 +1235,8 @@ async function main(args) {
         : args[0] === '--recovery-prepare' ? preparation(null, Date.now(), 'recovery_inspection')
         : args[0] === '--discard-template' ? profileTemplate(Date.now(), 'recovery_discard')
         : args[0] === '--discard-prepare' ? preparation(null, Date.now(), 'recovery_discard')
+        : args[0] === '--followup-template' ? profileTemplate(Date.now(), 'receipt_followup')
+        : args[0] === '--followup-prepare' ? preparation(null, Date.now(), 'receipt_followup')
         : args[0] === '--review' ? preparation(await readInput()) : preparation();
       process.stdout.write(`${JSON.stringify(value, null, 2)}\n`); return;
     }
@@ -1121,7 +1247,8 @@ async function main(args) {
     let report;
     try {
       const input = await readInput();
-      const runner = input?.profile?.queryMode === 'recovery_discard' ? runRecoveryDiscard
+      const runner = input?.profile?.queryMode === 'receipt_followup' ? runReceiptFollowup
+        : input?.profile?.queryMode === 'recovery_discard' ? runRecoveryDiscard
         : input?.profile?.queryMode === 'recovery_inspection' ? runRecoveryInspection
         : input?.profile?.queryMode === 'config_check' ? runConfigCheck : runReceipt;
       report = await runner(input, { signal: controller.signal });
@@ -1135,6 +1262,7 @@ async function main(args) {
   }
 }
 
-module.exports = { LIMITS, CONFIG_LIMITS, DISCARD_LIMITS, TARGET, RECOVERY_TRIAL_ID, profileTemplate, parseProfile, approvalId, preparation,
-  diagnosticRule, reviewEvents, reviewConfigResponse, runReceipt, runConfigCheck, runRecoveryInspection, runRecoveryDiscard };
+module.exports = { LIMITS, CONFIG_LIMITS, DISCARD_LIMITS, FOLLOWUP_LIMITS, FOLLOWUP_SOURCE, TARGET, RECOVERY_TRIAL_ID,
+  profileTemplate, parseProfile, approvalId, preparation,
+  diagnosticRule, reviewEvents, reviewConfigResponse, runReceipt, runConfigCheck, runRecoveryInspection, runRecoveryDiscard, runReceiptFollowup };
 if (require.main === module) void main(process.argv.slice(2));
