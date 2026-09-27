@@ -368,7 +368,8 @@ function launcherFixture({ mutation = '', confirmation = 'RUN TRAFFIC RECEIPT ON
   return JSON.parse(child.stdout);
 }
 
-describe('PowerShell confirmation and independent scope checks', () => {
+// This launcher uses Windows PowerShell; retain its checks on Windows without spawning it in Linux CI.
+(process.platform === 'win32' ? describe : describe.skip)('PowerShell confirmation and independent scope checks', () => {
   it('permits only the confirmed reviewed operation through mocked stdin', () => {
     expect(launcherFixture()).toEqual({ failed: false, tokenCalls: 1, liveCalls: 1 });
   });
@@ -389,6 +390,10 @@ describe('PowerShell confirmation and independent scope checks', () => {
   ])('refuses mutated review before secret entry (%#)', (mutation) => {
     expect(launcherFixture({ mutation })).toEqual({ failed: true, tokenCalls: 0, liveCalls: 0 });
   });
+});
+
+/** Keep Node CLI safety checks active on every platform, independent of the Windows launcher. */
+describe('Node CLI offline modes and argument validation', () => {
   it.each([[[]], [['--prepare']], [['--template']]])('keeps Node mode %j offline', (args) => {
     const child = spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', timeout: 15000, windowsHide: true });
     expect(child.error).toBeUndefined(); expect(child.status).toBe(0);
