@@ -6,8 +6,8 @@ const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const https = require('node:https');
-const { LIMITS, CONFIG_LIMITS, TARGET, RECOVERY_TRIAL_ID, profileTemplate, parseProfile, approvalId, preparation,
-  diagnosticRule, reviewEvents, reviewConfigResponse, runReceipt, runConfigCheck, runRecoveryInspection } = require('../../../scripts/gate1-log-receipt');
+const { LIMITS, CONFIG_LIMITS, DISCARD_LIMITS, TARGET, RECOVERY_TRIAL_ID, profileTemplate, parseProfile, approvalId, preparation,
+  diagnosticRule, reviewEvents, reviewConfigResponse, runReceipt, runConfigCheck, runRecoveryInspection, runRecoveryDiscard } = require('../../../scripts/gate1-log-receipt');
 
 const START = Date.parse('2026-09-24T12:00:00.000Z');
 const TOKEN = 'synthetic_log_receipt_provider_token';
@@ -59,10 +59,15 @@ function event(state, changes = {}) {
 /**
  * Simulate the documented shared-draft control plane. Hooks can change state or
  * replace a reply before/after a mutation to exercise ambiguous outcomes safely.
+ * roleMetadata models the approved local key/history preconditions across the
+ * lifecycle; activation/removal shapes are synthetic, not hosted evidence.
  */
 function fixture(options = {}) {
   const state = { active: baseline(), draft: null, versions: [], elapsed: 0,
     rule: null, providerCount: 0, appCount: 0, labels: [] };
+  const roleKeys = options.roleMetadata ? { active: `${TARGET.projectId}${options.separator || '#'}active`,
+    draft: `${TARGET.projectId}${options.separator || '#'}draft` } : null;
+  if (roleKeys) state.active.projectKey = roleKeys.active;
   if (options.state) Object.assign(state, options.state);
   const calls = [], requests = [], responses = [];
   /** Resolve only the fixed trial routes; an unexpected request is a test failure. */
@@ -103,7 +108,8 @@ function fixture(options = {}) {
       if (!state.draft) throw new Error('Fixture forbids activating an absent draft');
       state.versions.push(copy(state.active));
       state.active = { ...copy(state.draft), id: `icfg_fixture_active_${state.active.version + 1}`,
-        version: state.active.version + 1, updatedAt: new Date(START + state.elapsed).toISOString(), changes: [] };
+        version: state.active.version + 1, updatedAt: new Date(START + state.elapsed).toISOString(), changes: [],
+        ...(roleKeys ? { projectKey: roleKeys.active } : {}) };
       state.draft = null;
       reply = jsonReply(state.active);
     } else if (label === 'discard') {
@@ -114,6 +120,12 @@ function fixture(options = {}) {
         'cache-control': 'private, no-store' } };
     } else if (label === 'events') reply = jsonReply({ actions: [event(state)] });
     else throw new Error('Unexpected fixture route');
+    if (roleKeys && (label === 'rules.insert' || label === 'rules.remove')) {
+      state.draft.id = state.active.id;
+      state.draft.projectKey = roleKeys.draft;
+      Object.assign(state.draft.changes[0], { createdAt: new Date(START + state.elapsed).toISOString(),
+        userId: PRIVATE, username: PRIVATE });
+    }
     return options.after?.(reply, call, state) || reply;
   }
   /** Implement native request events while keeping all request/response data local to this fixture. */
@@ -195,6 +207,193 @@ function expectRecovery(result) {
   expect(JSON.stringify(result.report)).not.toContain(`gate1-log-${'a'.repeat(48)}`);
   expect(Buffer.byteLength(`${JSON.stringify(result.report, null, 1)}\n`)).toBeLessThanOrEqual(CONFIG_LIMITS.reportBytes);
 }
+
+/** Construct synthetic observed metadata/key forms; these values do not reconstruct historical evidence. */
+function discardState(separator = '#') {
+  const state = recoveryState();
+  state.active.projectKey = `${TARGET.projectId}${separator}active`;
+  state.draft.projectKey = `${TARGET.projectId}${separator}draft`;
+  state.draft.id = state.active.id;
+  Object.assign(state.draft.changes[0], { createdAt: new Date(START).toISOString(), userId: PRIVATE, username: PRIVATE });
+  return state;
+}
+
+/** Run the isolated owner exception against synthetic HTTPS and independently approved fixture input only. */
+async function discardTrial(options = {}, changes = {}) {
+  const wire = fixture({ state: discardState(), ...options }), selected = profile(START, 'recovery_discard');
+  const report = await runRecoveryDiscard({ profile: selected, approval: approvalId(selected),
+    credentials: { providerToken: TOKEN }, ...changes.input }, { ...wire.deps, ...changes.deps });
+  return { ...wire, report };
+}
+
+/** Every owner recovery report must preserve history/privacy limits and the zero-application budget. */
+function expectDiscardPrivate(result) {
+  expect(result.report).toMatchObject({ appRequests: 0, eventsQueries: 0, gate1Status: 'open',
+    sourceAgreement: 'not_evaluated', cleanup: { restorationVerified: false },
+    recovery: { originalBaselineComparison: 'unavailable', originalMarkerComparison: 'unavailable', ownership: 'unverified' } });
+  expect(result.report.providerRequests).toBeLessThanOrEqual(3);
+  expect(result.report.configMutations).toBeLessThanOrEqual(1);
+  expect(result.state.labels.every((label) => ['config', 'discard'].includes(label))).toBe(true);
+  expect(result.sleep).not.toHaveBeenCalled(); expectPrivate(result.report);
+  expect(JSON.stringify(result.report)).not.toContain(`gate1-log-${'a'.repeat(48)}`);
+  expect(Buffer.byteLength(JSON.stringify(result.report, null, 2))).toBeLessThan(DISCARD_LIMITS.reportBytes);
+}
+
+describe('bounded owner recovery', () => {
+  it('requires separate owner/history attestations and binds the three operations to a fresh approval', () => {
+    const template = profileTemplate(START, 'recovery_discard'), selected = profile(START, 'recovery_discard');
+    expect(Object.values(template.attestations)).toEqual(Array(7).fill(false));
+    const prepared = preparation(selected, START);
+    expect(prepared).toMatchObject({ scope: 'provider_firewall_owner_recovery_only', liveApproved: false,
+      failedTrialId: RECOVERY_TRIAL_ID, limits: { maxProviderRequests: 3, maxConfigMutations: 1, overallMs: 40000 } });
+    expect(prepared.operations.map(([method]) => method)).toEqual(['GET', 'DELETE', 'GET']);
+    expect(approvalId(selected)).not.toBe(approvalId(profile(START, 'recovery_inspection')));
+  });
+
+  it.each(['#', ':', '/', '.', '_', '-'])('recovers only the current state for an exact %s separator pair', async (separator) => {
+    const state = discardState(separator), before = copy(state.active), result = await discardTrial({ state });
+    expect(result.report).toMatchObject({ result: 'completed', providerRequests: 3, configMutations: 1,
+      pendingMutation: null, cleanup: { status: 'current_state_recovered' },
+      recovery: { preconditionsVerified: true, discardAcknowledged: true, activeUnchanged: true,
+        draftAbsent: true, currentStateRecoveryVerified: true } });
+    expect(result.state.labels).toEqual(['config', 'discard', 'config']);
+    expect(result.state.active).toEqual(before); expect(result.state.draft).toBeNull();
+    expect(result.calls.every((call) => call.options.hostname === 'api.vercel.com' && !call.body)).toBe(true);
+    expectDiscardPrivate(result);
+  });
+
+  it.each([
+    'no_draft', 'active_candidate', 'second_candidate', 'extra_active_rule', 'config_id', 'key_prefix',
+    'key_extra', 'key_case', 'key_separator', 'key_equal', 'key_unknown', 'key_version',
+    'rule_limit', 'rule_metadata', 'ips', 'unknown_config', 'candidate_marker', 'candidate_extra',
+    'candidate_disabled', 'history_unknown', 'history_missing', 'history_type', 'history_oversize',
+    'history_empty', 'history_action', 'history_id', 'history_value', 'history_multiple',
+    'config_proto_key', 'candidate_proto_key',
+  ])('refuses %s before any DELETE', async (kind) => {
+    const state = discardState(), draft = state.draft, entry = draft.changes[0];
+    if (kind === 'no_draft') state.draft = null;
+    if (kind === 'active_candidate') state.active.rules = [copy(draft.rules[1])];
+    if (kind === 'second_candidate') draft.rules.push({ ...copy(draft.rules[1]), id: 'rule_second' });
+    if (kind === 'extra_active_rule') { state.active.rules.push({ ...copy(state.active.rules[0]), id: 'rule_second' }); draft.rules.unshift(copy(state.active.rules[1])); }
+    if (kind === 'config_id') draft.id += 'other';
+    if (kind === 'key_prefix') { state.active.projectKey = `prefix${state.active.projectKey}`; draft.projectKey = `prefix${draft.projectKey}`; }
+    if (kind === 'key_extra') { state.active.projectKey += '#other'; draft.projectKey += '#other'; }
+    if (kind === 'key_case') draft.projectKey = `${TARGET.projectId}#DRAFT`;
+    if (kind === 'key_separator') draft.projectKey = `${TARGET.projectId}:draft`;
+    if (kind === 'key_equal') draft.projectKey = state.active.projectKey;
+    if (kind === 'key_unknown') { state.active.projectKey = `${TARGET.projectId}@active`; draft.projectKey = `${TARGET.projectId}@draft`; }
+    if (kind === 'key_version') { state.active.projectKey += '#3'; draft.projectKey += '#4'; }
+    if (kind === 'rule_limit') draft.rules[0].action.mitigate.rateLimit.limit = 999;
+    if (kind === 'rule_metadata') draft.rules[0].unknownPrivateMetadata = PRIVATE;
+    if (kind === 'ips') draft.ips.push({ ip: ADDRESS });
+    if (kind === 'unknown_config') draft.unknownPrivatePolicy = { secret: PRIVATE };
+    if (kind === 'candidate_marker') draft.rules[1].conditionGroup[0].conditions[3].value = 'wrong';
+    if (kind === 'candidate_extra') draft.rules[1].unexpected = true;
+    if (kind === 'candidate_disabled') draft.rules[1].active = false;
+    if (kind === 'history_unknown') entry.updatedAt = new Date(START).toISOString();
+    if (kind === 'history_missing') delete entry.username;
+    if (kind === 'history_type') entry.userId = null;
+    if (kind === 'history_oversize') entry.createdAt = 'x'.repeat(129);
+    if (kind === 'history_empty') entry.username = '';
+    if (kind === 'history_action') entry.action = 'rules.remove';
+    if (kind === 'history_id') entry.id = 'rule_unrelated';
+    if (kind === 'history_value') entry.value.active = false;
+    if (kind === 'history_multiple') draft.changes.push(copy(entry));
+    if (kind === 'config_proto_key') Object.defineProperty(draft, '__proto__', { value: { private: PRIVATE }, enumerable: true });
+    if (kind === 'candidate_proto_key') Object.defineProperty(draft.rules[1], '__proto__', { value: PRIVATE, enumerable: true });
+    const result = await discardTrial({ state });
+    expect(result.report).toMatchObject({ result: 'stopped', providerRequests: 1, configMutations: 0,
+      failure: 'configuration_drift', recovery: { preconditionsVerified: false } });
+    expect(result.state.labels).toEqual(['config']); expectDiscardPrivate(result);
+  });
+
+  it.each(['ownerApprovesCurrentDraftDiscard', 'historicalRestorationUnavailable', 'noConcurrentWafEdits'])('requires %s before HTTP', async (key) => {
+    const selected = profile(START, 'recovery_discard'); selected.attestations[key] = false;
+    const result = await discardTrial({}, { input: { profile: selected } });
+    expect(result.calls).toHaveLength(0); expect(result.report.result).toBe('stopped'); expectDiscardPrivate(result);
+  });
+
+  it.each(['config_check', 'recovery_inspection', 'log_receipt'])('rejects the %s approval and profile', async (mode) => {
+    const selected = profile(START, mode);
+    const result = await discardTrial({}, { input: { profile: selected, approval: approvalId(selected) } });
+    expect(result.calls).toHaveLength(0); expect(result.report.failure).toBe('profile');
+    const wrongApproval = await discardTrial({}, { input: { approval: approvalId(selected) } });
+    expect(wrongApproval.calls).toHaveLength(0); expect(wrongApproval.report.failure).toBe('approval');
+  });
+
+  it.each(['stale', 'future', 'wrong_target'])('refuses %s input before HTTP', async (kind) => {
+    const selected = profile(kind === 'stale' ? START - 900001 : kind === 'future' ? START + 1 : START, 'recovery_discard');
+    const approval = approvalId(selected);
+    if (kind === 'wrong_target') selected.teamId = 'team_other';
+    const result = await discardTrial({}, { input: { profile: selected, approval } });
+    expect(result.calls).toHaveLength(0); expect(result.report.result).toBe('stopped');
+  });
+
+  it.each(['transport', 'status', 'body'])('uses only the final read after uncertain DELETE %s', async (kind) => {
+    const result = await discardTrial({ after: (reply, call) => call.label !== 'discard' ? reply
+      : kind === 'transport' ? { error: true } : kind === 'status' ? jsonReply({ private: PRIVATE }, 500)
+        : { status: 204, headers: {}, body: PRIVATE } });
+    expect(result.state.labels).toEqual(['config', 'discard', 'config']);
+    expect(result.report).toMatchObject({ result: 'completed', configMutations: 1,
+      recovery: { discardAcknowledged: false, currentStateRecoveryVerified: true } });
+    expect(result.report.recovery.discardFailure).not.toBeNull(); expectDiscardPrivate(result);
+  });
+
+  it.each(['delete_denied', 'draft_remains', 'new_draft', 'active_policy', 'active_metadata', 'final_http', 'final_schema', 'active_proto_key'])('leaves %s unresolved without retry', async (kind) => {
+    const result = await discardTrial({ before: (call, state) => {
+      if (call.label === 'discard' && kind === 'delete_denied') return jsonReply({}, 403);
+      if (call.label === 'discard' && kind === 'draft_remains') return { status: 204, headers: {}, body: '' };
+      if (state.providerCount === 3) {
+        if (kind === 'new_draft') state.draft = copy(discardState().draft);
+        if (kind === 'active_policy') state.active.rules[0].action.mitigate.rateLimit.limit = 999;
+        if (kind === 'active_metadata') state.active.version += 1;
+        if (kind === 'active_proto_key') Object.defineProperty(state.active, '__proto__', { value: { private: PRIVATE }, enumerable: true });
+        if (kind === 'final_http') return jsonReply({}, 403);
+        if (kind === 'final_schema') return jsonReply({ active: null });
+      }
+      return undefined;
+    } });
+    expect(result.state.labels).toEqual(['config', 'discard', 'config']);
+    expect(result.report).toMatchObject({ result: 'stopped', configMutations: 1,
+      cleanup: { status: 'cleanup_unresolved' }, recovery: { currentStateRecoveryVerified: false } });
+    expectDiscardPrivate(result);
+  });
+
+  it.each([302, 403, 429, 500])('stops after initial HTTP %s', async (status) => {
+    const result = await discardTrial({ before: () => jsonReply({}, status) });
+    expect(result.calls).toHaveLength(1); expect(result.report.configMutations).toBe(0); expectDiscardPrivate(result);
+  });
+
+  it.each(['before_delete', 'after_delete'])('honors cancellation %s without replay', async (when) => {
+    const controller = new AbortController();
+    const result = await discardTrial({ after: (reply, call) => {
+      if (call.label === (when === 'before_delete' ? 'config' : 'discard')) controller.abort();
+      return reply;
+    } }, { deps: { signal: controller.signal } });
+    expect(result.report).toMatchObject({ result: 'stopped', failure: 'cancelled',
+      configMutations: when === 'before_delete' ? 0 : 1 }); expectDiscardPrivate(result);
+  });
+
+  it('enforces the overall deadline after a dispatched deletion', async () => {
+    const result = await discardTrial({ after: (reply, call, state) => {
+      if (call.label === 'discard') state.elapsed = 40000;
+      return reply;
+    } });
+    expect(result.report).toMatchObject({ result: 'stopped', failure: 'deadline', providerRequests: 2, configMutations: 1 });
+    expectDiscardPrivate(result);
+  });
+
+  it('times out a DELETE once and uses one readback without replay', async () => {
+    jest.useFakeTimers();
+    try {
+      const pending = discardTrial({ after: (reply, call) => call.label === 'discard' ? { hang: true } : reply });
+      await jest.advanceTimersByTimeAsync(10001);
+      const result = await pending;
+      expect(result.report.result).toBe('completed'); expect(result.calls).toHaveLength(3);
+      expect(result.report.recovery.discardFailure).toBe('deadline'); expectDiscardPrivate(result);
+    } finally { jest.useRealTimers(); }
+  });
+});
 
 describe('isolated recovery inspection', () => {
   it('binds the fixed failed trial, operation and budgets to a distinct fresh approval', () => {
@@ -677,11 +876,12 @@ describe('recovery metadata investigation', () => {
     expectConfigPrivate(checked.report);
   });
 
-  it.each(['project_key', 'history_metadata'])('retains full-trial drift rejection and refuses cleanup for %s', async (kind) => {
+  it.each(['project_key', 'unknown_history_metadata'])('retains full-trial drift rejection and refuses cleanup for %s', async (kind) => {
     const result = await trial({ after: (reply, call, state) => {
       if (call.label === 'rules.insert') {
         if (kind === 'project_key') state.draft.projectKey = `${TARGET.projectId}#3#draft`;
-        else Object.assign(state.draft.changes[0], { createdAt: new Date(START).toISOString(), userId: TOKEN, username: PRIVATE });
+        else Object.assign(state.draft.changes[0], { createdAt: new Date(START).toISOString(), userId: TOKEN,
+          username: PRIVATE, unknownMetadata: PRIVATE });
       }
       return reply;
     } });
@@ -1078,6 +1278,208 @@ describe('one marked request and targeted cleanup', () => {
     const secondMarker = second.state.rule.conditionGroup[0].conditions.find((condition) => condition.type === 'user_agent').value;
     expect(firstMarker).not.toBe(secondMarker);
     expectPrivate(first.report, first); expectPrivate(second.report, second);
+  });
+});
+
+describe('ordinary receipt role keys, bounded history and original JSON comparisons', () => {
+  it.each(['#', ':', '/', '.', '_', '-'])('restores the complete synthetic lifecycle with %s role keys', async (separator) => {
+    const result = await trial({ roleMetadata: true, separator });
+    expect(result.state.labels).toEqual(['config', 'rules.insert', 'config', 'activate', 'config',
+      'app', 'events', 'config', 'rules.remove', 'config', 'activate', 'config']);
+    expect(result.report).toMatchObject({ result: 'completed', appRequests: 1, providerRequests: 11,
+      mainProviderRequests: 6, cleanupProviderRequests: 5, eventsQueries: 1,
+      cleanup: { status: 'restored', failure: null, restorationVerified: true } });
+    expect(result.state.active.projectKey).toBe(`${TARGET.projectId}${separator}active`);
+    expect(result.state.active.rules).toEqual(baseline().rules);
+    expect(result.state.draft).toBeNull(); expectPrivate(result.report, result);
+  });
+
+  it('accepts the bounded history shape with unchanged opaque keys independently of role keys', async () => {
+    const result = await trial({ after: (reply, call, state) => {
+      if (call.label === 'rules.insert' || call.label === 'rules.remove') {
+        Object.assign(state.draft.changes[0], { createdAt: new Date(START).toISOString(),
+          userId: PRIVATE, username: PRIVATE });
+      }
+      return reply;
+    } });
+    expect(result.report.result).toBe('completed'); expect(result.state.draft).toBeNull();
+    expect(result.state.active.projectKey).toBe(PROJECT_KEY); expectPrivate(result.report, result);
+  });
+
+  it('accepts exact role keys with legacy history while preserving the legacy comparison contract', async () => {
+    const result = await trial({ roleMetadata: true, after: (reply, call, state) => {
+      if (call.label === 'rules.insert' || call.label === 'rules.remove') {
+        for (const key of ['createdAt', 'userId', 'username']) delete state.draft.changes[0][key];
+      }
+      return reply;
+    } });
+    expect(result.report.result).toBe('completed'); expect(result.state.draft).toBeNull();
+    expectPrivate(result.report, result);
+  });
+
+  it.each(['equal_active', 'wrong_separator', 'version', 'prefix', 'suffix', 'double_separator',
+    'wrong_project', 'case', 'unrelated'])('refuses %s draft-key substitution without activation or discard', async (kind) => {
+    const result = await trial({ roleMetadata: true, after: (reply, call, state) => {
+      if (call.label === 'rules.insert') {
+        const keys = { equal_active: state.active.projectKey, wrong_separator: `${TARGET.projectId}:draft`,
+          version: `${TARGET.projectId}#3#draft`, prefix: `extra${TARGET.projectId}#draft`,
+          suffix: `${TARGET.projectId}#draft#extra`, double_separator: `${TARGET.projectId}##draft`,
+          wrong_project: 'prj_other#draft', case: `${TARGET.projectId}#Draft`, unrelated: 'opaque-other' };
+        state.draft.projectKey = keys[kind];
+      }
+      return reply;
+    } });
+    expect(result.report).toMatchObject({ result: 'stopped', failure: 'configuration_drift', stoppedPhase: 'verifyDraft',
+      appRequests: 0, eventsQueries: 0, providerRequests: 4,
+      cleanup: { status: 'cleanup_unresolved', restorationVerified: false } });
+    expect(result.state.labels).toEqual(['config', 'rules.insert', 'config', 'config']);
+    expect(result.state.draft).not.toBeNull(); expectPrivate(result.report, result);
+  });
+
+  it.each([[2, 'active'], [3, 'active'], [4, 'active'], [5, 'active'], [5, 'draft'], [6, 'active']])(
+    'never normalizes role-key drift on configuration read %i in %s', async (read, field) => {
+      const result = await trial({ roleMetadata: true, before: (call, state) => {
+        if (call.label === 'config' && state.labels.filter((label) => label === 'config').length === read) {
+          state[field].projectKey = `${TARGET.projectId}#${field === 'active' ? 'draft' : 'active'}`;
+        }
+      } });
+      expect(result.report).toMatchObject({ result: 'stopped', failure: 'configuration_drift',
+        cleanup: { status: 'cleanup_unresolved', restorationVerified: false } });
+      expect(result.state.appCount).toBe(read < 4 ? 0 : 1);
+      expect(result.state.labels.filter((label) => label === 'activate')).toHaveLength(read === 2 ? 0 : read === 6 ? 2 : 1);
+      expect(result.state.labels.filter((label) => label === 'rules.remove')).toHaveLength(read < 5 ? 0 : 1);
+      expect(result.state.providerCount).toBeLessThanOrEqual(11); expectPrivate(result.report, result);
+    });
+
+  describe.each(['rules.insert', 'rules.remove'])('%s history boundaries', (operation) => {
+    it.each(['missing_createdAt', 'missing_userId', 'missing_username', 'empty_createdAt', 'empty_userId',
+      'empty_username', 'oversized_createdAt', 'oversized_userId', 'oversized_username', 'wrong_type',
+      'unknown', 'proto', 'id_null', 'id_other', 'wrong_action', 'wrong_value', 'extra_entry', 'missing_value'])(
+      'rejects %s without publishing or discarding an unrecognized draft', async (kind) => {
+        const result = await trial({ roleMetadata: true, after: (reply, call, state) => {
+          if (call.label === operation) {
+            const entry = state.draft.changes[0];
+            if (kind.startsWith('missing_')) delete entry[kind.slice(8)];
+            if (kind.startsWith('empty_')) entry[kind.slice(6)] = '';
+            if (kind.startsWith('oversized_')) entry[kind.slice(10)] = 'x'.repeat(kind.endsWith('createdAt') ? 129 : 513);
+            if (kind === 'wrong_type') entry.createdAt = { private: PRIVATE };
+            if (kind === 'unknown') entry.updatedAt = new Date(START).toISOString();
+            if (kind === 'proto') Object.defineProperty(entry, '__proto__', { enumerable: true, value: PRIVATE });
+            if (kind === 'id_null') entry.id = null;
+            if (kind === 'id_other') entry.id = 'rule_other';
+            if (kind === 'wrong_action') entry.action = operation === 'rules.insert' ? 'rules.remove' : 'rules.insert';
+            if (kind === 'wrong_value') entry.value = operation === 'rules.insert' ? { ...entry.value, name: 'other' } : copy(state.rule);
+            if (kind === 'extra_entry') state.draft.changes.push(copy(entry));
+          }
+          return reply;
+        } });
+        expect(result.report).toMatchObject({ result: 'stopped', failure: 'configuration_drift',
+          stoppedPhase: operation === 'rules.insert' ? 'verifyDraft' : 'verifyRemoval',
+          cleanup: { status: 'cleanup_unresolved', restorationVerified: false } });
+        expect(result.state.labels.filter((label) => label === 'activate')).toHaveLength(operation === 'rules.insert' ? 0 : 1);
+        expect(result.state.labels).not.toContain('discard'); expect(result.state.draft).not.toBeNull();
+        expect(result.state.appCount).toBe(operation === 'rules.insert' ? 0 : 1);
+        expect(result.state.providerCount).toBeLessThanOrEqual(11); expectPrivate(result.report, result);
+      });
+  });
+
+  it('does not accept provider-generated rule fields as the submitted input in metadata history', async () => {
+    const result = await trial({ roleMetadata: true, after: (reply, call, state) => {
+      if (call.label === 'rules.insert') state.draft.changes[0].value = copy(state.rule);
+      return reply;
+    } });
+    expect(result.state.labels).toEqual(['config', 'rules.insert', 'config', 'config']);
+    expect(result.report.cleanup.restorationVerified).toBe(false); expectPrivate(result.report, result);
+  });
+
+  it.each([
+    ['rules.insert', 1, false], ['rules.insert', 1, true], ['activate', 1, false], ['activate', 1, true],
+    ['rules.remove', 1, false], ['rules.remove', 1, true], ['activate', 2, false], ['activate', 2, true],
+    ['discard', 1, false], ['discard', 1, true],
+  ])('reconciles %s occurrence %i with role metadata, applied=%s, without replay', async (operation, occurrence, applied) => {
+    const result = await trial({ roleMetadata: true,
+      before: (call, state) => !applied && call.label === operation
+        && state.labels.filter((label) => label === operation).length === occurrence ? { error: true } : undefined,
+      after: (reply, call, state) => {
+        if (operation === 'discard' && call.label === 'rules.insert') return { error: true };
+        if (applied && call.label === operation
+          && state.labels.filter((label) => label === operation).length === occurrence) return { error: true };
+        return reply;
+      } });
+    expect(result.report.cleanup).toMatchObject({ status: applied ? 'restored' : 'cleanup_unresolved', restorationVerified: applied });
+    expect(result.state.labels.filter((label) => label === 'rules.insert')).toHaveLength(1);
+    expect(result.state.labels.filter((label) => label === 'rules.remove').length).toBeLessThanOrEqual(1);
+    expect(result.state.labels.filter((label) => label === 'discard').length).toBeLessThanOrEqual(1);
+    expect(result.state.providerCount).toBeLessThanOrEqual(11);
+    expect(result.state.appCount).toBe(operation === 'rules.remove' || occurrence === 2 ? 1 : 0);
+    if (applied) {
+      expect(result.state.draft).toBeNull(); expect(result.state.active.rules).toEqual(baseline().rules);
+      expect(result.state.active.projectKey).toBe(`${TARGET.projectId}#active`);
+    }
+    expectPrivate(result.report, result);
+  });
+
+  it('preserves unchanged own __proto__ fields on configurations and existing rules through restoration', async () => {
+    const result = await trial({ roleMetadata: true, before: (call, state) => {
+      if (call.label === 'config' && state.labels.length === 1) {
+        for (const target of [state.active, state.active.rules[0]]) {
+          Object.defineProperty(target, '__proto__', { enumerable: true, value: { private: PRIVATE } });
+        }
+      }
+    } });
+    expect(result.report.result).toBe('completed'); expect(result.state.draft).toBeNull();
+    for (const target of [result.state.active, result.state.active.rules[0]]) {
+      expect(Object.hasOwn(target, '__proto__')).toBe(true);
+      expect(target.__proto__).toEqual({ private: PRIVATE });
+    }
+    expectPrivate(result.report, result);
+  });
+
+  describe.each(['config', 'existing_rule'])('original %s JSON preservation', (surface) => {
+    it.each([[2, 'draft'], [2, 'active'], [3, 'active'], [4, 'active'], [5, 'draft'], [5, 'active'], [6, 'active']])(
+      'refuses own-field drift at read %i in %s', async (read, field) => {
+        const result = await trial({ roleMetadata: true, before: (call, state) => {
+          if (call.label !== 'config') return;
+          const count = state.labels.filter((label) => label === 'config').length;
+          if (count === 1 || count === read) {
+            const config = count === 1 ? state.active : state[field];
+            const target = surface === 'config' ? config : config.rules[0];
+            Object.defineProperty(target, '__proto__', { enumerable: true, configurable: true,
+              value: { private: PRIVATE, changed: count !== 1 } });
+          }
+        } });
+        expect(result.report).toMatchObject({ result: 'stopped', failure: 'configuration_drift',
+          cleanup: { status: 'cleanup_unresolved', restorationVerified: false } });
+        expect(result.state.appCount).toBe(read < 4 ? 0 : 1);
+        expect(result.state.labels.filter((label) => label === 'activate')).toHaveLength(read === 2 ? 0 : read === 6 ? 2 : 1);
+        expect(result.state.labels.filter((label) => label === 'rules.remove')).toHaveLength(read < 5 ? 0 : 1);
+        expect(result.state.providerCount).toBeLessThanOrEqual(11); expectPrivate(result.report, result);
+      });
+  });
+
+  it.each(['add', 'remove'])('refuses an own policy field %s in the draft', async (operation) => {
+    const result = await trial({ roleMetadata: true, before: (call, state) => {
+      if (call.label === 'config' && state.labels.length === 1 && operation === 'remove') {
+        Object.defineProperty(state.active, '__proto__', { enumerable: true, value: PRIVATE });
+      }
+    }, after: (reply, call, state) => {
+      if (call.label === 'rules.insert') {
+        if (operation === 'remove') delete state.draft.__proto__;
+        else Object.defineProperty(state.draft, '__proto__', { enumerable: true, value: PRIVATE });
+      }
+      return reply;
+    } });
+    expect(result.state.labels).toEqual(['config', 'rules.insert', 'config', 'config']);
+    expect(result.report.cleanup.restorationVerified).toBe(false); expectPrivate(result.report, result);
+  });
+
+  it('rejects an unknown own field on the diagnostic rule before activation or discard', async () => {
+    const result = await trial({ roleMetadata: true, after: (reply, call, state) => {
+      if (call.label === 'rules.insert') Object.defineProperty(state.draft.rules[1], '__proto__', { enumerable: true, value: PRIVATE });
+      return reply;
+    } });
+    expect(result.state.labels).toEqual(['config', 'rules.insert', 'config', 'config']);
+    expect(result.report.cleanup.restorationVerified).toBe(false); expectPrivate(result.report, result);
   });
 });
 
@@ -1485,7 +1887,7 @@ function launcherFixture(options = {}) {
   const directory = path.resolve(__dirname, '../../../.tmp');
   fs.mkdirSync(directory, { recursive: true });
   const file = path.join(directory, `log-receipt-launcher-fixture-${randomUUID()}.json`);
-  const selected = profile(Date.now(), options.recovery ? 'recovery_inspection' : options.configCheck ? 'config_check' : undefined), digest = approvalId(selected);
+  const selected = profile(Date.now(), options.discard ? 'recovery_discard' : options.recovery ? 'recovery_inspection' : options.configCheck ? 'config_check' : undefined), digest = approvalId(selected);
   const prepared = { ...preparation(selected), ...options.reviewChanges };
   if (options.limitChanges) prepared.limits = { ...prepared.limits, ...options.limitChanges };
   fs.writeFileSync(file, JSON.stringify(selected), { flag: 'wx' });
@@ -1512,7 +1914,7 @@ function launcherFixture(options = {}) {
     "  Assert-FixtureCondition (($script:sequence -join ',') -ceq 'review')",
     "  $script:sequence.Add('confirmation')",
     `  return ${psLiteral(options.confirmation === undefined
-      ? options.recovery ? 'RUN RECOVERY INSPECTION ONCE' : options.configCheck ? 'RUN CONFIG CHECK ONCE' : 'RUN LOG RECEIPT ONCE' : options.confirmation)}`,
+      ? options.discard ? 'DISCARD REVIEWED GATE1 DRAFT ONCE' : options.recovery ? 'RUN RECOVERY INSPECTION ONCE' : options.configCheck ? 'RUN CONFIG CHECK ONCE' : 'RUN LOG RECEIPT ONCE' : options.confirmation)}`,
     '}',
     '<# Intercept both child modes and validate credential isolation in the stdin envelope. #>',
     'function Invoke-Gate1ReceiptNode([string]$Mode, [string]$InputJson) {',
@@ -1627,6 +2029,67 @@ describe('offline CLI and guarded PowerShell launcher', () => {
     expect(child.error).toBeUndefined(); expect(child.status).toBe(0); expect(child.stderr).toBe('');
     expect(JSON.parse(child.stdout)).toMatchObject({ sequence: ['review', 'confirmation', 'hidden_token'], threw: true,
       fixtureViolation: false, liveEnvelopeValidated: false });
+  });
+});
+
+describe('owner recovery CLI and launcher', () => {
+  it.each(['--discard-template', '--discard-prepare', '--review'])('keeps %s offline', (mode) => {
+    const selected = profile(Date.now(), 'recovery_discard');
+    const child = offlineCli([mode], mode === '--review' ? JSON.stringify(selected) : undefined);
+    expect(child.status).toBe(0);
+    const output = JSON.parse(child.stdout);
+    expect(output.queryMode).toBe('recovery_discard');
+    if (mode === '--discard-template') expect(Object.values(output.attestations)).toEqual(Array(7).fill(false));
+    else expect(output).toMatchObject({ liveApproved: false, appRequests: 0, providerRequests: 0,
+      limits: { maxConfigMutations: 1, maxProviderRequests: 3 } });
+  });
+
+  it('routes live discard input to the isolated runner before refusing bad approval', () => {
+    const child = offlineCli(['--live'], JSON.stringify({ profile: profile(Date.now(), 'recovery_discard'),
+      approval: '0'.repeat(64), credentials: { providerToken: TOKEN } }));
+    expect(child.status).toBe(1);
+    expect(JSON.parse(child.stdout)).toMatchObject({ scope: 'provider_firewall_owner_recovery_only',
+      providerRequests: 0, configMutations: 0, failure: 'approval' });
+  });
+
+  (process.platform === 'win32' ? it.each : it.skip.each)([
+    [['-DiscardTemplate'], '--discard-template'], [['-RecoveryDiscard'], '--discard-prepare'],
+  ])('selects %j offline', (args, mode) => {
+    const child = launcherSelectorFixture(args);
+    expect(child.status).toBe(0);
+    expect(JSON.parse(child.stdout)).toMatchObject({ modes: [mode], prompted: false, threw: false });
+  });
+
+  (process.platform === 'win32' ? it.each : it.skip.each)([
+    ['-DiscardTemplate', '-RecoveryTemplate'], ['-RecoveryDiscard', '-Live'], ['-RecoveryDiscard', '-Template'],
+  ])('refuses conflicting owner recovery selectors %j', (...args) => {
+    const child = launcherSelectorFixture(args);
+    expect(child.status).toBe(0); expect(JSON.parse(child.stdout)).toMatchObject({ modes: [], threw: true });
+  });
+
+  (process.platform === 'win32' ? it : it.skip)('requires owner confirmation before hidden token entry', () => {
+    const child = launcherFixture({ discard: true });
+    expect(child.status).toBe(0); expect(JSON.parse(child.stdout)).toMatchObject({
+      sequence: ['review', 'confirmation', 'hidden_token', 'live_stdin'], threw: false, fixtureViolation: false });
+    expect(child.stdout).not.toContain(TOKEN);
+  });
+
+  (process.platform === 'win32' ? it.each : it.skip.each)(['RUN RECOVERY INSPECTION ONCE', 'RUN LOG RECEIPT ONCE', ''])('rejects confirmation %s before secrets', (confirmation) => {
+    const child = launcherFixture({ discard: true, confirmation });
+    expect(child.status).toBe(0); expect(JSON.parse(child.stdout)).toMatchObject({
+      sequence: ['review', 'confirmation'], threw: true, fixtureViolation: false });
+  });
+
+  (process.platform === 'win32' ? it.each : it.skip.each)([
+    { limitChanges: { maxProviderRequests: 4 } }, { limitChanges: { maxConfigMutations: 2 } },
+    { reviewChanges: { operations: [['DELETE', '/other']] } },
+    { reviewChanges: { failedTrialId: '0'.repeat(32) } },
+    { reviewChanges: { scope: 'provider_firewall_recovery_inspection_only' } },
+    { reviewChanges: { recoveryBasis: 'historical_ownership' } },
+  ])('rejects altered owner recovery review %# before confirmation', (options) => {
+    const child = launcherFixture({ ...options, discard: true });
+    expect(child.status).toBe(0); expect(JSON.parse(child.stdout)).toMatchObject({
+      sequence: ['review'], threw: true, fixtureViolation: false });
   });
 });
 
@@ -1812,7 +2275,8 @@ function durableFixture(wire, failRename = () => false, mode = 'log_receipt') {
   nativeGuard.mockImplementation(wire.requestImpl);
   /** Exercise production persistence with an in-memory network fixture and fixed clocks. */
   async function run() {
-    const selected = profile(START, mode), runner = mode === 'recovery_inspection' ? runRecoveryInspection : runReceipt;
+    const selected = profile(START, mode), runner = mode === 'recovery_discard' ? runRecoveryDiscard
+      : mode === 'recovery_inspection' ? runRecoveryInspection : runReceipt;
     return runner({ profile: selected, approval: approvalId(selected), credentials: { providerToken: TOKEN } },
       { ...wire.deps, requestImpl: undefined });
   }
@@ -1840,6 +2304,69 @@ async function renderRecoveryReport(report) {
 }
 
 describe('durable approval and recovery evidence', () => {
+  it('consumes a discard approval once and preserves private-data-free mutation intent and current-state results', async () => {
+    const wire = fixture({ state: discardState() }), storage = durableFixture(wire, undefined, 'recovery_discard');
+    try {
+      const result = await storage.run();
+      expect(result).toMatchObject({ result: 'completed', providerRequests: 3, configMutations: 1 });
+      const records = storage.writes.map((encoded) => JSON.parse(encoded));
+      expect(records.some((record) => record.pendingMutation === 'discardDraft'
+        && record.configMutations === 0)).toBe(true);
+      expect(records.some((record) => record.recovery.currentStateRecoveryVerified)).toBe(true);
+      for (const record of records) { expectPrivate(record); expect(record.cleanup.restorationVerified).toBe(false); }
+      for (const encoded of storage.writes) {
+        expect(Buffer.byteLength(encoded)).toBeLessThanOrEqual(8192);
+        expect(encoded).not.toContain(`gate1-log-${'a'.repeat(48)}`);
+        expect(encoded).not.toContain(`${TARGET.projectId}#active`);
+      }
+      const consumed = await storage.run();
+      expect(consumed).toMatchObject({ failure: 'approval_consumed', providerRequests: 0, configMutations: 0 });
+      expect(wire.calls).toHaveLength(3);
+    } finally { storage.restore(); }
+  });
+
+  /** Fail each pre-mutation checkpoint to verify persistence still blocks initial GET or DELETE dispatch. */
+  it.each([1, 2, 3])('blocks dispatch when pre-mutation checkpoint %s cannot be persisted', async (failedSave) => {
+    const wire = fixture({ state: discardState() });
+    let saves = 0;
+    /** Reject only the selected save so the final failure report can still be persisted. */
+    const storage = durableFixture(wire, () => ++saves === failedSave, 'recovery_discard');
+    try {
+      const result = await storage.run();
+      expect(result).toMatchObject({ result: 'stopped', failure: 'local_evidence', providerRequests: failedSave === 1 ? 0 : 1,
+        configMutations: 0, pendingMutation: null });
+      const { reportPath, ...savedFacts } = result;
+      expect(JSON.parse(storage.records.get(reportPath))).toEqual(savedFacts);
+      expect(nativeGuard).toHaveBeenCalledTimes(failedSave === 1 ? 0 : 1);
+      expect(wire.state.labels).toEqual(failedSave === 1 ? [] : ['config']); expect(wire.state.draft).not.toBeNull();
+    } finally { storage.restore(); }
+  });
+
+  /** Preserve readback after acknowledged or uncertain DELETE despite transient or persistent evidence failures. */
+  it.each([[false, false], [true, false], [false, true], [true, true]])(
+    'reads final recovery state despite checkpoint failure (uncertain=%s, persistent=%s)', async (uncertain, persistent) => {
+    const wire = fixture({ state: discardState(),
+      /** Optionally lose the DELETE acknowledgement after the fixture has discarded its draft. */
+      after: (reply, call) => uncertain && call.label === 'discard' ? { error: true } : reply });
+    let saves = 0;
+    /** Fail the readback checkpoint and optionally all later saves, after durable mutation intent exists. */
+    const storage = durableFixture(wire, () => ++saves === 4 || (persistent && saves > 4), 'recovery_discard');
+    try {
+      const result = await storage.run();
+      expect(result).toMatchObject({ result: persistent ? 'stopped' : 'completed', failure: null,
+        evidenceFailure: 'local_evidence', providerRequests: 3, configMutations: 1, pendingMutation: null,
+        recovery: { discardAcknowledged: !uncertain, activeUnchanged: true, draftAbsent: true,
+          currentStateRecoveryVerified: true }, cleanup: { status: 'current_state_recovered', restorationVerified: false } });
+      expect(nativeGuard).toHaveBeenCalledTimes(3);
+      expect(wire.state.labels).toEqual(['config', 'discard', 'config']);
+      expect(wire.state.draft).toBeNull();
+      if (!persistent) {
+        const { reportPath, ...savedFacts } = result;
+        expect(JSON.parse(storage.records.get(reportPath))).toEqual(savedFacts);
+      }
+    } finally { storage.restore(); }
+  });
+
   it('keeps detailed recovery facts bounded and private for many provider fields, rules and value differences', async () => {
     const state = recoveryState(), template = copy(state.active.rules[0]);
     for (let index = 0; index < 100; index += 1) {

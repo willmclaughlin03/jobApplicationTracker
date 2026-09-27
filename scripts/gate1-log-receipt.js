@@ -9,6 +9,8 @@
  * with sanitized validation facts; it cannot enter the rule lifecycle.
  * Recovery inspection uses the same one-GET boundary with a separate approval;
  * candidate similarity never establishes ownership or restoration.
+ * Owner recovery is a separate GET/DELETE/GET exception; it never qualifies
+ * historical restoration or enters the ordinary receipt lifecycle.
  */
 const https = require('node:https');
 const fs = require('node:fs');
@@ -33,6 +35,9 @@ const CONFIG_LIMITS = Object.freeze({ maxAppRequests: 0, maxProviderRequests: 1,
 const SCOPE = 'ordinary_log_receipt_trial_only';
 const CONFIG_SCOPE = 'provider_firewall_config_check_only';
 const RECOVERY_SCOPE = 'provider_firewall_recovery_inspection_only';
+const DISCARD_SCOPE = 'provider_firewall_owner_recovery_only';
+const DISCARD_LIMITS = Object.freeze({ ...CONFIG_LIMITS, maxProviderRequests: 3,
+  maxConfigMutations: 1, overallMs: 40000 });
 const RECOVERY_TRIAL_ID = '447e9964d04241e92885614852a7bf3f';
 const RECOVERY_NAME = `gate1-log-receipt-${RECOVERY_TRIAL_ID}`;
 // Investigation candidates only: their presence is not a supported change-entry contract.
@@ -43,6 +48,7 @@ const ACTIVATE_PATH = `/v1/security/firewall/config/draft/activate?projectId=${T
 const ATTESTATIONS = ['sourceCodeReviewed', 'credentialLoggingReviewed', 'noConcurrentWafEdits',
   'includedUsageHeadroom', 'recoveryProcedureReviewed'];
 const CONFIG_ATTESTATIONS = ['sourceCodeReviewed', 'credentialLoggingReviewed', 'includedUsageHeadroom'];
+const DISCARD_ATTESTATIONS = [...ATTESTATIONS, 'ownerApprovesCurrentDraftDiscard', 'historicalRestorationUnavailable'];
 const profileFields = { schemaVersion: z.literal(1),
   projectId: z.literal(TARGET.projectId), teamId: z.literal(TARGET.teamId), hostname: z.literal(TARGET.hostname),
   reviewedAt: z.string().max(24).datetime() };
@@ -56,7 +62,11 @@ const recoveryProfileSchema = z.object({ ...profileFields, queryMode: z.literal(
   failedTrialId: z.literal(RECOVERY_TRIAL_ID),
   attestations: z.object(Object.fromEntries(ATTESTATIONS.map((key) => [key, z.literal(true)]))).strict(),
 }).strict();
-const profileSchema = z.union([receiptProfileSchema, configProfileSchema, recoveryProfileSchema]);
+const discardProfileSchema = z.object({ ...profileFields, queryMode: z.literal('recovery_discard'),
+  failedTrialId: z.literal(RECOVERY_TRIAL_ID),
+  attestations: z.object(Object.fromEntries(DISCARD_ATTESTATIONS.map((key) => [key, z.literal(true)]))).strict(),
+}).strict();
+const profileSchema = z.union([receiptProfileSchema, configProfileSchema, recoveryProfileSchema, discardProfileSchema]);
 const envelopeSchema = z.object({ profile: profileSchema, approval: z.string().regex(/^[a-f0-9]{64}$/),
   credentials: z.object({ providerToken: z.string().min(20).max(512).regex(/^[A-Za-z0-9_-]+$/) }).strict(),
 }).strict();
@@ -104,12 +114,13 @@ class ReceiptError extends Error {
 
 /** Create an unapproved profile with only the attestations needed for the selected fixed operation. */
 function profileTemplate(now = Date.now(), queryMode = 'log_receipt') {
-  if (!z.enum(['log_receipt', 'config_check', 'recovery_inspection']).safeParse(queryMode).success) throw new ReceiptError('profile');
+  if (!z.enum(['log_receipt', 'config_check', 'recovery_inspection', 'recovery_discard']).safeParse(queryMode).success) throw new ReceiptError('profile');
   const config = queryMode === 'config_check';
-  const recovery = queryMode === 'recovery_inspection';
+  const discard = queryMode === 'recovery_discard';
+  const recovery = queryMode === 'recovery_inspection' || discard;
   return { schemaVersion: 1, ...(config || recovery ? { queryMode } : {}),
     ...(recovery ? { failedTrialId: RECOVERY_TRIAL_ID } : {}), ...TARGET, reviewedAt: new Date(now).toISOString(),
-    attestations: Object.fromEntries((config ? CONFIG_ATTESTATIONS : ATTESTATIONS).map((key) => [key, false])) };
+    attestations: Object.fromEntries((discard ? DISCARD_ATTESTATIONS : config ? CONFIG_ATTESTATIONS : ATTESTATIONS).map((key) => [key, false])) };
 }
 
 /** Validate and detach the fixed target and required operator attestations. */
@@ -128,7 +139,10 @@ function requireFresh(profile, now) {
 /** Bind a single profile to exact code, imported executable dependencies and budgets. */
 function approvalId(value) {
   const profile = parseProfile(value);
-  const operation = profile.queryMode
+  const operation = profile.queryMode === 'recovery_discard'
+    ? { scope: DISCARD_SCOPE, limits: DISCARD_LIMITS, hostname: 'api.vercel.com',
+      operations: [['GET', CONFIG_PATH], ['DELETE', DRAFT_PATH], ['GET', CONFIG_PATH]] }
+    : profile.queryMode
     ? { scope: profile.queryMode === 'config_check' ? CONFIG_SCOPE : RECOVERY_SCOPE,
       limits: CONFIG_LIMITS, method: 'GET', path: CONFIG_PATH, hostname: 'api.vercel.com' }
     : { scope: SCOPE, limits: LIMITS };
@@ -139,9 +153,24 @@ function approvalId(value) {
 
 /** Supply concrete offline review and manual recovery boundaries before live approval. */
 function preparation(value = null, now = Date.now(), queryMode = 'log_receipt') {
-  if (!z.enum(['log_receipt', 'config_check', 'recovery_inspection']).safeParse(queryMode).success) throw new ReceiptError('profile');
+  if (!z.enum(['log_receipt', 'config_check', 'recovery_inspection', 'recovery_discard']).safeParse(queryMode).success) throw new ReceiptError('profile');
   const profile = value === null ? null : parseProfile(value);
   if (profile) requireFresh(profile, now);
+  if ((profile ? profile.queryMode : queryMode) === 'recovery_discard') return {
+    schemaVersion: 1, mode: 'prepare', scope: DISCARD_SCOPE, queryMode: 'recovery_discard',
+    failedTrialId: RECOVERY_TRIAL_ID, liveApproved: false, target: TARGET, profile,
+    approvalId: profile ? approvalId(profile) : null, limits: DISCARD_LIMITS,
+    appRequests: 0, providerRequests: 0, eventsQueries: 0, configMutations: 0,
+    gate1Status: 'open', sourceAgreement: 'not_evaluated', correlation: 'unqualified', completeness: 'unqualified',
+    application: null, rule: null, providerOrigin: 'https://api.vercel.com',
+    operations: [['GET', CONFIG_PATH], ['DELETE', DRAFT_PATH], ['GET', CONFIG_PATH]],
+    recoveryBasis: 'owner_approved_current_draft_exception',
+    limitations: ['original_baseline_and_marker_unavailable', 'historical_ownership_unverified',
+      'no_conditional_version_guard', 'owner_waf_edit_freeze_required', 'no_retries_or_activation',
+      'only_final_read_after_uncertain_delete', 'key_encoding_is_a_narrow_local_precondition',
+      'current_active_unchanged_and_no_draft_is_not_historical_restoration'],
+    nextStep: profile ? 'obtain_separate_live_approval' : 'complete_local_profile',
+  };
   const config = profile ? profile.queryMode === 'config_check' : queryMode === 'config_check';
   const recovery = profile ? profile.queryMode === 'recovery_inspection' : queryMode === 'recovery_inspection';
   if (config || recovery) return { schemaVersion: 1, mode: 'prepare',
@@ -195,32 +224,64 @@ function policy(config) {
   return rest;
 }
 
-/** Accept only an exact owned rule plus documented, successful validation metadata. */
-function matchesRule(rule, expected) {
-  if (!rule || !ruleIdSchema.safeParse(rule.id).success || rule.valid !== true) return false;
-  const { id: _id, valid: _valid, validationErrors, ...rest } = rule;
-  return (validationErrors === undefined || validationErrors === null
-    || (Array.isArray(validationErrors) && validationErrors.length === 0)) && isDeepStrictEqual(rest, expected);
+/**
+ * Compare original policy fields with the baseline, optionally excluding the owned
+ * addition via rules and allowing the exact role counterpart only when isDraft.
+ * Opaque keys remain exact. Direct own-field checks avoid schema/rest projections;
+ * no raw values leave memory and the key rule is not a provider contract.
+ */
+function policyMatches(config, baseline, isDraft = false, rules = config.rules) {
+  const suffix = baseline.projectKey.slice(TARGET.projectId.length);
+  const roleKey = baseline.projectKey.startsWith(TARGET.projectId) && /^[#:/._-]active$/.test(suffix);
+  const expectedKey = isDraft && roleKey ? `${TARGET.projectId}${suffix[0]}draft` : baseline.projectKey;
+  const excluded = ['id', 'version', 'updatedAt', 'changes', 'projectKey', 'rules'];
+  const keys = Object.keys(config).filter((key) => !excluded.includes(key)).sort();
+  const baselineKeys = Object.keys(baseline).filter((key) => !excluded.includes(key)).sort();
+  return config.projectKey === expectedKey && isDeepStrictEqual(keys, baselineKeys)
+    && keys.every((key) => isDeepStrictEqual(config[key], baseline[key]))
+    && isDeepStrictEqual(rules, baseline.rules);
 }
 
-/** Establish one exact addition, with every baseline policy field and original rule order preserved. */
-function addedRule(config, baseline, expected) {
+/** Compare original owned-rule fields against input; only successful validation metadata may differ. */
+function matchesRule(rule, expected) {
+  if (!rule || !ruleIdSchema.safeParse(rule.id).success || rule.valid !== true) return false;
+  const validationErrors = rule.validationErrors;
+  const keys = Object.keys(rule).filter((key) => !['id', 'valid', 'validationErrors'].includes(key)).sort();
+  return (validationErrors === undefined || validationErrors === null
+    || (Array.isArray(validationErrors) && validationErrors.length === 0))
+    && isDeepStrictEqual(keys, Object.keys(expected).sort())
+    && keys.every((key) => isDeepStrictEqual(rule[key], expected[key]));
+}
+
+/** Establish one exact addition; only isDraft admits a role key, with baseline policy/order preserved. */
+function addedRule(config, baseline, expected, isDraft = false) {
   const additions = config.rules.filter((rule) => !baseline.rules.some((old) => old.id === rule.id));
   if (additions.length !== 1 || !matchesRule(additions[0], expected)) throw new ReceiptError('configuration_drift');
   const rule = additions[0];
-  const restored = { ...config, rules: config.rules.filter((item) => item.id !== rule.id) };
-  if (!isDeepStrictEqual(policy(restored), policy(baseline))) throw new ReceiptError('configuration_drift');
+  const restoredRules = config.rules.filter((item) => item.id !== rule.id);
+  if (!policyMatches(config, baseline, isDraft, restoredRules)) throw new ReceiptError('configuration_drift');
   return rule;
 }
 
-/** Require one recognized owned draft operation in addition to full policy equality. */
+/**
+ * Require one owned operation, using original values after policy comparison.
+ * Accept the legacy three-field entry or the complete bounded metadata shape from
+ * recovery. Metadata establishes neither identity nor ownership; rule ID/input do.
+ */
 function requireChange(draft, action, rule, expected) {
   const change = draft.changes[0];
-  if (draft.changes.length !== 1 || !change || Object.keys(change).sort().join(',') !== 'action,id,value'
+  if (draft.changes.length !== 1 || !change || typeof change !== 'object' || Array.isArray(change)
     || change.action !== action) throw new ReceiptError('configuration_drift');
+  const fields = Object.keys(change).sort().join(',');
+  const legacy = fields === 'action,id,value';
+  const metadata = fields === 'action,createdAt,id,userId,username,value'
+    && z.object({ action: z.enum(['rules.insert', 'rules.remove']), id: ruleIdSchema, value: z.unknown(),
+      createdAt: z.string().min(1).max(128), userId: z.string().min(1).max(512),
+      username: z.string().min(1).max(512) }).strict().safeParse(change).success;
+  if (!legacy && !metadata) throw new ReceiptError('configuration_drift');
   if (action === 'rules.insert') {
-    if ((change.id !== null && change.id !== rule.id)
-      || (!isDeepStrictEqual(change.value, expected) && !isDeepStrictEqual(change.value, rule))) {
+    if ((change.id !== rule.id && (!legacy || change.id !== null))
+      || (!isDeepStrictEqual(change.value, expected) && (!legacy || !isDeepStrictEqual(change.value, rule)))) {
       throw new ReceiptError('configuration_drift');
     }
   } else if (change.id !== rule.id || change.value !== null) throw new ReceiptError('configuration_drift');
@@ -693,18 +754,18 @@ async function runReceipt(input, deps = {}) {
   async function cleanup() {
     cleaning = true; cleanupStart = now(); guardFailure = null;
     report.cleanup.status = 'cleanup_unresolved';
-    const current = snapshot(await request('inspectCleanup'));
-    if (isDeepStrictEqual(policy(current.active), policy(baseline))) {
+    const current = rawSnapshot(await request('inspectCleanup'));
+    if (policyMatches(current.active, baseline)) {
       // An unchanged snapshot cannot rule out a timed-out write committing later.
       if (pendingMutation && (current.draft === null || pendingMutation !== 'insert')) throw new ReceiptError('mutation_unresolved');
       if (current.draft === null) { report.cleanup.status = 'restored'; report.cleanup.restorationVerified = true; return; }
       if (!isDeepStrictEqual(current.active, baseline)) throw new ReceiptError('configuration_drift');
-      const rule = addedRule(current.draft, baseline, expected);
+      const rule = addedRule(current.draft, baseline, expected, true);
       ownRule(rule); requireChange(current.draft, 'rules.insert', rule, expected);
       resolvedMutation();
       // Even when acknowledgement is lost, spend the existing final read to check the effect.
       try { await mutate('discard'); } catch { /* No retry: verify the owned draft's disappearance. */ }
-      const final = snapshot(await request('verifyDiscard'));
+      const final = rawSnapshot(await request('verifyDiscard'));
       if (final.draft !== null || !isDeepStrictEqual(final.active, baseline)) throw new ReceiptError('configuration_drift');
       resolvedMutation();
     } else {
@@ -716,14 +777,14 @@ async function runReceipt(input, deps = {}) {
       resolvedMutation();
       try { await mutate('remove', { action: 'rules.remove', id: rule.id, value: null }); }
       catch { /* Verify the effect within the reserved call budget before proceeding. */ }
-      const staged = snapshot(await request('verifyRemoval'));
+      const staged = rawSnapshot(await request('verifyRemoval'));
       if (!staged.draft || !isDeepStrictEqual(staged.active, current.active)
-        || !isDeepStrictEqual(policy(staged.draft), policy(baseline))) throw new ReceiptError('configuration_drift');
+        || !policyMatches(staged.draft, baseline, true)) throw new ReceiptError('configuration_drift');
       requireChange(staged.draft, 'rules.remove', rule, expected);
       resolvedMutation();
       try { await mutate('activateRemoval', {}); } catch { /* Only final readback can establish restoration. */ }
-      const final = snapshot(await request('verifyRestoration'));
-      if (final.draft !== null || !isDeepStrictEqual(policy(final.active), policy(baseline))) throw new ReceiptError('configuration_drift');
+      const final = rawSnapshot(await request('verifyRestoration'));
+      if (final.draft !== null || !policyMatches(final.active, baseline)) throw new ReceiptError('configuration_drift');
       resolvedMutation();
     }
     report.cleanup.status = 'restored'; report.cleanup.restorationVerified = true;
@@ -743,18 +804,18 @@ async function runReceipt(input, deps = {}) {
     report.startedAt = new Date(wallStart).toISOString();
     expected = diagnosticRule(report.trialId, `gate1-log-${randomBytes(24).toString('hex')}`);
     if (!deps.requestImpl) file = reserveTrial(report);
-    const first = snapshot(await request('baseline'), report);
+    const first = rawSnapshot(await request('baseline'), report);
     if (first.draft !== null) throw new ReceiptError('existing_draft');
     baseline = first.active;
     if (baseline.rules.some((rule) => rule.name === expected.name)) throw new ReceiptError('rule_identity');
     armed = true; report.cleanup.status = 'cleanup_unresolved';
     await mutate('insert', { action: 'rules.insert', id: null, value: expected });
-    const staged = snapshot(await request('verifyDraft'));
+    const staged = rawSnapshot(await request('verifyDraft'));
     if (!staged.draft || !isDeepStrictEqual(staged.active, baseline)) throw new ReceiptError('configuration_drift');
-    ownRule(addedRule(staged.draft, baseline, expected));
+    ownRule(addedRule(staged.draft, baseline, expected, true));
     requireChange(staged.draft, 'rules.insert', verifiedRule, expected);
     await mutate('activate', {});
-    const active = snapshot(await request('verifyActive'));
+    const active = rawSnapshot(await request('verifyActive'));
     if (active.draft !== null) throw new ReceiptError('configuration_drift');
     ownRule(addedRule(active.active, baseline, expected)); activeTrial = active.active;
     const probeStart = wall(), probe = await request('probe');
@@ -883,17 +944,173 @@ async function runReadOnlyConfig(input, deps, expectedMode) {
   return report;
 }
 
+/**
+ * Admit only the observed candidate/history shape under an explicit owner exception.
+ * Both full keys must be projectId + the same single separator + active/draft.
+ * This local precondition is not a provider encoding contract or proof of ownership.
+ * All other policy values/order remain exact; input and marker stay transient.
+ */
+function requireDiscardCandidate(current) {
+  const { active, draft } = current;
+  if (!draft || active.rules.length !== 1 || active.rules.some((rule) => rule.name === RECOVERY_NAME)
+    || active.id !== draft.id) throw new ReceiptError('configuration_drift');
+  const suffix = active.projectKey.slice(TARGET.projectId.length);
+  if (!active.projectKey.startsWith(TARGET.projectId) || !/^[#:/._-]active$/.test(suffix)
+    || draft.projectKey !== `${TARGET.projectId}${suffix[0]}draft`) throw new ReceiptError('configuration_drift');
+  const facts = recoveryCandidates(draft);
+  if (facts.count !== 1 || facts.exactStructureCount !== 1 || facts.additionalRuleFieldsCount !== 0) throw new ReceiptError('configuration_drift');
+  const candidate = draft.rules.find((rule) => rule.name === RECOVERY_NAME);
+  // Compare own fields directly; object projections can erase provider-selected names.
+  const excluded = ['id', 'version', 'updatedAt', 'changes', 'projectKey', 'rules'];
+  const activeKeys = Object.keys(active).filter((key) => !excluded.includes(key)).sort();
+  const draftKeys = Object.keys(draft).filter((key) => !excluded.includes(key)).sort();
+  if (!isDeepStrictEqual(activeKeys, draftKeys) || !activeKeys.every((key) => isDeepStrictEqual(active[key], draft[key]))
+    || !isDeepStrictEqual(draft.rules.filter((rule) => rule.id !== candidate.id), active.rules)) throw new ReceiptError('configuration_drift');
+  const { id: _id, valid: _valid, validationErrors: _errors, ...input } = candidate;
+  const historySchema = z.object({ action: z.literal('rules.insert'), id: z.literal(candidate.id),
+    value: z.unknown(), createdAt: z.string().min(1).max(128),
+    userId: z.string().min(1).max(512), username: z.string().min(1).max(512) }).strict();
+  if (draft.changes.length !== 1 || !historySchema.safeParse(draft.changes[0]).success
+    || !isDeepStrictEqual(draft.changes[0].value, input)) throw new ReceiptError('configuration_drift');
+}
+
+/**
+ * Validate the bounded response with the existing reader, then keep its original
+ * JSON object in memory for exact trial/recovery comparisons. Zod's parsed projection
+ * drops an own __proto__ key; comparing that projection could hide policy drift.
+ * Optional report receives only sanitized validation facts. No raw object enters
+ * evidence; the read-only modes keep their existing diagnostic projections.
+ */
+function rawSnapshot(response, report) {
+  snapshot(response, report);
+  return providerJson(response);
+}
+
+/**
+ * Run only GET/DELETE/GET for the fixed failed trial under a new owner approval.
+ * Test seams replace HTTPS/clocks. Baseline and marker remain in memory; durable
+ * intent is saved before deletion. Uncertain deletion permits one verification
+ * read, never another mutation. Historical restoration always stays unverified.
+ */
+async function runRecoveryDiscard(input, deps = {}) {
+  const report = { schemaVersion: 1, mode: deps.requestImpl ? 'fixture' : 'live', scope: DISCARD_SCOPE,
+    queryMode: 'recovery_discard', failedTrialId: RECOVERY_TRIAL_ID, result: 'stopped',
+    gate1Status: 'open', sourceAgreement: 'not_evaluated', correlation: 'unqualified', completeness: 'unqualified',
+    hostedEvidence: deps.requestImpl ? 'not_executed' : 'requires_review', target: TARGET, limits: DISCARD_LIMITS,
+    approvalId: null, appRequests: 0, providerRequests: 0, eventsQueries: 0, configMutations: 0,
+    receipts: [], pendingMutation: null,
+    recovery: { basis: 'owner_approved_current_draft_exception', originalBaselineComparison: 'unavailable',
+      originalMarkerComparison: 'unavailable', ownership: 'unverified', preconditionsVerified: false,
+      discardAcknowledged: false, discardFailure: null, activeUnchanged: null, draftAbsent: null,
+      currentStateRecoveryVerified: false },
+    cleanup: { status: 'cleanup_unresolved', failure: null, restorationVerified: false },
+    failure: null, stoppedPhase: 'validation' };
+  const now = deps.now || (() => performance.now()), wall = deps.wall || Date.now;
+  let started, wallStart, previous, file, token, phase = 'validation', guardFailure;
+  /** Bound each request by monotonic/wall clocks and cancellation, without creating a retry path. */
+  function remaining() {
+    if (deps.signal?.aborted) throw new ReceiptError('cancelled');
+    const current = now(), currentWall = wall(), elapsed = current - started;
+    if (![current, currentWall, elapsed].every(Number.isFinite) || current < previous || elapsed < 0
+      || elapsed >= DISCARD_LIMITS.overallMs || Math.abs((currentWall - wallStart) - elapsed) > 5000) throw new ReceiptError('deadline');
+    previous = current;
+    return DISCARD_LIMITS.overallMs - elapsed;
+  }
+  /** Dispatch only the next fixed step, recording mutation intent before native HTTPS and rejecting duplicates. */
+  async function request(nextPhase, index) {
+    phase = nextPhase; report.stoppedPhase = phase; remaining();
+    const method = index === 1 ? 'DELETE' : 'GET', endpoint = index === 1 ? DRAFT_PATH : CONFIG_PATH;
+    const headers = { Accept: 'application/json', 'Accept-Encoding': 'identity', Authorization: `Bearer ${token}` };
+    const receipt = { phase, httpStatus: null };
+    if (index === 2) {
+      try { checkpoint(file, report); }
+      catch { report.evidenceFailure = 'local_evidence'; }
+    } else checkpoint(file, report);
+    /** Enforce transport shape, sequence and actual-attempt budgets; mutation intent must persist before DELETE. */
+    function dispatch(options, receive) {
+      try {
+        remaining();
+        if (report.providerRequests !== index || index > 2
+          || (index > 0 && !report.recovery.preconditionsVerified)
+          || (index === 1 && report.configMutations !== 0)
+          || (index === 2 && report.configMutations !== 1)
+          || options.hostname !== 'api.vercel.com' || options.path !== endpoint || options.method !== method
+          || options.protocol !== 'https:' || options.port !== 443 || options.rejectUnauthorized !== true
+          || options.agent !== false || !isDeepStrictEqual(options.headers, headers)) throw new ReceiptError('request_budget');
+        // Persist possible-write intent before native dispatch; counts track dispatched attempts only.
+        if (index === 1) {
+          report.pendingMutation = 'discardDraft';
+          try { checkpoint(file, report); }
+          catch (error) { report.pendingMutation = null; throw error; }
+        }
+        report.providerRequests += 1;
+        if (index === 1) report.configMutations += 1;
+        report.receipts.push(receipt);
+      } catch (error) { guardFailure = error; throw error; }
+      return (deps.requestImpl || https.request)(options, (incoming) => {
+        if (Number.isInteger(incoming.statusCode) && incoming.statusCode >= 100 && incoming.statusCode <= 599) receipt.httpStatus = incoming.statusCode;
+        receive(incoming);
+      });
+    }
+    const response = await exchange({ hostname: 'api.vercel.com', path: endpoint, method,
+      bytes: DISCARD_LIMITS.providerBytes, headers },
+    { requestImpl: dispatch, signal: deps.signal, timeoutMs: Math.min(DISCARD_LIMITS.requestMs, remaining()) });
+    remaining();
+    return response;
+  }
+  try {
+    started = now(); previous = started; wallStart = wall(); remaining();
+    const parsed = envelopeSchema.safeParse(input);
+    if (!parsed.success) throw new ReceiptError('input');
+    const profile = parseProfile(parsed.data.profile);
+    if (profile.queryMode !== 'recovery_discard') throw new ReceiptError('profile');
+    requireFresh(profile, wall()); token = parsed.data.credentials.providerToken;
+    if (JSON.stringify(profile).includes(token) || parsed.data.approval.includes(token)) throw new ReceiptError('credentials');
+    if (parsed.data.approval !== approvalId(profile)) throw new ReceiptError('approval');
+    report.approvalId = parsed.data.approval; report.startedAt = new Date(wallStart).toISOString();
+    if (!deps.requestImpl) file = reserveTrial(report);
+    const current = rawSnapshot(await request('inspectCurrentDraft', 0));
+    requireDiscardCandidate(current); report.recovery.preconditionsVerified = true;
+    try {
+      const reply = await request('discardDraft', 1);
+      if (reply.status !== 204 || reply.body !== '') throw new ReceiptError('provider_status');
+      report.recovery.discardAcknowledged = true;
+    } catch (error) {
+      report.recovery.discardFailure = failureCode(guardFailure || error);
+      if (report.configMutations !== 1 || guardFailure) throw error;
+      // A dispatched uncertain DELETE gets only its reserved readback, if time/cancellation permits.
+    }
+    const final = rawSnapshot(await request('verifyCurrentRecovery', 2));
+    report.recovery.activeUnchanged = isDeepStrictEqual(final.active, current.active);
+    report.recovery.draftAbsent = final.draft === null;
+    if (!report.recovery.activeUnchanged || !report.recovery.draftAbsent) throw new ReceiptError('configuration_drift');
+    remaining(); report.pendingMutation = null; report.recovery.currentStateRecoveryVerified = true;
+    report.cleanup.status = 'current_state_recovered'; report.result = 'completed'; report.stoppedPhase = null;
+  } catch (error) {
+    report.failure = failureCode(guardFailure || error); report.stoppedPhase = phase;
+    report.cleanup.failure = report.failure;
+  } finally { token = null; }
+  const elapsed = now() - started;
+  if (Number.isFinite(elapsed) && elapsed >= 0) report.elapsedMs = Math.round(elapsed * 1000) / 1000;
+  try { checkpoint(file, report); }
+  catch { report.evidenceFailure = 'local_evidence'; report.result = 'stopped'; }
+  if (file) report.reportPath = file;
+  return report;
+}
+
 /** CLI input is bounded stdin only, offline by default; signal cancellation still reserves cleanup time. */
 async function main(args) {
   try {
     if (args.length > 1 || (args.length && !['--prepare', '--template', '--config-prepare', '--config-template',
-      '--recovery-prepare', '--recovery-template', '--review', '--live'].includes(args[0]))) throw new ReceiptError('arguments');
+      '--recovery-prepare', '--recovery-template', '--discard-prepare', '--discard-template', '--review', '--live'].includes(args[0]))) throw new ReceiptError('arguments');
     if (args[0] !== '--live') {
       const value = args[0] === '--template' ? profileTemplate()
         : args[0] === '--config-template' ? profileTemplate(Date.now(), 'config_check')
         : args[0] === '--config-prepare' ? preparation(null, Date.now(), 'config_check')
         : args[0] === '--recovery-template' ? profileTemplate(Date.now(), 'recovery_inspection')
         : args[0] === '--recovery-prepare' ? preparation(null, Date.now(), 'recovery_inspection')
+        : args[0] === '--discard-template' ? profileTemplate(Date.now(), 'recovery_discard')
+        : args[0] === '--discard-prepare' ? preparation(null, Date.now(), 'recovery_discard')
         : args[0] === '--review' ? preparation(await readInput()) : preparation();
       process.stdout.write(`${JSON.stringify(value, null, 2)}\n`); return;
     }
@@ -904,7 +1121,8 @@ async function main(args) {
     let report;
     try {
       const input = await readInput();
-      const runner = input?.profile?.queryMode === 'recovery_inspection' ? runRecoveryInspection
+      const runner = input?.profile?.queryMode === 'recovery_discard' ? runRecoveryDiscard
+        : input?.profile?.queryMode === 'recovery_inspection' ? runRecoveryInspection
         : input?.profile?.queryMode === 'config_check' ? runConfigCheck : runReceipt;
       report = await runner(input, { signal: controller.signal });
     }
@@ -917,6 +1135,6 @@ async function main(args) {
   }
 }
 
-module.exports = { LIMITS, CONFIG_LIMITS, TARGET, RECOVERY_TRIAL_ID, profileTemplate, parseProfile, approvalId, preparation,
-  diagnosticRule, reviewEvents, reviewConfigResponse, runReceipt, runConfigCheck, runRecoveryInspection };
+module.exports = { LIMITS, CONFIG_LIMITS, DISCARD_LIMITS, TARGET, RECOVERY_TRIAL_ID, profileTemplate, parseProfile, approvalId, preparation,
+  diagnosticRule, reviewEvents, reviewConfigResponse, runReceipt, runConfigCheck, runRecoveryInspection, runRecoveryDiscard };
 if (require.main === module) void main(process.argv.slice(2));
