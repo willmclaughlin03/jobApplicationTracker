@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-20
 
+- `2026-09-27` - `GATE-1 historical Log receipt follow-up`: Added an offline-default mode for one historical Firewall Events GET, pinned to the reviewed report digest, rule and exact time window. It permits zero application requests or WAF changes, reserves once per source report within the worktree, and requires separate live approval plus hidden-token confirmation. Added 83 mocked regressions; all 1,101 diagnostic tests and lint/syntax checks pass. Empty results remain inconclusive and aggregate matches do not qualify source agreement. No live follow-up was executed.
+
 - `2026-09-27` - `GATE-1 recovery checkpoint handling`: Clear pending discard intent when its pre-dispatch checkpoint fails, and retain the final recovery read after a checkpoint failure while recording `local_evidence`. Earlier checkpoints still block dispatch. Mocked regressions cover saved reports, all pre-mutation checkpoints, and acknowledged/uncertain deletion with transient/persistent evidence failures; all 493 focused tests pass.
 
 - `2026-09-26` - `GATE-1 bounded owner recovery`: Added an offline-default recovery mode with a separate owner exception, code-bound approval and hidden-token confirmation. It permits only GET/DELETE-draft/GET, at most one mutation, zero application or Events requests, and no retries or activation. Exact candidate/history/key checks preserve unrelated policy; final readback verifies only current-state recovery while historical ownership/restoration stay unverified. All 924 mocked diagnostic tests pass. Live recovery remains separately approved and GATE-1 stays open.
