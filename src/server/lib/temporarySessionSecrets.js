@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import {
   decodeTemporarySessionHmacKey,
@@ -41,8 +42,8 @@ const redisSecretSchema = z.object({
 /**
  * Creates the only error exposed by the deployment configuration boundary.
  *
- * Why: environment values and validation details must not reach request logs,
- * responses, snapshots, or telemetry.
+ * Why: environment values and parser errors must not reach request logs,
+ * responses, snapshots, or telemetry. Opt-in diagnostics expose fixed stages only.
  *
  * @returns {Error} sanitized availability error
  */
@@ -254,7 +255,7 @@ function createRuntimePair(hmac, redis) {
  * for the instance. The reset seam exists only for isolated tests.
  *
  * @param {object} [options] runtime configuration and deterministic seams
- * @returns {{getRuntimePair: Function, reset: Function, getSnapshot: Function}} loader
+ * @returns {{getRuntimePair: Function, reset: Function, getSnapshot: Function, getDiagnosticSnapshot: Function}} loader
  */
 export function createTemporarySessionSecrets(options = {}) {
   const env = options.env ?? process.env;
@@ -264,6 +265,7 @@ export function createTemporarySessionSecrets(options = {}) {
   const localRedisSecret = options.localRedisSecret;
   const localSecretProvider = options.localSecretProvider;
   const onEvent = options.onEvent ?? recordConfigurationEvent;
+  const randomBytesFunction = options.randomBytesFunction ?? randomBytes;
 
   if (typeof onEvent !== 'function'
     || (localSecretProvider !== undefined && typeof localSecretProvider !== 'function')
@@ -275,6 +277,13 @@ export function createTemporarySessionSecrets(options = {}) {
 
   let cachedPair = null;
   let permanentFailure = false;
+  let validationAttempts = 0;
+  let effectiveMode = 'not_attempted';
+  let validationStage = 'not_attempted';
+  let hmacInput = 'not_read';
+  let redisInput = 'not_read';
+  let diagnosticIdInitialized = false;
+  let loaderId = null;
 
   /**
    * Reads explicit local/test fixtures or local Redis credentials.
@@ -322,14 +331,23 @@ export function createTemporarySessionSecrets(options = {}) {
    * @throws {Error} sanitized availability error
    */
   function loadRuntimePair() {
+    validationStage = 'mode';
     const mode = resolveTemporarySessionSecretMode({ mode: modeOption, env });
+    effectiveMode = mode ?? 'invalid';
     if (!mode) throw createUnavailableError();
+    validationStage = 'payloads';
     const payloads = mode === TEMPORARY_SESSION_SECRET_MODES.LOCAL
       ? readLocalPayloads()
       : readVercelPayloads();
+    hmacInput = payloads.hmacPayload == null ? 'missing' : 'present';
+    redisInput = payloads.redisPayload == null ? 'missing' : 'present';
+    validationStage = 'hmac';
     const hmac = parseTemporarySessionHmacSecret(payloads.hmacPayload, allowedGenerations);
+    validationStage = 'redis';
     const redis = parseTemporarySessionRedisSecret(payloads.redisPayload);
-    return createRuntimePair(hmac, redis);
+    const pair = createRuntimePair(hmac, redis);
+    validationStage = 'complete';
+    return pair;
   }
 
   /**
@@ -341,6 +359,7 @@ export function createTemporarySessionSecrets(options = {}) {
     if (cachedPair) return cachedPair;
     if (permanentFailure) throw createUnavailableError();
     try {
+      validationAttempts = Math.min(2, validationAttempts + 1);
       cachedPair = loadRuntimePair();
       emitConfigurationEvent(
         onEvent,
@@ -365,10 +384,17 @@ export function createTemporarySessionSecrets(options = {}) {
   function reset() {
     cachedPair = null;
     permanentFailure = false;
+    validationAttempts = 0;
+    effectiveMode = 'not_attempted';
+    validationStage = 'not_attempted';
+    hmacInput = 'not_read';
+    redisInput = 'not_read';
+    diagnosticIdInitialized = false;
+    loaderId = null;
   }
 
   /**
-   * Returns value-free loader state for isolated assertions.
+   * Returns value-free cache state for tests and authenticated observations.
    *
    * @returns {{hasCachedPair: boolean, permanentFailure: boolean}} safe state
    */
@@ -379,7 +405,30 @@ export function createTemporarySessionSecrets(options = {}) {
     };
   }
 
-  return { getRuntimePair, reset, getSnapshot };
+  /**
+   * Returns fixed, value-free facts for an authenticated post-decision observer.
+   * The lazy random ID identifies this loader between test resets, not a process.
+   * No parsing, credential reads, logging or transport occurs here. Randomness
+   * failure yields a null ID and cannot change enforcement or trigger retries.
+   * @returns {Readonly<object>} detached diagnostic state; no secret-derived data
+   */
+  function getDiagnosticSnapshot() {
+    if (!diagnosticIdInitialized) {
+      diagnosticIdInitialized = true;
+      try {
+        const bytes = randomBytesFunction(16);
+        if (Buffer.isBuffer(bytes) && bytes.length === 16) loaderId = bytes.toString('hex');
+      } catch {
+        // Missing attribution makes diagnostic evidence unqualified.
+      }
+    }
+    return Object.freeze({
+      loaderId, validationAttempts, effectiveMode, validationStage, hmacInput, redisInput,
+      hasCachedPair: cachedPair !== null, permanentFailure,
+    });
+  }
+
+  return { getRuntimePair, reset, getSnapshot, getDiagnosticSnapshot };
 }
 
 export const temporarySessionSecrets = createTemporarySessionSecrets();

@@ -13,8 +13,8 @@ const { z } = require('zod');
 const { RestartError, failureCode, statsSchema, FAILURE_CODES } = require('./gate1-restart-transport.js');
 
 const ROOT = path.resolve(__dirname, '..');
-// Reviewed source-observer/logger changes; the hosted reference below is historical.
-const APP_BASE = 'eebe47f091aa1f522a8e18f7b2c916dc5e1de677';
+// Reviewed source/secret-observer changes; the hosted reference below is historical.
+const APP_BASE = 'ad3843dd21abbc787f8e28fc4934735ba59de4a1';
 const HOSTED_REFERENCE = Object.freeze({ deploymentId: 'dpl_AaGEjVjtrjaiLbHqAyCKYfdFraU6',
   gitSha: 'ba8c398c5d0af2dba9c75305397b774f946b6b1e', nextBuildId: 'VjEJE3geVJngqDN7JymXV' });
 const LIMITS = Object.freeze({ decisions: 402, concurrency: 4, clockReads: 2,
@@ -27,9 +27,9 @@ const APP_FILES = Object.freeze(['temporarySessionCeiling', 'temporarySessionRed
 // Normalized source hashes make correspondence independent of Git history depth/CRLF.
 // Source changes require review and an explicit APP_BASE/hash update; never regenerate at runtime.
 const APP_HASHES = Object.freeze({
-  'src/server/lib/temporarySessionCeiling.js': 'd0eab0bc84f2d00709fc244296ae4986551e780c09234ccb1fc76f57b2d2e11b',
+  'src/server/lib/temporarySessionCeiling.js': '5bf68460a5948dfe7b650854ca22c5fcf151d65b49e4e076b9657b70b0124b46',
   'src/server/lib/temporarySessionRedisScript.js': '0432f292da4425472c15f81b8849406a89f35fb097c98f7d99047b929dc70e34',
-  'src/server/lib/temporarySessionSecrets.js': '96f69368d3ba8f5c9bcd79a3c53efb1dd888a75ef92cbd5f68967a963e6d4d81',
+  'src/server/lib/temporarySessionSecrets.js': 'c18ac2cfa4e0461e2b766bb61b6bd66e05b383ab23412decf9ab4ae5ea82f93b',
   'src/server/lib/temporarySessionSource.js': '6b48f9d33eb4489de6aeabe739f62e12ec98c38d2ace21d42a915664b4bcb264',
   'src/server/lib/temporarySessionIdentity.js': 'bc41b44c8f206ec6f34acd2b7044d0ae913bc4e5dcaefada83cab8ec86f31ec0',
   'src/server/lib/temporarySessionTelemetry.js': 'ca3b16153accd047f5b4bf97c6ac8791296c70f0c7d5cf85e8ff0ba93854b6be',
