@@ -6,8 +6,8 @@ const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const https = require('node:https');
-const { LIMITS, CONFIG_LIMITS, TARGET, RECOVERY_TRIAL_ID, profileTemplate, parseProfile, approvalId, preparation,
-  diagnosticRule, reviewEvents, reviewConfigResponse, runReceipt, runConfigCheck, runRecoveryInspection } = require('../../../scripts/gate1-log-receipt');
+const { LIMITS, CONFIG_LIMITS, DISCARD_LIMITS, TARGET, RECOVERY_TRIAL_ID, profileTemplate, parseProfile, approvalId, preparation,
+  diagnosticRule, reviewEvents, reviewConfigResponse, runReceipt, runConfigCheck, runRecoveryInspection, runRecoveryDiscard } = require('../../../scripts/gate1-log-receipt');
 
 const START = Date.parse('2026-09-24T12:00:00.000Z');
 const TOKEN = 'synthetic_log_receipt_provider_token';
@@ -195,6 +195,193 @@ function expectRecovery(result) {
   expect(JSON.stringify(result.report)).not.toContain(`gate1-log-${'a'.repeat(48)}`);
   expect(Buffer.byteLength(`${JSON.stringify(result.report, null, 1)}\n`)).toBeLessThanOrEqual(CONFIG_LIMITS.reportBytes);
 }
+
+/** Construct synthetic observed metadata/key forms; these values do not reconstruct historical evidence. */
+function discardState(separator = '#') {
+  const state = recoveryState();
+  state.active.projectKey = `${TARGET.projectId}${separator}active`;
+  state.draft.projectKey = `${TARGET.projectId}${separator}draft`;
+  state.draft.id = state.active.id;
+  Object.assign(state.draft.changes[0], { createdAt: new Date(START).toISOString(), userId: PRIVATE, username: PRIVATE });
+  return state;
+}
+
+/** Run the isolated owner exception against synthetic HTTPS and independently approved fixture input only. */
+async function discardTrial(options = {}, changes = {}) {
+  const wire = fixture({ state: discardState(), ...options }), selected = profile(START, 'recovery_discard');
+  const report = await runRecoveryDiscard({ profile: selected, approval: approvalId(selected),
+    credentials: { providerToken: TOKEN }, ...changes.input }, { ...wire.deps, ...changes.deps });
+  return { ...wire, report };
+}
+
+/** Every owner recovery report must preserve history/privacy limits and the zero-application budget. */
+function expectDiscardPrivate(result) {
+  expect(result.report).toMatchObject({ appRequests: 0, eventsQueries: 0, gate1Status: 'open',
+    sourceAgreement: 'not_evaluated', cleanup: { restorationVerified: false },
+    recovery: { originalBaselineComparison: 'unavailable', originalMarkerComparison: 'unavailable', ownership: 'unverified' } });
+  expect(result.report.providerRequests).toBeLessThanOrEqual(3);
+  expect(result.report.configMutations).toBeLessThanOrEqual(1);
+  expect(result.state.labels.every((label) => ['config', 'discard'].includes(label))).toBe(true);
+  expect(result.sleep).not.toHaveBeenCalled(); expectPrivate(result.report);
+  expect(JSON.stringify(result.report)).not.toContain(`gate1-log-${'a'.repeat(48)}`);
+  expect(Buffer.byteLength(JSON.stringify(result.report, null, 2))).toBeLessThan(DISCARD_LIMITS.reportBytes);
+}
+
+describe('bounded owner recovery', () => {
+  it('requires separate owner/history attestations and binds the three operations to a fresh approval', () => {
+    const template = profileTemplate(START, 'recovery_discard'), selected = profile(START, 'recovery_discard');
+    expect(Object.values(template.attestations)).toEqual(Array(7).fill(false));
+    const prepared = preparation(selected, START);
+    expect(prepared).toMatchObject({ scope: 'provider_firewall_owner_recovery_only', liveApproved: false,
+      failedTrialId: RECOVERY_TRIAL_ID, limits: { maxProviderRequests: 3, maxConfigMutations: 1, overallMs: 40000 } });
+    expect(prepared.operations.map(([method]) => method)).toEqual(['GET', 'DELETE', 'GET']);
+    expect(approvalId(selected)).not.toBe(approvalId(profile(START, 'recovery_inspection')));
+  });
+
+  it.each(['#', ':', '/', '.', '_', '-'])('recovers only the current state for an exact %s separator pair', async (separator) => {
+    const state = discardState(separator), before = copy(state.active), result = await discardTrial({ state });
+    expect(result.report).toMatchObject({ result: 'completed', providerRequests: 3, configMutations: 1,
+      pendingMutation: null, cleanup: { status: 'current_state_recovered' },
+      recovery: { preconditionsVerified: true, discardAcknowledged: true, activeUnchanged: true,
+        draftAbsent: true, currentStateRecoveryVerified: true } });
+    expect(result.state.labels).toEqual(['config', 'discard', 'config']);
+    expect(result.state.active).toEqual(before); expect(result.state.draft).toBeNull();
+    expect(result.calls.every((call) => call.options.hostname === 'api.vercel.com' && !call.body)).toBe(true);
+    expectDiscardPrivate(result);
+  });
+
+  it.each([
+    'no_draft', 'active_candidate', 'second_candidate', 'extra_active_rule', 'config_id', 'key_prefix',
+    'key_extra', 'key_case', 'key_separator', 'key_equal', 'key_unknown', 'key_version',
+    'rule_limit', 'rule_metadata', 'ips', 'unknown_config', 'candidate_marker', 'candidate_extra',
+    'candidate_disabled', 'history_unknown', 'history_missing', 'history_type', 'history_oversize',
+    'history_empty', 'history_action', 'history_id', 'history_value', 'history_multiple',
+    'config_proto_key', 'candidate_proto_key',
+  ])('refuses %s before any DELETE', async (kind) => {
+    const state = discardState(), draft = state.draft, entry = draft.changes[0];
+    if (kind === 'no_draft') state.draft = null;
+    if (kind === 'active_candidate') state.active.rules = [copy(draft.rules[1])];
+    if (kind === 'second_candidate') draft.rules.push({ ...copy(draft.rules[1]), id: 'rule_second' });
+    if (kind === 'extra_active_rule') { state.active.rules.push({ ...copy(state.active.rules[0]), id: 'rule_second' }); draft.rules.unshift(copy(state.active.rules[1])); }
+    if (kind === 'config_id') draft.id += 'other';
+    if (kind === 'key_prefix') { state.active.projectKey = `prefix${state.active.projectKey}`; draft.projectKey = `prefix${draft.projectKey}`; }
+    if (kind === 'key_extra') { state.active.projectKey += '#other'; draft.projectKey += '#other'; }
+    if (kind === 'key_case') draft.projectKey = `${TARGET.projectId}#DRAFT`;
+    if (kind === 'key_separator') draft.projectKey = `${TARGET.projectId}:draft`;
+    if (kind === 'key_equal') draft.projectKey = state.active.projectKey;
+    if (kind === 'key_unknown') { state.active.projectKey = `${TARGET.projectId}@active`; draft.projectKey = `${TARGET.projectId}@draft`; }
+    if (kind === 'key_version') { state.active.projectKey += '#3'; draft.projectKey += '#4'; }
+    if (kind === 'rule_limit') draft.rules[0].action.mitigate.rateLimit.limit = 999;
+    if (kind === 'rule_metadata') draft.rules[0].unknownPrivateMetadata = PRIVATE;
+    if (kind === 'ips') draft.ips.push({ ip: ADDRESS });
+    if (kind === 'unknown_config') draft.unknownPrivatePolicy = { secret: PRIVATE };
+    if (kind === 'candidate_marker') draft.rules[1].conditionGroup[0].conditions[3].value = 'wrong';
+    if (kind === 'candidate_extra') draft.rules[1].unexpected = true;
+    if (kind === 'candidate_disabled') draft.rules[1].active = false;
+    if (kind === 'history_unknown') entry.updatedAt = new Date(START).toISOString();
+    if (kind === 'history_missing') delete entry.username;
+    if (kind === 'history_type') entry.userId = null;
+    if (kind === 'history_oversize') entry.createdAt = 'x'.repeat(129);
+    if (kind === 'history_empty') entry.username = '';
+    if (kind === 'history_action') entry.action = 'rules.remove';
+    if (kind === 'history_id') entry.id = 'rule_unrelated';
+    if (kind === 'history_value') entry.value.active = false;
+    if (kind === 'history_multiple') draft.changes.push(copy(entry));
+    if (kind === 'config_proto_key') Object.defineProperty(draft, '__proto__', { value: { private: PRIVATE }, enumerable: true });
+    if (kind === 'candidate_proto_key') Object.defineProperty(draft.rules[1], '__proto__', { value: PRIVATE, enumerable: true });
+    const result = await discardTrial({ state });
+    expect(result.report).toMatchObject({ result: 'stopped', providerRequests: 1, configMutations: 0,
+      failure: 'configuration_drift', recovery: { preconditionsVerified: false } });
+    expect(result.state.labels).toEqual(['config']); expectDiscardPrivate(result);
+  });
+
+  it.each(['ownerApprovesCurrentDraftDiscard', 'historicalRestorationUnavailable', 'noConcurrentWafEdits'])('requires %s before HTTP', async (key) => {
+    const selected = profile(START, 'recovery_discard'); selected.attestations[key] = false;
+    const result = await discardTrial({}, { input: { profile: selected } });
+    expect(result.calls).toHaveLength(0); expect(result.report.result).toBe('stopped'); expectDiscardPrivate(result);
+  });
+
+  it.each(['config_check', 'recovery_inspection', 'log_receipt'])('rejects the %s approval and profile', async (mode) => {
+    const selected = profile(START, mode);
+    const result = await discardTrial({}, { input: { profile: selected, approval: approvalId(selected) } });
+    expect(result.calls).toHaveLength(0); expect(result.report.failure).toBe('profile');
+    const wrongApproval = await discardTrial({}, { input: { approval: approvalId(selected) } });
+    expect(wrongApproval.calls).toHaveLength(0); expect(wrongApproval.report.failure).toBe('approval');
+  });
+
+  it.each(['stale', 'future', 'wrong_target'])('refuses %s input before HTTP', async (kind) => {
+    const selected = profile(kind === 'stale' ? START - 900001 : kind === 'future' ? START + 1 : START, 'recovery_discard');
+    const approval = approvalId(selected);
+    if (kind === 'wrong_target') selected.teamId = 'team_other';
+    const result = await discardTrial({}, { input: { profile: selected, approval } });
+    expect(result.calls).toHaveLength(0); expect(result.report.result).toBe('stopped');
+  });
+
+  it.each(['transport', 'status', 'body'])('uses only the final read after uncertain DELETE %s', async (kind) => {
+    const result = await discardTrial({ after: (reply, call) => call.label !== 'discard' ? reply
+      : kind === 'transport' ? { error: true } : kind === 'status' ? jsonReply({ private: PRIVATE }, 500)
+        : { status: 204, headers: {}, body: PRIVATE } });
+    expect(result.state.labels).toEqual(['config', 'discard', 'config']);
+    expect(result.report).toMatchObject({ result: 'completed', configMutations: 1,
+      recovery: { discardAcknowledged: false, currentStateRecoveryVerified: true } });
+    expect(result.report.recovery.discardFailure).not.toBeNull(); expectDiscardPrivate(result);
+  });
+
+  it.each(['delete_denied', 'draft_remains', 'new_draft', 'active_policy', 'active_metadata', 'final_http', 'final_schema', 'active_proto_key'])('leaves %s unresolved without retry', async (kind) => {
+    const result = await discardTrial({ before: (call, state) => {
+      if (call.label === 'discard' && kind === 'delete_denied') return jsonReply({}, 403);
+      if (call.label === 'discard' && kind === 'draft_remains') return { status: 204, headers: {}, body: '' };
+      if (state.providerCount === 3) {
+        if (kind === 'new_draft') state.draft = copy(discardState().draft);
+        if (kind === 'active_policy') state.active.rules[0].action.mitigate.rateLimit.limit = 999;
+        if (kind === 'active_metadata') state.active.version += 1;
+        if (kind === 'active_proto_key') Object.defineProperty(state.active, '__proto__', { value: { private: PRIVATE }, enumerable: true });
+        if (kind === 'final_http') return jsonReply({}, 403);
+        if (kind === 'final_schema') return jsonReply({ active: null });
+      }
+      return undefined;
+    } });
+    expect(result.state.labels).toEqual(['config', 'discard', 'config']);
+    expect(result.report).toMatchObject({ result: 'stopped', configMutations: 1,
+      cleanup: { status: 'cleanup_unresolved' }, recovery: { currentStateRecoveryVerified: false } });
+    expectDiscardPrivate(result);
+  });
+
+  it.each([302, 403, 429, 500])('stops after initial HTTP %s', async (status) => {
+    const result = await discardTrial({ before: () => jsonReply({}, status) });
+    expect(result.calls).toHaveLength(1); expect(result.report.configMutations).toBe(0); expectDiscardPrivate(result);
+  });
+
+  it.each(['before_delete', 'after_delete'])('honors cancellation %s without replay', async (when) => {
+    const controller = new AbortController();
+    const result = await discardTrial({ after: (reply, call) => {
+      if (call.label === (when === 'before_delete' ? 'config' : 'discard')) controller.abort();
+      return reply;
+    } }, { deps: { signal: controller.signal } });
+    expect(result.report).toMatchObject({ result: 'stopped', failure: 'cancelled',
+      configMutations: when === 'before_delete' ? 0 : 1 }); expectDiscardPrivate(result);
+  });
+
+  it('enforces the overall deadline after a dispatched deletion', async () => {
+    const result = await discardTrial({ after: (reply, call, state) => {
+      if (call.label === 'discard') state.elapsed = 40000;
+      return reply;
+    } });
+    expect(result.report).toMatchObject({ result: 'stopped', failure: 'deadline', providerRequests: 2, configMutations: 1 });
+    expectDiscardPrivate(result);
+  });
+
+  it('times out a DELETE once and uses one readback without replay', async () => {
+    jest.useFakeTimers();
+    try {
+      const pending = discardTrial({ after: (reply, call) => call.label === 'discard' ? { hang: true } : reply });
+      await jest.advanceTimersByTimeAsync(10001);
+      const result = await pending;
+      expect(result.report.result).toBe('completed'); expect(result.calls).toHaveLength(3);
+      expect(result.report.recovery.discardFailure).toBe('deadline'); expectDiscardPrivate(result);
+    } finally { jest.useRealTimers(); }
+  });
+});
 
 describe('isolated recovery inspection', () => {
   it('binds the fixed failed trial, operation and budgets to a distinct fresh approval', () => {
@@ -1485,7 +1672,7 @@ function launcherFixture(options = {}) {
   const directory = path.resolve(__dirname, '../../../.tmp');
   fs.mkdirSync(directory, { recursive: true });
   const file = path.join(directory, `log-receipt-launcher-fixture-${randomUUID()}.json`);
-  const selected = profile(Date.now(), options.recovery ? 'recovery_inspection' : options.configCheck ? 'config_check' : undefined), digest = approvalId(selected);
+  const selected = profile(Date.now(), options.discard ? 'recovery_discard' : options.recovery ? 'recovery_inspection' : options.configCheck ? 'config_check' : undefined), digest = approvalId(selected);
   const prepared = { ...preparation(selected), ...options.reviewChanges };
   if (options.limitChanges) prepared.limits = { ...prepared.limits, ...options.limitChanges };
   fs.writeFileSync(file, JSON.stringify(selected), { flag: 'wx' });
@@ -1512,7 +1699,7 @@ function launcherFixture(options = {}) {
     "  Assert-FixtureCondition (($script:sequence -join ',') -ceq 'review')",
     "  $script:sequence.Add('confirmation')",
     `  return ${psLiteral(options.confirmation === undefined
-      ? options.recovery ? 'RUN RECOVERY INSPECTION ONCE' : options.configCheck ? 'RUN CONFIG CHECK ONCE' : 'RUN LOG RECEIPT ONCE' : options.confirmation)}`,
+      ? options.discard ? 'DISCARD REVIEWED GATE1 DRAFT ONCE' : options.recovery ? 'RUN RECOVERY INSPECTION ONCE' : options.configCheck ? 'RUN CONFIG CHECK ONCE' : 'RUN LOG RECEIPT ONCE' : options.confirmation)}`,
     '}',
     '<# Intercept both child modes and validate credential isolation in the stdin envelope. #>',
     'function Invoke-Gate1ReceiptNode([string]$Mode, [string]$InputJson) {',
@@ -1627,6 +1814,67 @@ describe('offline CLI and guarded PowerShell launcher', () => {
     expect(child.error).toBeUndefined(); expect(child.status).toBe(0); expect(child.stderr).toBe('');
     expect(JSON.parse(child.stdout)).toMatchObject({ sequence: ['review', 'confirmation', 'hidden_token'], threw: true,
       fixtureViolation: false, liveEnvelopeValidated: false });
+  });
+});
+
+describe('owner recovery CLI and launcher', () => {
+  it.each(['--discard-template', '--discard-prepare', '--review'])('keeps %s offline', (mode) => {
+    const selected = profile(Date.now(), 'recovery_discard');
+    const child = offlineCli([mode], mode === '--review' ? JSON.stringify(selected) : undefined);
+    expect(child.status).toBe(0);
+    const output = JSON.parse(child.stdout);
+    expect(output.queryMode).toBe('recovery_discard');
+    if (mode === '--discard-template') expect(Object.values(output.attestations)).toEqual(Array(7).fill(false));
+    else expect(output).toMatchObject({ liveApproved: false, appRequests: 0, providerRequests: 0,
+      limits: { maxConfigMutations: 1, maxProviderRequests: 3 } });
+  });
+
+  it('routes live discard input to the isolated runner before refusing bad approval', () => {
+    const child = offlineCli(['--live'], JSON.stringify({ profile: profile(Date.now(), 'recovery_discard'),
+      approval: '0'.repeat(64), credentials: { providerToken: TOKEN } }));
+    expect(child.status).toBe(1);
+    expect(JSON.parse(child.stdout)).toMatchObject({ scope: 'provider_firewall_owner_recovery_only',
+      providerRequests: 0, configMutations: 0, failure: 'approval' });
+  });
+
+  (process.platform === 'win32' ? it.each : it.skip.each)([
+    [['-DiscardTemplate'], '--discard-template'], [['-RecoveryDiscard'], '--discard-prepare'],
+  ])('selects %j offline', (args, mode) => {
+    const child = launcherSelectorFixture(args);
+    expect(child.status).toBe(0);
+    expect(JSON.parse(child.stdout)).toMatchObject({ modes: [mode], prompted: false, threw: false });
+  });
+
+  (process.platform === 'win32' ? it.each : it.skip.each)([
+    ['-DiscardTemplate', '-RecoveryTemplate'], ['-RecoveryDiscard', '-Live'], ['-RecoveryDiscard', '-Template'],
+  ])('refuses conflicting owner recovery selectors %j', (...args) => {
+    const child = launcherSelectorFixture(args);
+    expect(child.status).toBe(0); expect(JSON.parse(child.stdout)).toMatchObject({ modes: [], threw: true });
+  });
+
+  (process.platform === 'win32' ? it : it.skip)('requires owner confirmation before hidden token entry', () => {
+    const child = launcherFixture({ discard: true });
+    expect(child.status).toBe(0); expect(JSON.parse(child.stdout)).toMatchObject({
+      sequence: ['review', 'confirmation', 'hidden_token', 'live_stdin'], threw: false, fixtureViolation: false });
+    expect(child.stdout).not.toContain(TOKEN);
+  });
+
+  (process.platform === 'win32' ? it.each : it.skip.each)(['RUN RECOVERY INSPECTION ONCE', 'RUN LOG RECEIPT ONCE', ''])('rejects confirmation %s before secrets', (confirmation) => {
+    const child = launcherFixture({ discard: true, confirmation });
+    expect(child.status).toBe(0); expect(JSON.parse(child.stdout)).toMatchObject({
+      sequence: ['review', 'confirmation'], threw: true, fixtureViolation: false });
+  });
+
+  (process.platform === 'win32' ? it.each : it.skip.each)([
+    { limitChanges: { maxProviderRequests: 4 } }, { limitChanges: { maxConfigMutations: 2 } },
+    { reviewChanges: { operations: [['DELETE', '/other']] } },
+    { reviewChanges: { failedTrialId: '0'.repeat(32) } },
+    { reviewChanges: { scope: 'provider_firewall_recovery_inspection_only' } },
+    { reviewChanges: { recoveryBasis: 'historical_ownership' } },
+  ])('rejects altered owner recovery review %# before confirmation', (options) => {
+    const child = launcherFixture({ ...options, discard: true });
+    expect(child.status).toBe(0); expect(JSON.parse(child.stdout)).toMatchObject({
+      sequence: ['review'], threw: true, fixtureViolation: false });
   });
 });
 
@@ -1812,7 +2060,8 @@ function durableFixture(wire, failRename = () => false, mode = 'log_receipt') {
   nativeGuard.mockImplementation(wire.requestImpl);
   /** Exercise production persistence with an in-memory network fixture and fixed clocks. */
   async function run() {
-    const selected = profile(START, mode), runner = mode === 'recovery_inspection' ? runRecoveryInspection : runReceipt;
+    const selected = profile(START, mode), runner = mode === 'recovery_discard' ? runRecoveryDiscard
+      : mode === 'recovery_inspection' ? runRecoveryInspection : runReceipt;
     return runner({ profile: selected, approval: approvalId(selected), credentials: { providerToken: TOKEN } },
       { ...wire.deps, requestImpl: undefined });
   }
@@ -1840,6 +2089,38 @@ async function renderRecoveryReport(report) {
 }
 
 describe('durable approval and recovery evidence', () => {
+  it('consumes a discard approval once and preserves private-data-free mutation intent and current-state results', async () => {
+    const wire = fixture({ state: discardState() }), storage = durableFixture(wire, undefined, 'recovery_discard');
+    try {
+      const result = await storage.run();
+      expect(result).toMatchObject({ result: 'completed', providerRequests: 3, configMutations: 1 });
+      const records = storage.writes.map((encoded) => JSON.parse(encoded));
+      expect(records.some((record) => record.pendingMutation === 'discardDraft'
+        && record.configMutations === 0)).toBe(true);
+      expect(records.some((record) => record.recovery.currentStateRecoveryVerified)).toBe(true);
+      for (const record of records) { expectPrivate(record); expect(record.cleanup.restorationVerified).toBe(false); }
+      for (const encoded of storage.writes) {
+        expect(Buffer.byteLength(encoded)).toBeLessThanOrEqual(8192);
+        expect(encoded).not.toContain(`gate1-log-${'a'.repeat(48)}`);
+        expect(encoded).not.toContain(`${TARGET.projectId}#active`);
+      }
+      const consumed = await storage.run();
+      expect(consumed).toMatchObject({ failure: 'approval_consumed', providerRequests: 0, configMutations: 0 });
+      expect(wire.calls).toHaveLength(3);
+    } finally { storage.restore(); }
+  });
+
+  it('refuses DELETE if mutation intent cannot be persisted', async () => {
+    const wire = fixture({ state: discardState() });
+    let saves = 0;
+    const storage = durableFixture(wire, () => ++saves === 3, 'recovery_discard');
+    try {
+      const result = await storage.run();
+      expect(result).toMatchObject({ result: 'stopped', failure: 'local_evidence', providerRequests: 1, configMutations: 0 });
+      expect(wire.state.labels).toEqual(['config']); expect(wire.state.draft).not.toBeNull();
+    } finally { storage.restore(); }
+  });
+
   it('keeps detailed recovery facts bounded and private for many provider fields, rules and value differences', async () => {
     const state = recoveryState(), template = copy(state.active.rules[0]);
     for (let index = 0; index < 100; index += 1) {

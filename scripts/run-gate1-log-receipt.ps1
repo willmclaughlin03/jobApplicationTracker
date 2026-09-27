@@ -2,6 +2,7 @@
 Offline by default. -Template emits unapproved trial attestations; -ConfigTemplate
 emits a read-only config profile; -ConfigCheck prepares that check without HTTP.
 -RecoveryTemplate/-RecoveryInspection prepare inspection of the fixed failed trial.
+-DiscardTemplate/-RecoveryDiscard prepare a separately approved owner recovery exception.
 -ProfilePath reviews any supported profile. Separately approved -Live -Approval binds
 the selected operation to reviewed code/profile. No credentials belong in arguments or files.
 For a full trial, keep the WAF edit freeze until the report verifies restoration. If interrupted,
@@ -10,6 +11,7 @@ inspect .tmp/gate1-log-receipt-<approval>.json; do not rerun or bulk-restore con
 [CmdletBinding()]
 param([switch]$Template, [switch]$ConfigTemplate, [switch]$ConfigCheck,
     [switch]$RecoveryTemplate, [switch]$RecoveryInspection,
+    [switch]$DiscardTemplate, [switch]$RecoveryDiscard,
     [string]$ProfilePath, [switch]$Live, [string]$Approval)
 $ErrorActionPreference = 'Stop'
 
@@ -19,10 +21,11 @@ Invoke a fixed Node mode with bounded stdin and hidden output capture. The
 cleanup and reporting. Raw stderr is never emitted. On launcher interruption,
 give the child its remaining deadline before killing it; hard termination can
 still prevent rollback and requires operator recovery review.
+Owner recovery uses a 60-second child deadline around its 40-second runner budget.
 #>
 function Invoke-Gate1ReceiptNode([string]$Mode, [string]$InputJson = '') {
     if ($Mode -cnotin @('--prepare', '--template', '--config-prepare', '--config-template',
-        '--recovery-prepare', '--recovery-template', '--review', '--live') -or
+        '--recovery-prepare', '--recovery-template', '--discard-prepare', '--discard-template', '--review', '--live') -or
         [Text.Encoding]::UTF8.GetByteCount($InputJson) -gt 16384) { throw 'Invalid receipt input.' }
     $runner = Join-Path $PSScriptRoot 'gate1-log-receipt.js'
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
@@ -38,6 +41,7 @@ function Invoke-Gate1ReceiptNode([string]$Mode, [string]$InputJson = '') {
     $started = $false
     $timer = [Diagnostics.Stopwatch]::StartNew()
     $childMs = if ($Mode -ceq '--live') { 210000 } else { 30000 }
+    if ($Mode -ceq '--live' -and (($InputJson | ConvertFrom-Json).profile.queryMode -ceq 'recovery_discard')) { $childMs = 60000 }
     try {
         $started = $process.Start()
         if (-not $started) { throw 'Receipt process did not start.' }
@@ -72,10 +76,12 @@ function Invoke-Gate1ReceiptNode([string]$Mode, [string]$InputJson = '') {
 
 <#
 Read only the provider token without echo/history; ConfigurationOnly selects
-the read-only prompt. Release the BSTR; the string reaches only child stdin.
+the read-only prompt and OwnerRecovery names the single draft discard. Release
+the BSTR; the string reaches only child stdin.
 #>
-function Read-Gate1ReceiptToken([switch]$ConfigurationOnly) {
-    $prompt = if ($ConfigurationOnly) { 'Vercel API token for the approved read-only config GET (hidden)' }
+function Read-Gate1ReceiptToken([switch]$ConfigurationOnly, [switch]$OwnerRecovery) {
+    $prompt = if ($OwnerRecovery) { 'Vercel API token for the separately approved single draft discard (hidden)' }
+        elseif ($ConfigurationOnly) { 'Vercel API token for the approved read-only config GET (hidden)' }
         else { 'Vercel API token for the separately approved WAF trial (hidden)' }
     $secure = Read-Host -Prompt $prompt -AsSecureString
     $pointer = [IntPtr]::Zero
@@ -108,14 +114,23 @@ function Test-Gate1ReceiptReview($Prepared, $ReceiptProfile) {
     if ($Prepared.profile.reviewedAt -cne $ReceiptProfile.reviewedAt) { return $false }
     $configOnly = $ReceiptProfile.queryMode -ceq 'config_check'
     $recoveryOnly = $ReceiptProfile.queryMode -ceq 'recovery_inspection'
-    if ($configOnly -or $recoveryOnly) {
-        $expectedScope = if ($recoveryOnly) { 'provider_firewall_recovery_inspection_only' } else { 'provider_firewall_config_check_only' }
+    $discardOnly = $ReceiptProfile.queryMode -ceq 'recovery_discard'
+    if ($configOnly -or $recoveryOnly -or $discardOnly) {
+        $expectedScope = if ($discardOnly) { 'provider_firewall_owner_recovery_only' }
+            elseif ($recoveryOnly) { 'provider_firewall_recovery_inspection_only' } else { 'provider_firewall_config_check_only' }
         if ($Prepared.scope -cne $expectedScope -or
             $Prepared.queryMode -cne $ReceiptProfile.queryMode -or $Prepared.profile.queryMode -cne $ReceiptProfile.queryMode -or
-            $Prepared.endpoint -cne 'https://api.vercel.com/v1/security/firewall/config' -or
-            $Prepared.method -cne 'GET' -or
             $Prepared.PSObject.Properties.Name -cnotcontains 'application' -or $null -ne $Prepared.application -or
-            $Prepared.PSObject.Properties.Name -cnotcontains 'rule' -or $null -ne $Prepared.rule -or
+            $Prepared.PSObject.Properties.Name -cnotcontains 'rule' -or $null -ne $Prepared.rule) { return $false }
+        if ($discardOnly) {
+            $configPath = '/v1/security/firewall/config?projectId=' + $target.projectId + '&teamId=' + $target.teamId
+            $draftPath = '/v1/security/firewall/config/draft?projectId=' + $target.projectId + '&teamId=' + $target.teamId
+            $operations = @(@('GET', $configPath), @('DELETE', $draftPath), @('GET', $configPath))
+            if ((ConvertTo-Json -InputObject $Prepared.operations -Depth 4 -Compress) -cne
+                (ConvertTo-Json -InputObject $operations -Depth 4 -Compress) -or
+                $Prepared.recoveryBasis -cne 'owner_approved_current_draft_exception') { return $false }
+        } elseif ($Prepared.endpoint -cne 'https://api.vercel.com/v1/security/firewall/config' -or
+            $Prepared.method -cne 'GET' -or
             @($Prepared.queryParameters.PSObject.Properties).Count -ne 2 -or
             $Prepared.queryParameters.PSObject.Properties.Name -cnotcontains 'projectId' -or
             $Prepared.queryParameters.PSObject.Properties.Name -cnotcontains 'teamId' -or
@@ -126,7 +141,7 @@ function Test-Gate1ReceiptReview($Prepared, $ReceiptProfile) {
             if (($actual -isnot [int] -and $actual -isnot [long]) -or $actual -ne 0) { return $false }
         }
         $attestations = @('sourceCodeReviewed', 'credentialLoggingReviewed', 'includedUsageHeadroom')
-        if ($recoveryOnly) {
+        if ($recoveryOnly -or $discardOnly) {
             $failedTrial = '447e9964d04241e92885614852a7bf3f'
             if ($ReceiptProfile.failedTrialId -cne $failedTrial -or $Prepared.failedTrialId -cne $failedTrial -or
                 $Prepared.profile.failedTrialId -cne $failedTrial) { return $false }
@@ -136,6 +151,10 @@ function Test-Gate1ReceiptReview($Prepared, $ReceiptProfile) {
         $limits = @{ maxAppRequests = 0; maxProviderRequests = 1; maxEventsQueries = 0; maxConfigMutations = 0;
             concurrency = 1; requestMs = 10000; overallMs = 15000; providerBytes = 262144;
             headerBytes = 16384; inputBytes = 16384; reportBytes = 8192; profileAgeMs = 900000 }
+        if ($discardOnly) {
+            $attestations += @('ownerApprovesCurrentDraftDiscard', 'historicalRestorationUnavailable')
+            $limits.maxProviderRequests = 3; $limits.maxConfigMutations = 1; $limits.overallMs = 40000
+        }
     } else {
         if ($ReceiptProfile.PSObject.Properties.Name -contains 'queryMode' -or
             $Prepared.profile.PSObject.Properties.Name -contains 'queryMode' -or
@@ -171,7 +190,7 @@ to an already separately approved live trial, never grants billing/other edits.
 An approval is consumed by the runner before its first provider request.
 #>
 function Invoke-Gate1LogReceipt {
-    $selectors = @($Template, $ConfigTemplate, $ConfigCheck, $RecoveryTemplate, $RecoveryInspection) |
+    $selectors = @($Template, $ConfigTemplate, $ConfigCheck, $RecoveryTemplate, $RecoveryInspection, $DiscardTemplate, $RecoveryDiscard) |
         Where-Object { $_.IsPresent }
     if ($args.Count -ne 0 -or @($selectors).Count -gt 1 -or
         (@($selectors).Count -gt 0 -and ($ProfilePath -or $Live -or $Approval)) -or
@@ -182,6 +201,8 @@ function Invoke-Gate1LogReceipt {
     if ($ConfigCheck) { return Invoke-Gate1ReceiptNode -Mode '--config-prepare' }
     if ($RecoveryTemplate) { return Invoke-Gate1ReceiptNode -Mode '--recovery-template' }
     if ($RecoveryInspection) { return Invoke-Gate1ReceiptNode -Mode '--recovery-prepare' }
+    if ($DiscardTemplate) { return Invoke-Gate1ReceiptNode -Mode '--discard-template' }
+    if ($RecoveryDiscard) { return Invoke-Gate1ReceiptNode -Mode '--discard-prepare' }
     if (-not $ProfilePath) { return Invoke-Gate1ReceiptNode -Mode '--prepare' }
     $file = Get-Item -LiteralPath $ProfilePath
     if ($file.PSIsContainer -or $file.Extension -ine '.json' -or $file.Length -gt 8192 -or
@@ -199,7 +220,13 @@ function Invoke-Gate1LogReceipt {
     Write-Host $review.Json
     $configOnly = $receiptProfile.queryMode -ceq 'config_check'
     $recoveryOnly = $receiptProfile.queryMode -ceq 'recovery_inspection'
-    if ($recoveryOnly) {
+    $discardOnly = $receiptProfile.queryMode -ceq 'recovery_discard'
+    if ($discardOnly) {
+        Write-Host 'Owner recovery exception: at most THREE provider requests (GET, DELETE draft, GET); ZERO app requests or Events queries.'
+        Write-Host 'This discards the qualifying current draft. Keep the WAF edit freeze. Historical ownership/restoration remain unverified.'
+        $confirmation = Read-Host -Prompt 'Separately approved owner exception. Type DISCARD REVIEWED GATE1 DRAFT ONCE'
+        if ($confirmation -cne 'DISCARD REVIEWED GATE1 DRAFT ONCE') { throw 'Owner recovery confirmation was not provided.' }
+    } elseif ($recoveryOnly) {
         Write-Host 'Recovery inspection: ONE configuration GET, ZERO app requests, ZERO Events queries, ZERO WAF changes.'
         Write-Host 'Cleanup remains unresolved. Keep the existing WAF edit freeze; this check cannot prove ownership or restoration.'
         $confirmation = Read-Host -Prompt 'Approve ONE recovery inspection GET only. Type RUN RECOVERY INSPECTION ONCE'
@@ -216,7 +243,8 @@ function Invoke-Gate1LogReceipt {
     $token = $null
     $envelope = $null
     try {
-        $token = if ($configOnly -or $recoveryOnly) { Read-Gate1ReceiptToken -ConfigurationOnly } else { Read-Gate1ReceiptToken }
+        $token = if ($discardOnly) { Read-Gate1ReceiptToken -OwnerRecovery }
+            elseif ($configOnly -or $recoveryOnly) { Read-Gate1ReceiptToken -ConfigurationOnly } else { Read-Gate1ReceiptToken }
         if ($token -cnotmatch '^[A-Za-z0-9_-]{20,512}$') { throw 'Receipt credential contract failed.' }
         $envelope = ConvertTo-Json -Depth 8 -Compress -InputObject @{
             profile = $receiptProfile; approval = $Approval; credentials = @{ providerToken = $token }
@@ -237,6 +265,8 @@ if ($MyInvocation.InvocationName -ne '.') {
                 Write-Warning 'Configuration check stopped. Share the sanitized validation report; do not rerun automatically.'
             } elseif ($stoppedReport.scope -ceq 'provider_firewall_recovery_inspection_only') {
                 Write-Warning 'Inspection stopped; cleanup remains unresolved. Share the sanitized report and keep the WAF edit freeze.'
+            } elseif ($stoppedReport.scope -ceq 'provider_firewall_owner_recovery_only') {
+                Write-Warning 'Owner recovery stopped. Keep the WAF edit freeze and review the sanitized report; do not retry the discard.'
             } else {
                 Write-Warning 'Trial stopped. Inspect cleanup status/recovery record; do not rerun automatically.'
             }
