@@ -224,32 +224,64 @@ function policy(config) {
   return rest;
 }
 
-/** Accept only an exact owned rule plus documented, successful validation metadata. */
-function matchesRule(rule, expected) {
-  if (!rule || !ruleIdSchema.safeParse(rule.id).success || rule.valid !== true) return false;
-  const { id: _id, valid: _valid, validationErrors, ...rest } = rule;
-  return (validationErrors === undefined || validationErrors === null
-    || (Array.isArray(validationErrors) && validationErrors.length === 0)) && isDeepStrictEqual(rest, expected);
+/**
+ * Compare original policy fields with the baseline, optionally excluding the owned
+ * addition via rules and allowing the exact role counterpart only when isDraft.
+ * Opaque keys remain exact. Direct own-field checks avoid schema/rest projections;
+ * no raw values leave memory and the key rule is not a provider contract.
+ */
+function policyMatches(config, baseline, isDraft = false, rules = config.rules) {
+  const suffix = baseline.projectKey.slice(TARGET.projectId.length);
+  const roleKey = baseline.projectKey.startsWith(TARGET.projectId) && /^[#:/._-]active$/.test(suffix);
+  const expectedKey = isDraft && roleKey ? `${TARGET.projectId}${suffix[0]}draft` : baseline.projectKey;
+  const excluded = ['id', 'version', 'updatedAt', 'changes', 'projectKey', 'rules'];
+  const keys = Object.keys(config).filter((key) => !excluded.includes(key)).sort();
+  const baselineKeys = Object.keys(baseline).filter((key) => !excluded.includes(key)).sort();
+  return config.projectKey === expectedKey && isDeepStrictEqual(keys, baselineKeys)
+    && keys.every((key) => isDeepStrictEqual(config[key], baseline[key]))
+    && isDeepStrictEqual(rules, baseline.rules);
 }
 
-/** Establish one exact addition, with every baseline policy field and original rule order preserved. */
-function addedRule(config, baseline, expected) {
+/** Compare original owned-rule fields against input; only successful validation metadata may differ. */
+function matchesRule(rule, expected) {
+  if (!rule || !ruleIdSchema.safeParse(rule.id).success || rule.valid !== true) return false;
+  const validationErrors = rule.validationErrors;
+  const keys = Object.keys(rule).filter((key) => !['id', 'valid', 'validationErrors'].includes(key)).sort();
+  return (validationErrors === undefined || validationErrors === null
+    || (Array.isArray(validationErrors) && validationErrors.length === 0))
+    && isDeepStrictEqual(keys, Object.keys(expected).sort())
+    && keys.every((key) => isDeepStrictEqual(rule[key], expected[key]));
+}
+
+/** Establish one exact addition; only isDraft admits a role key, with baseline policy/order preserved. */
+function addedRule(config, baseline, expected, isDraft = false) {
   const additions = config.rules.filter((rule) => !baseline.rules.some((old) => old.id === rule.id));
   if (additions.length !== 1 || !matchesRule(additions[0], expected)) throw new ReceiptError('configuration_drift');
   const rule = additions[0];
-  const restored = { ...config, rules: config.rules.filter((item) => item.id !== rule.id) };
-  if (!isDeepStrictEqual(policy(restored), policy(baseline))) throw new ReceiptError('configuration_drift');
+  const restoredRules = config.rules.filter((item) => item.id !== rule.id);
+  if (!policyMatches(config, baseline, isDraft, restoredRules)) throw new ReceiptError('configuration_drift');
   return rule;
 }
 
-/** Require one recognized owned draft operation in addition to full policy equality. */
+/**
+ * Require one owned operation, using original values after policy comparison.
+ * Accept the legacy three-field entry or the complete bounded metadata shape from
+ * recovery. Metadata establishes neither identity nor ownership; rule ID/input do.
+ */
 function requireChange(draft, action, rule, expected) {
   const change = draft.changes[0];
-  if (draft.changes.length !== 1 || !change || Object.keys(change).sort().join(',') !== 'action,id,value'
+  if (draft.changes.length !== 1 || !change || typeof change !== 'object' || Array.isArray(change)
     || change.action !== action) throw new ReceiptError('configuration_drift');
+  const fields = Object.keys(change).sort().join(',');
+  const legacy = fields === 'action,id,value';
+  const metadata = fields === 'action,createdAt,id,userId,username,value'
+    && z.object({ action: z.enum(['rules.insert', 'rules.remove']), id: ruleIdSchema, value: z.unknown(),
+      createdAt: z.string().min(1).max(128), userId: z.string().min(1).max(512),
+      username: z.string().min(1).max(512) }).strict().safeParse(change).success;
+  if (!legacy && !metadata) throw new ReceiptError('configuration_drift');
   if (action === 'rules.insert') {
-    if ((change.id !== null && change.id !== rule.id)
-      || (!isDeepStrictEqual(change.value, expected) && !isDeepStrictEqual(change.value, rule))) {
+    if ((change.id !== rule.id && (!legacy || change.id !== null))
+      || (!isDeepStrictEqual(change.value, expected) && (!legacy || !isDeepStrictEqual(change.value, rule)))) {
       throw new ReceiptError('configuration_drift');
     }
   } else if (change.id !== rule.id || change.value !== null) throw new ReceiptError('configuration_drift');
@@ -722,18 +754,18 @@ async function runReceipt(input, deps = {}) {
   async function cleanup() {
     cleaning = true; cleanupStart = now(); guardFailure = null;
     report.cleanup.status = 'cleanup_unresolved';
-    const current = snapshot(await request('inspectCleanup'));
-    if (isDeepStrictEqual(policy(current.active), policy(baseline))) {
+    const current = rawSnapshot(await request('inspectCleanup'));
+    if (policyMatches(current.active, baseline)) {
       // An unchanged snapshot cannot rule out a timed-out write committing later.
       if (pendingMutation && (current.draft === null || pendingMutation !== 'insert')) throw new ReceiptError('mutation_unresolved');
       if (current.draft === null) { report.cleanup.status = 'restored'; report.cleanup.restorationVerified = true; return; }
       if (!isDeepStrictEqual(current.active, baseline)) throw new ReceiptError('configuration_drift');
-      const rule = addedRule(current.draft, baseline, expected);
+      const rule = addedRule(current.draft, baseline, expected, true);
       ownRule(rule); requireChange(current.draft, 'rules.insert', rule, expected);
       resolvedMutation();
       // Even when acknowledgement is lost, spend the existing final read to check the effect.
       try { await mutate('discard'); } catch { /* No retry: verify the owned draft's disappearance. */ }
-      const final = snapshot(await request('verifyDiscard'));
+      const final = rawSnapshot(await request('verifyDiscard'));
       if (final.draft !== null || !isDeepStrictEqual(final.active, baseline)) throw new ReceiptError('configuration_drift');
       resolvedMutation();
     } else {
@@ -745,14 +777,14 @@ async function runReceipt(input, deps = {}) {
       resolvedMutation();
       try { await mutate('remove', { action: 'rules.remove', id: rule.id, value: null }); }
       catch { /* Verify the effect within the reserved call budget before proceeding. */ }
-      const staged = snapshot(await request('verifyRemoval'));
+      const staged = rawSnapshot(await request('verifyRemoval'));
       if (!staged.draft || !isDeepStrictEqual(staged.active, current.active)
-        || !isDeepStrictEqual(policy(staged.draft), policy(baseline))) throw new ReceiptError('configuration_drift');
+        || !policyMatches(staged.draft, baseline, true)) throw new ReceiptError('configuration_drift');
       requireChange(staged.draft, 'rules.remove', rule, expected);
       resolvedMutation();
       try { await mutate('activateRemoval', {}); } catch { /* Only final readback can establish restoration. */ }
-      const final = snapshot(await request('verifyRestoration'));
-      if (final.draft !== null || !isDeepStrictEqual(policy(final.active), policy(baseline))) throw new ReceiptError('configuration_drift');
+      const final = rawSnapshot(await request('verifyRestoration'));
+      if (final.draft !== null || !policyMatches(final.active, baseline)) throw new ReceiptError('configuration_drift');
       resolvedMutation();
     }
     report.cleanup.status = 'restored'; report.cleanup.restorationVerified = true;
@@ -772,18 +804,18 @@ async function runReceipt(input, deps = {}) {
     report.startedAt = new Date(wallStart).toISOString();
     expected = diagnosticRule(report.trialId, `gate1-log-${randomBytes(24).toString('hex')}`);
     if (!deps.requestImpl) file = reserveTrial(report);
-    const first = snapshot(await request('baseline'), report);
+    const first = rawSnapshot(await request('baseline'), report);
     if (first.draft !== null) throw new ReceiptError('existing_draft');
     baseline = first.active;
     if (baseline.rules.some((rule) => rule.name === expected.name)) throw new ReceiptError('rule_identity');
     armed = true; report.cleanup.status = 'cleanup_unresolved';
     await mutate('insert', { action: 'rules.insert', id: null, value: expected });
-    const staged = snapshot(await request('verifyDraft'));
+    const staged = rawSnapshot(await request('verifyDraft'));
     if (!staged.draft || !isDeepStrictEqual(staged.active, baseline)) throw new ReceiptError('configuration_drift');
-    ownRule(addedRule(staged.draft, baseline, expected));
+    ownRule(addedRule(staged.draft, baseline, expected, true));
     requireChange(staged.draft, 'rules.insert', verifiedRule, expected);
     await mutate('activate', {});
-    const active = snapshot(await request('verifyActive'));
+    const active = rawSnapshot(await request('verifyActive'));
     if (active.draft !== null) throw new ReceiptError('configuration_drift');
     ownRule(addedRule(active.active, baseline, expected)); activeTrial = active.active;
     const probeStart = wall(), probe = await request('probe');
@@ -944,12 +976,13 @@ function requireDiscardCandidate(current) {
 
 /**
  * Validate the bounded response with the existing reader, then keep its original
- * JSON object in memory for exact recovery comparisons. Zod's parsed projection
+ * JSON object in memory for exact trial/recovery comparisons. Zod's parsed projection
  * drops an own __proto__ key; comparing that projection could hide policy drift.
- * No raw object is returned in evidence or shared with the other operation modes.
+ * Optional report receives only sanitized validation facts. No raw object enters
+ * evidence; the read-only modes keep their existing diagnostic projections.
  */
-function discardSnapshot(response) {
-  snapshot(response);
+function rawSnapshot(response, report) {
+  snapshot(response, report);
   return providerJson(response);
 }
 
@@ -1036,7 +1069,7 @@ async function runRecoveryDiscard(input, deps = {}) {
     if (parsed.data.approval !== approvalId(profile)) throw new ReceiptError('approval');
     report.approvalId = parsed.data.approval; report.startedAt = new Date(wallStart).toISOString();
     if (!deps.requestImpl) file = reserveTrial(report);
-    const current = discardSnapshot(await request('inspectCurrentDraft', 0));
+    const current = rawSnapshot(await request('inspectCurrentDraft', 0));
     requireDiscardCandidate(current); report.recovery.preconditionsVerified = true;
     try {
       const reply = await request('discardDraft', 1);
@@ -1047,7 +1080,7 @@ async function runRecoveryDiscard(input, deps = {}) {
       if (report.configMutations !== 1 || guardFailure) throw error;
       // A dispatched uncertain DELETE gets only its reserved readback, if time/cancellation permits.
     }
-    const final = discardSnapshot(await request('verifyCurrentRecovery', 2));
+    const final = rawSnapshot(await request('verifyCurrentRecovery', 2));
     report.recovery.activeUnchanged = isDeepStrictEqual(final.active, current.active);
     report.recovery.draftAbsent = final.draft === null;
     if (!report.recovery.activeUnchanged || !report.recovery.draftAbsent) throw new ReceiptError('configuration_drift');

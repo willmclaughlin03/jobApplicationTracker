@@ -59,10 +59,15 @@ function event(state, changes = {}) {
 /**
  * Simulate the documented shared-draft control plane. Hooks can change state or
  * replace a reply before/after a mutation to exercise ambiguous outcomes safely.
+ * roleMetadata models the approved local key/history preconditions across the
+ * lifecycle; activation/removal shapes are synthetic, not hosted evidence.
  */
 function fixture(options = {}) {
   const state = { active: baseline(), draft: null, versions: [], elapsed: 0,
     rule: null, providerCount: 0, appCount: 0, labels: [] };
+  const roleKeys = options.roleMetadata ? { active: `${TARGET.projectId}${options.separator || '#'}active`,
+    draft: `${TARGET.projectId}${options.separator || '#'}draft` } : null;
+  if (roleKeys) state.active.projectKey = roleKeys.active;
   if (options.state) Object.assign(state, options.state);
   const calls = [], requests = [], responses = [];
   /** Resolve only the fixed trial routes; an unexpected request is a test failure. */
@@ -103,7 +108,8 @@ function fixture(options = {}) {
       if (!state.draft) throw new Error('Fixture forbids activating an absent draft');
       state.versions.push(copy(state.active));
       state.active = { ...copy(state.draft), id: `icfg_fixture_active_${state.active.version + 1}`,
-        version: state.active.version + 1, updatedAt: new Date(START + state.elapsed).toISOString(), changes: [] };
+        version: state.active.version + 1, updatedAt: new Date(START + state.elapsed).toISOString(), changes: [],
+        ...(roleKeys ? { projectKey: roleKeys.active } : {}) };
       state.draft = null;
       reply = jsonReply(state.active);
     } else if (label === 'discard') {
@@ -114,6 +120,12 @@ function fixture(options = {}) {
         'cache-control': 'private, no-store' } };
     } else if (label === 'events') reply = jsonReply({ actions: [event(state)] });
     else throw new Error('Unexpected fixture route');
+    if (roleKeys && (label === 'rules.insert' || label === 'rules.remove')) {
+      state.draft.id = state.active.id;
+      state.draft.projectKey = roleKeys.draft;
+      Object.assign(state.draft.changes[0], { createdAt: new Date(START + state.elapsed).toISOString(),
+        userId: PRIVATE, username: PRIVATE });
+    }
     return options.after?.(reply, call, state) || reply;
   }
   /** Implement native request events while keeping all request/response data local to this fixture. */
@@ -864,11 +876,12 @@ describe('recovery metadata investigation', () => {
     expectConfigPrivate(checked.report);
   });
 
-  it.each(['project_key', 'history_metadata'])('retains full-trial drift rejection and refuses cleanup for %s', async (kind) => {
+  it.each(['project_key', 'unknown_history_metadata'])('retains full-trial drift rejection and refuses cleanup for %s', async (kind) => {
     const result = await trial({ after: (reply, call, state) => {
       if (call.label === 'rules.insert') {
         if (kind === 'project_key') state.draft.projectKey = `${TARGET.projectId}#3#draft`;
-        else Object.assign(state.draft.changes[0], { createdAt: new Date(START).toISOString(), userId: TOKEN, username: PRIVATE });
+        else Object.assign(state.draft.changes[0], { createdAt: new Date(START).toISOString(), userId: TOKEN,
+          username: PRIVATE, unknownMetadata: PRIVATE });
       }
       return reply;
     } });
@@ -1265,6 +1278,208 @@ describe('one marked request and targeted cleanup', () => {
     const secondMarker = second.state.rule.conditionGroup[0].conditions.find((condition) => condition.type === 'user_agent').value;
     expect(firstMarker).not.toBe(secondMarker);
     expectPrivate(first.report, first); expectPrivate(second.report, second);
+  });
+});
+
+describe('ordinary receipt role keys, bounded history and original JSON comparisons', () => {
+  it.each(['#', ':', '/', '.', '_', '-'])('restores the complete synthetic lifecycle with %s role keys', async (separator) => {
+    const result = await trial({ roleMetadata: true, separator });
+    expect(result.state.labels).toEqual(['config', 'rules.insert', 'config', 'activate', 'config',
+      'app', 'events', 'config', 'rules.remove', 'config', 'activate', 'config']);
+    expect(result.report).toMatchObject({ result: 'completed', appRequests: 1, providerRequests: 11,
+      mainProviderRequests: 6, cleanupProviderRequests: 5, eventsQueries: 1,
+      cleanup: { status: 'restored', failure: null, restorationVerified: true } });
+    expect(result.state.active.projectKey).toBe(`${TARGET.projectId}${separator}active`);
+    expect(result.state.active.rules).toEqual(baseline().rules);
+    expect(result.state.draft).toBeNull(); expectPrivate(result.report, result);
+  });
+
+  it('accepts the bounded history shape with unchanged opaque keys independently of role keys', async () => {
+    const result = await trial({ after: (reply, call, state) => {
+      if (call.label === 'rules.insert' || call.label === 'rules.remove') {
+        Object.assign(state.draft.changes[0], { createdAt: new Date(START).toISOString(),
+          userId: PRIVATE, username: PRIVATE });
+      }
+      return reply;
+    } });
+    expect(result.report.result).toBe('completed'); expect(result.state.draft).toBeNull();
+    expect(result.state.active.projectKey).toBe(PROJECT_KEY); expectPrivate(result.report, result);
+  });
+
+  it('accepts exact role keys with legacy history while preserving the legacy comparison contract', async () => {
+    const result = await trial({ roleMetadata: true, after: (reply, call, state) => {
+      if (call.label === 'rules.insert' || call.label === 'rules.remove') {
+        for (const key of ['createdAt', 'userId', 'username']) delete state.draft.changes[0][key];
+      }
+      return reply;
+    } });
+    expect(result.report.result).toBe('completed'); expect(result.state.draft).toBeNull();
+    expectPrivate(result.report, result);
+  });
+
+  it.each(['equal_active', 'wrong_separator', 'version', 'prefix', 'suffix', 'double_separator',
+    'wrong_project', 'case', 'unrelated'])('refuses %s draft-key substitution without activation or discard', async (kind) => {
+    const result = await trial({ roleMetadata: true, after: (reply, call, state) => {
+      if (call.label === 'rules.insert') {
+        const keys = { equal_active: state.active.projectKey, wrong_separator: `${TARGET.projectId}:draft`,
+          version: `${TARGET.projectId}#3#draft`, prefix: `extra${TARGET.projectId}#draft`,
+          suffix: `${TARGET.projectId}#draft#extra`, double_separator: `${TARGET.projectId}##draft`,
+          wrong_project: 'prj_other#draft', case: `${TARGET.projectId}#Draft`, unrelated: 'opaque-other' };
+        state.draft.projectKey = keys[kind];
+      }
+      return reply;
+    } });
+    expect(result.report).toMatchObject({ result: 'stopped', failure: 'configuration_drift', stoppedPhase: 'verifyDraft',
+      appRequests: 0, eventsQueries: 0, providerRequests: 4,
+      cleanup: { status: 'cleanup_unresolved', restorationVerified: false } });
+    expect(result.state.labels).toEqual(['config', 'rules.insert', 'config', 'config']);
+    expect(result.state.draft).not.toBeNull(); expectPrivate(result.report, result);
+  });
+
+  it.each([[2, 'active'], [3, 'active'], [4, 'active'], [5, 'active'], [5, 'draft'], [6, 'active']])(
+    'never normalizes role-key drift on configuration read %i in %s', async (read, field) => {
+      const result = await trial({ roleMetadata: true, before: (call, state) => {
+        if (call.label === 'config' && state.labels.filter((label) => label === 'config').length === read) {
+          state[field].projectKey = `${TARGET.projectId}#${field === 'active' ? 'draft' : 'active'}`;
+        }
+      } });
+      expect(result.report).toMatchObject({ result: 'stopped', failure: 'configuration_drift',
+        cleanup: { status: 'cleanup_unresolved', restorationVerified: false } });
+      expect(result.state.appCount).toBe(read < 4 ? 0 : 1);
+      expect(result.state.labels.filter((label) => label === 'activate')).toHaveLength(read === 2 ? 0 : read === 6 ? 2 : 1);
+      expect(result.state.labels.filter((label) => label === 'rules.remove')).toHaveLength(read < 5 ? 0 : 1);
+      expect(result.state.providerCount).toBeLessThanOrEqual(11); expectPrivate(result.report, result);
+    });
+
+  describe.each(['rules.insert', 'rules.remove'])('%s history boundaries', (operation) => {
+    it.each(['missing_createdAt', 'missing_userId', 'missing_username', 'empty_createdAt', 'empty_userId',
+      'empty_username', 'oversized_createdAt', 'oversized_userId', 'oversized_username', 'wrong_type',
+      'unknown', 'proto', 'id_null', 'id_other', 'wrong_action', 'wrong_value', 'extra_entry', 'missing_value'])(
+      'rejects %s without publishing or discarding an unrecognized draft', async (kind) => {
+        const result = await trial({ roleMetadata: true, after: (reply, call, state) => {
+          if (call.label === operation) {
+            const entry = state.draft.changes[0];
+            if (kind.startsWith('missing_')) delete entry[kind.slice(8)];
+            if (kind.startsWith('empty_')) entry[kind.slice(6)] = '';
+            if (kind.startsWith('oversized_')) entry[kind.slice(10)] = 'x'.repeat(kind.endsWith('createdAt') ? 129 : 513);
+            if (kind === 'wrong_type') entry.createdAt = { private: PRIVATE };
+            if (kind === 'unknown') entry.updatedAt = new Date(START).toISOString();
+            if (kind === 'proto') Object.defineProperty(entry, '__proto__', { enumerable: true, value: PRIVATE });
+            if (kind === 'id_null') entry.id = null;
+            if (kind === 'id_other') entry.id = 'rule_other';
+            if (kind === 'wrong_action') entry.action = operation === 'rules.insert' ? 'rules.remove' : 'rules.insert';
+            if (kind === 'wrong_value') entry.value = operation === 'rules.insert' ? { ...entry.value, name: 'other' } : copy(state.rule);
+            if (kind === 'extra_entry') state.draft.changes.push(copy(entry));
+          }
+          return reply;
+        } });
+        expect(result.report).toMatchObject({ result: 'stopped', failure: 'configuration_drift',
+          stoppedPhase: operation === 'rules.insert' ? 'verifyDraft' : 'verifyRemoval',
+          cleanup: { status: 'cleanup_unresolved', restorationVerified: false } });
+        expect(result.state.labels.filter((label) => label === 'activate')).toHaveLength(operation === 'rules.insert' ? 0 : 1);
+        expect(result.state.labels).not.toContain('discard'); expect(result.state.draft).not.toBeNull();
+        expect(result.state.appCount).toBe(operation === 'rules.insert' ? 0 : 1);
+        expect(result.state.providerCount).toBeLessThanOrEqual(11); expectPrivate(result.report, result);
+      });
+  });
+
+  it('does not accept provider-generated rule fields as the submitted input in metadata history', async () => {
+    const result = await trial({ roleMetadata: true, after: (reply, call, state) => {
+      if (call.label === 'rules.insert') state.draft.changes[0].value = copy(state.rule);
+      return reply;
+    } });
+    expect(result.state.labels).toEqual(['config', 'rules.insert', 'config', 'config']);
+    expect(result.report.cleanup.restorationVerified).toBe(false); expectPrivate(result.report, result);
+  });
+
+  it.each([
+    ['rules.insert', 1, false], ['rules.insert', 1, true], ['activate', 1, false], ['activate', 1, true],
+    ['rules.remove', 1, false], ['rules.remove', 1, true], ['activate', 2, false], ['activate', 2, true],
+    ['discard', 1, false], ['discard', 1, true],
+  ])('reconciles %s occurrence %i with role metadata, applied=%s, without replay', async (operation, occurrence, applied) => {
+    const result = await trial({ roleMetadata: true,
+      before: (call, state) => !applied && call.label === operation
+        && state.labels.filter((label) => label === operation).length === occurrence ? { error: true } : undefined,
+      after: (reply, call, state) => {
+        if (operation === 'discard' && call.label === 'rules.insert') return { error: true };
+        if (applied && call.label === operation
+          && state.labels.filter((label) => label === operation).length === occurrence) return { error: true };
+        return reply;
+      } });
+    expect(result.report.cleanup).toMatchObject({ status: applied ? 'restored' : 'cleanup_unresolved', restorationVerified: applied });
+    expect(result.state.labels.filter((label) => label === 'rules.insert')).toHaveLength(1);
+    expect(result.state.labels.filter((label) => label === 'rules.remove').length).toBeLessThanOrEqual(1);
+    expect(result.state.labels.filter((label) => label === 'discard').length).toBeLessThanOrEqual(1);
+    expect(result.state.providerCount).toBeLessThanOrEqual(11);
+    expect(result.state.appCount).toBe(operation === 'rules.remove' || occurrence === 2 ? 1 : 0);
+    if (applied) {
+      expect(result.state.draft).toBeNull(); expect(result.state.active.rules).toEqual(baseline().rules);
+      expect(result.state.active.projectKey).toBe(`${TARGET.projectId}#active`);
+    }
+    expectPrivate(result.report, result);
+  });
+
+  it('preserves unchanged own __proto__ fields on configurations and existing rules through restoration', async () => {
+    const result = await trial({ roleMetadata: true, before: (call, state) => {
+      if (call.label === 'config' && state.labels.length === 1) {
+        for (const target of [state.active, state.active.rules[0]]) {
+          Object.defineProperty(target, '__proto__', { enumerable: true, value: { private: PRIVATE } });
+        }
+      }
+    } });
+    expect(result.report.result).toBe('completed'); expect(result.state.draft).toBeNull();
+    for (const target of [result.state.active, result.state.active.rules[0]]) {
+      expect(Object.hasOwn(target, '__proto__')).toBe(true);
+      expect(target.__proto__).toEqual({ private: PRIVATE });
+    }
+    expectPrivate(result.report, result);
+  });
+
+  describe.each(['config', 'existing_rule'])('original %s JSON preservation', (surface) => {
+    it.each([[2, 'draft'], [2, 'active'], [3, 'active'], [4, 'active'], [5, 'draft'], [5, 'active'], [6, 'active']])(
+      'refuses own-field drift at read %i in %s', async (read, field) => {
+        const result = await trial({ roleMetadata: true, before: (call, state) => {
+          if (call.label !== 'config') return;
+          const count = state.labels.filter((label) => label === 'config').length;
+          if (count === 1 || count === read) {
+            const config = count === 1 ? state.active : state[field];
+            const target = surface === 'config' ? config : config.rules[0];
+            Object.defineProperty(target, '__proto__', { enumerable: true, configurable: true,
+              value: { private: PRIVATE, changed: count !== 1 } });
+          }
+        } });
+        expect(result.report).toMatchObject({ result: 'stopped', failure: 'configuration_drift',
+          cleanup: { status: 'cleanup_unresolved', restorationVerified: false } });
+        expect(result.state.appCount).toBe(read < 4 ? 0 : 1);
+        expect(result.state.labels.filter((label) => label === 'activate')).toHaveLength(read === 2 ? 0 : read === 6 ? 2 : 1);
+        expect(result.state.labels.filter((label) => label === 'rules.remove')).toHaveLength(read < 5 ? 0 : 1);
+        expect(result.state.providerCount).toBeLessThanOrEqual(11); expectPrivate(result.report, result);
+      });
+  });
+
+  it.each(['add', 'remove'])('refuses an own policy field %s in the draft', async (operation) => {
+    const result = await trial({ roleMetadata: true, before: (call, state) => {
+      if (call.label === 'config' && state.labels.length === 1 && operation === 'remove') {
+        Object.defineProperty(state.active, '__proto__', { enumerable: true, value: PRIVATE });
+      }
+    }, after: (reply, call, state) => {
+      if (call.label === 'rules.insert') {
+        if (operation === 'remove') delete state.draft.__proto__;
+        else Object.defineProperty(state.draft, '__proto__', { enumerable: true, value: PRIVATE });
+      }
+      return reply;
+    } });
+    expect(result.state.labels).toEqual(['config', 'rules.insert', 'config', 'config']);
+    expect(result.report.cleanup.restorationVerified).toBe(false); expectPrivate(result.report, result);
+  });
+
+  it('rejects an unknown own field on the diagnostic rule before activation or discard', async () => {
+    const result = await trial({ roleMetadata: true, after: (reply, call, state) => {
+      if (call.label === 'rules.insert') Object.defineProperty(state.draft.rules[1], '__proto__', { enumerable: true, value: PRIVATE });
+      return reply;
+    } });
+    expect(result.state.labels).toEqual(['config', 'rules.insert', 'config', 'config']);
+    expect(result.report.cleanup.restorationVerified).toBe(false); expectPrivate(result.report, result);
   });
 });
 
