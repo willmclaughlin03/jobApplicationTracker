@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-20
 
+- `2026-09-27` - `GATE-1 restart attribution baseline`: Updated the reviewed baseline and two pinned source hashes for the secret-observer changes, with matching attribution expectations. All 162 tests across five focused suites, syntax and diff checks pass; source-integrity and hosted-correspondence guards remain unchanged.
+
 - `2026-09-27` - `GATE-1 Preview secret observations`: Added a dedicated, authenticated Preview-only session probe reporting bounded source/loader stages, cache state, validation attempts and random loader attribution after enforcement. Missing/malformed configuration and cached failures are distinguishable without exposing values or bypassing guards. Added privacy, concurrency, composition and exact route-safety coverage; 532 focused tests across ten suites, changed-file lint and diff checks pass. Deployment/configuration and live testing remain separately approved; GATE-1 stays open.
 
 - `2026-09-27` - `GATE-1 traffic receipt test portability`: Restricted the 19 Windows PowerShell launcher cases to Windows and separated the four Node CLI safety cases so they remain active on every platform. All 130 tests pass on Windows; simulated Linux/macOS registration enables 111 tests and skips only the 19 launcher cases. Diff checks pass.

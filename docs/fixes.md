@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-09-27` - `Stale restart attribution pins after secret observations`: Reproduced 21 failures caused by the previous limiter and secrets-loader hashes. Approach: review the changed source and explicitly advance its pinned baseline. Fix: update the two hashes, APP_BASE and matching test expectation without relaxing attribution checks. All 162 tests across five focused suites, syntax and diff checks pass.
+
 - `2026-09-27` - `Secret-failure evidence ambiguity`: Generic session 503s and aggregate telemetry could not distinguish source rejection, initial loader failure or cached failure. Approach: capture request-local stages and value-free loader state behind dedicated Preview-only authentication. Fix: preserve normal enforcement and cache contracts, contain observation failures, require bounded agreeing raw/normalized authentication headers, and extend the exact route-safety template with negative bypass cases. All 532 focused tests across ten suites, changed-file lint and diff checks pass; no hosted qualification or live runner is included.
 
 - `2026-09-27` - `GATE-1 traffic receipt tests spawned Windows PowerShell on Ubuntu`: CI failed 19 launcher cases with `spawnSync powershell.exe ENOENT`. Approach: follow the existing Windows-only launcher test pattern. Fix: guard the PowerShell suite with `process.platform === 'win32'` and keep Node CLI safety checks in an unconditional suite. All 130 tests pass on Windows; simulated Linux/macOS registration confirms 111 enabled and 19 skipped, with all four Node CLI cases enabled. Diff checks pass.
