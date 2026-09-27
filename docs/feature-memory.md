@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-20
 
+- `2026-09-27` - `GATE-1 Preview secret observations`: Added a dedicated, authenticated Preview-only session probe reporting bounded source/loader stages, cache state, validation attempts and random loader attribution after enforcement. Missing/malformed configuration and cached failures are distinguishable without exposing values or bypassing guards. Added privacy, concurrency, composition and exact route-safety coverage; 532 focused tests across ten suites, changed-file lint and diff checks pass. Deployment/configuration and live testing remain separately approved; GATE-1 stays open.
+
 - `2026-09-27` - `GATE-1 traffic receipt test portability`: Restricted the 19 Windows PowerShell launcher cases to Windows and separated the four Node CLI safety cases so they remain active on every platform. All 130 tests pass on Windows; simulated Linux/macOS registration enables 111 tests and skips only the 19 launcher cases. Diff checks pass.
 
 - `2026-09-27` - `GATE-1 historical traffic summary diagnostic`: Added a standalone, offline-default reader and hidden-token PowerShell launcher for one fixed historical `/v2/observability/query` POST. Exact project/team/rule/window, code-bound approval, retention and response limits, and a durable reservation prevent widening or replay; application and configuration requests remain zero. Added 130 mocked tests; all 567 related tests, lint and syntax checks pass. Live execution requires separate approval; aggregates do not qualify request correlation, completeness or source agreement.

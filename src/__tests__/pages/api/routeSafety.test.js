@@ -97,13 +97,13 @@ function comparableSyntax(node) {
 }
 
 /**
- * Recognizes only the authenticated source-observer setup and unconditional
+ * Recognizes only authenticated source/optional-secret setup and unconditional
  * awaited delegation with cleanup. An exact AST template rejects added returns,
  * catches, branches, substitutions and finally overrides without relaxing the
  * existing trusted middleware/import checks.
  * @param {object[]} statements parsed module declarations
  * @param {object} exported session wrapper with original req/res parameters
- * @returns {boolean} whether the approved source-observation composition matches
+ * @returns {boolean} whether an exact approved observation composition matches
  */
 function isSourceObservationBody(statements, exported) {
   const trustedProbe = statements.some((statement) => statement.type === 'ImportDeclaration'
@@ -125,13 +125,37 @@ function isSourceObservationBody(statements, exported) {
       sourceObservers.delete(req);
     }
   }`).program.body[0].body;
-  return JSON.stringify(comparableSyntax(exported.body)) === JSON.stringify(comparableSyntax(template));
+  const actual = JSON.stringify(comparableSyntax(exported.body));
+  if (actual === JSON.stringify(comparableSyntax(template))) return true;
+  const trustedSecretsProbe = statements.some((statement) => statement.type === 'ImportDeclaration'
+    && statement.source.value === '../../../server/lib/gate1SecretsProbe.js'
+    && statement.specifiers.some((specifier) => specifier.type === 'ImportSpecifier'
+      && isIdentifier(specifier.imported, 'gate1SecretsProbe') && isIdentifier(specifier.local, 'gate1SecretsProbe')));
+  const privateSecretObservers = statements.some((statement) => statement.type === 'VariableDeclaration'
+    && statement.kind === 'const' && statement.declarations.some((declaration) =>
+      isIdentifier(declaration.id, 'secretObservers') && declaration.init?.type === 'NewExpression'
+      && isIdentifier(declaration.init.callee, 'WeakMap') && declaration.init.arguments.length === 0));
+  if (!trustedSecretsProbe || !privateSecretObservers) return false;
+  const secretsTemplate = parse(`async function expected(req, res) {
+    gate1RestartProbe.attach(req, res);
+    const observer = gate1SourceProbe.createObserver(req, res);
+    if (observer) sourceObservers.set(req, observer);
+    const secretObserver = gate1SecretsProbe.createObserver(req, res);
+    if (secretObserver) secretObservers.set(req, secretObserver);
+    try {
+      return await sessionRoute(req, res);
+    } finally {
+      sourceObservers.delete(req);
+      secretObservers.delete(req);
+    }
+  }`).program.body[0].body;
+  return actual === JSON.stringify(comparableSyntax(secretsTemplate));
 }
 
 /**
  * Recognizes only the session route's observational probe followed by its limiter.
  * Requires trusted imports, an immutable top-level limiter binding, and either
- * the original two statements or the exact source-observer setup/cleanup template.
+ * the original two statements or exact source/secret observer setup/cleanup templates.
  * Neither composition permits an early return, shadowed limiter or conditional delegation.
  * @param {object[]} statements - Parsed module statements; comments are excluded.
  * @param {object} exported - Actual default-export declaration.
@@ -254,6 +278,39 @@ describe('API Route Safety', () => {
     }
   `;
 
+  const secretsObservationSource = sourceObservationSource
+    .replace('const sourceObservers =',
+      "import { gate1SecretsProbe } from '../../../server/lib/gate1SecretsProbe.js';\nconst secretObservers = new WeakMap();\nconst sourceObservers =")
+    .replace('try {', `const secretObserver = gate1SecretsProbe.createObserver(req, res);
+      if (secretObserver) secretObservers.set(req, secretObserver);
+      try {`)
+    .replace('sourceObservers.delete(req);', 'sourceObservers.delete(req);\nsecretObservers.delete(req);');
+
+  /** The additional observer must preserve the same exact delegation and cleanup. */
+  it('accepts the exact Preview secrets observer only on the session route', () => {
+    expect(hasApprovedWrapper(secretsObservationSource, 'pages/api/auth/session.js')).toBe(true);
+    expect(hasApprovedWrapper(secretsObservationSource, 'pages\\api\\auth\\session.js')).toBe(true);
+    expect(hasApprovedWrapper(secretsObservationSource, 'pages/api/jobs.js')).toBe(false);
+  });
+
+  /** A secret observer cannot authorize alternate imports, storage or execution. */
+  it.each([
+    ['untrusted import', '../../../server/lib/gate1SecretsProbe.js', './fake.js'],
+    ['wrong named import', 'import { gate1SecretsProbe }', 'import { other as gate1SecretsProbe }'],
+    ['mutable association', 'const secretObservers', 'let secretObservers'],
+    ['wrong association', 'const secretObservers = new WeakMap()', 'const secretObservers = new Map()'],
+    ['substituted observer request', 'gate1SecretsProbe.createObserver(req, res)', 'gate1SecretsProbe.createObserver({}, res)'],
+    ['early secret return', 'const secretObserver =', 'return handler(req, res); const secretObserver ='],
+    ['wrong cleanup request', 'secretObservers.delete(req)', 'secretObservers.delete({})'],
+    ['missing cleanup', 'secretObservers.delete(req);', ''],
+    ['finally override', 'secretObservers.delete(req);', 'return handler(req, res);'],
+    ['extra finally return', 'secretObservers.delete(req);', 'secretObservers.delete(req); return {};'],
+    ['local observer shadowing', 'const secretObserver =', 'const gate1SecretsProbe = fake; const secretObserver ='],
+  ])('rejects secrets observation composition with %s', (_case, before, after) => {
+    expect(secretsObservationSource).toContain(before);
+    expect(hasApprovedWrapper(secretsObservationSource.replace(before, after), 'pages/api/auth/session.js')).toBe(false);
+  });
+
   /** The real async observer composition remains scoped to the session route. */
   it('accepts the exact source observation wrapper without making it a general bypass', () => {
     expect(hasApprovedWrapper(sourceObservationSource, 'pages/api/auth/session.js')).toBe(true);
@@ -284,6 +341,8 @@ describe('API Route Safety', () => {
   ])('rejects source observation composition with %s', (_case, before, after) => {
     expect(sourceObservationSource).toContain(before);
     expect(hasApprovedWrapper(sourceObservationSource.replace(before, after), 'pages/api/auth/session.js')).toBe(false);
+    expect(secretsObservationSource).toContain(before);
+    expect(hasApprovedWrapper(secretsObservationSource.replace(before, after), 'pages/api/auth/session.js')).toBe(false);
   });
 
   /**

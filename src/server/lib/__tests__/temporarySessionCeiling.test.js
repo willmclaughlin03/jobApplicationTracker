@@ -2,6 +2,7 @@ import {
   createTemporarySessionCeiling,
   TEMPORARY_SESSION_CEILING_DEADLINE_MS,
 } from '../temporarySessionCeiling.js';
+import { createTemporarySessionSecrets } from '../temporarySessionSecrets.js';
 
 const SOURCE = Object.freeze({ family: 4, addressBytes: Buffer.from([192, 0, 2, 80]) });
 const RUNTIME_PAIR = Object.freeze({
@@ -16,6 +17,17 @@ const RUNTIME_PAIR = Object.freeze({
   redis: Object.freeze({ url: 'https://synthetic-gate1.upstash.io', token: 'synthetic-token' }),
   cacheIdentity: Object.freeze({}),
 });
+
+/** Creates the real deployed loader with synthetic values; no transports are used. */
+function diagnosticLoader(overrides = {}) {
+  return createTemporarySessionSecrets({
+    env: { NODE_ENV: 'production', VERCEL: '1', TEMPORARY_SESSION_CEILING_SECRET_MODE: 'vercel',
+      TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON: JSON.stringify({ schemaVersion: 1, ...RUNTIME_PAIR.hmac }),
+      TEMPORARY_SESSION_CEILING_UPSTASH_JSON: JSON.stringify({ schemaVersion: 1, ...RUNTIME_PAIR.redis }),
+      ...overrides },
+    onEvent: jest.fn(),
+  });
+}
 
 /**
  * Creates a fixed telemetry spy surface for facade tests.
@@ -69,6 +81,104 @@ function createFixture(overrides = {}) {
     redis,
   };
 }
+
+describe('temporarySessionCeiling secret observations', () => {
+  it('does not access the loader after source rejection', async () => {
+    const secrets = { getRuntimePair: jest.fn(), getSnapshot: jest.fn(), getDiagnosticSnapshot: jest.fn() };
+    const fixture = createFixture({ resolveSource: () => null, secrets });
+    const observeSecrets = jest.fn();
+    await expect(fixture.ceiling.evaluate({}, { routeVersion: 'v1', observeSecrets }))
+      .resolves.toMatchObject({ reason: 'source_unavailable' });
+    expect(observeSecrets).toHaveBeenCalledWith(expect.objectContaining({
+      sourceResolution: 'rejected', loaderReached: false, loaderStateBefore: null, loader: null,
+      identityAttempted: false, redisAttempted: false, scriptAttempted: false,
+    }));
+    for (const fn of Object.values(secrets)) expect(fn).not.toHaveBeenCalled();
+  });
+
+  it('attributes concurrent failures to their own pre-call state and one loader', async () => {
+    const secrets = diagnosticLoader({ TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON: undefined });
+    const fixture = createFixture({ secrets });
+    const first = jest.fn();
+    const second = jest.fn();
+    await Promise.all([
+      fixture.ceiling.evaluate({}, { routeVersion: 'v1', observeSecrets: first }),
+      fixture.ceiling.evaluate({}, { routeVersion: 'v1', observeSecrets: second }),
+    ]);
+    const initial = first.mock.calls[0][0];
+    const cached = second.mock.calls[0][0];
+    expect(initial.loaderStateBefore).toEqual({ hasCachedPair: false, permanentFailure: false });
+    expect(cached.loaderStateBefore).toEqual({ hasCachedPair: false, permanentFailure: true });
+    expect(initial.loader).toEqual(cached.loader);
+    expect(initial.loader).toMatchObject({ validationAttempts: 1, validationStage: 'hmac', permanentFailure: true });
+    expect(initial).toMatchObject({ loaderReached: true, identityAttempted: false,
+      redisAttempted: false, scriptAttempted: false, reason: 'secret_unavailable' });
+    expect(Object.isFrozen(initial)).toBe(true);
+    expect(Object.isFrozen(initial.loaderStateBefore)).toBe(true);
+    expect(Object.isFrozen(initial.loader)).toBe(true);
+    expect(fixture.deriveIdentity).not.toHaveBeenCalled();
+    expect(fixture.getRedisClientFunction).not.toHaveBeenCalled();
+    expect(fixture.executeScript).not.toHaveBeenCalled();
+  });
+
+  it('delivers both observer types after enforcement without expanding the source schema', async () => {
+    const fixture = createFixture();
+    const observeSource = jest.fn();
+    const observeSecrets = jest.fn(() => { expect(fixture.executeScript).toHaveBeenCalledTimes(1); });
+    await expect(fixture.ceiling.evaluate({}, { routeVersion: 'v1', observeSource, observeSecrets }))
+      .resolves.toEqual({ allowed: true });
+    expect(observeSecrets).toHaveBeenCalledWith(expect.objectContaining({
+      allowed: true, reason: null, loaderReached: true,
+      identityAttempted: true, redisAttempted: true, scriptAttempted: true,
+    }));
+    expect(observeSource).toHaveBeenCalledWith({ effectiveMode: 'local', sourceResolution: 'accepted', canonicalFamily: 4 });
+  });
+
+  it.each(['before', 'after', 'observer', 'async observer', 'getter'])(
+    'keeps a secret rejection unchanged when %s observation fails', async (where) => {
+      const secrets = diagnosticLoader({ TEMPORARY_SESSION_CEILING_UPSTASH_JSON: undefined });
+      if (where === 'before') secrets.getSnapshot = () => { throw new Error('before sentinel'); };
+      if (where === 'after') secrets.getDiagnosticSnapshot = () => { throw new Error('after sentinel'); };
+      const fixture = createFixture({ secrets });
+      const observeSecrets = jest.fn(() => {
+        if (where === 'observer') throw new Error('observer sentinel');
+        if (where === 'async observer') return Promise.reject(new Error('async sentinel'));
+      });
+      const context = { routeVersion: 'v1', observeSecrets };
+      if (where === 'getter') Object.defineProperty(context, 'observeSecrets', { get() { throw new Error('getter'); } });
+      await expect(fixture.ceiling.evaluate({}, context)).resolves.toEqual({
+        allowed: false, statusCode: 503, reason: 'secret_unavailable',
+      });
+      expect(fixture.getRedisClientFunction).not.toHaveBeenCalled();
+      if (where === 'before') expect(observeSecrets.mock.calls[0][0].loaderStateBefore).toBeNull();
+      if (where === 'after') expect(observeSecrets.mock.calls[0][0].loader).toBeNull();
+    });
+
+  it('does not initialize diagnostics for an ordinary request', async () => {
+    const secrets = diagnosticLoader();
+    const before = jest.spyOn(secrets, 'getSnapshot');
+    const after = jest.spyOn(secrets, 'getDiagnosticSnapshot');
+    await createFixture({ secrets }).ceiling.evaluate({}, { routeVersion: 'v1' });
+    expect(before).not.toHaveBeenCalled();
+    expect(after).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ status: 'allowed' }, { allowed: true }],
+    [{ status: 'rate_limited', retryAfterSeconds: 12 },
+      { allowed: false, statusCode: 429, reason: 'limit_exceeded', retryAfterSeconds: 12 }],
+  ])('takes the final loader snapshot after the enforcement deadline (%#)', async (result, expected) => {
+    let time = 0;
+    const secrets = diagnosticLoader();
+    const getSnapshot = secrets.getDiagnosticSnapshot;
+    secrets.getDiagnosticSnapshot = () => { time = 5000; return getSnapshot(); };
+    const fixture = createFixture({ secrets, now: () => time, executeScript: jest.fn(async () => result) });
+    const observeSecrets = jest.fn();
+    await expect(fixture.ceiling.evaluate({}, { routeVersion: 'v1', observeSecrets })).resolves.toEqual(expected);
+    expect(observeSecrets).toHaveBeenCalledTimes(1);
+    expect(time).toBe(5000);
+  });
+});
 
 describe('temporarySessionCeiling facade', () => {
   it('uses one immutable runtime pair for active identity and Redis in strict order', async () => {

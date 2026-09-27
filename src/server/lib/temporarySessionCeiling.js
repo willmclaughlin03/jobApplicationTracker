@@ -61,6 +61,25 @@ function recordTelemetry(telemetry, event, reason) {
   invokeTelemetrySafely(() => telemetry.record(event, reason));
 }
 
+/** Reads the named callback from context; returns undefined when access fails. */
+function readObserver(context, name) {
+  try {
+    const candidate = context?.[name];
+    return typeof candidate === 'function' ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Sends frozen facts to an internal observer; contains sync/async callback failures. */
+function deliverObservation(observer, facts) {
+  if (!observer) return;
+  invokeTelemetrySafely(() => {
+    const pending = observer(Object.freeze(facts));
+    if (pending && typeof pending.then === 'function') Promise.resolve(pending).catch(() => {});
+  });
+}
+
 /**
  * Creates one asynchronous shared temporary session ceiling facade.
  *
@@ -158,9 +177,10 @@ export function createTemporarySessionCeiling(options = {}) {
    * @param {object} req Next.js request-like object
    * @param {object} [context] bounded route/logger context
    * @param {object|null} observation internal primitive-only capture, never caller-owned
+   * @param {object|null} secretObservation request-local stage flags and pre-call cache state
    * @returns {Promise<object>} allow, bounded 429, or sanitized 503
    */
-  async function evaluateDecision(req, context, observation) {
+  async function evaluateDecision(req, context, observation, secretObservation = null) {
     const startedAt = now();
     if (!Number.isFinite(startedAt) || startedAt < 0) {
       return { allowed: false, statusCode: 503, reason: TEMPORARY_SESSION_FAILURE_REASONS.INTERNAL_FAILURE };
@@ -205,6 +225,17 @@ export function createTemporarySessionCeiling(options = {}) {
     }
 
     let runtimePair;
+    if (secretObservation) {
+      secretObservation.loaderReached = true;
+      invokeTelemetrySafely(() => {
+        const before = secrets.getSnapshot?.();
+        if (typeof before?.hasCachedPair === 'boolean' && typeof before?.permanentFailure === 'boolean') {
+          secretObservation.loaderStateBefore = Object.freeze({
+            hasCachedPair: before.hasCachedPair, permanentFailure: before.permanentFailure,
+          });
+        }
+      });
+    }
     try {
       runtimePair = await secrets.getRuntimePair();
     } catch {
@@ -226,6 +257,7 @@ export function createTemporarySessionCeiling(options = {}) {
     }
 
     let identity;
+    if (secretObservation) secretObservation.identityAttempted = true;
     try {
       identity = deriveIdentity(source, runtimePair.hmac.active);
     } catch {
@@ -233,6 +265,7 @@ export function createTemporarySessionCeiling(options = {}) {
     }
 
     let redis;
+    if (secretObservation) secretObservation.redisAttempted = true;
     try {
       redis = await acquireRedis(runtimePair);
     } catch {
@@ -255,6 +288,7 @@ export function createTemporarySessionCeiling(options = {}) {
     recordTelemetry(telemetry, TEMPORARY_SESSION_TELEMETRY_EVENTS.REDIS_CLIENT_ACQUIRED);
 
     let result;
+    if (secretObservation) secretObservation.scriptAttempted = true;
     try {
       result = await executeScript(redis, identity.redisKey, {
         deadlineAt,
@@ -316,7 +350,7 @@ export function createTemporarySessionCeiling(options = {}) {
   }
 
   /**
-   * Delivers a primitive-only source snapshot after enforcement has completed.
+   * Delivers value-free source/secret snapshots after enforcement has completed.
    * Why: observers cannot mutate canonical bytes, select identity or run inside
    * the limiter deadline. No parser is rerun; exceptions cannot change a result.
    * @param {object} req original request passed through unchanged
@@ -324,24 +358,30 @@ export function createTemporarySessionCeiling(options = {}) {
    * @returns {Promise<object>} original allow, 429 or unavailable decision
    */
   async function evaluate(req, context = {}) {
-    let observer;
-    try {
-      observer = context?.observeSource;
-    } catch {
-      observer = undefined;
-    }
-    if (typeof observer !== 'function') return evaluateDecision(req, context, null);
+    const observer = readObserver(context, 'observeSource');
+    const secretObserver = readObserver(context, 'observeSecrets');
+    if (!observer && !secretObserver) return evaluateDecision(req, context, null);
     const observation = {
       effectiveMode: 'not_observed',
       sourceResolution: 'not_attempted',
       canonicalFamily: null,
     };
-    const decision = await evaluateDecision(req, context, observation);
-    invokeTelemetrySafely(() => {
-      const pending = observer(Object.freeze(observation));
-      // The route observer is synchronous; contain an accidental async rejection too.
-      if (pending && typeof pending.then === 'function') Promise.resolve(pending).catch(() => {});
-    });
+    const secretObservation = secretObserver ? {
+      loaderReached: false, loaderStateBefore: null,
+      identityAttempted: false, redisAttempted: false, scriptAttempted: false,
+    } : null;
+    const decision = await evaluateDecision(req, context, observation, secretObservation);
+    if (secretObserver) {
+      let loader = null;
+      if (secretObservation.loaderReached) {
+        invokeTelemetrySafely(() => { loader = secrets.getDiagnosticSnapshot?.() ?? null; });
+      }
+      deliverObservation(secretObserver, {
+        ...observation, ...secretObservation, loader,
+        allowed: decision.allowed, reason: decision.reason ?? null,
+      });
+    }
+    deliverObservation(observer, observation);
     return decision;
   }
 

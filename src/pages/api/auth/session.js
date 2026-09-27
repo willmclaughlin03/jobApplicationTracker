@@ -26,9 +26,11 @@ import {
 import { OPERATIONS } from '../../../shared/constants/tiers.js';
 import { gate1RestartProbe } from '../../../server/lib/gate1RestartProbe.js';
 import { gate1SourceProbe } from '../../../server/lib/gate1SourceProbe.js';
+import { gate1SecretsProbe } from '../../../server/lib/gate1SecretsProbe.js';
 
 // Private request association avoids adding a caller-visible field or changing middleware.
 const sourceObservers = new WeakMap();
+const secretObservers = new WeakMap();
 
 /**
  * Evaluates the v1 route against the shared temporary session allowance.
@@ -41,10 +43,12 @@ const sourceObservers = new WeakMap();
  */
 async function evaluateTemporarySessionRequest(req) {
   const observeSource = sourceObservers.get(req);
+  const observeSecrets = secretObservers.get(req);
   return temporarySessionCeiling.evaluate(req, {
     routeVersion: 'v1',
     logger: req.log,
     ...(observeSource ? { observeSource } : {}),
+    ...(observeSecrets ? { observeSecrets } : {}),
   });
 }
 
@@ -131,8 +135,9 @@ const sessionRoute = withRateLimit(handler, {
  * Why: a valid diagnostic request needs runtime metadata even when the shared
  * ceiling returns 429/503. The probe owns no response or limiter decision;
  * every request still traverses the method guard and normal shared ceiling.
- * Source observations are request-local and emitted only after the limiter's
- * decision. The private association is removed on success and thrown failures.
+ * Source/secret observations are request-local and emitted after the limiter's
+ * decision. Secret observations require explicit Preview-only authorization.
+ * Private associations are removed on success and thrown failures.
  *
  * @param {import('next').NextApiRequest} req original session request
  * @param {import('next').NextApiResponse} res route-owned no-store response
@@ -142,9 +147,12 @@ export default async function sessionWithRestartProbe(req, res) {
   gate1RestartProbe.attach(req, res);
   const observer = gate1SourceProbe.createObserver(req, res);
   if (observer) sourceObservers.set(req, observer);
+  const secretObserver = gate1SecretsProbe.createObserver(req, res);
+  if (secretObserver) secretObservers.set(req, secretObserver);
   try {
     return await sessionRoute(req, res);
   } finally {
     sourceObservers.delete(req);
+    secretObservers.delete(req);
   }
 }
