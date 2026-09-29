@@ -14,7 +14,15 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-09-27
+
+- `2026-09-28` - `Portable canary approval assertions`: Capture filesystem reads only during approvalId execution and restore the spy before Jest formats errors, so dependency placement cannot cause false failures. All 147 canary tests, targeted ESLint and whitespace checks pass locally.
+
+- `2026-09-28` - `GATE-1 secret canary review fixes`: Bind approvals to matching HEAD and clean bound files, retry transient checkpoint renames within four 25 ms waits, preserve the original failure and phase when the final checkpoint also fails, and use a distinct PowerShell canary-profile variable. Added 23 regression cases; all 147 canary tests, targeted ESLint, PowerShell syntax and whitespace checks pass. No live canary ran.
+
 ### Week of 2026-09-20
+
+- `2026-09-27` - `GATE-1 Preview secret canary runner`: Added an offline-default runner and hidden-input PowerShell launcher for a separately approved four-request Preview missing-both-secrets trial. Code-bound approval, deployment/case reservations shared across worktrees, bounded responses and atomic sanitized reports prevent widening or automatic replay. Validation requires initial HMAC-stage rejection followed by cached failure in the same loader. All 124 new tests pass; four focused suites pass 189 tests with 27 existing inventory-dependent skips. Syntax, lint and whitespace checks pass. No live trial ran; GATE-1 remains open.
 
 - `2026-09-27` - `GATE-1 restart attribution baseline`: Updated the reviewed baseline and two pinned source hashes for the secret-observer changes, with matching attribution expectations. All 162 tests across five focused suites, syntax and diff checks pass; source-integrity and hosted-correspondence guards remain unchanged.
 
