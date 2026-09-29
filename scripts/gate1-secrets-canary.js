@@ -71,10 +71,19 @@ function profileTemplate() {
     attestations: Object.fromEntries(ATTESTATIONS.map((name) => [name, false])) };
 }
 
-/** Binds target, fixed limits and executable/helper/application bytes to review. */
+/** Binds target, limits and source bytes to review only from a clean, matching checkout. */
 function approvalId(profile) {
-  const hash = createHash('sha256').update(JSON.stringify({ profile: parseProfile(profile), limits: LIMITS }));
-  for (const name of BOUND_FILES) hash.update(name).update(fs.readFileSync(path.resolve(__dirname, '..', name)));
+  const parsed = parseProfile(profile);
+  const root = path.resolve(__dirname, '..');
+  /** Reads bounded Git state from the source checkout, independent of the caller's cwd. */
+  const git = (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', timeout: 3000,
+    maxBuffer: 65536, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  try {
+    if (git(['rev-parse', 'HEAD']) !== parsed.gitSha) throw new CanaryError('profile');
+    if (git(['status', '--porcelain', '--', ...BOUND_FILES]) !== '') throw new CanaryError('profile');
+  } catch { throw new CanaryError('profile'); }
+  const hash = createHash('sha256').update(JSON.stringify({ profile: parsed, limits: LIMITS }));
+  for (const name of BOUND_FILES) hash.update(name).update(fs.readFileSync(path.resolve(root, name)));
   return hash.digest('hex');
 }
 
@@ -296,7 +305,14 @@ function createStore(profile, approval, directory = evidenceDirectory()) {
       try {
         const file = fs.openSync(temporary, 'wx', 0o600);
         try { fs.writeFileSync(file, encoded); fs.fsyncSync(file); } finally { fs.closeSync(file); }
-        fs.renameSync(temporary, reportPath);
+        // Retry transient file locks with at most four 25 ms waits, preserving the previous checkpoint.
+        for (let attempt = 0; ; attempt += 1) {
+          try { fs.renameSync(temporary, reportPath); break; }
+          catch (error) {
+            if (attempt >= 4 || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) throw error;
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+          }
+        }
       } catch { throw new CanaryError('local_evidence'); }
       finally { try { fs.unlinkSync(temporary); } catch { /* Only our owned temporary file. */ } }
     }
@@ -414,7 +430,14 @@ async function runCanary(input, deps = {}) {
   }
   if (store) {
     try { store.save(report); }
-    catch { report.result = 'stopped'; report.secretEvidence = 'unqualified'; report.failure = 'local_evidence'; report.stoppedPhase = 'report'; }
+    catch {
+      // Keep the original diagnosis when final persistence also fails.
+      report.finalCheckpoint = 'failed';
+      if (report.result === 'completed' || report.failure === null) {
+        report.failure = 'local_evidence'; report.stoppedPhase = 'report';
+      }
+      report.result = 'stopped'; report.secretEvidence = 'unqualified';
+    }
   }
   return { reportPath: store?.reportPath ?? null, report };
 }

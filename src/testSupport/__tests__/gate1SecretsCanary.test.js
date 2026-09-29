@@ -1,11 +1,15 @@
 /** Offline canary contracts: all HTTPS is mocked; real transport is forbidden throughout this suite. */
+jest.mock('node:child_process', () => ({
+  ...jest.requireActual('node:child_process'), execFileSync: jest.fn(),
+}));
+
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
-const { spawnSync } = require('node:child_process');
+const { spawnSync, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const https = require('node:https');
-const { LIMITS, profileTemplate, parseProfile, preparation, approvalId, selectedHeaders,
+const { LIMITS, CanaryError, profileTemplate, parseProfile, preparation, approvalId, selectedHeaders,
   evidenceDirectory, createStore, runCanary, readInput } = require('../../../scripts/gate1-secrets-canary');
 
 const ROOT = path.resolve(__dirname, '../../..');
@@ -19,6 +23,14 @@ const LOADER = 'a1'.repeat(16);
 const directories = [];
 let nativeGuard;
 beforeAll(() => { nativeGuard = jest.spyOn(https, 'request').mockImplementation(() => { throw new Error('Network forbidden'); }); });
+beforeEach(() => {
+  // Keep synthetic approvals independent of the developer's HEAD and pending edits.
+  execFileSync.mockReset().mockImplementation((command, args, options) => {
+    if (command === 'git' && args.join(' ') === 'rev-parse HEAD') return profile().gitSha + '\n';
+    if (command === 'git' && args[0] === 'status') return '';
+    return jest.requireActual('node:child_process').execFileSync(command, args, options);
+  });
+});
 afterEach(() => { expect(nativeGuard).not.toHaveBeenCalled(); jest.useRealTimers(); });
 afterAll(() => {
   nativeGuard.mockRestore();
@@ -112,6 +124,58 @@ describe('Preview canary approval and fixed sequence', () => {
     expect(preparation()).toMatchObject({ appRequests: 0, providerRequests: 0, liveApproved: false, approvalId: null });
     expect(preparation(profile()).approvalId).toBe(approvalId(profile()));
     expect(approvalId(profile(START + 1))).not.toBe(approvalId(profile()));
+  });
+
+  it('checks HEAD and every bound file from the repository root before approving', () => {
+    expect(approvalId(profile())).toMatch(/^[a-f0-9]{64}$/);
+    const options = { cwd: ROOT, encoding: 'utf8', timeout: 3000, maxBuffer: 65536,
+      windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] };
+    expect(execFileSync.mock.calls).toEqual([
+      ['git', ['rev-parse', 'HEAD'], options],
+      ['git', ['status', '--porcelain', '--',
+        'scripts/gate1-secrets-canary.js', 'scripts/run-gate1-secrets-canary.ps1',
+        'scripts/gate1-host-protection.js', 'src/server/lib/gate1SecretsProbe.js',
+        'src/server/lib/temporarySessionSecrets.js', 'src/server/lib/temporarySessionCeiling.js',
+        'src/server/lib/temporarySessionSource.js', 'src/pages/api/auth/session.js',
+        'src/server/middleware/withRateLimit.js', 'src/shared/response.js', 'src/shared/errors.js'], options],
+    ]);
+  });
+
+  it.each([
+    ['different HEAD', 'rev-parse', '2'.repeat(40)],
+    ['modified file', 'status', ' M scripts/gate1-secrets-canary.js\n'],
+    ['staged file', 'status', 'M  src/pages/api/auth/session.js\n'],
+    ['deleted file', 'status', ' D src/shared/errors.js\n'],
+    ['untracked file', 'status', '?? scripts/run-gate1-secrets-canary.ps1\n'],
+    ['failed HEAD lookup', 'rev-parse', new Error(PRIVATE)],
+    ['failed status lookup', 'status', new Error(PRIVATE)],
+  ])('rejects %s before reading bound bytes without retaining Git output', (_label, command, result) => {
+    execFileSync.mockImplementation((_file, args) => {
+      if (args[0] !== command) return profile().gitSha + '\r\n';
+      if (result instanceof Error) throw result;
+      return result;
+    });
+    const read = jest.spyOn(fs, 'readFileSync');
+    try {
+      expect(() => approvalId(profile())).toThrow(expect.objectContaining({
+        constructor: CanaryError, code: 'profile', message: 'profile',
+      }));
+      expect(read.mock.calls.filter(([name]) => typeof name === 'string' && name.startsWith(ROOT + path.sep))).toEqual([]);
+    } finally { read.mockRestore(); }
+  });
+
+  it.each(['revision', 'changes', 'failure'])('rechecks checkout %s before storage or HTTP dispatch', async (change) => {
+    const selected = profile(), approval = approvalId(selected), wire = transport(), save = jest.fn();
+    execFileSync.mockImplementation((_file, args) => {
+      if (change === 'failure') throw new Error(PRIVATE);
+      if (args[0] === 'rev-parse') return change === 'revision' ? '2'.repeat(40) : selected.gitSha;
+      return ' M scripts/gate1-secrets-canary.js\n';
+    });
+    const { report } = await runCanary({ profile: selected, approval, liveApproved: true,
+      credentials: { probeSecret: PROBE, bypassSecret: BYPASS } },
+    { requestImpl: wire.requestImpl, store: { save }, now: () => 0, wall: () => START });
+    expect(report).toMatchObject({ result: 'stopped', failure: 'profile', stoppedPhase: 'validation', appRequests: 0 });
+    expect(save).not.toHaveBeenCalled(); expect(wire.requestImpl).not.toHaveBeenCalled(); expectPrivate(report);
   });
 
   it('binds launcher, helper and application bytes into the approval', () => {
@@ -350,12 +414,57 @@ describe('durable evidence and consumed trials', () => {
     expect(fs.readdirSync(location).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 
-  it('retains the previous nonpassing checkpoint when atomic replacement fails', () => {
-    const store = createStore(profile(), approvalId(profile()), directory());
+  it.each(['EPERM', 'EACCES', 'EBUSY'])('retries a transient %s replacement while retaining the previous checkpoint', (code) => {
+    const location = directory(), store = createStore(profile(), approvalId(profile()), location);
     store.save({ result: 'stopped' });
-    const rename = jest.spyOn(fs, 'renameSync').mockImplementation(() => { throw new Error(PRIVATE); });
-    try { expect(() => store.save({ result: 'completed' })).toThrow('local_evidence'); } finally { rename.mockRestore(); }
+    const replace = fs.renameSync;
+    const rename = jest.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      expect(JSON.parse(fs.readFileSync(store.reportPath, 'utf8')).result).toBe('stopped');
+      if (rename.mock.calls.length < 5) throw Object.assign(new Error(PRIVATE), { code });
+      return replace(from, to);
+    });
+    const wait = jest.spyOn(Atomics, 'wait').mockReturnValue('timed-out');
+    try {
+      store.save({ result: 'completed' });
+      expect(rename).toHaveBeenCalledTimes(5);
+      expect(new Set(rename.mock.calls.map(([from]) => from)).size).toBe(1);
+      expect(rename.mock.calls.every(([, to]) => to === store.reportPath)).toBe(true);
+      expect(wait).toHaveBeenCalledTimes(4);
+      for (const args of wait.mock.calls) expect(args).toEqual([expect.any(Int32Array), 0, 0, 25]);
+    } finally { rename.mockRestore(); wait.mockRestore(); }
+    expect(JSON.parse(fs.readFileSync(store.reportPath, 'utf8')).result).toBe('completed');
+    expect(fs.readdirSync(location).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it.each(['EPERM', 'EACCES', 'EBUSY'])('bounds persistent %s retries and preserves the previous checkpoint', (code) => {
+    const location = directory(), store = createStore(profile(), approvalId(profile()), location);
+    store.save({ result: 'stopped' });
+    const rename = jest.spyOn(fs, 'renameSync').mockImplementation(() => {
+      expect(JSON.parse(fs.readFileSync(store.reportPath, 'utf8')).result).toBe('stopped');
+      throw Object.assign(new Error(PRIVATE), { code });
+    });
+    const wait = jest.spyOn(Atomics, 'wait').mockReturnValue('timed-out');
+    try {
+      expect(() => store.save({ result: 'completed' })).toThrow(new CanaryError('local_evidence'));
+      expect(rename).toHaveBeenCalledTimes(5);
+      expect(wait).toHaveBeenCalledTimes(4);
+    } finally { rename.mockRestore(); wait.mockRestore(); }
     expect(JSON.parse(fs.readFileSync(store.reportPath, 'utf8')).result).toBe('stopped');
+    expect(fs.readdirSync(location).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it.each([undefined, 'ENOENT', 'ENOSPC'])('retains the previous checkpoint without retrying nontransient failure %s', (code) => {
+    const location = directory(), store = createStore(profile(), approvalId(profile()), location);
+    store.save({ result: 'stopped' });
+    const rename = jest.spyOn(fs, 'renameSync').mockImplementation(() => { throw Object.assign(new Error(PRIVATE), { code }); });
+    const wait = jest.spyOn(Atomics, 'wait').mockReturnValue('timed-out');
+    try {
+      expect(() => store.save({ result: 'completed' })).toThrow(new CanaryError('local_evidence'));
+      expect(rename).toHaveBeenCalledTimes(1);
+      expect(wait).not.toHaveBeenCalled();
+    } finally { rename.mockRestore(); wait.mockRestore(); }
+    expect(JSON.parse(fs.readFileSync(store.reportPath, 'utf8')).result).toBe('stopped');
+    expect(fs.readdirSync(location).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 
   it('consumes the reservation even if its initial durable write fails', () => {
@@ -381,9 +490,34 @@ describe('durable evidence and consumed trials', () => {
       count += 1; if (count >= failAt) throw new Error(PRIVATE); retained = JSON.parse(JSON.stringify(report));
     });
     const { report, calls } = await trial(undefined, { deps: { store: { reportPath: null, save } } });
-    expect(report).toMatchObject({ result: 'stopped', secretEvidence: 'unqualified', failure: 'local_evidence' });
+    const phase = failAt === 1 ? 'validation' : failAt === 10 ? 'report'
+      : ['buildBefore', 'probe1', 'probe2', 'buildAfter'][Math.floor((failAt - 2) / 2)];
+    expect(report).toMatchObject({ result: 'stopped', secretEvidence: 'unqualified', failure: 'local_evidence',
+      stoppedPhase: phase, finalCheckpoint: 'failed' });
     expect(calls.length).toBe(Math.min(4, Math.floor((failAt - 1) / 2)));
     if (retained) expect(retained.result).toBe('stopped'); expectPrivate(report);
+  });
+
+  it.each([
+    ['transport', 'buildBefore', 0], ['build_mismatch', 'buildAfter', 3], ['deadline', 'probe2', 2],
+  ])('preserves %s in %s when the final checkpoint also fails', async (failure, phase, failedIndex) => {
+    let elapsed = 0, retained = null;
+    const save = jest.fn((report) => {
+      if (report.failure !== null) throw new Error(PRIVATE);
+      retained = JSON.parse(JSON.stringify(report));
+    });
+    const { report, calls } = await trial((options, index) => {
+      const response = reply(options, index);
+      if (index !== failedIndex) return response;
+      if (failure === 'transport') return { error: true };
+      if (failure === 'build_mismatch') response.body = response.body.replace('fixture-build', 'different');
+      else elapsed = LIMITS.overallMs;
+      return response;
+    }, { deps: { store: { reportPath: null, save }, now: () => elapsed, wall: () => START + elapsed } });
+    expect(report).toMatchObject({ result: 'stopped', secretEvidence: 'unqualified', failure,
+      stoppedPhase: phase, finalCheckpoint: 'failed' });
+    expect(calls).toHaveLength(failedIndex + 1);
+    expect(retained.result).toBe('stopped'); expectPrivate(report);
   });
 
   it('stores the bounded completed fixture and refuses unsafe reservation identifiers', async () => {
@@ -391,6 +525,8 @@ describe('durable evidence and consumed trials', () => {
     const store = createStore(selected, approvalId(selected), location);
     const { report } = await trial(undefined, { deps: { store } });
     expect(JSON.parse(fs.readFileSync(store.reportPath, 'utf8'))).toEqual(report);
+    expect(report).toMatchObject({ result: 'completed', failure: null, stoppedPhase: null });
+    expect(report).not.toHaveProperty('finalCheckpoint');
     expect(() => createStore({ ...selected, deploymentId: '../escape' }, approvalId(selected), location)).toThrow('profile');
     expect(() => createStore(selected, '../escape', location)).toThrow('approval');
     expect(() => store.save({ data: 'a'.repeat(16385) })).toThrow('local_evidence');
@@ -416,7 +552,7 @@ describe('bounded stdin and offline CLI', () => {
       encoding: 'utf8', timeout: 5000, maxBuffer: 32768, windowsHide: true });
     expect(output.error).toBeUndefined();
     if (args[0] === '--live') { expect(JSON.parse(output.stdout).report.appRequests).toBe(0); expect(output.status).toBe(1); }
-    else if (args[0] === '--unknown') expect(output.status).toBe(1);
+    else if (args[0] === '--unknown' || args[0] === '--review') expect(output.status).toBe(1);
     else expect(output.status).toBe(0);
     expect(output.stdout + output.stderr).not.toContain(PROBE);
   });
@@ -438,7 +574,7 @@ windows('PowerShell launcher offline fixtures', () => {
     expect(output.status).toBe(0); expect(JSON.parse(output.stdout)).toMatchObject({ mode: 'prepare', liveApproved: false, appRequests: 0 });
   });
 
-  it.each(['approve', 'wrong_hash', 'wrong_limits', 'cancel', 'offline'])('reviews before hidden prompts (%s)', (mode) => {
+  it.each(['approve', 'wrong_hash', 'wrong_limits', 'cancel', 'offline', 'invalid_checkout'])('reviews before hidden prompts (%s)', (mode) => {
     const location = directory(), file = path.join(location, 'profile.json'); fs.writeFileSync(file, JSON.stringify(profile()));
     const digest = approvalId(profile());
     const output = powershell(`
@@ -456,7 +592,10 @@ function Invoke-Gate1SecretsNode([string]$Mode, [string]$InputJson = '') {
         if ($value.credentials.probeSecret -cne '${PROBE}' -or $value.credentials.bypassSecret -cne '${BYPASS}' -or $value.liveApproved -ne $true) { throw 'Fixture envelope failed' }
         return @{ Json = '{"fixture":true}'; ExitCode = 7 }
     }
-    $value = & $script:originalNode $Mode $InputJson
+    # Fixture reviews isolate launcher approval checks; invalid_checkout exercises the real Git guard.
+    if ($Mode -ceq '--review' -and '${mode}' -cne 'invalid_checkout') {
+        $value = @{ Json = ${quoted(JSON.stringify(preparation(profile())))}; ExitCode = 0 }
+    } else { $value = & $script:originalNode $Mode $InputJson }
     ${mode === 'wrong_limits' ? "$parsed = $value.Json | ConvertFrom-Json; $parsed.limits.maxAppRequests = 5; $value.Json = $parsed | ConvertTo-Json -Depth 10" : ''}
     return $value
 }

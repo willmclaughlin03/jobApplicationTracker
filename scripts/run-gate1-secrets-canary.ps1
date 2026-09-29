@@ -105,18 +105,18 @@ function Test-Gate1SecretsEqual($Actual, $Expected) {
 }
 
 <# Check the reviewed profile, fixed request budget and offline state before any confirmation or credential prompt. #>
-function Test-Gate1SecretsReview($Prepared, $Profile) {
+function Test-Gate1SecretsReview($Prepared, $canaryProfile) {
     $limits = @{ maxAppRequests = 4; maxProviderRequests = 0; maxConfigMutations = 0; concurrency = 1;
         requestMs = 10000; overallMs = 60000; buildBytes = 1048576; sessionBytes = 8192; probeBytes = 1536;
         headerBytes = 16384; inputBytes = 16384; reportBytes = 16384; profileAgeMs = 900000 }
-    return (Test-Gate1SecretsEqual $Prepared.profile $Profile) -and
+    return (Test-Gate1SecretsEqual $Prepared.profile $canaryProfile) -and
         (Test-Gate1SecretsEqual $Prepared.limits $limits) -and
         (Test-Gate1SecretsEqual $Prepared.sequence @('buildBefore', 'probe1', 'probe2', 'buildAfter')) -and
-        $Profile.environment -ceq 'preview' -and $Profile.caseId -ceq 'both_application_secrets_missing' -and
-        $Profile.accessMode -ceq 'automation_bypass' -and
-        $Profile.projectId -ceq 'prj_b2nMrysMSJtpmqoeGx5g0WGgGuom' -and
-        $Profile.teamId -ceq 'team_7o3efmwjZbMc2Bfy9qAzkc9q' -and
-        $Profile.hostname -cmatch '^job-application-tracker-[a-z0-9]{1,63}-track-the-app\.vercel\.app$' -and
+        $canaryProfile.environment -ceq 'preview' -and $canaryProfile.caseId -ceq 'both_application_secrets_missing' -and
+        $canaryProfile.accessMode -ceq 'automation_bypass' -and
+        $canaryProfile.projectId -ceq 'prj_b2nMrysMSJtpmqoeGx5g0WGgGuom' -and
+        $canaryProfile.teamId -ceq 'team_7o3efmwjZbMc2Bfy9qAzkc9q' -and
+        $canaryProfile.hostname -cmatch '^job-application-tracker-[a-z0-9]{1,63}-track-the-app\.vercel\.app$' -and
         $Prepared.schemaVersion -eq 1 -and $Prepared.mode -ceq 'prepare' -and
         $Prepared.scope -ceq 'preview_missing_secrets_only' -and $Prepared.gate1Status -ceq 'open' -and
         $Prepared.liveApproved -is [bool] -and $Prepared.liveApproved -eq $false -and
@@ -147,13 +147,13 @@ function Invoke-Gate1SecretsCanary {
     $file = Get-Item -LiteralPath $ProfilePath
     if ($file.PSIsContainer -or $file.Extension -ine '.json' -or $file.Length -gt 16384 -or
         ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Use a bounded local JSON profile.' }
-    try { $profile = [IO.File]::ReadAllText($file.FullName) | ConvertFrom-Json }
+    try { $canaryProfile = [IO.File]::ReadAllText($file.FullName) | ConvertFrom-Json }
     catch { throw 'Invalid local JSON profile.' }
-    $review = Invoke-Gate1SecretsNode '--review' (ConvertTo-Json -InputObject $profile -Depth 10 -Compress)
+    $review = Invoke-Gate1SecretsNode '--review' (ConvertTo-Json -InputObject $canaryProfile -Depth 10 -Compress)
     if ($review.ExitCode -ne 0) { throw 'Canary profile review failed.' }
     if (-not $Live) { return $review }
     $prepared = $review.Json | ConvertFrom-Json
-    if ($prepared.approvalId -cne $Approval -or -not (Test-Gate1SecretsReview $prepared $profile)) {
+    if ($prepared.approvalId -cne $Approval -or -not (Test-Gate1SecretsReview $prepared $canaryProfile)) {
         throw 'Approval must match the reviewed canary and runner.'
     }
     if ((Read-Host 'Type RUN PREVIEW CANARY ONCE for this separately approved trial') -cne 'RUN PREVIEW CANARY ONCE') {
@@ -167,7 +167,7 @@ function Invoke-Gate1SecretsCanary {
             throw 'Canary credential contract failed.'
         }
         $envelope = ConvertTo-Json -Depth 10 -Compress -InputObject @{
-            profile = $profile; approval = $Approval; liveApproved = $true;
+            profile = $canaryProfile; approval = $Approval; liveApproved = $true;
             credentials = @{ probeSecret = $probe; bypassSecret = $bypass }
         }
         return Invoke-Gate1SecretsNode '--live' $envelope
