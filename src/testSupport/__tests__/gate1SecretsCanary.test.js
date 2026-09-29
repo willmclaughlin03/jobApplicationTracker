@@ -156,12 +156,15 @@ describe('Preview canary approval and fixed sequence', () => {
       return result;
     });
     const read = jest.spyOn(fs, 'readFileSync');
+    let failure, reads;
     try {
-      expect(() => approvalId(profile())).toThrow(expect.objectContaining({
-        constructor: CanaryError, code: 'profile', message: 'profile',
-      }));
-      expect(read.mock.calls.filter(([name]) => typeof name === 'string' && name.startsWith(ROOT + path.sep))).toEqual([]);
+      try { approvalId(profile()); } catch (error) { failure = error; }
+      // Snapshot before Jest's error matchers can lazily read their own source files.
+      reads = [...read.mock.calls];
     } finally { read.mockRestore(); }
+    expect(failure).toBeInstanceOf(CanaryError);
+    expect(failure).toMatchObject({ code: 'profile', message: 'profile' });
+    expect(reads).toEqual([]);
   });
 
   it.each(['revision', 'changes', 'failure'])('rechecks checkout %s before storage or HTTP dispatch', async (change) => {
