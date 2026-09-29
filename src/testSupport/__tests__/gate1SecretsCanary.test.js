@@ -577,6 +577,50 @@ windows('PowerShell launcher offline fixtures', () => {
     expect(output.status).toBe(0); expect(JSON.parse(output.stdout)).toMatchObject({ mode: 'prepare', liveApproved: false, appRequests: 0 });
   });
 
+  it.each([
+    ['empty', ''],
+    ['ASCII JSON', '{"fixture":true}'],
+    ['Unicode JSON', JSON.stringify({ fixture: '\u00e9\u6f22\u5b57\ud83d\ude00' })],
+    ['ASCII at cap', 'a'.repeat(LIMITS.inputBytes)],
+    ['Unicode at cap', '\ud83d\ude00'.repeat(LIMITS.inputBytes / 4)],
+    ['ASCII over cap', 'a'.repeat(LIMITS.inputBytes + 1)],
+    ['Unicode over cap', '\ud83d\ude00'.repeat(LIMITS.inputBytes / 4) + 'a'],
+  ])('counts and transmits the same UTF-8 bytes (%s)', (label, input) => {
+    const location = directory(), launcher = path.join(location, 'run-gate1-secrets-canary.ps1');
+    fs.copyFileSync(LAUNCHER, launcher);
+    // A local child records startup and returns raw stdin bytes, without parsing or re-encoding them.
+    fs.writeFileSync(path.join(location, 'gate1-secrets-canary.js'), `
+require('node:fs').writeFileSync(require('node:path').join(__dirname, 'started'), 'yes');
+const chunks = [];
+process.stdin.on('data', (chunk) => chunks.push(chunk));
+process.stdin.on('end', () => {
+  const input = Buffer.concat(chunks);
+  process.stdout.write(JSON.stringify({ base64: input.toString('base64'), bytes: input.length }));
+});
+`);
+    const expected = Buffer.from(input, 'utf8');
+    const output = powershell(`
+. ${quoted(launcher)}
+$value = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${expected.toString('base64')}'))
+try {
+    $result = Invoke-Gate1SecretsNode '--review' $value
+    Write-Output $result.Json
+    exit $result.ExitCode
+} catch {
+    if ($_.Exception.Message -cne 'Invalid canary input.') { exit 2 }
+    Write-Output '{"rejected":true}'
+}
+`);
+    expect(output.error).toBeUndefined(); expect(output.status).toBe(0);
+    if (expected.length > LIMITS.inputBytes) {
+      expect(JSON.parse(output.stdout)).toEqual({ rejected: true });
+      expect(fs.existsSync(path.join(location, 'started'))).toBe(false);
+    } else {
+      expect(JSON.parse(output.stdout)).toEqual({ base64: expected.toString('base64'), bytes: expected.length });
+      expect(fs.existsSync(path.join(location, 'started'))).toBe(true);
+    }
+  });
+
   it.each(['approve', 'wrong_hash', 'wrong_limits', 'cancel', 'offline', 'invalid_checkout'])('reviews before hidden prompts (%s)', (mode) => {
     const location = directory(), file = path.join(location, 'profile.json'); fs.writeFileSync(file, JSON.stringify(profile()));
     const digest = approvalId(profile());

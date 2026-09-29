@@ -9,8 +9,9 @@ $ErrorActionPreference = 'Stop'
 
 <# Run a fixed Node mode with bounded stdin, streaming output caps and a 90s deadline. Raw stderr is discarded. #>
 function Invoke-Gate1SecretsNode([string]$Mode, [string]$InputJson = '') {
+    $utf8 = New-Object Text.UTF8Encoding($false)
     if ($Mode -cnotin @('--prepare', '--template', '--review', '--live') -or
-        [Text.Encoding]::UTF8.GetByteCount($InputJson) -gt 16384) { throw 'Invalid canary input.' }
+        $utf8.GetByteCount($InputJson) -gt 16384) { throw 'Invalid canary input.' }
     $runner = Join-Path $PSScriptRoot 'gate1-secrets-canary.js'
     $startInfo = New-Object Diagnostics.ProcessStartInfo
     $startInfo.FileName = 'node.exe'
@@ -20,11 +21,15 @@ function Invoke-Gate1SecretsNode([string]$Mode, [string]$InputJson = '') {
     $startInfo.RedirectStandardInput = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    # Match the byte cap without a BOM; Windows PowerShell 5.1 needs the raw stream fallback below.
+    $hasInputEncoding = $null -ne $startInfo.PSObject.Properties['StandardInputEncoding']
+    if ($hasInputEncoding) { $startInfo.StandardInputEncoding = $utf8 }
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $startInfo
     $output = New-Object IO.MemoryStream
     $outBuffer = New-Object byte[] 4096
     $errBuffer = New-Object byte[] 4096
+    $inputBytes = $null
     $started = $false
     try {
         $started = $process.Start()
@@ -33,7 +38,11 @@ function Invoke-Gate1SecretsNode([string]$Mode, [string]$InputJson = '') {
         $outTask = $process.StandardOutput.BaseStream.ReadAsync($outBuffer, 0, $outBuffer.Length)
         $errTask = $process.StandardError.BaseStream.ReadAsync($errBuffer, 0, $errBuffer.Length)
         if ($InputJson) {
-            $write = $process.StandardInput.WriteAsync($InputJson)
+            if ($hasInputEncoding) { $write = $process.StandardInput.WriteAsync($InputJson) }
+            else {
+                $inputBytes = $utf8.GetBytes($InputJson)
+                $write = $process.StandardInput.BaseStream.WriteAsync($inputBytes, 0, $inputBytes.Length)
+            }
             if (-not $write.Wait(5000)) { throw 'Canary input deadline.' }
         }
         $process.StandardInput.Close()
@@ -68,6 +77,7 @@ function Invoke-Gate1SecretsNode([string]$Mode, [string]$InputJson = '') {
     } finally {
         if ($started -and -not $process.HasExited) { $process.Kill(); $null = $process.WaitForExit(5000) }
         $InputJson = $null
+        if ($null -ne $inputBytes) { [Array]::Clear($inputBytes, 0, $inputBytes.Length) }
         [Array]::Clear($errBuffer, 0, $errBuffer.Length)
         $output.Dispose()
         $process.Dispose()

@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-27
 
+- `2026-09-28` - `GATE-1 canary UTF-8 stdin`: Count and transmit the same BOM-free UTF-8 bytes, configure child stdin encoding where supported, and use the raw stream on Windows PowerShell 5.1. Added seven offline regressions for empty, ASCII and Unicode input, exact-cap acceptance, and rejection before child startup above 16,384 bytes. All 154 canary tests, targeted ESLint, PowerShell syntax and whitespace checks pass on Windows PowerShell 5.1; PowerShell 7 was unavailable.
+
 - `2026-09-28` - `Portable canary approval assertions`: Capture filesystem reads only during approvalId execution and restore the spy before Jest formats errors, so dependency placement cannot cause false failures. All 147 canary tests, targeted ESLint and whitespace checks pass locally.
 
 - `2026-09-28` - `GATE-1 secret canary review fixes`: Bind approvals to matching HEAD and clean bound files, retry transient checkpoint renames within four 25 ms waits, preserve the original failure and phase when the final checkpoint also fails, and use a distinct PowerShell canary-profile variable. Added 23 regression cases; all 147 canary tests, targeted ESLint, PowerShell syntax and whitespace checks pass. No live canary ran.
