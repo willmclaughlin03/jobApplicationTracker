@@ -50,6 +50,8 @@ const CODES = new Set(['arguments', 'input', 'profile', 'approval', 'credentials
   'response_size', 'response_encoding', 'response_incomplete', 'redirect', 'cookie_contract',
   'build_mismatch', 'session_status', 'body_contract', 'cache_contract', 'probe_contract',
   'environment_mismatch', 'source_rejected', 'secret_contract', 'loader_already_initialized', 'loader_changed', 'internal']);
+const PROBE_FAILURES = new Set(['header_missing', 'header_invalid', 'header_oversized',
+  'json_invalid', 'schema_invalid', 'marker_mismatch', 'credential_echo']);
 const SELECTED = new Set(['content-type', 'content-length', 'content-encoding', 'set-cookie',
   'cache-control', 'cdn-cache-control', 'vercel-cdn-cache-control', 'x-vercel-cache',
   'retry-after', 'x-gate1-secrets-probe']);
@@ -61,8 +63,11 @@ const BOUND_FILES = ['scripts/gate1-secrets-canary.js', 'scripts/run-gate1-secre
 
 /** Carries an allowlisted reason only; raw errors and input are never retained. */
 class CanaryError extends Error {
-  /** Normalize an internal code before it crosses any output boundary. */
-  constructor(code) { super(CODES.has(code) ? code : 'internal'); this.code = this.message; }
+  /** Retain only known code/detail enums; probeFailure describes a check, never response contents. */
+  constructor(code, probeFailure = null) {
+    super(CODES.has(code) ? code : 'internal'); this.code = this.message;
+    this.probeFailure = this.code === 'probe_contract' && PROBE_FAILURES.has(probeFailure) ? probeFailure : null;
+  }
 }
 
 /** Validates/detaches a credential-free immutable target; templates cannot dispatch. */
@@ -259,9 +264,14 @@ function reviewProbe(response, marker, firstId = null, caseId = CASE) {
     throw new CanaryError('body_contract');
   }
   const raw = response.headers['x-gate1-secrets-probe'];
-  if (typeof raw !== 'string' || Buffer.byteLength(raw) > LIMITS.probeBytes) throw new CanaryError('probe_contract');
-  try { observation = observationSchema.parse(JSON.parse(raw)); } catch { throw new CanaryError('probe_contract'); }
-  if (observation.marker !== marker) throw new CanaryError('probe_contract');
+  if (raw === undefined) throw new CanaryError('probe_contract', 'header_missing');
+  if (typeof raw !== 'string') throw new CanaryError('probe_contract', 'header_invalid');
+  if (Buffer.byteLength(raw) > LIMITS.probeBytes) throw new CanaryError('probe_contract', 'header_oversized');
+  try { observation = JSON.parse(raw); } catch { throw new CanaryError('probe_contract', 'json_invalid'); }
+  const parsedObservation = observationSchema.safeParse(observation);
+  if (!parsedObservation.success) throw new CanaryError('probe_contract', 'schema_invalid');
+  observation = parsedObservation.data;
+  if (observation.marker !== marker) throw new CanaryError('probe_contract', 'marker_mismatch');
   if (observation.environment !== (success ? 'production' : 'preview')) throw new CanaryError('environment_mismatch');
   if (observation.effectiveMode !== 'vercel' || observation.sourceResolution !== 'accepted'
     || ![4, 6].includes(observation.canonicalFamily)) throw new CanaryError('source_rejected');
@@ -366,7 +376,7 @@ async function runCanary(input, deps = {}) {
     secretEvidence: 'unqualified', initializationEvidence: 'not_observed', sourceAgreement: 'not_evaluated', wafEvidence: 'not_qualified_by_this_run',
     target: null, approvalId: null, limits: LIMITS, appRequests: 0, providerRequests: 0, configMutations: 0,
     validatedRequests: 0, unvalidatedAttempts: 0, receipts: [], observations: [],
-    failure: null, stoppedPhase: 'validation', dispatchState: 'not_started',
+    failure: null, probeFailure: null, stoppedPhase: 'validation', dispatchState: 'not_started',
     attribution: 'operator_attested_snapshot_with_runtime_environment_and_http_build_checks' };
   const now = deps.now ?? (() => performance.now()), wall = deps.wall ?? Date.now;
   let phase = 'validation', store, start, wallStart, previous;
@@ -434,7 +444,9 @@ async function runCanary(input, deps = {}) {
         observation = reviewProbe(response, marker, firstId, profile.caseId);
         // Even schema-valid provider fields cannot echo the supplied credentials.
         const projected = JSON.stringify(observation);
-        if (projected.includes(credentials.probeSecret) || projected.includes(credentials.bypassSecret)) throw new CanaryError('probe_contract');
+        if (projected.includes(credentials.probeSecret) || projected.includes(credentials.bypassSecret)) {
+          throw new CanaryError('probe_contract', 'credential_echo');
+        }
         report.observations.push({ phase, ...observation });
       } else if (loginBuild(response) !== profile.nextBuildId) throw new CanaryError('build_mismatch');
       receipt.validated = true; report.validatedRequests += 1;
@@ -454,6 +466,7 @@ async function runCanary(input, deps = {}) {
     report.stoppedPhase = null;
   } catch (error) {
     report.failure = error instanceof CanaryError ? error.code : 'internal';
+    if (report.failure === 'probe_contract' && PROBE_FAILURES.has(error.probeFailure)) report.probeFailure = error.probeFailure;
     report.stoppedPhase = phase;
   }
   report.unvalidatedAttempts = report.appRequests - report.validatedRequests;
