@@ -1,9 +1,11 @@
 /**
- * Authenticated, Preview-only secret-loader observations on the real session route.
+ * Authenticated secret-loader observations on the real session route.
  * Requires GATE1_SECRETS_PROBE_ENABLED=true and a dedicated 64-lowercase-hex
  * GATE1_SECRETS_PROBE_SECRET, supplied as Authorization: Bearer. The additional
  * marker header is x-gate1-secrets-diagnostic: 1 and User-Agent is
  * gate1-secrets-<32 lowercase hex>. Neither marker nor credential bypasses guards.
+ * Production also requires GATE1_SECRETS_PROBE_PRODUCTION_ENABLED=true; the
+ * existing enable flag alone continues to permit only Preview observations.
  * No secrets, source addresses, raw errors, logs, resets or transport operations.
  * Deployment/configuration and live requests require separate authorization.
  */
@@ -86,16 +88,18 @@ export function createGate1SecretsProbe(options = {}) {
   const env = options.env ?? process.env;
 
   /**
-   * Authenticates bounded Preview GET metadata before requesting observations.
+   * Authenticates bounded, explicitly enabled deployment GET metadata.
    * @param {object} req original Node request, read only
    * @param {object} res existing route response; receives only no-store metadata
    * @returns {Function|undefined} one-shot synchronous observer; failures omit it
    */
   function createObserver(req, res) {
     try {
+      const environment = env.VERCEL_ENV;
       if (env.GATE1_SECRETS_PROBE_ENABLED !== 'true' || req.method !== 'GET'
         || env.NODE_ENV !== 'production' || env.VERCEL !== '1'
-        || env.VERCEL_ENV !== 'preview') return undefined;
+        || (environment !== 'preview' && !(environment === 'production'
+          && env.GATE1_SECRETS_PROBE_PRODUCTION_ENABLED === 'true'))) return undefined;
       const secret = env.GATE1_SECRETS_PROBE_SECRET;
       if (!credentialSchema.safeParse(secret).success || !validRawMetadata(req.rawHeaders)) return undefined;
       if (singleton(req, GATE1_SECRETS_DIAGNOSTIC_HEADER) !== '1') return undefined;
@@ -119,8 +123,8 @@ export function createGate1SecretsProbe(options = {}) {
           const parsed = factsSchema.safeParse(facts);
           if (!parsed.success) return;
           const value = JSON.stringify({
-            schemaVersion: 1, scope: 'secret_loader_observation_only',
-            contextScope: 'loader', marker, ...parsed.data,
+            schemaVersion: 2, scope: 'secret_loader_observation_only',
+            environment, contextScope: 'loader', marker, ...parsed.data,
           });
           if (Buffer.byteLength(value) > 1_536) return;
           res.setHeader('Cache-Control', PRIVATE_NO_STORE);
