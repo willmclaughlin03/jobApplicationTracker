@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Offline-default, separately approved Preview missing-both-secrets canary.
+ * Offline-default, separately approved Preview failure or Production success canary.
  * Four sequential HTTPS attempts maximum; no provider API, redirects, retries,
  * cookies, configuration mutation or secret reset. Credentials enter via stdin.
  * Reuses only the existing login HTML build parser; no inventory batch is run.
@@ -20,27 +20,36 @@ const LIMITS = Object.freeze({ maxAppRequests: 4, maxProviderRequests: 0,
   buildBytes: 1048576, sessionBytes: 8192, probeBytes: 1536, headerBytes: 16384,
   inputBytes: 16384, reportBytes: 16384, profileAgeMs: 900000 });
 const CASE = 'both_application_secrets_missing';
+const SUCCESS_CASE = 'production_secret_success_cache';
 const PROJECT = 'prj_b2nMrysMSJtpmqoeGx5g0WGgGuom';
 const TEAM = 'team_7o3efmwjZbMc2Bfy9qAzkc9q';
 const ATTESTATIONS = ['sourceCodeReviewed', 'deploymentSnapshotReviewed', 'previewOverridesReviewed',
   'bothApplicationSecretsAbsent', 'productionCredentialsExcluded', 'explicitVercelModes',
   'probeConfigured', 'protectionAccessApproved', 'credentialLoggingReviewed',
   'noConcurrentDeploymentsOrConfigurationChanges', 'freshLoaderTrialReviewed'];
-const profileSchema = z.object({ schemaVersion: z.literal(1), caseId: z.literal(CASE),
-  projectId: z.literal(PROJECT), teamId: z.literal(TEAM), environment: z.literal('preview'),
+const SUCCESS_ATTESTATIONS = ['sourceCodeReviewed', 'deploymentSnapshotReviewed', 'actualProductionEnvironmentReviewed',
+  'bothApplicationSecretsConfigured', 'applicationSecretsUnchanged', 'explicitVercelModes',
+  'probeConfigured', 'productionProbeOptInReviewed', 'protectionAccessApproved', 'credentialLoggingReviewed',
+  'noConcurrentDeploymentsOrConfigurationChanges', 'warmLoaderReuseScopeReviewed'];
+const profileFields = { schemaVersion: z.literal(1),
+  projectId: z.literal(PROJECT), teamId: z.literal(TEAM),
   hostname: z.string().max(253).regex(/^job-application-tracker-[a-z0-9]{1,63}-track-the-app\.vercel\.app$/),
   deploymentId: z.string().max(80).regex(/^dpl_[A-Za-z0-9]+$/),
   gitSha: z.string().regex(/^[a-f0-9]{40}$/), nextBuildId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
-  accessMode: z.literal('automation_bypass'), reviewedAt: z.string().datetime(),
-  attestations: z.object(Object.fromEntries(ATTESTATIONS.map((name) => [name, z.literal(true)]))).strict(),
-}).strict();
+  accessMode: z.literal('automation_bypass'), reviewedAt: z.string().datetime() };
+const profileSchema = z.discriminatedUnion('caseId', [
+  z.object({ ...profileFields, caseId: z.literal(CASE), environment: z.literal('preview'),
+    attestations: z.object(Object.fromEntries(ATTESTATIONS.map((name) => [name, z.literal(true)]))).strict() }).strict(),
+  z.object({ ...profileFields, caseId: z.literal(SUCCESS_CASE), environment: z.literal('production'),
+    attestations: z.object(Object.fromEntries(SUCCESS_ATTESTATIONS.map((name) => [name, z.literal(true)]))).strict() }).strict(),
+]);
 const credentialsSchema = z.object({ probeSecret: z.string().regex(/^[a-f0-9]{64}$/),
   bypassSecret: z.string().min(16).max(512).regex(/^[\x21-\x7e]+$/) }).strict();
 const CODES = new Set(['arguments', 'input', 'profile', 'approval', 'credentials', 'reservation',
   'local_evidence', 'cancelled', 'deadline', 'request_budget', 'transport', 'response_headers',
   'response_size', 'response_encoding', 'response_incomplete', 'redirect', 'cookie_contract',
   'build_mismatch', 'session_status', 'body_contract', 'cache_contract', 'probe_contract',
-  'source_rejected', 'secret_contract', 'loader_already_initialized', 'loader_changed', 'internal']);
+  'environment_mismatch', 'source_rejected', 'secret_contract', 'loader_already_initialized', 'loader_changed', 'internal']);
 const SELECTED = new Set(['content-type', 'content-length', 'content-encoding', 'set-cookie',
   'cache-control', 'cdn-cache-control', 'vercel-cdn-cache-control', 'x-vercel-cache',
   'retry-after', 'x-gate1-secrets-probe']);
@@ -64,11 +73,18 @@ function parseProfile(value) {
 }
 
 /** Produces an unusable local template with no inferred deployment or approvals. */
-function profileTemplate() {
-  return { schemaVersion: 1, caseId: CASE, projectId: PROJECT, teamId: TEAM,
-    environment: 'preview', hostname: '', deploymentId: '', gitSha: '', nextBuildId: '',
+function profileTemplate(caseId = CASE) {
+  if (![CASE, SUCCESS_CASE].includes(caseId)) throw new CanaryError('profile');
+  const success = caseId === SUCCESS_CASE;
+  return { schemaVersion: 1, caseId, projectId: PROJECT, teamId: TEAM,
+    environment: success ? 'production' : 'preview', hostname: '', deploymentId: '', gitSha: '', nextBuildId: '',
     accessMode: 'automation_bypass', reviewedAt: '',
-    attestations: Object.fromEntries(ATTESTATIONS.map((name) => [name, false])) };
+    attestations: Object.fromEntries((success ? SUCCESS_ATTESTATIONS : ATTESTATIONS).map((name) => [name, false])) };
+}
+
+/** Maps a validated case to its evidence scope; no other qualification is implied. */
+function evidenceScope(caseId) {
+  return caseId === SUCCESS_CASE ? 'production_secret_success_cache_only' : 'preview_missing_secrets_only';
 }
 
 /** Binds target, limits and source bytes to review only from a clean, matching checkout. */
@@ -90,13 +106,16 @@ function approvalId(profile) {
 /** Returns a zero-traffic proposal; neither review nor a digest is live approval. */
 function preparation(value = null) {
   const profile = value === null ? null : parseProfile(value);
-  return { schemaVersion: 1, mode: 'prepare', scope: 'preview_missing_secrets_only',
+  const success = profile?.caseId === SUCCESS_CASE;
+  return { schemaVersion: 1, mode: 'prepare', scope: evidenceScope(profile?.caseId),
     liveApproved: false, gate1Status: 'open', appRequests: 0, providerRequests: 0,
     profile, approvalId: profile ? approvalId(profile) : null, limits: LIMITS,
     sequence: ['buildBefore', 'probe1', 'probe2', 'buildAfter'],
     nextStep: profile ? 'obtain_separate_live_approval' : 'complete_local_profile',
-    limitations: ['operator_attested_deployment_configuration', 'hmac_rejection_precedes_redis_validation',
-      'loader_identity_only', 'no_hosted_success_or_malformed_cases', 'no_independent_waf_evidence'] };
+    limitations: ['operator_attested_snapshot_with_runtime_environment_check', 'loader_identity_only',
+      ...(success ? ['warm_first_loader_does_not_prove_initialization', 'no_missing_malformed_or_environment_isolation_evidence']
+        : ['hmac_rejection_precedes_redis_validation', 'no_hosted_success_or_malformed_cases']),
+      'no_independent_waf_evidence'] };
 }
 
 /** Projects bounded singleton response headers; all other response fields are discarded. */
@@ -203,7 +222,8 @@ function reviewCache(headers) {
   return { private: true, noStore: true, vercelCache: headers['x-vercel-cache'] };
 }
 
-const observationSchema = z.object({ schemaVersion: z.literal(1), scope: z.literal('secret_loader_observation_only'),
+const observationSchema = z.object({ schemaVersion: z.literal(2), scope: z.literal('secret_loader_observation_only'),
+  environment: z.enum(['preview', 'production']),
   contextScope: z.literal('loader'), marker: z.string().regex(/^gate1-secrets-[a-f0-9]{32}$/),
   effectiveMode: z.enum(['not_observed', 'invalid', 'local', 'vercel']),
   sourceResolution: z.enum(['not_attempted', 'accepted', 'rejected']),
@@ -219,29 +239,48 @@ const observationSchema = z.object({ schemaVersion: z.literal(1), scope: z.liter
 }).strict();
 
 /**
- * Validates the exact negative canary, not merely HTTP 503. All provider content
+ * Validates the case-specific body, environment and loader facts, not merely status. Provider content
  * stays transient; return only fixed facts and the nonsecret loader identifier.
- * firstId null requires a fresh first loader; otherwise requires memoized reuse.
+ * firstId null permits warm success but requires fresh failure; otherwise requires memoized reuse.
  */
-function reviewProbe(response, marker, firstId = null) {
-  if (response.status !== 503) throw new CanaryError('session_status');
+function reviewProbe(response, marker, firstId = null, caseId = CASE) {
+  if (![CASE, SUCCESS_CASE].includes(caseId)) throw new CanaryError('profile');
+  const success = caseId === SUCCESS_CASE;
+  if (response.status !== (success ? 200 : 503)) throw new CanaryError('session_status');
   const cache = reviewCache(response.headers);
   if (!/^application\/json(?:\s*;|$)/i.test(response.headers['content-type'] || '')) throw new CanaryError('body_contract');
   let body, observation;
   try { body = JSON.parse(response.text); } catch { throw new CanaryError('body_contract'); }
-  if (!z.object({ data: z.null(), error: z.literal('SERVICE_UNAVAILABLE'),
-    message: z.literal('Service temporarily unavailable. Please try again later.') }).strict().safeParse(body).success) {
+  const bodySchema = success
+    ? z.object({ data: z.object({ user: z.null() }).strict(), error: z.null(), message: z.literal('Success') }).strict()
+    : z.object({ data: z.null(), error: z.literal('SERVICE_UNAVAILABLE'),
+      message: z.literal('Service temporarily unavailable. Please try again later.') }).strict();
+  if (!bodySchema.safeParse(body).success) {
     throw new CanaryError('body_contract');
   }
   const raw = response.headers['x-gate1-secrets-probe'];
   if (typeof raw !== 'string' || Buffer.byteLength(raw) > LIMITS.probeBytes) throw new CanaryError('probe_contract');
   try { observation = observationSchema.parse(JSON.parse(raw)); } catch { throw new CanaryError('probe_contract'); }
   if (observation.marker !== marker) throw new CanaryError('probe_contract');
+  if (observation.environment !== (success ? 'production' : 'preview')) throw new CanaryError('environment_mismatch');
   if (observation.effectiveMode !== 'vercel' || observation.sourceResolution !== 'accepted'
     || ![4, 6].includes(observation.canonicalFamily)) throw new CanaryError('source_rejected');
   const loader = observation.loader, before = observation.loaderStateBefore;
   if (!observation.loaderReached || !loader || !before || !loader.loaderId
-    || observation.allowed || observation.reason !== 'secret_unavailable'
+    || loader.effectiveMode !== 'vercel' || loader.validationAttempts !== 1) throw new CanaryError('secret_contract');
+  if (firstId !== null && loader.loaderId !== firstId) throw new CanaryError('loader_changed');
+  if (success) {
+    if (!observation.allowed || observation.reason !== null || !observation.identityAttempted
+      || !observation.redisAttempted || !observation.scriptAttempted || loader.validationStage !== 'complete'
+      || loader.hmacInput !== 'present' || loader.redisInput !== 'present'
+      || !loader.hasCachedPair || loader.permanentFailure || before.permanentFailure
+      || (firstId !== null && !before.hasCachedPair)) throw new CanaryError('secret_contract');
+    return { cache, environment: 'production', loaderId: loader.loaderId, sourceAccepted: true, secretMode: 'vercel',
+      validationStage: 'complete', bothInputsPresent: true, validationAttempts: 1,
+      hasCachedPair: true, permanentFailure: false, downstreamAttempted: true,
+      cacheStateBefore: before.hasCachedPair ? 'cached_pair' : 'uninitialized' };
+  }
+  if (observation.allowed || observation.reason !== 'secret_unavailable'
     || observation.identityAttempted || observation.redisAttempted || observation.scriptAttempted
     || loader.effectiveMode !== 'vercel' || loader.validationStage !== 'hmac'
     || loader.hmacInput !== 'missing' || loader.redisInput !== 'missing'
@@ -249,9 +288,8 @@ function reviewProbe(response, marker, firstId = null) {
     throw new CanaryError('secret_contract');
   }
   if (firstId === null && (before.hasCachedPair || before.permanentFailure)) throw new CanaryError('loader_already_initialized');
-  if (firstId !== null && loader.loaderId !== firstId) throw new CanaryError('loader_changed');
   if (firstId !== null && (before.hasCachedPair || !before.permanentFailure)) throw new CanaryError('secret_contract');
-  return { cache, loaderId: loader.loaderId, sourceAccepted: true, secretMode: 'vercel',
+  return { cache, environment: 'preview', loaderId: loader.loaderId, sourceAccepted: true, secretMode: 'vercel',
     validationStage: 'hmac', bothInputsMissing: true, validationAttempts: 1,
     hasCachedPair: false, permanentFailure: true, downstreamAttempted: false,
     cacheStateBefore: firstId === null ? 'uninitialized' : 'permanent_failure' };
@@ -287,12 +325,12 @@ function createStore(profile, approval, directory = evidenceDirectory()) {
       if (fs.lstatSync(current).isSymbolicLink()) throw new Error();
       if (path.dirname(current) === current) break;
     }
-    const reservation = path.join(directory, `${profile.deploymentId}-${CASE}.reservation.json`);
+    const reservation = path.join(directory, `${profile.deploymentId}-${profile.caseId}.reservation.json`);
     let fd;
     try { fd = fs.openSync(reservation, 'wx', 0o600); }
     catch (error) { if (error.code === 'EEXIST') throw new CanaryError('reservation'); throw error; }
     try {
-      fs.writeFileSync(fd, JSON.stringify({ deploymentId: profile.deploymentId, caseId: CASE, approvalId: approval }));
+      fs.writeFileSync(fd, JSON.stringify({ deploymentId: profile.deploymentId, caseId: profile.caseId, approvalId: approval }));
       fs.fsyncSync(fd);
     } finally { fs.closeSync(fd); }
     const reportPath = path.join(directory, `gate1-secrets-canary-${profile.deploymentId}-${approval}.json`);
@@ -325,11 +363,11 @@ async function runCanary(input, deps = {}) {
   const fixture = typeof deps.requestImpl === 'function';
   const report = { schemaVersion: 1, mode: fixture ? 'fixture' : 'live', scope: 'preview_missing_secrets_only',
     result: 'stopped', gate1Status: 'open', hostedEvidence: fixture ? 'not_executed' : 'requires_review',
-    secretEvidence: 'unqualified', sourceAgreement: 'not_evaluated', wafEvidence: 'not_qualified_by_this_run',
+    secretEvidence: 'unqualified', initializationEvidence: 'not_observed', sourceAgreement: 'not_evaluated', wafEvidence: 'not_qualified_by_this_run',
     target: null, approvalId: null, limits: LIMITS, appRequests: 0, providerRequests: 0, configMutations: 0,
     validatedRequests: 0, unvalidatedAttempts: 0, receipts: [], observations: [],
     failure: null, stoppedPhase: 'validation', dispatchState: 'not_started',
-    attribution: 'operator_attested_preview_snapshot_and_http_build_checks' };
+    attribution: 'operator_attested_snapshot_with_runtime_environment_and_http_build_checks' };
   const now = deps.now ?? (() => performance.now()), wall = deps.wall ?? Date.now;
   let phase = 'validation', store, start, wallStart, previous;
   try {
@@ -337,6 +375,7 @@ async function runCanary(input, deps = {}) {
       liveApproved: z.literal(true), credentials: credentialsSchema }).strict().safeParse(input);
     if (!parsed.success) throw new CanaryError('input');
     const { profile, approval, credentials } = parsed.data;
+    report.scope = evidenceScope(profile.caseId);
     if (credentials.probeSecret === credentials.bypassSecret
       || JSON.stringify(profile).includes(credentials.probeSecret) || JSON.stringify(profile).includes(credentials.bypassSecret)) {
       throw new CanaryError('credentials');
@@ -392,7 +431,7 @@ async function runCanary(input, deps = {}) {
       report.receipts.push(receipt);
       let observation;
       if (marked) {
-        observation = reviewProbe(response, marker, firstId);
+        observation = reviewProbe(response, marker, firstId, profile.caseId);
         // Even schema-valid provider fields cannot echo the supplied credentials.
         const projected = JSON.stringify(observation);
         if (projected.includes(credentials.probeSecret) || projected.includes(credentials.bypassSecret)) throw new CanaryError('probe_contract');
@@ -407,7 +446,11 @@ async function runCanary(input, deps = {}) {
     await request('probe2', true, first.loaderId);
     await request('buildAfter');
     remaining();
-    report.result = 'completed'; report.secretEvidence = 'missing_both_and_same_loader_failure_observed';
+    report.result = 'completed';
+    report.secretEvidence = profile.caseId === SUCCESS_CASE
+      ? 'validated_pair_and_same_loader_cache_reuse_observed' : 'missing_both_and_same_loader_failure_observed';
+    if (profile.caseId === SUCCESS_CASE) report.initializationEvidence = first.cacheStateBefore === 'uninitialized'
+      ? 'observed_on_probe1' : 'already_cached_on_probe1';
     report.stoppedPhase = null;
   } catch (error) {
     report.failure = error instanceof CanaryError ? error.code : 'internal';
@@ -423,7 +466,7 @@ async function runCanary(input, deps = {}) {
     } catch {
       report.elapsedMs = null;
       if (report.result === 'completed') {
-        report.result = 'stopped'; report.secretEvidence = 'unqualified';
+        report.result = 'stopped'; report.secretEvidence = 'unqualified'; report.initializationEvidence = 'not_observed';
         report.failure = 'deadline'; report.stoppedPhase = 'report';
       }
     }
@@ -436,7 +479,7 @@ async function runCanary(input, deps = {}) {
       if (report.result === 'completed' || report.failure === null) {
         report.failure = 'local_evidence'; report.stoppedPhase = 'report';
       }
-      report.result = 'stopped'; report.secretEvidence = 'unqualified';
+      report.result = 'stopped'; report.secretEvidence = 'unqualified'; report.initializationEvidence = 'not_observed';
     }
   }
   return { reportPath: store?.reportPath ?? null, report };
@@ -472,9 +515,10 @@ function readInput(stream = process.stdin) {
 /** Exact offline-default CLI; only --live accepts a separately approved credential envelope. */
 async function main(args) {
   try {
-    if (args.length > 1 || (args.length && !['--prepare', '--template', '--review', '--live'].includes(args[0]))) throw new CanaryError('arguments');
+    if (args.length > 1 || (args.length && !['--prepare', '--template', '--template-production', '--review', '--live'].includes(args[0]))) throw new CanaryError('arguments');
     if (args[0] !== '--live') {
-      const value = args[0] === '--template' ? profileTemplate() : args[0] === '--review' ? preparation(await readInput()) : preparation();
+      const value = args[0] === '--template-production' ? profileTemplate(SUCCESS_CASE)
+        : args[0] === '--template' ? profileTemplate() : args[0] === '--review' ? preparation(await readInput()) : preparation();
       process.stdout.write(JSON.stringify(value, null, 2) + '\n'); return;
     }
     const controller = new AbortController();
@@ -489,6 +533,6 @@ async function main(args) {
   } catch { process.stderr.write('Canary preparation/execution failed. Do not rerun automatically.\n'); process.exitCode = 1; }
 }
 
-module.exports = { LIMITS, CASE, CanaryError, profileTemplate, parseProfile, approvalId, preparation,
+module.exports = { LIMITS, CASE, SUCCESS_CASE, CanaryError, profileTemplate, parseProfile, approvalId, preparation,
   selectedHeaders, exchange, reviewProbe, evidenceDirectory, createStore, runCanary, readInput };
 if (require.main === module) void main(process.argv.slice(2));

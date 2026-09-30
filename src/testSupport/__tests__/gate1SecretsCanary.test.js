@@ -9,7 +9,7 @@ const { spawnSync, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const https = require('node:https');
-const { LIMITS, CanaryError, profileTemplate, parseProfile, preparation, approvalId, selectedHeaders,
+const { LIMITS, SUCCESS_CASE, CanaryError, profileTemplate, parseProfile, preparation, approvalId, selectedHeaders,
   evidenceDirectory, createStore, runCanary, readInput } = require('../../../scripts/gate1-secrets-canary');
 
 const ROOT = path.resolve(__dirname, '../../..');
@@ -41,8 +41,8 @@ afterAll(() => {
 });
 
 /** Return a synthetic immutable Preview identity with deliberate fixture attestations, never a hosted approval. */
-function profile(time = START) {
-  const value = { ...profileTemplate(), hostname: 'job-application-tracker-fixture-track-the-app.vercel.app',
+function profile(time = START, caseId) {
+  const value = { ...profileTemplate(caseId), hostname: 'job-application-tracker-fixture-track-the-app.vercel.app',
     deploymentId: 'dpl_fixtureCanary', gitSha: '1'.repeat(40), nextBuildId: 'fixture-build', reviewedAt: new Date(time).toISOString() };
   for (const name of Object.keys(value.attestations)) value.attestations[name] = true;
   return value;
@@ -50,7 +50,7 @@ function profile(time = START) {
 
 /** Emit the exact secret observation shape; cached is the request's pre-call permanent-failure state. */
 function facts(marker, cached) {
-  return { schemaVersion: 1, scope: 'secret_loader_observation_only', contextScope: 'loader', marker,
+  return { schemaVersion: 2, environment: 'preview', scope: 'secret_loader_observation_only', contextScope: 'loader', marker,
     effectiveMode: 'vercel', sourceResolution: 'accepted', canonicalFamily: 4, loaderReached: true,
     loaderStateBefore: { hasCachedPair: false, permanentFailure: cached },
     loader: { loaderId: LOADER, validationAttempts: 1, effectiveMode: 'vercel', validationStage: 'hmac',
@@ -65,6 +65,22 @@ function reply(options, index) {
   return { status: 503, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'private, no-store',
     'x-vercel-cache': 'BYPASS', 'x-gate1-secrets-probe': JSON.stringify(facts(options.headers['User-Agent'], index === 2)) },
   body: JSON.stringify({ data: null, error: 'SERVICE_UNAVAILABLE', message: 'Service temporarily unavailable. Please try again later.' }) };
+}
+
+/** Builds the Production success contract with either observed initialization or a warm first loader. */
+function successReply(options, index, warm = false) {
+  const response = reply(options, index);
+  if (options.path === '/login') return response;
+  const value = facts(options.headers['User-Agent'], false);
+  value.environment = 'production';
+  value.loaderStateBefore = { hasCachedPair: warm || index === 2, permanentFailure: false };
+  Object.assign(value.loader, { validationStage: 'complete', hmacInput: 'present', redisInput: 'present',
+    hasCachedPair: true, permanentFailure: false });
+  Object.assign(value, { identityAttempted: true, redisAttempted: true, scriptAttempted: true, allowed: true, reason: null });
+  response.status = 200;
+  response.body = JSON.stringify({ data: { user: null }, error: null, message: 'Success' });
+  response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
+  return response;
 }
 
 /** Simulate native streams and their failure modes; retain outgoing credentials only in test-local assertions. */
@@ -259,6 +275,9 @@ describe('response and loader qualification', () => {
   });
 
   it.each([
+    ['environment_mismatch', (value) => { value.environment = 'production'; }],
+    ['probe_contract', (value) => { delete value.environment; }],
+    ['probe_contract', (value) => { value.schemaVersion = 1; }],
     ['source_rejected', (value) => { value.sourceResolution = 'rejected'; value.canonicalFamily = null; }],
     ['source_rejected', (value) => { value.effectiveMode = 'local'; }],
     ['secret_contract', (value) => { value.loaderReached = false; }],
@@ -327,6 +346,133 @@ describe('response and loader qualification', () => {
   ])('rejects nonqualifying session contract %s (%#)', async (code, mutate) => {
     const { report, calls } = await trial((options, index) => { const response = reply(options, index); if (index === 1) mutate(response); return response; });
     expect(report.failure).toBe(code); expect(calls).toHaveLength(2); expectPrivate(report);
+  });
+});
+
+describe('Production success/cache qualification', () => {
+  it('binds a distinct case, scope and complete Production attestations into review', () => {
+    const selected = profile(START, SUCCESS_CASE);
+    expect(() => parseProfile(profileTemplate(SUCCESS_CASE))).toThrow('profile');
+    expect(preparation(selected)).toMatchObject({ scope: 'production_secret_success_cache_only', appRequests: 0,
+      providerRequests: 0, liveApproved: false, profile: { environment: 'production', caseId: SUCCESS_CASE } });
+    expect(approvalId(selected)).not.toBe(approvalId(profile()));
+    for (const name of Object.keys(selected.attestations)) {
+      expect(() => parseProfile({ ...selected, attestations: { ...selected.attestations, [name]: false } })).toThrow('profile');
+    }
+    expect(() => parseProfile({ ...selected, environment: 'preview' })).toThrow('profile');
+    expect(() => parseProfile({ ...selected, attestations: profile().attestations })).toThrow('profile');
+  });
+
+  it.each([false, true])('requires same-loader cached success and distinguishes warm start (%s)', async (warm) => {
+    const { report, calls } = await trial((options, index) => successReply(options, index, warm), { profile: profile(START, SUCCESS_CASE) });
+    expect(report).toMatchObject({ result: 'completed', scope: 'production_secret_success_cache_only',
+      appRequests: 4, validatedRequests: 4, unvalidatedAttempts: 0,
+      secretEvidence: 'validated_pair_and_same_loader_cache_reuse_observed',
+      initializationEvidence: warm ? 'already_cached_on_probe1' : 'observed_on_probe1', failure: null });
+    expect(report.observations.map((row) => row.cacheStateBefore)).toEqual([warm ? 'cached_pair' : 'uninitialized', 'cached_pair']);
+    expect(report.observations.map((row) => row.loaderId)).toEqual([LOADER, LOADER]);
+    expect(report.observations.every((row) => row.environment === 'production' && row.validationAttempts === 1)).toBe(true);
+    expect(calls.map((call) => call.path)).toEqual(['/login', '/api/auth/session', '/api/auth/session', '/login']);
+    expect(calls.every((call) => call.headers.Cookie === undefined && call.agent === false && call.rejectUnauthorized === true)).toBe(true);
+    expectPrivate(report);
+  });
+
+  it.each([
+    ['environment_mismatch', (value) => { value.environment = 'preview'; }],
+    ['probe_contract', (value) => { delete value.environment; }],
+    ['probe_contract', (value) => { value.schemaVersion = 1; }],
+    ['source_rejected', (value) => { value.effectiveMode = 'local'; }],
+    ['source_rejected', (value) => { value.sourceResolution = 'rejected'; }],
+    ['source_rejected', (value) => { value.canonicalFamily = null; }],
+    ['secret_contract', (value) => { value.loaderReached = false; }],
+    ['secret_contract', (value) => { value.loader = null; }],
+    ['secret_contract', (value) => { value.loader.loaderId = null; }],
+    ['secret_contract', (value) => { value.loader.validationAttempts = 2; }],
+    ['secret_contract', (value) => { value.loader.validationStage = 'redis'; }],
+    ['secret_contract', (value) => { value.loader.effectiveMode = 'local'; }],
+    ['secret_contract', (value) => { value.loader.hmacInput = 'missing'; }],
+    ['secret_contract', (value) => { value.loader.redisInput = 'missing'; }],
+    ['secret_contract', (value) => { value.loader.hasCachedPair = false; }],
+    ['secret_contract', (value) => { value.loader.permanentFailure = true; }],
+    ['secret_contract', (value) => { value.loaderStateBefore.permanentFailure = true; }],
+    ['secret_contract', (value) => { value.loaderStateBefore = null; }],
+    ['secret_contract', (value) => { value.identityAttempted = false; }],
+    ['secret_contract', (value) => { value.redisAttempted = false; }],
+    ['secret_contract', (value) => { value.scriptAttempted = false; }],
+    ['secret_contract', (value) => { value.allowed = false; }],
+    ['secret_contract', (value) => { value.reason = 'secret_unavailable'; }],
+    ['probe_contract', (value) => { value.marker = 'gate1-secrets-' + '0'.repeat(32); }],
+    ['probe_contract', (value) => { value.loader.token = PRIVATE; }],
+  ])('rejects ambiguous Production facts %s (%#)', async (code, mutate) => {
+    const { report, calls } = await trial((options, index) => {
+      const response = successReply(options, index);
+      if (index === 1) {
+        const value = JSON.parse(response.headers['x-gate1-secrets-probe']);
+        mutate(value); response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
+      }
+      return response;
+    }, { profile: profile(START, SUCCESS_CASE) });
+    expect(report).toMatchObject({ failure: code, result: 'stopped', secretEvidence: 'unqualified', initializationEvidence: 'not_observed' });
+    expect(report.observations).toEqual([]); expect(calls).toHaveLength(2); expectPrivate(report);
+  });
+
+  it.each(['different', 'uncached'])('rejects a Production second loader that is %s', async (change) => {
+    const { report, calls } = await trial((options, index) => {
+      const response = successReply(options, index);
+      if (index === 2) {
+        const value = JSON.parse(response.headers['x-gate1-secrets-probe']);
+        if (change === 'different') value.loader.loaderId = 'b2'.repeat(16); else value.loaderStateBefore.hasCachedPair = false;
+        response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
+      }
+      return response;
+    }, { profile: profile(START, SUCCESS_CASE) });
+    expect(report.failure).toBe(change === 'different' ? 'loader_changed' : 'secret_contract');
+    expect(report.secretEvidence).toBe('unqualified'); expect(calls).toHaveLength(3);
+  });
+
+  it.each([
+    ['session_status', (response) => { response.status = 503; }],
+    ['session_status', (response) => { response.status = 429; }],
+    ['body_contract', (response) => { response.body = JSON.stringify({ data: { user: { id: PRIVATE } }, error: null, message: 'Success' }); }],
+    ['body_contract', (response) => { response.body = JSON.stringify({ data: { user: null }, error: null, message: 'Success', extra: PRIVATE }); }],
+    ['cache_contract', (response) => { response.headers['cache-control'] = 'public, max-age=60'; }],
+    ['cache_contract', (response) => { response.headers['x-vercel-cache'] = 'HIT'; }],
+    ['cache_contract', (response) => { response.headers['retry-after'] = '1'; }],
+    ['cookie_contract', (response) => { response.headers['set-cookie'] = PRIVATE; }],
+    ['probe_contract', (response) => { delete response.headers['x-gate1-secrets-probe']; }],
+  ])('rejects nonqualifying Production response %s (%#)', async (code, mutate) => {
+    const { report, calls } = await trial((options, index) => {
+      const response = successReply(options, index); if (index === 1) mutate(response); return response;
+    }, { profile: profile(START, SUCCESS_CASE) });
+    expect(report.failure).toBe(code); expect(calls).toHaveLength(2); expectPrivate(report);
+  });
+
+  it('rejects credentials in projected Production facts before retaining them', async () => {
+    const bypass = LOADER.slice(0, 16);
+    const { report } = await trial(successReply, { profile: profile(START, SUCCESS_CASE),
+      input: { credentials: { probeSecret: PROBE, bypassSecret: bypass } } });
+    expect(report.failure).toBe('probe_contract'); expect(report.observations).toEqual([]);
+    expect(JSON.stringify(report)).not.toContain(bypass);
+  });
+
+  it('keeps each case reservation consumed across fresh reviews without overwriting the negative case', () => {
+    const location = directory(), negative = profile(), positive = profile(START, SUCCESS_CASE);
+    const oldStore = createStore(negative, approvalId(negative), location);
+    const oldBytes = fs.readFileSync(oldStore.reportPath);
+    createStore(positive, approvalId(positive), location);
+    const reservation = JSON.parse(fs.readFileSync(path.join(location, `${positive.deploymentId}-${SUCCESS_CASE}.reservation.json`)));
+    expect(reservation).toEqual({ deploymentId: positive.deploymentId, caseId: SUCCESS_CASE, approvalId: approvalId(positive) });
+    expect(() => createStore(profile(START + 1, SUCCESS_CASE), approvalId(profile(START + 1, SUCCESS_CASE)), location)).toThrow('reservation');
+    expect(() => createStore(negative, approvalId(negative), location)).toThrow('reservation');
+    expect(fs.readFileSync(oldStore.reportPath)).toEqual(oldBytes);
+  });
+
+  it('drops Production completion claims on final persistence failure', async () => {
+    const { report } = await trial(successReply, { profile: profile(START, SUCCESS_CASE), deps: { store: {
+      /** Simulates a failure only when attempting to save the completed fixture. */
+      save(value) { if (value.result === 'completed') throw new Error(PRIVATE); },
+    } } });
+    expect(report).toMatchObject({ result: 'stopped', secretEvidence: 'unqualified', initializationEvidence: 'not_observed', failure: 'local_evidence' });
   });
 });
 
@@ -550,7 +696,7 @@ describe('bounded stdin and offline CLI', () => {
     const assertion = expect(running).rejects.toThrow('input'); await jest.advanceTimersByTimeAsync(15001); await assertion;
     expect(stream.listenerCount('data')).toBe(0);
   });
-  it.each([[], ['--template'], ['--review'], ['--live'], ['--unknown']].map((args) => [args]))('keeps CLI offline without a valid live envelope (%j)', (args) => {
+  it.each([[], ['--template'], ['--template-production'], ['--review'], ['--live'], ['--unknown']].map((args) => [args]))('keeps CLI offline without a valid live envelope (%j)', (args) => {
     const output = spawnSync(process.execPath, [CLI, ...args], { input: args[0] === '--review' ? JSON.stringify(profile()) : '{}',
       encoding: 'utf8', timeout: 5000, maxBuffer: 32768, windowsHide: true });
     expect(output.error).toBeUndefined();
@@ -575,6 +721,12 @@ windows('PowerShell launcher offline fixtures', () => {
   it('starts offline by default and returns Node preparation', () => {
     const output = powershell(`& ${quoted(LAUNCHER)}\nexit $LASTEXITCODE`);
     expect(output.status).toBe(0); expect(JSON.parse(output.stdout)).toMatchObject({ mode: 'prepare', liveApproved: false, appRequests: 0 });
+  });
+
+  it('returns an unusable Production template without prompts or requests', () => {
+    const output = powershell(`& ${quoted(LAUNCHER)} -ProductionTemplate\nexit $LASTEXITCODE`);
+    expect(output.status).toBe(0);
+    expect(JSON.parse(output.stdout)).toEqual(profileTemplate(SUCCESS_CASE));
   });
 
   it.each([
@@ -621,9 +773,14 @@ try {
     }
   });
 
-  it.each(['approve', 'wrong_hash', 'wrong_limits', 'cancel', 'offline', 'invalid_checkout'])('reviews before hidden prompts (%s)', (mode) => {
-    const location = directory(), file = path.join(location, 'profile.json'); fs.writeFileSync(file, JSON.stringify(profile()));
-    const digest = approvalId(profile());
+  it.each([undefined, SUCCESS_CASE].flatMap((caseId) =>
+    ['approve', 'wrong_hash', 'wrong_limits', 'wrong_scope', 'wrong_case', 'cancel', 'wrong_confirmation', 'offline', 'invalid_checkout']
+      .map((mode) => [mode, caseId])))('reviews before hidden prompts (%s, %s)', (mode, caseId) => {
+    const selected = profile(START, caseId);
+    const location = directory(), file = path.join(location, 'profile.json'); fs.writeFileSync(file, JSON.stringify(selected));
+    const digest = approvalId(selected);
+    const confirmation = caseId === SUCCESS_CASE ? 'RUN PRODUCTION CACHE CANARY ONCE' : 'RUN PREVIEW CANARY ONCE';
+    const otherConfirmation = caseId === SUCCESS_CASE ? 'RUN PREVIEW CANARY ONCE' : 'RUN PRODUCTION CACHE CANARY ONCE';
     const output = powershell(`
 . ${quoted(LAUNCHER)}
 $ProfilePath = ${quoted(file)}
@@ -641,12 +798,14 @@ function Invoke-Gate1SecretsNode([string]$Mode, [string]$InputJson = '') {
     }
     # Fixture reviews isolate launcher approval checks; invalid_checkout exercises the real Git guard.
     if ($Mode -ceq '--review' -and '${mode}' -cne 'invalid_checkout') {
-        $value = @{ Json = ${quoted(JSON.stringify(preparation(profile())))}; ExitCode = 0 }
+        $value = @{ Json = ${quoted(JSON.stringify(preparation(selected)))}; ExitCode = 0 }
     } else { $value = & $script:originalNode $Mode $InputJson }
     ${mode === 'wrong_limits' ? "$parsed = $value.Json | ConvertFrom-Json; $parsed.limits.maxAppRequests = 5; $value.Json = $parsed | ConvertTo-Json -Depth 10" : ''}
+    ${mode === 'wrong_scope' ? "$parsed = $value.Json | ConvertFrom-Json; $parsed.scope = 'other'; $value.Json = $parsed | ConvertTo-Json -Depth 10" : ''}
+    ${mode === 'wrong_case' ? "$parsed = $value.Json | ConvertFrom-Json; $parsed.profile.environment = 'other'; $value.Json = $parsed | ConvertTo-Json -Depth 10" : ''}
     return $value
 }
-function Read-Host { return '${mode === 'cancel' ? 'CANCEL' : 'RUN PREVIEW CANARY ONCE'}' }
+function Read-Host { return '${mode === 'cancel' ? 'CANCEL' : mode === 'wrong_confirmation' ? otherConfirmation : confirmation}' }
 function Read-Gate1SecretsCredential([string]$Prompt) { $script:prompts++; if ($script:prompts -eq 1) { return '${PROBE}' }; return '${BYPASS}' }
 try { $result = Invoke-Gate1SecretsCanary; $stopped = $false } catch { $stopped = $true }
 @{ stopped = $stopped; prompts = $script:prompts; liveCalls = $script:liveCalls; exitCode = $result.ExitCode } | ConvertTo-Json

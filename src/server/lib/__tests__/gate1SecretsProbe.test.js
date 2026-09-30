@@ -25,20 +25,44 @@ function fixture() {
   return { req, res };
 }
 
-describe('GATE-1 Preview secrets probe', () => {
+describe('GATE-1 deployment secrets probe', () => {
   it('emits strict value-free facts once with private no-store caching', () => {
     const { req, res } = fixture();
     const observe = createGate1SecretsProbe({ env: ENV }).createObserver(req, res);
     observe(FACTS);
     observe({ ...FACTS, canonicalFamily: 6 });
     const text = res.getHeader(GATE1_SECRETS_PROBE_HEADER);
-    expect(JSON.parse(text)).toEqual({ schemaVersion: 1, scope: 'secret_loader_observation_only',
-      contextScope: 'loader', marker: MARKER, ...FACTS });
+    expect(JSON.parse(text)).toEqual({ schemaVersion: 2, scope: 'secret_loader_observation_only',
+      environment: 'preview', contextScope: 'loader', marker: MARKER, ...FACTS });
     expect(Buffer.byteLength(text)).toBeLessThanOrEqual(1536);
     expect(text).not.toContain(SECRET);
     expect(text).not.toContain('203.0.113.2');
     expect(res.getHeader('Cache-Control')).toBe('private, no-store');
     expect(res.setHeader).toHaveBeenCalledTimes(2);
+  });
+
+  it('requires explicit Production opt-in and captures the authenticated runtime environment', () => {
+    const env = { ...ENV, VERCEL_ENV: 'production', GATE1_SECRETS_PROBE_PRODUCTION_ENABLED: 'true' };
+    const { req, res } = fixture();
+    const observe = createGate1SecretsProbe({ env }).createObserver(req, res);
+    env.VERCEL_ENV = 'preview';
+    observe(FACTS);
+    expect(JSON.parse(res.getHeader(GATE1_SECRETS_PROBE_HEADER)))
+      .toMatchObject({ schemaVersion: 2, environment: 'production' });
+  });
+
+  it.each([
+    { GATE1_SECRETS_PROBE_PRODUCTION_ENABLED: undefined },
+    { GATE1_SECRETS_PROBE_PRODUCTION_ENABLED: 'false' },
+    { GATE1_SECRETS_PROBE_PRODUCTION_ENABLED: 'True' },
+    { GATE1_SECRETS_PROBE_ENABLED: 'false' },
+    { GATE1_SECRETS_PROBE_SECRET: 'd'.repeat(64) },
+    { VERCEL_ENV: 'development' }, { VERCEL: undefined }, { NODE_ENV: 'test' },
+  ])('keeps all Production authorization boundaries (%#)', (change) => {
+    const { req, res } = fixture();
+    const env = { ...ENV, VERCEL_ENV: 'production', GATE1_SECRETS_PROBE_PRODUCTION_ENABLED: 'true', ...change };
+    expect(createGate1SecretsProbe({ env }).createObserver(req, res)).toBeUndefined();
+    expect(res.setHeader).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -88,7 +112,7 @@ describe('GATE-1 Preview secrets probe', () => {
   });
 
   it.each([
-    { ...FACTS, unexpected: 'sentinel' },
+    { ...FACTS, unexpected: 'sentinel' }, { ...FACTS, environment: 'production' },
     { ...FACTS, reason: 'raw-error-sentinel' },
     { ...FACTS, loader: { ...FACTS.loader, key: 'credential-sentinel' } },
     { ...FACTS, loader: { ...FACTS.loader, loaderId: 'unsafe-sentinel' } },
