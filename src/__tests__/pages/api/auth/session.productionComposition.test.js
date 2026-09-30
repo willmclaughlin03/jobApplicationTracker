@@ -19,6 +19,7 @@ const ENVIRONMENT_NAMES = [
   'GATE1_SOURCE_PROBE_ENABLED',
   'GATE1_SOURCE_PROBE_SECRET',
   'GATE1_SECRETS_PROBE_ENABLED',
+  'GATE1_SECRETS_PROBE_PRODUCTION_ENABLED',
   'GATE1_SECRETS_PROBE_SECRET',
   'TEMPORARY_SESSION_CEILING_SOURCE_MODE',
   'TEMPORARY_SESSION_CEILING_SECRET_MODE',
@@ -98,6 +99,7 @@ function installProductionEnvironment() {
   delete process.env.GATE1_SOURCE_PROBE_ENABLED;
   delete process.env.GATE1_SOURCE_PROBE_SECRET;
   delete process.env.GATE1_SECRETS_PROBE_ENABLED;
+  delete process.env.GATE1_SECRETS_PROBE_PRODUCTION_ENABLED;
   delete process.env.GATE1_SECRETS_PROBE_SECRET;
   process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'vercel';
   process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE = 'vercel';
@@ -303,6 +305,62 @@ describe('/api/auth/session production/Vercel composition', () => {
     }
     jest.restoreAllMocks();
   });
+
+  it.each([false, true])('observes Production success/cache with a warm first loader: %s', async (warm) => {
+    installPreviewSecretsProbe();
+    process.env.VERCEL_ENV = 'production';
+    process.env.GATE1_SECRETS_PROBE_PRODUCTION_ENABLED = 'true';
+    const route = loadSessionRoute();
+    if (warm) await route(createMockRequest().req, createMockResponse());
+    const observations = [];
+    for (const marker of ['a'.repeat(32), 'b'.repeat(32)]) {
+      const { req } = createMockRequest();
+      markSecretsRequest(req, marker);
+      const res = createMockResponse();
+      await route(req, res);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toEqual({ data: { user: null }, error: null, message: 'Success' });
+      expect(res.getHeader('Cache-Control')).toBe('private, no-store');
+      expect(res.getHeader('Set-Cookie')).toBeUndefined();
+      expect(res.getHeader('Retry-After')).toBeUndefined();
+      const observation = secretsObservation(res);
+      expect(observation).toMatchObject({ schemaVersion: 2, environment: 'production',
+        sourceResolution: 'accepted', loaderReached: true, allowed: true, reason: null,
+        identityAttempted: true, redisAttempted: true, scriptAttempted: true,
+        loader: { validationAttempts: 1, validationStage: 'complete', effectiveMode: 'vercel',
+          hmacInput: 'present', redisInput: 'present', hasCachedPair: true, permanentFailure: false } });
+      for (const sentinel of [TEST_HMAC_KEY, TEST_KEY_ID, TEST_REDIS_TOKEN, TEST_REDIS_URL, TEST_SOURCE, 'e'.repeat(64)]) {
+        expect(JSON.stringify(observation)).not.toContain(sentinel);
+      }
+      observations.push(observation);
+    }
+    expect(observations[0].loader.loaderId).toMatch(/^[a-f0-9]{32}$/);
+    expect(observations[1].loader).toEqual(observations[0].loader);
+    expect(observations.map((value) => value.loaderStateBefore))
+      .toEqual([{ hasCachedPair: warm, permanentFailure: false }, { hasCachedPair: true, permanentFailure: false }]);
+    expect(mockRedisConstructor).toHaveBeenCalledTimes(1);
+    expect(mockRedisEvalsha).toHaveBeenCalledTimes(warm ? 3 : 2);
+    expect(mockSupabaseGetUser).toHaveBeenCalledTimes(warm ? 3 : 2);
+    expectSensitiveValuesAbsentFromLogs(['e'.repeat(64)]);
+  });
+
+  it.each(['missing secrets', 'invalid source', 'rate limited'])(
+    'keeps Production enforcement authoritative with the probe enabled: %s', async (scenario) => {
+      installPreviewSecretsProbe();
+      process.env.VERCEL_ENV = 'production';
+      process.env.GATE1_SECRETS_PROBE_PRODUCTION_ENABLED = 'true';
+      if (scenario === 'missing secrets') delete process.env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON;
+      if (scenario === 'rate limited') mockRedisEvalsha.mockResolvedValue([1, 1, 17]);
+      const { req, cookieRead } = createMockRequest(scenario === 'invalid source'
+        ? { normalizedSource: undefined, rawHeaders: [] } : {});
+      markSecretsRequest(req);
+      const res = createMockResponse();
+      await loadSessionRoute()(req, res);
+      expect(res.statusCode).toBe(scenario === 'rate limited' ? 429 : 503);
+      expect(secretsObservation(res)).toMatchObject({ environment: 'production', allowed: false });
+      expect(cookieRead).not.toHaveBeenCalled();
+      expect(mockSupabaseGetUser).not.toHaveBeenCalled();
+    });
 
   it.each([
     ['both missing', undefined, undefined, 'hmac', 'missing', 'missing'],
