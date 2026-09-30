@@ -10,7 +10,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const https = require('node:https');
 const { LIMITS, SUCCESS_CASE, CanaryError, profileTemplate, parseProfile, preparation, approvalId, selectedHeaders,
-  evidenceDirectory, createStore, runCanary, readInput } = require('../../../scripts/gate1-secrets-canary');
+  evidenceDirectory, createStore, runCanary, readInput, reviewProbe } = require('../../../scripts/gate1-secrets-canary');
 
 const ROOT = path.resolve(__dirname, '../../..');
 const CLI = path.join(ROOT, 'scripts/gate1-secrets-canary.js');
@@ -126,6 +126,7 @@ function expectPrivate(report) {
   expect(Buffer.byteLength(encoded)).toBeLessThan(LIMITS.reportBytes);
   expect(report).toMatchObject({ mode: 'fixture', gate1Status: 'open', hostedEvidence: 'not_executed',
     sourceAgreement: 'not_evaluated', providerRequests: 0, configMutations: 0, wafEvidence: 'not_qualified_by_this_run' });
+  if (report.failure !== 'probe_contract') expect(report.probeFailure).toBeNull();
 }
 
 /** Allocate isolated fixture files inside the current worktree, never historical evidence directories. */
@@ -325,7 +326,7 @@ describe('response and loader qualification', () => {
   it('rejects a credential echoed inside a schema-valid loader identifier before retaining it', async () => {
     const bypass = LOADER.slice(0, 16);
     const { report, calls } = await trial(undefined, { input: { credentials: { probeSecret: PROBE, bypassSecret: bypass } } });
-    expect(report.failure).toBe('probe_contract'); expect(calls).toHaveLength(2);
+    expect(report).toMatchObject({ failure: 'probe_contract', probeFailure: 'credential_echo' }); expect(calls).toHaveLength(2);
     expect(JSON.stringify(report)).not.toContain(bypass); expect(report.observations).toEqual([]);
   });
 
@@ -451,7 +452,7 @@ describe('Production success/cache qualification', () => {
     const bypass = LOADER.slice(0, 16);
     const { report } = await trial(successReply, { profile: profile(START, SUCCESS_CASE),
       input: { credentials: { probeSecret: PROBE, bypassSecret: bypass } } });
-    expect(report.failure).toBe('probe_contract'); expect(report.observations).toEqual([]);
+    expect(report).toMatchObject({ failure: 'probe_contract', probeFailure: 'credential_echo' }); expect(report.observations).toEqual([]);
     expect(JSON.stringify(report)).not.toContain(bypass);
   });
 
@@ -473,6 +474,100 @@ describe('Production success/cache qualification', () => {
       save(value) { if (value.result === 'completed') throw new Error(PRIVATE); },
     } } });
     expect(report).toMatchObject({ result: 'stopped', secretEvidence: 'unqualified', initializationEvidence: 'not_observed', failure: 'local_evidence' });
+  });
+});
+
+describe('sanitized probe failure detail', () => {
+  describe.each([
+    ['Preview', undefined, reply], ['Production', SUCCESS_CASE, successReply],
+  ])('%s report', (_label, caseId, responder) => {
+    describe.each([1, 2])('probe %s', (failedIndex) => {
+      it.each([
+        ['missing header', 'header_missing', () => undefined],
+        ['oversized UTF-8 header', 'header_oversized', () => '\u00e9'.repeat(769)],
+        ['malformed JSON', 'json_invalid', () => '{"private":"' + PRIVATE],
+        ['empty header', 'json_invalid', () => ''],
+        ['JSON null', 'schema_invalid', () => 'null'],
+        ['old schema', 'schema_invalid', (value) => JSON.stringify({ ...value, schemaVersion: 1 })],
+        ['missing environment', 'schema_invalid', (value) => {
+          delete value.environment; return JSON.stringify(value);
+        }],
+        ['untrusted nested field', 'schema_invalid', (value) => {
+          value.loader[PRIVATE] = PROBE; return JSON.stringify(value);
+        }],
+        ['different marker', 'marker_mismatch', (value) => JSON.stringify({ ...value, marker: 'gate1-secrets-' + '0'.repeat(32) })],
+      ])('stops and checkpoints only the fixed reason for %s', async (_name, reason, header) => {
+        let retained;
+        const { report, calls } = await trial((options, index) => {
+          const response = responder(options, index);
+          if (index === failedIndex) {
+            const value = header(JSON.parse(response.headers['x-gate1-secrets-probe']));
+            if (value === undefined) delete response.headers['x-gate1-secrets-probe'];
+            else response.headers['x-gate1-secrets-probe'] = value;
+          }
+          return response;
+        }, { profile: profile(START, caseId), deps: { store: {
+          /** Capture detached checkpoints to verify only sanitized report fields are persisted. */
+          save(value) { retained = JSON.parse(JSON.stringify(value)); },
+        } } });
+        expect(report).toMatchObject({ result: 'stopped', failure: 'probe_contract', probeFailure: reason,
+          stoppedPhase: `probe${failedIndex}`, dispatchState: 'response_received',
+          appRequests: failedIndex + 1, validatedRequests: failedIndex, unvalidatedAttempts: 1,
+          secretEvidence: 'unqualified', initializationEvidence: 'not_observed' });
+        expect(calls).toHaveLength(failedIndex + 1);
+        expect(report.receipts.at(-1).validated).toBe(false);
+        expect(report.observations).toHaveLength(failedIndex - 1);
+        expect(retained).toEqual(report); expectPrivate(retained);
+        expect(JSON.stringify(retained)).not.toContain(calls.at(-1).headers['User-Agent']);
+      });
+    });
+  });
+
+  it.each([null, 42, [PRIVATE]])('rejects a nonscalar header at the direct review boundary (%#)', (raw) => {
+    const marker = 'gate1-secrets-' + '1'.repeat(32);
+    const response = successReply({ path: '/api/auth/session', headers: { 'User-Agent': marker } }, 1);
+    response.headers['x-gate1-secrets-probe'] = raw;
+    expect(() => reviewProbe({ ...response, text: response.body }, marker, null, SUCCESS_CASE))
+      .toThrow(expect.objectContaining({ code: 'probe_contract', probeFailure: 'header_invalid' }));
+  });
+
+  it.each([
+    ['probe_contract', PRIVATE], ['probe_contract', { message: PROBE }], ['probe_contract', undefined],
+    ['transport', 'header_missing'], [PRIVATE, 'schema_invalid'],
+  ])('discards unknown or inapplicable diagnostic detail (%#)', (code, detail) => {
+    const error = new CanaryError(code, detail);
+    expect(error.probeFailure).toBeNull();
+    expect(error.message).toBe(code === PRIVATE ? 'internal' : code);
+    expect(JSON.stringify(error)).not.toContain(PRIVATE); expect(JSON.stringify(error)).not.toContain(PROBE);
+  });
+
+  it('preserves the original diagnostic if final persistence also fails', async () => {
+    const { report, calls } = await trial((options, index) => {
+      const response = successReply(options, index);
+      if (index === 1) delete response.headers['x-gate1-secrets-probe'];
+      return response;
+    }, { profile: profile(START, SUCCESS_CASE), deps: { store: {
+      /** Fail the final failure checkpoint without changing earlier fixture checkpoints. */
+      save(value) { if (value.failure !== null) throw new Error(PRIVATE); },
+    } } });
+    expect(report).toMatchObject({ result: 'stopped', failure: 'probe_contract', probeFailure: 'header_missing',
+      finalCheckpoint: 'failed', stoppedPhase: 'probe1', secretEvidence: 'unqualified' });
+    expect(calls).toHaveLength(2); expectPrivate(report);
+  });
+
+  it('keeps a persisted failure consumed even when a fresh approval is supplied', async () => {
+    const location = directory(), selected = profile(START, SUCCESS_CASE);
+    const store = createStore(selected, approvalId(selected), location);
+    const { report, calls } = await trial((options, index) => {
+      const response = successReply(options, index);
+      if (index === 1) response.headers['x-gate1-secrets-probe'] = PROBE;
+      return response;
+    }, { profile: selected, deps: { store } });
+    expect(report).toMatchObject({ failure: 'probe_contract', probeFailure: 'json_invalid', result: 'stopped' });
+    expect(calls).toHaveLength(2);
+    expect(JSON.parse(fs.readFileSync(store.reportPath, 'utf8'))).toEqual(report); expectPrivate(report);
+    const fresh = profile(START + 1, SUCCESS_CASE);
+    expect(() => createStore(fresh, approvalId(fresh), location)).toThrow('reservation');
   });
 });
 
