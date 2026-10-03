@@ -21,6 +21,7 @@ const ENVIRONMENT_NAMES = [
   'GATE1_SECRETS_PROBE_ENABLED',
   'GATE1_SECRETS_PROBE_PRODUCTION_ENABLED',
   'GATE1_SECRETS_PROBE_SECRET',
+  'GATE1_SECRETS_TRACE_JSON',
   'TEMPORARY_SESSION_CEILING_SOURCE_MODE',
   'TEMPORARY_SESSION_CEILING_SECRET_MODE',
   'TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON',
@@ -101,6 +102,7 @@ function installProductionEnvironment() {
   delete process.env.GATE1_SECRETS_PROBE_ENABLED;
   delete process.env.GATE1_SECRETS_PROBE_PRODUCTION_ENABLED;
   delete process.env.GATE1_SECRETS_PROBE_SECRET;
+  delete process.env.GATE1_SECRETS_TRACE_JSON;
   process.env.TEMPORARY_SESSION_CEILING_SOURCE_MODE = 'vercel';
   process.env.TEMPORARY_SESSION_CEILING_SECRET_MODE = 'vercel';
   process.env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON = JSON.stringify({
@@ -139,6 +141,7 @@ function createMockRequest(options = {}) {
   const cookieRead = jest.fn(() => ({}));
   const req = {
     method: 'GET',
+    url: '/api/auth/session',
     headers: normalizedSource === undefined
       ? {}
       : { 'x-vercel-forwarded-for': normalizedSource },
@@ -277,6 +280,21 @@ function secretsObservation(res) {
   return JSON.parse(res.getHeader('X-Gate1-Secrets-Probe'));
 }
 
+/** Arms synthetic private tracing and attaches fresh generated IDs through the middleware seam. */
+function installPrivateTrace() {
+  const time = Date.now();
+  process.env.GATE1_SECRETS_TRACE_JSON = JSON.stringify({ schemaVersion: 1, marker: `gate1-secrets-${'a'.repeat(32)}`,
+    startsAt: new Date(time - 1000).toISOString(), expiresAt: new Date(time + 600000).toISOString() });
+  mockAttachRequestLogger.mockImplementation((req) => {
+    const requestId = require('node:crypto').randomUUID();
+    req.log = { ...mockRequestLog, bindings: () => ({ requestId }) };
+    return requestId;
+  });
+}
+
+/** Selects diagnostic events only, excluding ordinary request-duration logs. */
+function traceEvents() { return mockRequestLog.info.mock.calls.map(([value]) => value).filter((value) => value?.event === 'gate1_secrets_probe_stage'); }
+
 describe('/api/auth/session production/Vercel composition', () => {
   let originalEnvironment;
 
@@ -286,6 +304,7 @@ describe('/api/auth/session production/Vercel composition', () => {
     );
     jest.resetModules();
     jest.clearAllMocks();
+    mockAttachRequestLogger.mockImplementation((req) => { req.log = mockRequestLog; return 'production-session-request-id'; });
     installProductionEnvironment();
     mockRedisEvalsha.mockResolvedValue([1, 0, 0]);
     mockRedisEval.mockResolvedValue([1, 0, 0]);
@@ -304,6 +323,80 @@ describe('/api/auth/session production/Vercel composition', () => {
       restoreEnvironmentVariable(name, originalEnvironment[name]);
     }
     jest.restoreAllMocks();
+  });
+
+  /** Observing real composed enforcement cannot change downstream execution or shared-cache decisions. */
+  it.each([200, 429, 503])('keeps traced %s enforcement equal to ordinary enforcement', async (status) => {
+    installPrivateTrace();
+    installPreviewSecretsProbe();
+    process.env.VERCEL_ENV = 'production'; process.env.GATE1_SECRETS_PROBE_PRODUCTION_ENABLED = 'true';
+    if (status === 429) mockRedisEvalsha.mockResolvedValue([1, 1, 17]);
+    if (status === 503) delete process.env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON;
+    const route = loadSessionRoute(), ordinary = createMockResponse(), traced = createMockResponse();
+    const { req } = createMockRequest(); markSecretsRequest(req);
+    await route(req, traced);
+    await route(createMockRequest().req, ordinary);
+    expect(traced.statusCode).toBe(status); expect(ordinary.statusCode).toBe(status);
+    expect(traced.body).toEqual(ordinary.body);
+    expect(traced.getHeader('Cache-Control')).toBe(ordinary.getHeader('Cache-Control'));
+    expect(traced.getHeader('Retry-After')).toBe(ordinary.getHeader('Retry-After'));
+    expect(traced.getHeader('x-request-id')).toMatch(/^[a-f0-9-]{36}$/);
+    expect(traceEvents()).toEqual([{ event: 'gate1_secrets_probe_stage', schemaVersion: 1, authentication: 'accepted',
+      observer: 'invoked_once', emission: 'header_set_returned', finalHeader: 'present', routeOutcome: 'returned' }]);
+    expect(require('../../../../server/lib/temporarySessionSecrets.js').temporarySessionSecrets.getSnapshot())
+      .toEqual({ hasCachedPair: status !== 503, permanentFailure: status === 503 });
+    expect(mockSupabaseGetUser).toHaveBeenCalledTimes(status === 200 ? 2 : 0);
+    expectSensitiveValuesAbsentFromLogs(['e'.repeat(64), req.headers['user-agent']]);
+  });
+
+  /** An armed marker cannot grant observation when probe authentication rejects. */
+  it('keeps authentication reasons private and the ordinary successful response intact', async () => {
+    installPrivateTrace();
+    const { req } = createMockRequest(); markSecretsRequest(req);
+    const res = createMockResponse(); await loadSessionRoute()(req, res);
+    expect(res.statusCode).toBe(200); expect(res.getHeader('X-Gate1-Secrets-Probe')).toBeUndefined();
+    expect(traceEvents()[0]).toMatchObject({ authentication: 'probe_disabled', observer: 'not_registered', emission: 'not_attempted' });
+    expect(JSON.stringify(res.body)).not.toContain('probe_disabled');
+  });
+
+  /** Local removal is distinguishable from a failed setter and never proves client delivery. */
+  it('records a successful header setter followed by local removal', async () => {
+    installPrivateTrace(); installPreviewSecretsProbe();
+    const { req } = createMockRequest(); markSecretsRequest(req);
+    const res = createMockResponse(), json = res.json;
+    res.json = jest.fn((body) => { res.removeHeader('X-Gate1-Secrets-Probe'); return json(body); });
+    await loadSessionRoute()(req, res);
+    expect(traceEvents()[0]).toMatchObject({ emission: 'header_set_returned', finalHeader: 'absent' });
+  });
+
+  /** Concurrent matching requests share only a reservation, never stage state or response writers. */
+  it('traces one concurrent request and leaves both authenticated observations intact', async () => {
+    installPrivateTrace(); installPreviewSecretsProbe();
+    const route = loadSessionRoute(), requests = [createMockRequest().req, createMockRequest().req];
+    const responses = [createMockResponse(), createMockResponse()];
+    requests.forEach((req) => markSecretsRequest(req));
+    await Promise.all(requests.map((req, index) => route(req, responses[index])));
+    expect(traceEvents()).toHaveLength(1);
+    expect(responses.map((res) => res.statusCode)).toEqual([200, 200]);
+    expect(responses.map((res) => secretsObservation(res).loader.validationAttempts)).toEqual([1, 1]);
+  });
+
+  /** A thrown route still finalizes and releases its observers before a reused request. */
+  it('cleans up a thrown route without allowing a logging exception to replace it', async () => {
+    installPrivateTrace(); installPreviewSecretsProbe();
+    const route = loadSessionRoute(), { req } = createMockRequest(); markSecretsRequest(req);
+    const res = createMockResponse(), original = res.setHeader;
+    const failure = new Error('fixture route failure');
+    res.setHeader = jest.fn((name, value) => { if (name === 'x-request-id') throw failure; return original(name, value); });
+    const info = mockRequestLog.info.getMockImplementation();
+    mockRequestLog.info.mockImplementation(() => { throw new Error('fixture logger failure'); });
+    try { await expect(route(req, res)).rejects.toBe(failure); }
+    finally { mockRequestLog.info.mockImplementation(info); }
+    expect(traceEvents()[0]).toMatchObject({ routeOutcome: 'threw', observer: 'registered_not_invoked' });
+    delete req.headers.authorization;
+    const next = createMockResponse(); await route(req, next);
+    expect(next.statusCode).toBe(200); expect(next.getHeader('X-Gate1-Secrets-Probe')).toBeUndefined();
+    expect(traceEvents()).toHaveLength(1);
   });
 
   it.each([false, true])('observes Production success/cache with a warm first loader: %s', async (warm) => {

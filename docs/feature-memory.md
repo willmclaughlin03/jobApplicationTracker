@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-09-27
 
+- `2026-10-03` - `GATE-1 private secret-probe stage diagnostic`: Added default-off, expiring request selection and one private stage event per loaded module, with generated request-ID correlation and strict sanitized-record review. Added a separate three-request diagnostic case, source-bound approval, arming-window checks and durable replay protection. All 794 tests across ten focused suites, changed-file lint, JavaScript/PowerShell syntax and whitespace checks pass. No live diagnostic ran; this locates a failure boundary and cannot qualify secret-cache reuse or close GATE-1.
+
 - `2026-09-29` - `GATE-1 secret probe failure detail`: Added an allowlisted `probeFailure` field alongside `probe_contract` to distinguish missing/invalid/oversized headers, JSON/schema failures, marker mismatches and credential echoes without retaining response contents. All 259 canary tests, including 46 new cases, syntax, lint and whitespace checks pass. Existing acceptance criteria, request limits and consumed reservations are preserved; no live trial ran.
 
 - `2026-09-29` - `GATE-1 Production secret success/cache canary`: Added a separately enabled Production observation mode, runtime environment attribution, strict positive-case profiles and same-loader cache validation within the existing four-request budget. Distinguishes observed initialization from warm reuse, preserves Preview negative criteria and consumed reservations, and adds case-specific PowerShell templates/confirmation. All 410 focused tests across six suites, syntax, lint and whitespace checks pass. No live trial ran for this change; GATE-1 remains open.

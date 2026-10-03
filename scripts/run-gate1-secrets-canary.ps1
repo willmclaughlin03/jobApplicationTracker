@@ -1,16 +1,16 @@
 <#
-Offline-default Preview missing-secrets or Production success/cache canary. Review a local JSON profile,
+Offline-default Preview missing-secrets, Production success/cache or private stage diagnostic. Review a local JSON profile,
 then separately approve -Live -Approval. Secrets enter hidden prompts and stdin
 only. No provider API, saved authentication files, deployment or configuration work.
 #>
 [CmdletBinding()]
-param([switch]$Template, [switch]$ProductionTemplate, [string]$ProfilePath, [switch]$Live, [string]$Approval)
+param([switch]$Template, [switch]$ProductionTemplate, [switch]$DiagnosticTemplate, [string]$ProfilePath, [switch]$Live, [string]$Approval)
 $ErrorActionPreference = 'Stop'
 
 <# Run a fixed Node mode with bounded stdin, streaming output caps and a 90s deadline. Raw stderr is discarded. #>
 function Invoke-Gate1SecretsNode([string]$Mode, [string]$InputJson = '') {
     $utf8 = New-Object Text.UTF8Encoding($false)
-    if ($Mode -cnotin @('--prepare', '--template', '--template-production', '--review', '--live') -or
+    if ($Mode -cnotin @('--prepare', '--template', '--template-production', '--template-diagnostic', '--review', '--live') -or
         $utf8.GetByteCount($InputJson) -gt 16384) { throw 'Invalid canary input.' }
     $runner = Join-Path $PSScriptRoot 'gate1-secrets-canary.js'
     $startInfo = New-Object Diagnostics.ProcessStartInfo
@@ -121,11 +121,18 @@ function Test-Gate1SecretsReview($Prepared, $canaryProfile) {
         headerBytes = 16384; inputBytes = 16384; reportBytes = 16384; profileAgeMs = 900000 }
     $preview = $canaryProfile.environment -ceq 'preview' -and $canaryProfile.caseId -ceq 'both_application_secrets_missing'
     $production = $canaryProfile.environment -ceq 'production' -and $canaryProfile.caseId -ceq 'production_secret_success_cache'
-    $scope = if ($production) { 'production_secret_success_cache_only' } else { 'preview_missing_secrets_only' }
+    $diagnostic = $canaryProfile.environment -ceq 'production' -and $canaryProfile.caseId -ceq 'secret_probe_stage_diagnostic_only'
+    $sequence = @('buildBefore', 'probe1', 'probe2', 'buildAfter')
+    if ($diagnostic) {
+        $limits.maxAppRequests = 3
+        $limits.traceBytes = 1024
+        $sequence = @('buildBefore', 'probe1', 'buildAfter')
+    }
+    $scope = if ($diagnostic) { 'secret_probe_stage_diagnostic_only' } elseif ($production) { 'production_secret_success_cache_only' } else { 'preview_missing_secrets_only' }
     return (Test-Gate1SecretsEqual $Prepared.profile $canaryProfile) -and
         (Test-Gate1SecretsEqual $Prepared.limits $limits) -and
-        (Test-Gate1SecretsEqual $Prepared.sequence @('buildBefore', 'probe1', 'probe2', 'buildAfter')) -and
-        ($preview -or $production) -and
+        (Test-Gate1SecretsEqual $Prepared.sequence $sequence) -and
+        ($preview -or $production -or $diagnostic) -and
         $canaryProfile.accessMode -ceq 'automation_bypass' -and
         $canaryProfile.projectId -ceq 'prj_b2nMrysMSJtpmqoeGx5g0WGgGuom' -and
         $canaryProfile.teamId -ceq 'team_7o3efmwjZbMc2Bfy9qAzkc9q' -and
@@ -152,12 +159,13 @@ function Read-Gate1SecretsCredential([string]$Prompt) {
 
 <# Review bounded local JSON first; only an exact approval and typed confirmation permit the stdin credential envelope. #>
 function Invoke-Gate1SecretsCanary {
-    if ($args.Count -ne 0 -or ($Template -and $ProductionTemplate) -or
-        (($Template -or $ProductionTemplate) -and ($ProfilePath -or $Live -or $Approval)) -or
+    if ($args.Count -ne 0 -or (([int]$Template.IsPresent + [int]$ProductionTemplate.IsPresent + [int]$DiagnosticTemplate.IsPresent) -gt 1) -or
+        (($Template -or $ProductionTemplate -or $DiagnosticTemplate) -and ($ProfilePath -or $Live -or $Approval)) -or
         ($Live -and (-not $ProfilePath -or $Approval -cnotmatch '^[a-f0-9]{64}$')) -or
         (-not $Live -and $Approval)) { throw 'Invalid canary mode.' }
     if ($Template) { return Invoke-Gate1SecretsNode '--template' }
     if ($ProductionTemplate) { return Invoke-Gate1SecretsNode '--template-production' }
+    if ($DiagnosticTemplate) { return Invoke-Gate1SecretsNode '--template-diagnostic' }
     if (-not $ProfilePath) { return Invoke-Gate1SecretsNode '--prepare' }
     $file = Get-Item -LiteralPath $ProfilePath
     if ($file.PSIsContainer -or $file.Extension -ine '.json' -or $file.Length -gt 16384 -or
@@ -171,7 +179,8 @@ function Invoke-Gate1SecretsCanary {
     if ($prepared.approvalId -cne $Approval -or -not (Test-Gate1SecretsReview $prepared $canaryProfile)) {
         throw 'Approval must match the reviewed canary and runner.'
     }
-    $confirmation = if ($canaryProfile.environment -ceq 'production') { 'RUN PRODUCTION CACHE CANARY ONCE' } else { 'RUN PREVIEW CANARY ONCE' }
+    $confirmation = if ($canaryProfile.caseId -ceq 'secret_probe_stage_diagnostic_only') { 'RUN PRIVATE SECRET STAGE DIAGNOSTIC ONCE' }
+        elseif ($canaryProfile.environment -ceq 'production') { 'RUN PRODUCTION CACHE CANARY ONCE' } else { 'RUN PREVIEW CANARY ONCE' }
     if ((Read-Host "Type $confirmation for this separately approved trial") -cne $confirmation) {
         throw 'Canary was not confirmed.'
     }
