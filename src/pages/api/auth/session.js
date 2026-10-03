@@ -27,6 +27,7 @@ import { OPERATIONS } from '../../../shared/constants/tiers.js';
 import { gate1RestartProbe } from '../../../server/lib/gate1RestartProbe.js';
 import { gate1SourceProbe } from '../../../server/lib/gate1SourceProbe.js';
 import { gate1SecretsProbe } from '../../../server/lib/gate1SecretsProbe.js';
+import { gate1SecretsTrace } from '../../../server/lib/gate1SecretsTrace.js';
 
 // Private request association avoids adding a caller-visible field or changing middleware.
 const sourceObservers = new WeakMap();
@@ -136,7 +137,8 @@ const sessionRoute = withRateLimit(handler, {
  * ceiling returns 429/503. The probe owns no response or limiter decision;
  * every request still traverses the method guard and normal shared ceiling.
  * Source/secret observations are request-local and emitted after the limiter's
- * decision. Secret observations require explicit Preview-only authorization.
+ * decision. Secret observations require separate deployment authorization.
+ * Optional expiring private tracing never authorizes an observer or route work.
  * Private associations are removed on success and thrown failures.
  *
  * @param {import('next').NextApiRequest} req original session request
@@ -144,15 +146,20 @@ const sessionRoute = withRateLimit(handler, {
  * @returns {Promise<object>} the existing composed route result
  */
 export default async function sessionWithRestartProbe(req, res) {
-  gate1RestartProbe.attach(req, res);
-  const observer = gate1SourceProbe.createObserver(req, res);
-  if (observer) sourceObservers.set(req, observer);
-  const secretObserver = gate1SecretsProbe.createObserver(req, res);
-  if (secretObserver) secretObservers.set(req, secretObserver);
+  const trace = gate1SecretsTrace.start(req);
+  let routeOutcome = 'threw';
   try {
-    return await sessionRoute(req, res);
+    gate1RestartProbe.attach(req, res);
+    const observer = gate1SourceProbe.createObserver(req, res);
+    if (observer) sourceObservers.set(req, observer);
+    const secretObserver = gate1SecretsProbe.createObserver(req, res, trace);
+    if (secretObserver) secretObservers.set(req, secretObserver);
+    const result = await sessionRoute(req, res);
+    routeOutcome = 'returned';
+    return result;
   } finally {
     sourceObservers.delete(req);
     secretObservers.delete(req);
+    trace?.finish(req, res, routeOutcome);
   }
 }

@@ -26,6 +26,73 @@ function fixture() {
 }
 
 describe('GATE-1 deployment secrets probe', () => {
+  /** Trace the actual first rejection; later credential/header checks must stay unexecuted. */
+  it.each([
+    ['probe_disabled', { GATE1_SECRETS_PROBE_ENABLED: 'false' }],
+    ['runtime_ineligible', { VERCEL: '0' }],
+    ['production_opt_in_missing', { VERCEL_ENV: 'production' }],
+    ['configured_credential_invalid', { GATE1_SECRETS_PROBE_SECRET: 'invalid' }],
+    ['raw_metadata_invalid', {}, { rawHeaders: ['odd'] }],
+    ['diagnostic_marker_invalid', {}, { diagnostic: '0' }],
+    ['authorization_invalid', {}, { authorization: 'invalid' }],
+    ['credential_mismatch', {}, { authorization: `Bearer ${'d'.repeat(64)}` }],
+    ['user_agent_invalid', {}, { marker: 'invalid' }],
+  ])('records only %s at its existing check', (reason, change, metadata = {}) => {
+    const { req, res } = fixture(), env = { ...ENV, ...change }, trace = { record: jest.fn() };
+    if (metadata.diagnostic) req.headers['x-gate1-secrets-diagnostic'] = metadata.diagnostic;
+    if (metadata.authorization) req.headers.authorization = metadata.authorization;
+    if (metadata.marker) req.headers['user-agent'] = metadata.marker;
+    req.rawHeaders = metadata.rawHeaders || Object.entries(req.headers).flat();
+    const later = jest.fn(() => { throw new Error('must not execute'); });
+    if (['probe_disabled', 'runtime_ineligible', 'production_opt_in_missing'].includes(reason)) {
+      Object.defineProperty(env, 'GATE1_SECRETS_PROBE_SECRET', { get: later });
+    } else if (reason === 'configured_credential_invalid') Object.defineProperty(req, 'rawHeaders', { get: later });
+    else if (reason === 'raw_metadata_invalid') Object.defineProperty(req, 'headers', { get: later });
+    else if (reason === 'diagnostic_marker_invalid') Object.defineProperty(req.headers, 'authorization', { get: later });
+    else if (['authorization_invalid', 'credential_mismatch'].includes(reason)) Object.defineProperty(req.headers, 'user-agent', { get: later });
+    expect(createGate1SecretsProbe({ env }).createObserver(req, res, trace)).toBeUndefined();
+    expect(trace.record.mock.calls).toEqual([['authentication', reason]]);
+    expect(later).not.toHaveBeenCalled(); expect(res.setHeader).not.toHaveBeenCalled();
+  });
+
+  /** Instrumentation must count invocations before suppressing duplicate header writes. */
+  it('counts duplicate callbacks while preserving the original one-shot emission', () => {
+    const { req, res } = fixture(), trace = { record: jest.fn() };
+    const observe = createGate1SecretsProbe({ env: ENV }).createObserver(req, res, trace);
+    observe(FACTS); observe(FACTS);
+    expect(trace.record.mock.calls).toEqual([['authentication', 'accepted'], ['invocation', undefined],
+      ['emission', 'header_set_returned'], ['invocation', undefined]]);
+    expect(res.setHeader).toHaveBeenCalledTimes(2);
+  });
+
+  /** Fixed emission reasons identify failure boundaries without exposing thrown values. */
+  it.each(['response_closed', 'facts_rejected', 'payload_oversized', 'header_write_failed', 'internal_error'])(
+    'records %s without changing the response', (reason) => {
+      const { req, res } = fixture(), trace = { record: jest.fn() };
+      const observe = createGate1SecretsProbe({ env: ENV }).createObserver(req, res, trace);
+      let facts = FACTS, spy;
+      if (reason === 'response_closed') res.headersSent = true;
+      if (reason === 'facts_rejected') facts = { ...FACTS, private: 'sentinel' };
+      if (reason === 'payload_oversized') spy = jest.spyOn(Buffer, 'byteLength').mockReturnValue(1537);
+      if (reason === 'header_write_failed') res.setHeader.mockImplementation(() => { throw new Error('sentinel'); });
+      if (reason === 'internal_error') facts = { get effectiveMode() { throw new Error('sentinel'); } };
+      try { expect(() => observe(facts)).not.toThrow(); } finally { spy?.mockRestore(); }
+      expect(trace.record).toHaveBeenLastCalledWith('emission', reason);
+      expect(res.getHeader(GATE1_SECRETS_PROBE_HEADER)).toBeUndefined();
+      expect(JSON.stringify(trace.record.mock.calls)).not.toContain('sentinel');
+    });
+
+  /** Probe-internal errors and broken diagnostic observers stay observational only. */
+  it('contains authentication and trace exceptions', () => {
+    const { req, res } = fixture(), trace = { record: jest.fn() };
+    const env = { get VERCEL_ENV() { throw new Error('sentinel'); } };
+    expect(createGate1SecretsProbe({ env }).createObserver(req, res, trace)).toBeUndefined();
+    expect(trace.record).toHaveBeenCalledWith('authentication', 'internal_error');
+    trace.record.mockImplementation(() => { throw new Error('trace failure'); });
+    const observe = createGate1SecretsProbe({ env: ENV }).createObserver(req, res, trace);
+    expect(() => observe(FACTS)).not.toThrow(); expect(res.getHeader(GATE1_SECRETS_PROBE_HEADER)).toBeDefined();
+  });
+
   it('emits strict value-free facts once with private no-store caching', () => {
     const { req, res } = fixture();
     const observe = createGate1SecretsProbe({ env: ENV }).createObserver(req, res);

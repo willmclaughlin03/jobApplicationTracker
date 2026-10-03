@@ -9,7 +9,7 @@ const { spawnSync, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const https = require('node:https');
-const { LIMITS, SUCCESS_CASE, CanaryError, profileTemplate, parseProfile, preparation, approvalId, selectedHeaders,
+const { LIMITS, SUCCESS_CASE, DIAGNOSTIC_CASE, DIAGNOSTIC_LIMITS, CanaryError, profileTemplate, parseProfile, preparation, approvalId, selectedHeaders,
   evidenceDirectory, createStore, runCanary, readInput, reviewProbe } = require('../../../scripts/gate1-secrets-canary');
 
 const ROOT = path.resolve(__dirname, '../../..');
@@ -44,6 +44,8 @@ afterAll(() => {
 function profile(time = START, caseId) {
   const value = { ...profileTemplate(caseId), hostname: 'job-application-tracker-fixture-track-the-app.vercel.app',
     deploymentId: 'dpl_fixtureCanary', gitSha: '1'.repeat(40), nextBuildId: 'fixture-build', reviewedAt: new Date(time).toISOString() };
+  if (caseId === DIAGNOSTIC_CASE) value.trace = { schemaVersion: 1, marker: `gate1-secrets-${'b'.repeat(32)}`,
+    startsAt: new Date(START).toISOString(), expiresAt: new Date(START + 900000).toISOString() };
   for (const name of Object.keys(value.attestations)) value.attestations[name] = true;
   return value;
 }
@@ -152,6 +154,7 @@ describe('Preview canary approval and fixed sequence', () => {
       ['git', ['status', '--porcelain', '--',
         'scripts/gate1-secrets-canary.js', 'scripts/run-gate1-secrets-canary.ps1',
         'scripts/gate1-host-protection.js', 'src/server/lib/gate1SecretsProbe.js',
+        'src/server/lib/gate1SecretsTrace.js', 'src/shared/logger.js',
         'src/server/lib/temporarySessionSecrets.js', 'src/server/lib/temporarySessionCeiling.js',
         'src/server/lib/temporarySessionSource.js', 'src/pages/api/auth/session.js',
         'src/server/middleware/withRateLimit.js', 'src/shared/response.js', 'src/shared/errors.js'], options],
@@ -477,6 +480,169 @@ describe('Production success/cache qualification', () => {
   });
 });
 
+const DIAGNOSTIC_ID = '12345678-1234-4123-8123-123456789abc';
+
+/** Produces the bounded discovery response, defaulting to the observed missing-header boundary. */
+function diagnosticReply(options, index, present = false) {
+  const response = successReply(options, index);
+  if (options.path === '/api/auth/session') {
+    response.headers['x-request-id'] = DIAGNOSTIC_ID;
+    if (!present) delete response.headers['x-gate1-secrets-probe'];
+  }
+  return response;
+}
+
+describe('private secret stage diagnostic runner', () => {
+  /** Both header outcomes require both builds but cannot qualify loader reuse. */
+  it.each([false, true])('uses exactly three sequential requests with header present=%s', async (present) => {
+    const selected = profile(START, DIAGNOSTIC_CASE), saved = [];
+    const { report, calls } = await trial((options, index) => diagnosticReply(options, index, present), {
+      profile: selected, deps: { store: { save(value) { saved.push(JSON.parse(JSON.stringify(value))); } } },
+    });
+    expect(report).toMatchObject({ result: 'completed', scope: DIAGNOSTIC_CASE, limits: DIAGNOSTIC_LIMITS,
+      appRequests: 3, validatedRequests: 3, unvalidatedAttempts: 0, failure: null,
+      attribution: 'operator_attested_snapshot_with_http_build_checks_only',
+      secretEvidence: 'unqualified', initializationEvidence: 'not_observed',
+      diagnostic: { requestId: DIAGNOSTIC_ID, probeHeader: present ? 'present' : 'missing', privateLog: 'not_reviewed' } });
+    expect(calls.map((call) => call.path)).toEqual(['/login', '/api/auth/session', '/login']);
+    expect(calls[1].headers['User-Agent']).toBe(selected.trace.marker);
+    expect(calls.filter((call) => call.headers.Authorization)).toHaveLength(1);
+    expect(report.receipts[1].requestId).toBe(DIAGNOSTIC_ID);
+    expect(report.observations).toHaveLength(present ? 1 : 0);
+    expect(saved.at(-1)).toEqual(report); expectPrivate(report);
+  });
+
+  /** Preparation is offline and pins the smaller budget, arming metadata and manual-log boundary. */
+  it('binds diagnostic scope and arming without generating or applying deployment configuration', () => {
+    expect(() => parseProfile(profileTemplate(DIAGNOSTIC_CASE))).toThrow('profile');
+    const selected = profile(START, DIAGNOSTIC_CASE), prepared = preparation(selected);
+    expect(prepared).toMatchObject({ liveApproved: false, appRequests: 0, providerRequests: 0,
+      limits: DIAGNOSTIC_LIMITS, scope: DIAGNOSTIC_CASE, sequence: ['buildBefore', 'probe1', 'buildAfter'] });
+    for (const change of [{ marker: `gate1-secrets-${'d'.repeat(32)}` }, { expiresAt: new Date(START + 800000).toISOString() }]) {
+      expect(approvalId({ ...selected, trace: { ...selected.trace, ...change } })).not.toBe(prepared.approvalId);
+    }
+    for (const name of ['traceConfigurationReviewed', 'privateLogPrivacyReviewed', 'privateLogAccessReviewed', 'singleManualLogInspectionApproved']) {
+      expect(() => parseProfile({ ...selected, attestations: { ...selected.attestations, [name]: false } })).toThrow('profile');
+    }
+  });
+
+  /** Newly bound server and logging bytes invalidate old approval digests. */
+  it.each(['src/server/lib/gate1SecretsTrace.js', 'src/shared/logger.js'])('binds %s into approval', (relative) => {
+    const selected = profile(START, DIAGNOSTIC_CASE), initial = approvalId(selected), read = fs.readFileSync;
+    const spy = jest.spyOn(fs, 'readFileSync').mockImplementation((name, ...args) => {
+      const value = read(name, ...args);
+      return name === path.join(ROOT, relative) ? Buffer.concat([value, Buffer.from('\n// fixture')]) : value;
+    });
+    try { expect(approvalId(selected)).not.toBe(initial); } finally { spy.mockRestore(); }
+  });
+
+  /** The only relaxed outcome is absence; every unexpected response still stops immediately. */
+  it.each([
+    ['transport', 'transport'], ['redirect', 'redirect'], ['status', 'session_status'], ['body', 'body_contract'],
+    ['cache', 'cache_contract'], ['cookie', 'cookie_contract'], ['retry', 'cache_contract'], ['cdn', 'cache_contract'],
+    ['json', 'probe_contract'], ['schema', 'probe_contract'], ['marker', 'probe_contract'], ['environment', 'environment_mismatch'],
+    ['duplicate_probe', 'response_headers'], ['missing_id', 'correlation_contract'], ['bad_id', 'correlation_contract'],
+    ['uppercase_id', 'correlation_contract'], ['duplicate_id', 'response_headers'],
+  ])('stops at unexpected %s', async (variant, failure) => {
+    const { report, calls } = await trial((options, index) => {
+      const response = diagnosticReply(options, index, true);
+      if (index !== 1) return response;
+      if (variant === 'transport') response.error = true;
+      if (variant === 'redirect') response.status = 302;
+      if (variant === 'status') response.status = 503;
+      if (variant === 'body') response.body = '{}';
+      if (variant === 'cache') response.headers['cache-control'] = 'public';
+      if (variant === 'cookie') response.headers['set-cookie'] = PRIVATE;
+      if (variant === 'retry') response.headers['retry-after'] = '1';
+      if (variant === 'cdn') response.headers['cdn-cache-control'] = 'public';
+      if (variant === 'json') response.headers['x-gate1-secrets-probe'] = '{';
+      if (variant === 'schema') response.headers['x-gate1-secrets-probe'] = '{}';
+      if (variant === 'marker' || variant === 'environment') {
+        const value = JSON.parse(response.headers['x-gate1-secrets-probe']);
+        value[variant] = variant === 'marker' ? `gate1-secrets-${'d'.repeat(32)}` : 'preview';
+        response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
+      }
+      if (variant === 'missing_id') delete response.headers['x-request-id'];
+      if (variant === 'bad_id') response.headers['x-request-id'] = PRIVATE;
+      if (variant === 'uppercase_id') response.headers['x-request-id'] = DIAGNOSTIC_ID.toUpperCase();
+      if (variant.startsWith('duplicate_')) {
+        const name = variant === 'duplicate_id' ? 'x-request-id' : 'x-gate1-secrets-probe';
+        response.rawHeaders = [...Object.entries(response.headers).flat(), name.toUpperCase(), response.headers[name]];
+      }
+      return response;
+    }, { profile: profile(START, DIAGNOSTIC_CASE) });
+    expect(report).toMatchObject({ result: 'stopped', failure, appRequests: 2, stoppedPhase: 'probe1', secretEvidence: 'unqualified' });
+    expect(calls).toHaveLength(2);
+    if (['json', 'schema', 'marker', 'environment'].includes(variant)) expect(report.diagnostic.requestId).toBe(DIAGNOSTIC_ID);
+    expectPrivate(report);
+  });
+
+  /** Canonical IDs are still rejected when they echo a credential substring. */
+  it('rejects credential echoes before retaining the response correlation', async () => {
+    const { report } = await trial(diagnosticReply, { profile: profile(START, DIAGNOSTIC_CASE),
+      input: { credentials: { probeSecret: PROBE, bypassSecret: DIAGNOSTIC_ID.slice(0, 18) } } });
+    expect(report.failure).toBe('correlation_contract'); expect(report.diagnostic.requestId).toBeNull();
+    expect(JSON.stringify(report)).not.toContain(DIAGNOSTIC_ID.slice(0, 18));
+  });
+
+  /** Build mismatch before or after the single probe cannot result in a completed diagnostic. */
+  it.each([0, 2])('requires matching build at phase %s', async (phase) => {
+    const { report, calls } = await trial((options, index) => {
+      const response = diagnosticReply(options, index);
+      if (index === phase) response.body = response.body.replace('fixture-build', 'wrong-build');
+      return response;
+    }, { profile: profile(START, DIAGNOSTIC_CASE) });
+    expect(report.failure).toBe('build_mismatch'); expect(calls).toHaveLength(phase + 1);
+  });
+
+  /** The runner never dispatches outside arming or with less than a full trial budget remaining. */
+  it.each([-1, 840001, 900000])('refuses clock offset %s before storage or dispatch', async (offset) => {
+    const save = jest.fn(), selected = profile(START - Math.max(0, -offset), DIAGNOSTIC_CASE);
+    const { report, calls } = await trial(diagnosticReply, { profile: selected,
+      deps: { wall: () => START + offset, store: { save } } });
+    expect(report.failure).toBe('trace_window'); expect(calls).toHaveLength(0); expect(save).not.toHaveBeenCalled();
+  });
+
+  /** Slow checkpoints must be followed by another physical-dispatch window check. */
+  it('rechecks arming after a slow checkpoint consumes the remaining buffer', async () => {
+    let elapsed = 0;
+    const selected = profile(START, DIAGNOSTIC_CASE);
+    selected.trace.expiresAt = new Date(START + 60000).toISOString();
+    const { report, calls } = await trial(diagnosticReply, { profile: selected,
+      deps: { now: () => elapsed, wall: () => START + elapsed, store: { save() { elapsed += 1; } } } });
+    expect(report.failure).toBe('trace_window'); expect(calls).toHaveLength(0);
+  });
+
+  /** Request timeout destroys the one pending stream and prevents the final build. */
+  it('keeps the ten-second request deadline and never retries', async () => {
+    jest.useFakeTimers();
+    const pending = trial((options, index) => index === 1 ? { hang: true } : diagnosticReply(options, index),
+      { profile: profile(START, DIAGNOSTIC_CASE) });
+    await jest.advanceTimersByTimeAsync(10000);
+    const { report, calls, requests } = await pending;
+    expect(report.failure).toBe('deadline'); expect(calls).toHaveLength(2); expect(requests[1].destroy).toHaveBeenCalled();
+  });
+
+  /** Changing marker or approval never frees a consumed deployment/case reservation. */
+  it('preserves durable reports and prevents replay across marker changes', async () => {
+    const selected = profile(START, DIAGNOSTIC_CASE), location = directory();
+    const store = createStore(selected, approvalId(selected), location);
+    const { report } = await trial(diagnosticReply, { profile: selected, deps: { store } });
+    expect(JSON.parse(fs.readFileSync(store.reportPath, 'utf8'))).toEqual(report);
+    const changed = { ...selected, trace: { ...selected.trace, marker: `gate1-secrets-${'d'.repeat(32)}` } };
+    expect(() => createStore(changed, approvalId(changed), location)).toThrow('reservation');
+  });
+
+  /** Persistence failure retains the correlation and cannot promote the diagnostic to qualification. */
+  it('stops if evidence persistence fails after the missing-header observation', async () => {
+    const { report, calls } = await trial(diagnosticReply, { profile: profile(START, DIAGNOSTIC_CASE),
+      deps: { store: { save(value) { if (value.diagnostic?.requestId) throw new Error(PRIVATE); } } } });
+    expect(report).toMatchObject({ failure: 'local_evidence', finalCheckpoint: 'failed', secretEvidence: 'unqualified',
+      diagnostic: { requestId: DIAGNOSTIC_ID, probeHeader: 'missing' } });
+    expect(calls).toHaveLength(2); expectPrivate(report);
+  });
+});
+
 describe('sanitized probe failure detail', () => {
   describe.each([
     ['Preview', undefined, reply], ['Production', SUCCESS_CASE, successReply],
@@ -791,7 +957,7 @@ describe('bounded stdin and offline CLI', () => {
     const assertion = expect(running).rejects.toThrow('input'); await jest.advanceTimersByTimeAsync(15001); await assertion;
     expect(stream.listenerCount('data')).toBe(0);
   });
-  it.each([[], ['--template'], ['--template-production'], ['--review'], ['--live'], ['--unknown']].map((args) => [args]))('keeps CLI offline without a valid live envelope (%j)', (args) => {
+  it.each([[], ['--template'], ['--template-production'], ['--template-diagnostic'], ['--review'], ['--live'], ['--unknown']].map((args) => [args]))('keeps CLI offline without a valid live envelope (%j)', (args) => {
     const output = spawnSync(process.execPath, [CLI, ...args], { input: args[0] === '--review' ? JSON.stringify(profile()) : '{}',
       encoding: 'utf8', timeout: 5000, maxBuffer: 32768, windowsHide: true });
     expect(output.error).toBeUndefined();
@@ -822,6 +988,12 @@ windows('PowerShell launcher offline fixtures', () => {
     const output = powershell(`& ${quoted(LAUNCHER)} -ProductionTemplate\nexit $LASTEXITCODE`);
     expect(output.status).toBe(0);
     expect(JSON.parse(output.stdout)).toEqual(profileTemplate(SUCCESS_CASE));
+  });
+
+  /** The diagnostic template does not generate arming metadata or prompt for credentials. */
+  it('returns an unusable diagnostic template offline', () => {
+    const output = powershell(`& ${quoted(LAUNCHER)} -DiagnosticTemplate\nexit $LASTEXITCODE`);
+    expect(output.status).toBe(0); expect(JSON.parse(output.stdout)).toEqual(profileTemplate(DIAGNOSTIC_CASE));
   });
 
   it.each([
@@ -868,13 +1040,14 @@ try {
     }
   });
 
-  it.each([undefined, SUCCESS_CASE].flatMap((caseId) =>
+  it.each([undefined, SUCCESS_CASE, DIAGNOSTIC_CASE].flatMap((caseId) =>
     ['approve', 'wrong_hash', 'wrong_limits', 'wrong_scope', 'wrong_case', 'cancel', 'wrong_confirmation', 'offline', 'invalid_checkout']
       .map((mode) => [mode, caseId])))('reviews before hidden prompts (%s, %s)', (mode, caseId) => {
     const selected = profile(START, caseId);
     const location = directory(), file = path.join(location, 'profile.json'); fs.writeFileSync(file, JSON.stringify(selected));
     const digest = approvalId(selected);
-    const confirmation = caseId === SUCCESS_CASE ? 'RUN PRODUCTION CACHE CANARY ONCE' : 'RUN PREVIEW CANARY ONCE';
+    const confirmation = caseId === DIAGNOSTIC_CASE ? 'RUN PRIVATE SECRET STAGE DIAGNOSTIC ONCE'
+      : caseId === SUCCESS_CASE ? 'RUN PRODUCTION CACHE CANARY ONCE' : 'RUN PREVIEW CANARY ONCE';
     const otherConfirmation = caseId === SUCCESS_CASE ? 'RUN PREVIEW CANARY ONCE' : 'RUN PRODUCTION CACHE CANARY ONCE';
     const output = powershell(`
 . ${quoted(LAUNCHER)}
