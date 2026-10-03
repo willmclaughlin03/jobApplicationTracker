@@ -6,7 +6,8 @@
  * gate1-secrets-<32 lowercase hex>. Neither marker nor credential bypasses guards.
  * Production also requires GATE1_SECRETS_PROBE_PRODUCTION_ENABLED=true; the
  * existing enable flag alone continues to permit only Preview observations.
- * No secrets, source addresses, raw errors, logs, resets or transport operations.
+ * No secrets, source addresses, raw errors, resets or transport operations.
+ * Optional private trace callbacks receive only fixed stage outcomes.
  * Deployment/configuration and live requests require separate authorization.
  */
 import { timingSafeEqual } from 'node:crypto';
@@ -79,6 +80,11 @@ function singleton(req, name) {
   return count === 1 ? value : null;
 }
 
+/** Records an optional private stage without letting diagnostic failures affect eligibility. */
+function traceStage(trace, kind, value) {
+  try { trace?.record(kind, value); } catch { /* Observational only. */ }
+}
+
 /**
  * Creates a response-only adapter using an isolated env seam for fixture tests.
  * @param {object} [options] env is read at authentication, never retained in output
@@ -91,23 +97,27 @@ export function createGate1SecretsProbe(options = {}) {
    * Authenticates bounded, explicitly enabled deployment GET metadata.
    * @param {object} req original Node request, read only
    * @param {object} res existing route response; receives only no-store metadata
+   * @param {object} [trace] independently selected private stage sink; never authorizes observation
    * @returns {Function|undefined} one-shot synchronous observer; failures omit it
    */
-  function createObserver(req, res) {
+  function createObserver(req, res, trace) {
+    /** Preserves the first actual rejection without evaluating any later checks. */
+    function reject(reason) { traceStage(trace, 'authentication', reason); return undefined; }
     try {
       const environment = env.VERCEL_ENV;
-      if (env.GATE1_SECRETS_PROBE_ENABLED !== 'true' || req.method !== 'GET'
-        || env.NODE_ENV !== 'production' || env.VERCEL !== '1'
-        || (environment !== 'preview' && !(environment === 'production'
-          && env.GATE1_SECRETS_PROBE_PRODUCTION_ENABLED === 'true'))) return undefined;
+      if (env.GATE1_SECRETS_PROBE_ENABLED !== 'true') return reject('probe_disabled');
+      if (req.method !== 'GET' || env.NODE_ENV !== 'production' || env.VERCEL !== '1'
+        || (environment !== 'preview' && environment !== 'production')) return reject('runtime_ineligible');
+      if (environment === 'production' && env.GATE1_SECRETS_PROBE_PRODUCTION_ENABLED !== 'true') return reject('production_opt_in_missing');
       const secret = env.GATE1_SECRETS_PROBE_SECRET;
-      if (!credentialSchema.safeParse(secret).success || !validRawMetadata(req.rawHeaders)) return undefined;
-      if (singleton(req, GATE1_SECRETS_DIAGNOSTIC_HEADER) !== '1') return undefined;
+      if (!credentialSchema.safeParse(secret).success) return reject('configured_credential_invalid');
+      if (!validRawMetadata(req.rawHeaders)) return reject('raw_metadata_invalid');
+      if (singleton(req, GATE1_SECRETS_DIAGNOSTIC_HEADER) !== '1') return reject('diagnostic_marker_invalid');
       const authorization = singleton(req, 'authorization');
-      if (typeof authorization !== 'string' || !/^Bearer [a-f0-9]{64}$/.test(authorization)) return undefined;
-      if (!timingSafeEqual(Buffer.from(authorization.slice(7), 'hex'), Buffer.from(secret, 'hex'))) return undefined;
+      if (typeof authorization !== 'string' || !/^Bearer [a-f0-9]{64}$/.test(authorization)) return reject('authorization_invalid');
+      if (!timingSafeEqual(Buffer.from(authorization.slice(7), 'hex'), Buffer.from(secret, 'hex'))) return reject('credential_mismatch');
       const marker = singleton(req, 'user-agent');
-      if (!markerSchema.safeParse(marker).success) return undefined;
+      if (!markerSchema.safeParse(marker).success) return reject('user_agent_invalid');
       let used = false;
 
       /**
@@ -116,26 +126,32 @@ export function createGate1SecretsProbe(options = {}) {
        * @returns {void} failures never replace the normal status/body or decision
        */
       function observe(facts) {
+        traceStage(trace, 'invocation');
         if (used) return;
         used = true;
         try {
-          if (res.headersSent || res.writableEnded || res.finished) return;
+          if (res.headersSent || res.writableEnded || res.finished) { traceStage(trace, 'emission', 'response_closed'); return; }
           const parsed = factsSchema.safeParse(facts);
-          if (!parsed.success) return;
+          if (!parsed.success) { traceStage(trace, 'emission', 'facts_rejected'); return; }
           const value = JSON.stringify({
             schemaVersion: 2, scope: 'secret_loader_observation_only',
             environment, contextScope: 'loader', marker, ...parsed.data,
           });
-          if (Buffer.byteLength(value) > 1_536) return;
-          res.setHeader('Cache-Control', PRIVATE_NO_STORE);
-          res.setHeader(GATE1_SECRETS_PROBE_HEADER, value);
+          if (Buffer.byteLength(value) > 1_536) { traceStage(trace, 'emission', 'payload_oversized'); return; }
+          try {
+            res.setHeader('Cache-Control', PRIVATE_NO_STORE);
+            res.setHeader(GATE1_SECRETS_PROBE_HEADER, value);
+          } catch { traceStage(trace, 'emission', 'header_write_failed'); return; }
+          traceStage(trace, 'emission', 'header_set_returned');
         } catch {
+          traceStage(trace, 'emission', 'internal_error');
           // Omit evidence without retaining request, response, errors or credentials.
         }
       }
+      traceStage(trace, 'authentication', 'accepted');
       return observe;
     } catch {
-      return undefined;
+      return reject('internal_error');
     }
   }
   return { createObserver };

@@ -149,7 +149,31 @@ function isSourceObservationBody(statements, exported) {
       secretObservers.delete(req);
     }
   }`).program.body[0].body;
-  return actual === JSON.stringify(comparableSyntax(secretsTemplate));
+  if (actual === JSON.stringify(comparableSyntax(secretsTemplate))) return true;
+  const trustedTrace = statements.some((statement) => statement.type === 'ImportDeclaration'
+    && statement.source.value === '../../../server/lib/gate1SecretsTrace.js'
+    && statement.specifiers.some((specifier) => specifier.type === 'ImportSpecifier'
+      && isIdentifier(specifier.imported, 'gate1SecretsTrace') && isIdentifier(specifier.local, 'gate1SecretsTrace')));
+  if (!trustedTrace) return false;
+  const traceTemplate = parse(`async function expected(req, res) {
+    const trace = gate1SecretsTrace.start(req);
+    let routeOutcome = 'threw';
+    try {
+      gate1RestartProbe.attach(req, res);
+      const observer = gate1SourceProbe.createObserver(req, res);
+      if (observer) sourceObservers.set(req, observer);
+      const secretObserver = gate1SecretsProbe.createObserver(req, res, trace);
+      if (secretObserver) secretObservers.set(req, secretObserver);
+      const result = await sessionRoute(req, res);
+      routeOutcome = 'returned';
+      return result;
+    } finally {
+      sourceObservers.delete(req);
+      secretObservers.delete(req);
+      trace?.finish(req, res, routeOutcome);
+    }
+  }`).program.body[0].body;
+  return actual === JSON.stringify(comparableSyntax(traceTemplate));
 }
 
 /**
@@ -285,6 +309,31 @@ describe('API Route Safety', () => {
       if (secretObserver) secretObservers.set(req, secretObserver);
       try {`)
     .replace('sourceObservers.delete(req);', 'sourceObservers.delete(req);\nsecretObservers.delete(req);');
+
+  const traceObservationSource = fs.readFileSync(path.join(__dirname, '../../../pages/api/auth/session.js'), 'utf8');
+
+  /** The private trace remains an exact session-only wrapper with unconditional enforcement. */
+  it('accepts the exact trace composition only for the session route', () => {
+    expect(hasApprovedWrapper(traceObservationSource, 'pages/api/auth/session.js')).toBe(true);
+    expect(hasApprovedWrapper(traceObservationSource, 'pages/api/jobs.js')).toBe(false);
+  });
+
+  /** Reject diagnostic additions that could bypass enforcement, cleanup or trusted imports. */
+  it.each([
+    ['untrusted trace', '../../../server/lib/gate1SecretsTrace.js', './fake.js'],
+    ['wrong trace binding', 'import { gate1SecretsTrace }', 'import { fake as gate1SecretsTrace }'],
+    ['trace request substitution', 'gate1SecretsTrace.start(req)', 'gate1SecretsTrace.start({})'],
+    ['early return', 'const trace =', 'return handler(req, res); const trace ='],
+    ['conditional limiter', 'await sessionRoute(req, res)', 'trace ? await handler(req, res) : await sessionRoute(req, res)'],
+    ['swallowed error', '} finally {', '} catch { return {}; } finally {'],
+    ['cleanup omission', 'secretObservers.delete(req);', ''],
+    ['finalizer override', 'trace?.finish(req, res, routeOutcome);', 'return trace?.finish(req, res, routeOutcome);'],
+    ['request substitution', 'await sessionRoute(req, res)', 'await sessionRoute({}, res)'],
+    ['result substitution', 'return result;', 'return {};'],
+  ])('rejects trace wrapper with %s', (_label, before, after) => {
+    expect(traceObservationSource).toContain(before);
+    expect(hasApprovedWrapper(traceObservationSource.replace(before, after), 'pages/api/auth/session.js')).toBe(false);
+  });
 
   /** The additional observer must preserve the same exact delegation and cleanup. */
   it('accepts the exact Preview secrets observer only on the session route', () => {
