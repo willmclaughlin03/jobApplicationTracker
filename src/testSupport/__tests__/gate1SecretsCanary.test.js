@@ -9,7 +9,7 @@ const { spawnSync, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const https = require('node:https');
-const { LIMITS, SUCCESS_CASE, DIAGNOSTIC_CASE, DIAGNOSTIC_LIMITS, CanaryError, profileTemplate, parseProfile, preparation, approvalId, selectedHeaders,
+const { LIMITS, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE, DIAGNOSTIC_LIMITS, CanaryError, profileTemplate, parseProfile, preparation, approvalId, selectedHeaders,
   evidenceDirectory, createStore, runCanary, readInput, reviewProbe } = require('../../../scripts/gate1-secrets-canary');
 
 const ROOT = path.resolve(__dirname, '../../..');
@@ -44,7 +44,7 @@ afterAll(() => {
 function profile(time = START, caseId) {
   const value = { ...profileTemplate(caseId), hostname: 'job-application-tracker-fixture-track-the-app.vercel.app',
     deploymentId: 'dpl_fixtureCanary', gitSha: '1'.repeat(40), nextBuildId: 'fixture-build', reviewedAt: new Date(time).toISOString() };
-  if (caseId === DIAGNOSTIC_CASE) value.trace = { schemaVersion: 1, marker: `gate1-secrets-${'b'.repeat(32)}`,
+  if ([DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE].includes(caseId)) value.trace = { schemaVersion: 1, marker: `gate1-secrets-${'b'.repeat(32)}`,
     startsAt: new Date(START).toISOString(), expiresAt: new Date(START + 900000).toISOString() };
   for (const name of Object.keys(value.attestations)) value.attestations[name] = true;
   return value;
@@ -482,24 +482,27 @@ describe('Production success/cache qualification', () => {
 
 const DIAGNOSTIC_ID = '12345678-1234-4123-8123-123456789abc';
 
-/** Produces the bounded discovery response, defaulting to the observed missing-header boundary. */
-function diagnosticReply(options, index, present = false) {
-  const response = successReply(options, index);
+/** Produces case-specific diagnostic fixtures; warm applies only to the Preview failure sentinel. */
+function diagnosticReply(options, index, present = false, caseId = DIAGNOSTIC_CASE, warm = false) {
+  const response = caseId === PREVIEW_DIAGNOSTIC_CASE ? reply(options, index) : successReply(options, index);
   if (options.path === '/api/auth/session') {
     response.headers['x-request-id'] = DIAGNOSTIC_ID;
+    if (caseId === PREVIEW_DIAGNOSTIC_CASE) response.headers['x-gate1-secrets-probe'] = JSON.stringify(facts(options.headers['User-Agent'], warm));
     if (!present) delete response.headers['x-gate1-secrets-probe'];
   }
   return response;
 }
 
-describe('private secret stage diagnostic runner', () => {
+describe.each([DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE])('private stage runner %s', (caseId) => {
+  /** Supplies the selected environment's fixture contract to the shared bounded-run checks. */
+  function caseReply(options, index, present = false) { return diagnosticReply(options, index, present, caseId); }
   /** Both header outcomes require both builds but cannot qualify loader reuse. */
   it.each([false, true])('uses exactly three sequential requests with header present=%s', async (present) => {
-    const selected = profile(START, DIAGNOSTIC_CASE), saved = [];
-    const { report, calls } = await trial((options, index) => diagnosticReply(options, index, present), {
+    const selected = profile(START, caseId), saved = [];
+    const { report, calls } = await trial((options, index) => caseReply(options, index, present), {
       profile: selected, deps: { store: { save(value) { saved.push(JSON.parse(JSON.stringify(value))); } } },
     });
-    expect(report).toMatchObject({ result: 'completed', scope: DIAGNOSTIC_CASE, limits: DIAGNOSTIC_LIMITS,
+    expect(report).toMatchObject({ result: 'completed', scope: caseId, limits: DIAGNOSTIC_LIMITS,
       appRequests: 3, validatedRequests: 3, unvalidatedAttempts: 0, failure: null,
       attribution: 'operator_attested_snapshot_with_http_build_checks_only',
       secretEvidence: 'unqualified', initializationEvidence: 'not_observed',
@@ -514,10 +517,10 @@ describe('private secret stage diagnostic runner', () => {
 
   /** Preparation is offline and pins the smaller budget, arming metadata and manual-log boundary. */
   it('binds diagnostic scope and arming without generating or applying deployment configuration', () => {
-    expect(() => parseProfile(profileTemplate(DIAGNOSTIC_CASE))).toThrow('profile');
-    const selected = profile(START, DIAGNOSTIC_CASE), prepared = preparation(selected);
+    expect(() => parseProfile(profileTemplate(caseId))).toThrow('profile');
+    const selected = profile(START, caseId), prepared = preparation(selected);
     expect(prepared).toMatchObject({ liveApproved: false, appRequests: 0, providerRequests: 0,
-      limits: DIAGNOSTIC_LIMITS, scope: DIAGNOSTIC_CASE, sequence: ['buildBefore', 'probe1', 'buildAfter'] });
+      limits: DIAGNOSTIC_LIMITS, scope: caseId, sequence: ['buildBefore', 'probe1', 'buildAfter'] });
     for (const change of [{ marker: `gate1-secrets-${'d'.repeat(32)}` }, { expiresAt: new Date(START + 800000).toISOString() }]) {
       expect(approvalId({ ...selected, trace: { ...selected.trace, ...change } })).not.toBe(prepared.approvalId);
     }
@@ -528,7 +531,7 @@ describe('private secret stage diagnostic runner', () => {
 
   /** Newly bound server and logging bytes invalidate old approval digests. */
   it.each(['src/server/lib/gate1SecretsTrace.js', 'src/shared/logger.js'])('binds %s into approval', (relative) => {
-    const selected = profile(START, DIAGNOSTIC_CASE), initial = approvalId(selected), read = fs.readFileSync;
+    const selected = profile(START, caseId), initial = approvalId(selected), read = fs.readFileSync;
     const spy = jest.spyOn(fs, 'readFileSync').mockImplementation((name, ...args) => {
       const value = read(name, ...args);
       return name === path.join(ROOT, relative) ? Buffer.concat([value, Buffer.from('\n// fixture')]) : value;
@@ -545,11 +548,11 @@ describe('private secret stage diagnostic runner', () => {
     ['uppercase_id', 'correlation_contract'], ['duplicate_id', 'response_headers'],
   ])('stops at unexpected %s', async (variant, failure) => {
     const { report, calls } = await trial((options, index) => {
-      const response = diagnosticReply(options, index, true);
+      const response = caseReply(options, index, true);
       if (index !== 1) return response;
       if (variant === 'transport') response.error = true;
       if (variant === 'redirect') response.status = 302;
-      if (variant === 'status') response.status = 503;
+      if (variant === 'status') response.status = caseId === PREVIEW_DIAGNOSTIC_CASE ? 200 : 503;
       if (variant === 'body') response.body = '{}';
       if (variant === 'cache') response.headers['cache-control'] = 'public';
       if (variant === 'cookie') response.headers['set-cookie'] = PRIVATE;
@@ -559,7 +562,7 @@ describe('private secret stage diagnostic runner', () => {
       if (variant === 'schema') response.headers['x-gate1-secrets-probe'] = '{}';
       if (variant === 'marker' || variant === 'environment') {
         const value = JSON.parse(response.headers['x-gate1-secrets-probe']);
-        value[variant] = variant === 'marker' ? `gate1-secrets-${'d'.repeat(32)}` : 'preview';
+        value[variant] = variant === 'marker' ? `gate1-secrets-${'d'.repeat(32)}` : caseId === PREVIEW_DIAGNOSTIC_CASE ? 'production' : 'preview';
         response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
       }
       if (variant === 'missing_id') delete response.headers['x-request-id'];
@@ -570,7 +573,7 @@ describe('private secret stage diagnostic runner', () => {
         response.rawHeaders = [...Object.entries(response.headers).flat(), name.toUpperCase(), response.headers[name]];
       }
       return response;
-    }, { profile: profile(START, DIAGNOSTIC_CASE) });
+    }, { profile: profile(START, caseId) });
     expect(report).toMatchObject({ result: 'stopped', failure, appRequests: 2, stoppedPhase: 'probe1', secretEvidence: 'unqualified' });
     expect(calls).toHaveLength(2);
     if (['json', 'schema', 'marker', 'environment'].includes(variant)) expect(report.diagnostic.requestId).toBe(DIAGNOSTIC_ID);
@@ -579,7 +582,7 @@ describe('private secret stage diagnostic runner', () => {
 
   /** Canonical IDs are still rejected when they echo a credential substring. */
   it('rejects credential echoes before retaining the response correlation', async () => {
-    const { report } = await trial(diagnosticReply, { profile: profile(START, DIAGNOSTIC_CASE),
+    const { report } = await trial(caseReply, { profile: profile(START, caseId),
       input: { credentials: { probeSecret: PROBE, bypassSecret: DIAGNOSTIC_ID.slice(0, 18) } } });
     expect(report.failure).toBe('correlation_contract'); expect(report.diagnostic.requestId).toBeNull();
     expect(JSON.stringify(report)).not.toContain(DIAGNOSTIC_ID.slice(0, 18));
@@ -588,17 +591,17 @@ describe('private secret stage diagnostic runner', () => {
   /** Build mismatch before or after the single probe cannot result in a completed diagnostic. */
   it.each([0, 2])('requires matching build at phase %s', async (phase) => {
     const { report, calls } = await trial((options, index) => {
-      const response = diagnosticReply(options, index);
+      const response = caseReply(options, index);
       if (index === phase) response.body = response.body.replace('fixture-build', 'wrong-build');
       return response;
-    }, { profile: profile(START, DIAGNOSTIC_CASE) });
+    }, { profile: profile(START, caseId) });
     expect(report.failure).toBe('build_mismatch'); expect(calls).toHaveLength(phase + 1);
   });
 
   /** The runner never dispatches outside arming or with less than a full trial budget remaining. */
   it.each([-1, 840001, 900000])('refuses clock offset %s before storage or dispatch', async (offset) => {
-    const save = jest.fn(), selected = profile(START - Math.max(0, -offset), DIAGNOSTIC_CASE);
-    const { report, calls } = await trial(diagnosticReply, { profile: selected,
+    const save = jest.fn(), selected = profile(START - Math.max(0, -offset), caseId);
+    const { report, calls } = await trial(caseReply, { profile: selected,
       deps: { wall: () => START + offset, store: { save } } });
     expect(report.failure).toBe('trace_window'); expect(calls).toHaveLength(0); expect(save).not.toHaveBeenCalled();
   });
@@ -606,9 +609,9 @@ describe('private secret stage diagnostic runner', () => {
   /** Slow checkpoints must be followed by another physical-dispatch window check. */
   it('rechecks arming after a slow checkpoint consumes the remaining buffer', async () => {
     let elapsed = 0;
-    const selected = profile(START, DIAGNOSTIC_CASE);
+    const selected = profile(START, caseId);
     selected.trace.expiresAt = new Date(START + 60000).toISOString();
-    const { report, calls } = await trial(diagnosticReply, { profile: selected,
+    const { report, calls } = await trial(caseReply, { profile: selected,
       deps: { now: () => elapsed, wall: () => START + elapsed, store: { save() { elapsed += 1; } } } });
     expect(report.failure).toBe('trace_window'); expect(calls).toHaveLength(0);
   });
@@ -616,8 +619,8 @@ describe('private secret stage diagnostic runner', () => {
   /** Request timeout destroys the one pending stream and prevents the final build. */
   it('keeps the ten-second request deadline and never retries', async () => {
     jest.useFakeTimers();
-    const pending = trial((options, index) => index === 1 ? { hang: true } : diagnosticReply(options, index),
-      { profile: profile(START, DIAGNOSTIC_CASE) });
+    const pending = trial((options, index) => index === 1 ? { hang: true } : caseReply(options, index),
+      { profile: profile(START, caseId) });
     await jest.advanceTimersByTimeAsync(10000);
     const { report, calls, requests } = await pending;
     expect(report.failure).toBe('deadline'); expect(calls).toHaveLength(2); expect(requests[1].destroy).toHaveBeenCalled();
@@ -625,9 +628,9 @@ describe('private secret stage diagnostic runner', () => {
 
   /** Changing marker or approval never frees a consumed deployment/case reservation. */
   it('preserves durable reports and prevents replay across marker changes', async () => {
-    const selected = profile(START, DIAGNOSTIC_CASE), location = directory();
+    const selected = profile(START, caseId), location = directory();
     const store = createStore(selected, approvalId(selected), location);
-    const { report } = await trial(diagnosticReply, { profile: selected, deps: { store } });
+    const { report } = await trial(caseReply, { profile: selected, deps: { store } });
     expect(JSON.parse(fs.readFileSync(store.reportPath, 'utf8'))).toEqual(report);
     const changed = { ...selected, trace: { ...selected.trace, marker: `gate1-secrets-${'d'.repeat(32)}` } };
     expect(() => createStore(changed, approvalId(changed), location)).toThrow('reservation');
@@ -635,11 +638,81 @@ describe('private secret stage diagnostic runner', () => {
 
   /** Persistence failure retains the correlation and cannot promote the diagnostic to qualification. */
   it('stops if evidence persistence fails after the missing-header observation', async () => {
-    const { report, calls } = await trial(diagnosticReply, { profile: profile(START, DIAGNOSTIC_CASE),
+    const { report, calls } = await trial(caseReply, { profile: profile(START, caseId),
       deps: { store: { save(value) { if (value.diagnostic?.requestId) throw new Error(PRIVATE); } } } });
     expect(report).toMatchObject({ failure: 'local_evidence', finalCheckpoint: 'failed', secretEvidence: 'unqualified',
       diagnostic: { requestId: DIAGNOSTIC_ID, probeHeader: 'missing' } });
     expect(calls).toHaveLength(2); expectPrivate(report);
+  });
+});
+
+/** Preview diagnostics deliberately investigate an already-used loader without qualifying it. */
+describe('Preview stage diagnostics preserve qualification boundaries', () => {
+  /** Missing-input snapshot attestations remain explicit; fresh-loader evidence cannot be asserted here. */
+  it('requires Preview diagnostic attestations and rejects Production/profile substitutions', () => {
+    const selected = profile(START, PREVIEW_DIAGNOSTIC_CASE);
+    expect(selected.environment).toBe('preview');
+    expect(selected.attestations).toMatchObject({ bothApplicationSecretsAbsent: true,
+      previewOverridesReviewed: true, productionCredentialsExcluded: true, warmLoaderDiagnosticScopeReviewed: true });
+    expect(selected.attestations.freshLoaderTrialReviewed).toBeUndefined();
+    for (const name of Object.keys(selected.attestations)) {
+      expect(() => parseProfile({ ...selected, attestations: { ...selected.attestations, [name]: false } })).toThrow('profile');
+    }
+    for (const change of [{ environment: 'production' }, { caseId: DIAGNOSTIC_CASE },
+      { attestations: profile().attestations }, { trace: undefined }]) {
+      expect(() => parseProfile({ ...selected, ...change })).toThrow('profile');
+    }
+    expect(preparation(selected).limitations).toContain('warm_failure_permitted_for_diagnosis_only');
+  });
+
+  /** A warm negative observation can diagnose emission but never passes the original fresh-loader trial. */
+  it.each([false, true])('records Preview loader state with warm=%s without qualification', async (warm) => {
+    const selected = profile(START, PREVIEW_DIAGNOSTIC_CASE);
+    const { report } = await trial((options, index) => diagnosticReply(options, index, true, PREVIEW_DIAGNOSTIC_CASE, warm),
+      { profile: selected });
+    expect(report).toMatchObject({ result: 'completed', appRequests: 3, validatedRequests: 3,
+      secretEvidence: 'unqualified', initializationEvidence: 'not_observed', diagnostic: { privateLog: 'not_reviewed' } });
+    expect(report.observations).toEqual([expect.objectContaining({ environment: 'preview',
+      cacheStateBefore: warm ? 'permanent_failure' : 'uninitialized', validationAttempts: 1 })]);
+    expectPrivate(report);
+    if (warm) {
+      const negative = await trial((options, index) => diagnosticReply(options, index, true, PREVIEW_DIAGNOSTIC_CASE, true));
+      expect(negative.report).toMatchObject({ result: 'stopped', failure: 'loader_already_initialized', appRequests: 2 });
+    }
+  });
+
+  /** Warm allowance never permits contradictory cache state, downstream work or a different negative case. */
+  it.each(['cached_pair', 'downstream', 'redis_stage', 'present_input', 'multiple_attempts'])('rejects %s observations', async (variant) => {
+    const { report, calls } = await trial((options, index) => {
+      const response = diagnosticReply(options, index, true, PREVIEW_DIAGNOSTIC_CASE, true);
+      if (index === 1) {
+        const value = JSON.parse(response.headers['x-gate1-secrets-probe']);
+        if (variant === 'cached_pair') value.loaderStateBefore.hasCachedPair = true;
+        if (variant === 'downstream') value.redisAttempted = true;
+        if (variant === 'redis_stage') value.loader.validationStage = 'redis';
+        if (variant === 'present_input') value.loader.hmacInput = 'present';
+        if (variant === 'multiple_attempts') value.loader.validationAttempts = 2;
+        response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
+      }
+      return response;
+    }, { profile: profile(START, PREVIEW_DIAGNOSTIC_CASE) });
+    expect(report).toMatchObject({ result: 'stopped', failure: 'secret_contract', secretEvidence: 'unqualified' });
+    expect(calls).toHaveLength(2); expectPrivate(report);
+  });
+
+  /** A new diagnostic case cannot overwrite or free the consumed qualification reservation. */
+  it('preserves both case reservations across fresh profiles', async () => {
+    const location = directory(), negative = profile(), selected = profile(START, PREVIEW_DIAGNOSTIC_CASE);
+    createStore(negative, approvalId(negative), location);
+    const reservation = path.join(location, `${negative.deploymentId}-${negative.caseId}.reservation.json`);
+    const original = fs.readFileSync(reservation, 'utf8');
+    const store = createStore(selected, approvalId(selected), location);
+    const { report } = await trial((options, index) => diagnosticReply(options, index, false, PREVIEW_DIAGNOSTIC_CASE),
+      { profile: selected, deps: { store } });
+    expect(report.result).toBe('completed');
+    expect(fs.readFileSync(reservation, 'utf8')).toBe(original);
+    for (const value of [negative, selected]) expect(() => createStore({ ...value, reviewedAt: new Date(START + 1).toISOString() },
+      approvalId(value), location)).toThrow('reservation');
   });
 });
 
@@ -957,7 +1030,7 @@ describe('bounded stdin and offline CLI', () => {
     const assertion = expect(running).rejects.toThrow('input'); await jest.advanceTimersByTimeAsync(15001); await assertion;
     expect(stream.listenerCount('data')).toBe(0);
   });
-  it.each([[], ['--template'], ['--template-production'], ['--template-diagnostic'], ['--review'], ['--live'], ['--unknown']].map((args) => [args]))('keeps CLI offline without a valid live envelope (%j)', (args) => {
+  it.each([[], ['--template'], ['--template-production'], ['--template-diagnostic'], ['--template-preview-diagnostic'], ['--review'], ['--live'], ['--unknown']].map((args) => [args]))('keeps CLI offline without a valid live envelope (%j)', (args) => {
     const output = spawnSync(process.execPath, [CLI, ...args], { input: args[0] === '--review' ? JSON.stringify(profile()) : '{}',
       encoding: 'utf8', timeout: 5000, maxBuffer: 32768, windowsHide: true });
     expect(output.error).toBeUndefined();
@@ -991,9 +1064,9 @@ windows('PowerShell launcher offline fixtures', () => {
   });
 
   /** The diagnostic template does not generate arming metadata or prompt for credentials. */
-  it('returns an unusable diagnostic template offline', () => {
-    const output = powershell(`& ${quoted(LAUNCHER)} -DiagnosticTemplate\nexit $LASTEXITCODE`);
-    expect(output.status).toBe(0); expect(JSON.parse(output.stdout)).toEqual(profileTemplate(DIAGNOSTIC_CASE));
+  it.each([['DiagnosticTemplate', DIAGNOSTIC_CASE], ['PreviewDiagnosticTemplate', PREVIEW_DIAGNOSTIC_CASE]])('returns an unusable %s offline', (flag, caseId) => {
+    const output = powershell(`& ${quoted(LAUNCHER)} -${flag}\nexit $LASTEXITCODE`);
+    expect(output.status).toBe(0); expect(JSON.parse(output.stdout)).toEqual(profileTemplate(caseId));
   });
 
   it.each([
@@ -1040,13 +1113,14 @@ try {
     }
   });
 
-  it.each([undefined, SUCCESS_CASE, DIAGNOSTIC_CASE].flatMap((caseId) =>
+  it.each([undefined, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE].flatMap((caseId) =>
     ['approve', 'wrong_hash', 'wrong_limits', 'wrong_scope', 'wrong_case', 'cancel', 'wrong_confirmation', 'offline', 'invalid_checkout']
       .map((mode) => [mode, caseId])))('reviews before hidden prompts (%s, %s)', (mode, caseId) => {
     const selected = profile(START, caseId);
     const location = directory(), file = path.join(location, 'profile.json'); fs.writeFileSync(file, JSON.stringify(selected));
     const digest = approvalId(selected);
-    const confirmation = caseId === DIAGNOSTIC_CASE ? 'RUN PRIVATE SECRET STAGE DIAGNOSTIC ONCE'
+    const confirmation = caseId === PREVIEW_DIAGNOSTIC_CASE ? 'RUN PREVIEW SECRET STAGE DIAGNOSTIC ONCE'
+      : caseId === DIAGNOSTIC_CASE ? 'RUN PRIVATE SECRET STAGE DIAGNOSTIC ONCE'
       : caseId === SUCCESS_CASE ? 'RUN PRODUCTION CACHE CANARY ONCE' : 'RUN PREVIEW CANARY ONCE';
     const otherConfirmation = caseId === SUCCESS_CASE ? 'RUN PREVIEW CANARY ONCE' : 'RUN PRODUCTION CACHE CANARY ONCE';
     const output = powershell(`
