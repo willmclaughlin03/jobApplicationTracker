@@ -14,6 +14,10 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-10-04
+
+- `2026-10-04` - `GATE-1 Preview private stage diagnostic`: Added a separate three-request Preview diagnostic for the expected missing-secrets 503 contract, with request-ID correlation, bounded trace selection, a case-specific template/confirmation and explicit probe credential naming. A missing header or valid warm failure can support investigation without qualifying initialization or cache reuse. All 505 focused tests, changed-file lint, syntax and whitespace checks pass. Live testing remains separately approved; GATE-1 stays open.
+
 ### Week of 2026-09-27
 
 - `2026-10-03` - `GATE-1 private secret-probe stage diagnostic`: Added default-off, expiring request selection and one private stage event per loaded module, with generated request-ID correlation and strict sanitized-record review. Added a separate three-request diagnostic case, source-bound approval, arming-window checks and durable replay protection. All 794 tests across ten focused suites, changed-file lint, JavaScript/PowerShell syntax and whitespace checks pass. No live diagnostic ran; this locates a failure boundary and cannot qualify secret-cache reuse or close GATE-1.

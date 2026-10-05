@@ -22,6 +22,7 @@ const LIMITS = Object.freeze({ maxAppRequests: 4, maxProviderRequests: 0,
 const CASE = 'both_application_secrets_missing';
 const SUCCESS_CASE = 'production_secret_success_cache';
 const DIAGNOSTIC_CASE = 'secret_probe_stage_diagnostic_only';
+const PREVIEW_DIAGNOSTIC_CASE = 'preview_secret_probe_stage_diagnostic_only';
 const DIAGNOSTIC_LIMITS = Object.freeze({ ...LIMITS, maxAppRequests: 3, traceBytes: 1024 });
 const PROJECT = 'prj_b2nMrysMSJtpmqoeGx5g0WGgGuom';
 const TEAM = 'team_7o3efmwjZbMc2Bfy9qAzkc9q';
@@ -35,6 +36,9 @@ const SUCCESS_ATTESTATIONS = ['sourceCodeReviewed', 'deploymentSnapshotReviewed'
   'noConcurrentDeploymentsOrConfigurationChanges', 'warmLoaderReuseScopeReviewed'];
 const DIAGNOSTIC_ATTESTATIONS = [...SUCCESS_ATTESTATIONS.filter((name) => name !== 'warmLoaderReuseScopeReviewed'),
   'traceConfigurationReviewed', 'privateLogAccessReviewed', 'privateLogPrivacyReviewed', 'singleManualLogInspectionApproved'];
+const PREVIEW_DIAGNOSTIC_ATTESTATIONS = [...ATTESTATIONS.filter((name) => name !== 'freshLoaderTrialReviewed'),
+  'warmLoaderDiagnosticScopeReviewed', 'traceConfigurationReviewed', 'privateLogAccessReviewed',
+  'privateLogPrivacyReviewed', 'singleManualLogInspectionApproved'];
 const traceSchema = z.object({ schemaVersion: z.literal(1),
   marker: z.string().length(46).regex(/^gate1-secrets-[a-f0-9]{32}$/),
   startsAt: z.string().datetime(), expiresAt: z.string().datetime(),
@@ -56,6 +60,8 @@ const profileSchema = z.discriminatedUnion('caseId', [
     attestations: z.object(Object.fromEntries(SUCCESS_ATTESTATIONS.map((name) => [name, z.literal(true)]))).strict() }).strict(),
   z.object({ ...profileFields, caseId: z.literal(DIAGNOSTIC_CASE), environment: z.literal('production'), trace: traceSchema,
     attestations: z.object(Object.fromEntries(DIAGNOSTIC_ATTESTATIONS.map((name) => [name, z.literal(true)]))).strict() }).strict(),
+  z.object({ ...profileFields, caseId: z.literal(PREVIEW_DIAGNOSTIC_CASE), environment: z.literal('preview'), trace: traceSchema,
+    attestations: z.object(Object.fromEntries(PREVIEW_DIAGNOSTIC_ATTESTATIONS.map((name) => [name, z.literal(true)]))).strict() }).strict(),
 ]);
 const credentialsSchema = z.object({ probeSecret: z.string().regex(/^[a-f0-9]{64}$/),
   bypassSecret: z.string().min(16).max(512).regex(/^[\x21-\x7e]+$/) }).strict();
@@ -93,25 +99,29 @@ function parseProfile(value) {
   return parsed.data;
 }
 
+/** Identifies the two investigation-only cases; neither can qualify secret loading or reuse. */
+function isDiagnosticCase(caseId) { return caseId === DIAGNOSTIC_CASE || caseId === PREVIEW_DIAGNOSTIC_CASE; }
+
 /** Produces an unusable local template with no inferred deployment or approvals. */
 function profileTemplate(caseId = CASE) {
-  if (![CASE, SUCCESS_CASE, DIAGNOSTIC_CASE].includes(caseId)) throw new CanaryError('profile');
-  const diagnostic = caseId === DIAGNOSTIC_CASE, success = caseId !== CASE;
+  if (![CASE, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE].includes(caseId)) throw new CanaryError('profile');
+  const diagnostic = isDiagnosticCase(caseId), success = caseId === SUCCESS_CASE || caseId === DIAGNOSTIC_CASE;
   return { schemaVersion: 1, caseId, projectId: PROJECT, teamId: TEAM,
     environment: success ? 'production' : 'preview', hostname: '', deploymentId: '', gitSha: '', nextBuildId: '',
     accessMode: 'automation_bypass', reviewedAt: '',
     ...(diagnostic ? { trace: { schemaVersion: 1, marker: '', startsAt: '', expiresAt: '' } } : {}),
-    attestations: Object.fromEntries((diagnostic ? DIAGNOSTIC_ATTESTATIONS : success ? SUCCESS_ATTESTATIONS : ATTESTATIONS).map((name) => [name, false])) };
+    attestations: Object.fromEntries((caseId === PREVIEW_DIAGNOSTIC_CASE ? PREVIEW_DIAGNOSTIC_ATTESTATIONS
+      : diagnostic ? DIAGNOSTIC_ATTESTATIONS : success ? SUCCESS_ATTESTATIONS : ATTESTATIONS).map((name) => [name, false])) };
 }
 
 /** Maps a validated case to its evidence scope; no other qualification is implied. */
 function evidenceScope(caseId) {
-  if (caseId === DIAGNOSTIC_CASE) return DIAGNOSTIC_CASE;
+  if (isDiagnosticCase(caseId)) return caseId;
   return caseId === SUCCESS_CASE ? 'production_secret_success_cache_only' : 'preview_missing_secrets_only';
 }
 
 /** Selects immutable case-specific bounds for approval, preparation and physical dispatch. */
-function caseLimits(caseId) { return caseId === DIAGNOSTIC_CASE ? DIAGNOSTIC_LIMITS : LIMITS; }
+function caseLimits(caseId) { return isDiagnosticCase(caseId) ? DIAGNOSTIC_LIMITS : LIMITS; }
 
 /** Binds target, limits and source bytes to review only from a clean, matching checkout. */
 function approvalId(profile) {
@@ -133,14 +143,15 @@ function approvalId(profile) {
 function preparation(value = null) {
   const profile = value === null ? null : parseProfile(value);
   const success = profile?.caseId === SUCCESS_CASE;
-  const diagnostic = profile?.caseId === DIAGNOSTIC_CASE;
+  const diagnostic = isDiagnosticCase(profile?.caseId);
   return { schemaVersion: 1, mode: 'prepare', scope: evidenceScope(profile?.caseId),
     liveApproved: false, gate1Status: 'open', appRequests: 0, providerRequests: 0,
     profile, approvalId: profile ? approvalId(profile) : null, limits: caseLimits(profile?.caseId),
     sequence: diagnostic ? ['buildBefore', 'probe1', 'buildAfter'] : ['buildBefore', 'probe1', 'probe2', 'buildAfter'],
     nextStep: profile ? 'obtain_separate_live_approval' : 'complete_local_profile',
     limitations: diagnostic ? ['private_stage_diagnostic_only', 'no_secret_qualification',
-      'single_manual_private_log_inspection_is_separate_external_work', 'no_guaranteed_log_delivery', 'no_independent_waf_evidence']
+      'single_manual_private_log_inspection_is_separate_external_work', 'no_guaranteed_log_delivery', 'no_independent_waf_evidence',
+      ...(profile.caseId === PREVIEW_DIAGNOSTIC_CASE ? ['expected_503_only', 'warm_failure_permitted_for_diagnosis_only'] : [])]
       : ['operator_attested_snapshot_with_runtime_environment_check', 'loader_identity_only',
       ...(success ? ['warm_first_loader_does_not_prove_initialization', 'no_missing_malformed_or_environment_isolation_evidence']
         : ['hmac_rejection_precedes_redis_validation', 'no_hosted_success_or_malformed_cases']),
@@ -270,11 +281,12 @@ const observationSchema = z.object({ schemaVersion: z.literal(2), scope: z.liter
 /**
  * Validates the case-specific body, environment and loader facts, not merely status. Provider content
  * stays transient; return only fixed facts and the nonsecret loader identifier.
- * firstId null permits warm success but requires fresh failure; otherwise requires memoized reuse.
+ * firstId null requires fresh failure for qualification; the Preview diagnostic alone permits a
+ * warm failure and missing observation. It never establishes initialization or cache reuse.
  */
 function reviewProbe(response, marker, firstId = null, caseId = CASE) {
-  if (![CASE, SUCCESS_CASE, DIAGNOSTIC_CASE].includes(caseId)) throw new CanaryError('profile');
-  const success = caseId !== CASE;
+  if (![CASE, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE].includes(caseId)) throw new CanaryError('profile');
+  const success = caseId === SUCCESS_CASE || caseId === DIAGNOSTIC_CASE;
   if (response.status !== (success ? 200 : 503)) throw new CanaryError('session_status');
   const cache = reviewCache(response.headers);
   if (!/^application\/json(?:\s*;|$)/i.test(response.headers['content-type'] || '')) throw new CanaryError('body_contract');
@@ -288,7 +300,7 @@ function reviewProbe(response, marker, firstId = null, caseId = CASE) {
     throw new CanaryError('body_contract');
   }
   const raw = response.headers['x-gate1-secrets-probe'];
-  if (raw === undefined && caseId === DIAGNOSTIC_CASE) return { cache, probeHeader: 'missing' };
+  if (raw === undefined && isDiagnosticCase(caseId)) return { cache, probeHeader: 'missing' };
   if (raw === undefined) throw new CanaryError('probe_contract', 'header_missing');
   if (typeof raw !== 'string') throw new CanaryError('probe_contract', 'header_invalid');
   if (Buffer.byteLength(raw) > LIMITS.probeBytes) throw new CanaryError('probe_contract', 'header_oversized');
@@ -322,12 +334,14 @@ function reviewProbe(response, marker, firstId = null, caseId = CASE) {
     || loader.hasCachedPair || !loader.permanentFailure || loader.validationAttempts !== 1) {
     throw new CanaryError('secret_contract');
   }
-  if (firstId === null && (before.hasCachedPair || before.permanentFailure)) throw new CanaryError('loader_already_initialized');
+  if (caseId === PREVIEW_DIAGNOSTIC_CASE) {
+    if (before.hasCachedPair) throw new CanaryError('secret_contract');
+  } else if (firstId === null && (before.hasCachedPair || before.permanentFailure)) throw new CanaryError('loader_already_initialized');
   if (firstId !== null && (before.hasCachedPair || !before.permanentFailure)) throw new CanaryError('secret_contract');
   return { cache, environment: 'preview', loaderId: loader.loaderId, sourceAccepted: true, secretMode: 'vercel',
     validationStage: 'hmac', bothInputsMissing: true, validationAttempts: 1,
     hasCachedPair: false, permanentFailure: true, downstreamAttempted: false,
-    cacheStateBefore: firstId === null ? 'uninitialized' : 'permanent_failure' };
+    cacheStateBefore: before.permanentFailure ? 'permanent_failure' : 'uninitialized' };
 }
 
 /** Resolves the shared checkout's ignored evidence directory across linked worktrees. */
@@ -410,7 +424,7 @@ async function runCanary(input, deps = {}) {
       liveApproved: z.literal(true), credentials: credentialsSchema }).strict().safeParse(input);
     if (!parsed.success) throw new CanaryError('input');
     const { profile, approval, credentials } = parsed.data;
-    const diagnostic = profile.caseId === DIAGNOSTIC_CASE, limits = caseLimits(profile.caseId);
+    const diagnostic = isDiagnosticCase(profile.caseId), limits = caseLimits(profile.caseId);
     report.limits = limits;
     if (diagnostic) {
       report.diagnostic = { requestId: null, probeHeader: 'not_evaluated', privateLog: 'not_reviewed' };
@@ -573,9 +587,10 @@ function readInput(stream = process.stdin) {
 /** Exact offline-default CLI; only --live accepts a separately approved credential envelope. */
 async function main(args) {
   try {
-    if (args.length > 1 || (args.length && !['--prepare', '--template', '--template-production', '--template-diagnostic', '--review', '--live'].includes(args[0]))) throw new CanaryError('arguments');
+    if (args.length > 1 || (args.length && !['--prepare', '--template', '--template-production', '--template-diagnostic', '--template-preview-diagnostic', '--review', '--live'].includes(args[0]))) throw new CanaryError('arguments');
     if (args[0] !== '--live') {
-      const value = args[0] === '--template-diagnostic' ? profileTemplate(DIAGNOSTIC_CASE)
+      const value = args[0] === '--template-preview-diagnostic' ? profileTemplate(PREVIEW_DIAGNOSTIC_CASE)
+        : args[0] === '--template-diagnostic' ? profileTemplate(DIAGNOSTIC_CASE)
         : args[0] === '--template-production' ? profileTemplate(SUCCESS_CASE)
         : args[0] === '--template' ? profileTemplate() : args[0] === '--review' ? preparation(await readInput()) : preparation();
       process.stdout.write(JSON.stringify(value, null, 2) + '\n'); return;
@@ -592,6 +607,6 @@ async function main(args) {
   } catch { process.stderr.write('Canary preparation/execution failed. Do not rerun automatically.\n'); process.exitCode = 1; }
 }
 
-module.exports = { LIMITS, CASE, SUCCESS_CASE, DIAGNOSTIC_CASE, DIAGNOSTIC_LIMITS, CanaryError, profileTemplate, parseProfile, approvalId, preparation,
+module.exports = { LIMITS, CASE, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE, DIAGNOSTIC_LIMITS, CanaryError, profileTemplate, parseProfile, approvalId, preparation,
   selectedHeaders, exchange, reviewProbe, evidenceDirectory, createStore, runCanary, readInput };
 if (require.main === module) void main(process.argv.slice(2));
