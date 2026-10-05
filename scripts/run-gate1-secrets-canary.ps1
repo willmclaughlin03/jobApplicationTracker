@@ -5,13 +5,15 @@ only. No provider API, saved authentication files, deployment or configuration w
 #>
 [CmdletBinding()]
 param([switch]$Template, [switch]$ProductionTemplate, [switch]$DiagnosticTemplate, [switch]$PreviewDiagnosticTemplate,
+    [switch]$MissingRedisTemplate, [switch]$MalformedHmacTemplate, [switch]$MalformedRedisTemplate,
     [string]$ProfilePath, [switch]$Live, [string]$Approval)
 $ErrorActionPreference = 'Stop'
 
 <# Run a fixed Node mode with bounded stdin, streaming output caps and a 90s deadline. Raw stderr is discarded. #>
 function Invoke-Gate1SecretsNode([string]$Mode, [string]$InputJson = '') {
     $utf8 = New-Object Text.UTF8Encoding($false)
-    if ($Mode -cnotin @('--prepare', '--template', '--template-production', '--template-diagnostic', '--template-preview-diagnostic', '--review', '--live') -or
+    if ($Mode -cnotin @('--prepare', '--template', '--template-production', '--template-diagnostic', '--template-preview-diagnostic',
+        '--template-missing-redis', '--template-malformed-hmac', '--template-malformed-redis', '--review', '--live') -or
         $utf8.GetByteCount($InputJson) -gt 16384) { throw 'Invalid canary input.' }
     $runner = Join-Path $PSScriptRoot 'gate1-secrets-canary.js'
     $startInfo = New-Object Diagnostics.ProcessStartInfo
@@ -115,12 +117,41 @@ function Test-Gate1SecretsEqual($Actual, $Expected) {
     return $true
 }
 
+<# Independently pin each synthetic case's fixture, scope, attestations and typed confirmation before prompting. #>
+function Get-Gate1SyntheticCase([string]$CaseId) {
+    switch -CaseSensitive ($CaseId) {
+        'redis_input_missing' { return @{ FixtureId = 'synthetic_hmac_redis_absent_v1'; Scope = 'preview_missing_redis_only';
+            Attestations = @('syntheticHmacKeyringValidated', 'redisInputAbsent'); Confirmation = 'RUN PREVIEW MISSING REDIS ONCE' } }
+        'hmac_input_malformed' { return @{ FixtureId = 'invalid_hmac_json_redis_absent_v1'; Scope = 'preview_malformed_hmac_only';
+            Attestations = @('malformedHmacInputReviewed', 'redisInputAbsent'); Confirmation = 'RUN PREVIEW MALFORMED HMAC ONCE' } }
+        'redis_input_malformed' { return @{ FixtureId = 'synthetic_hmac_invalid_redis_json_v1'; Scope = 'preview_malformed_redis_only';
+            Attestations = @('syntheticHmacKeyringValidated', 'malformedRedisInputReviewed'); Confirmation = 'RUN PREVIEW MALFORMED REDIS ONCE' } }
+        default { return $null }
+    }
+}
+
 <# Check the reviewed profile, fixed request budget and offline state before any confirmation or credential prompt. #>
 function Test-Gate1SecretsReview($Prepared, $canaryProfile) {
     $limits = @{ maxAppRequests = 4; maxProviderRequests = 0; maxConfigMutations = 0; concurrency = 1;
         requestMs = 10000; overallMs = 60000; buildBytes = 1048576; sessionBytes = 8192; probeBytes = 1536;
         headerBytes = 16384; inputBytes = 16384; reportBytes = 16384; profileAgeMs = 900000 }
     $preview = $canaryProfile.environment -ceq 'preview' -and $canaryProfile.caseId -ceq 'both_application_secrets_missing'
+    $synthetic = Get-Gate1SyntheticCase $canaryProfile.caseId
+    if ($null -ne $synthetic) {
+        $names = @('sourceCodeReviewed', 'deploymentSnapshotReviewed', 'previewOverridesReviewed',
+            'productionCredentialsExcluded', 'explicitVercelModes', 'probeConfigured', 'protectionAccessApproved',
+            'credentialLoggingReviewed', 'noConcurrentDeploymentsOrConfigurationChanges', 'freshLoaderTrialReviewed',
+            'syntheticInputsReviewed', 'fixtureLocallyValidated', 'noUsableRedisCredentials', 'productionConfigurationUnchanged') + $synthetic.Attestations
+        $attestations = @{}
+        foreach ($name in $names) { $attestations[$name] = $true }
+        $keys = @('schemaVersion', 'caseId', 'projectId', 'teamId', 'environment', 'hostname', 'deploymentId',
+            'gitSha', 'nextBuildId', 'accessMode', 'reviewedAt', 'fixtureId', 'attestations')
+        if ($canaryProfile.environment -cne 'preview' -or $canaryProfile.fixtureId -cne $synthetic.FixtureId -or
+            @($canaryProfile.PSObject.Properties.Name).Count -ne $keys.Count -or
+            @($canaryProfile.PSObject.Properties.Name | Where-Object { $_ -cnotin $keys }).Count -ne 0 -or
+            -not (Test-Gate1SecretsEqual $canaryProfile.attestations $attestations)) { return $false }
+        $preview = $true
+    }
     $production = $canaryProfile.environment -ceq 'production' -and $canaryProfile.caseId -ceq 'production_secret_success_cache'
     $previewDiagnostic = $canaryProfile.environment -ceq 'preview' -and $canaryProfile.caseId -ceq 'preview_secret_probe_stage_diagnostic_only'
     $diagnostic = $previewDiagnostic -or ($canaryProfile.environment -ceq 'production' -and $canaryProfile.caseId -ceq 'secret_probe_stage_diagnostic_only')
@@ -130,7 +161,8 @@ function Test-Gate1SecretsReview($Prepared, $canaryProfile) {
         $limits.traceBytes = 1024
         $sequence = @('buildBefore', 'probe1', 'buildAfter')
     }
-    $scope = if ($diagnostic) { $canaryProfile.caseId } elseif ($production) { 'production_secret_success_cache_only' } else { 'preview_missing_secrets_only' }
+    $scope = if ($null -ne $synthetic) { $synthetic.Scope } elseif ($diagnostic) { $canaryProfile.caseId }
+        elseif ($production) { 'production_secret_success_cache_only' } else { 'preview_missing_secrets_only' }
     return (Test-Gate1SecretsEqual $Prepared.profile $canaryProfile) -and
         (Test-Gate1SecretsEqual $Prepared.limits $limits) -and
         (Test-Gate1SecretsEqual $Prepared.sequence $sequence) -and
@@ -161,14 +193,19 @@ function Read-Gate1SecretsCredential([string]$Prompt) {
 
 <# Review bounded local JSON first; only an exact approval and typed confirmation permit the stdin credential envelope. #>
 function Invoke-Gate1SecretsCanary {
-    if ($args.Count -ne 0 -or (([int]$Template.IsPresent + [int]$ProductionTemplate.IsPresent + [int]$DiagnosticTemplate.IsPresent + [int]$PreviewDiagnosticTemplate.IsPresent) -gt 1) -or
-        (($Template -or $ProductionTemplate -or $DiagnosticTemplate -or $PreviewDiagnosticTemplate) -and ($ProfilePath -or $Live -or $Approval)) -or
+    $templateCount = [int]$Template.IsPresent + [int]$ProductionTemplate.IsPresent + [int]$DiagnosticTemplate.IsPresent +
+        [int]$PreviewDiagnosticTemplate.IsPresent + [int]$MissingRedisTemplate.IsPresent + [int]$MalformedHmacTemplate.IsPresent + [int]$MalformedRedisTemplate.IsPresent
+    if ($args.Count -ne 0 -or $templateCount -gt 1 -or
+        ($templateCount -gt 0 -and ($ProfilePath -or $Live -or $Approval)) -or
         ($Live -and (-not $ProfilePath -or $Approval -cnotmatch '^[a-f0-9]{64}$')) -or
         (-not $Live -and $Approval)) { throw 'Invalid canary mode.' }
     if ($Template) { return Invoke-Gate1SecretsNode '--template' }
     if ($ProductionTemplate) { return Invoke-Gate1SecretsNode '--template-production' }
     if ($DiagnosticTemplate) { return Invoke-Gate1SecretsNode '--template-diagnostic' }
     if ($PreviewDiagnosticTemplate) { return Invoke-Gate1SecretsNode '--template-preview-diagnostic' }
+    if ($MissingRedisTemplate) { return Invoke-Gate1SecretsNode '--template-missing-redis' }
+    if ($MalformedHmacTemplate) { return Invoke-Gate1SecretsNode '--template-malformed-hmac' }
+    if ($MalformedRedisTemplate) { return Invoke-Gate1SecretsNode '--template-malformed-redis' }
     if (-not $ProfilePath) { return Invoke-Gate1SecretsNode '--prepare' }
     $file = Get-Item -LiteralPath $ProfilePath
     if ($file.PSIsContainer -or $file.Extension -ine '.json' -or $file.Length -gt 16384 -or
@@ -182,7 +219,9 @@ function Invoke-Gate1SecretsCanary {
     if ($prepared.approvalId -cne $Approval -or -not (Test-Gate1SecretsReview $prepared $canaryProfile)) {
         throw 'Approval must match the reviewed canary and runner.'
     }
-    $confirmation = if ($canaryProfile.caseId -ceq 'preview_secret_probe_stage_diagnostic_only') { 'RUN PREVIEW SECRET STAGE DIAGNOSTIC ONCE' }
+    $synthetic = Get-Gate1SyntheticCase $canaryProfile.caseId
+    $confirmation = if ($null -ne $synthetic) { $synthetic.Confirmation }
+        elseif ($canaryProfile.caseId -ceq 'preview_secret_probe_stage_diagnostic_only') { 'RUN PREVIEW SECRET STAGE DIAGNOSTIC ONCE' }
         elseif ($canaryProfile.caseId -ceq 'secret_probe_stage_diagnostic_only') { 'RUN PRIVATE SECRET STAGE DIAGNOSTIC ONCE' }
         elseif ($canaryProfile.environment -ceq 'production') { 'RUN PRODUCTION CACHE CANARY ONCE' } else { 'RUN PREVIEW CANARY ONCE' }
     if ((Read-Host "Type $confirmation for this separately approved trial") -cne $confirmation) {
