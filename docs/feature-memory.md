@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-04
 
+- `2026-10-05` - `GATE-1 synthetic Preview secret cases`: Added fixed missing-Redis, malformed-HMAC and malformed-Redis cases to the offline-default canary and PowerShell launcher, with case-specific fixture attestations, approval bindings, confirmations and evidence scopes. Each preserves the four-request budget, fresh-first/same-second loader checks and consumed reservations. All 584 tests across the canary/launcher, loader and probe suites, targeted lint, syntax and whitespace checks pass. Application behavior is unchanged; deployment/configuration and live trials remain separately approved.
+
 - `2026-10-04` - `GATE-1 Preview private stage diagnostic`: Added a separate three-request Preview diagnostic for the expected missing-secrets 503 contract, with request-ID correlation, bounded trace selection, a case-specific template/confirmation and explicit probe credential naming. A missing header or valid warm failure can support investigation without qualifying initialization or cache reuse. All 505 focused tests, changed-file lint, syntax and whitespace checks pass. Live testing remains separately approved; GATE-1 stays open.
 
 ### Week of 2026-09-27

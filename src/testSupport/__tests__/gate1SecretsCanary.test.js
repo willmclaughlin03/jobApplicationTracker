@@ -9,6 +9,9 @@ const { spawnSync, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const https = require('node:https');
+const { randomBytes } = require('node:crypto');
+const { createTemporarySessionSecrets, parseTemporarySessionHmacSecret,
+  parseTemporarySessionRedisSecret } = require('../../server/lib/temporarySessionSecrets');
 const { LIMITS, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE, DIAGNOSTIC_LIMITS, CanaryError, profileTemplate, parseProfile, preparation, approvalId, selectedHeaders,
   evidenceDirectory, createStore, runCanary, readInput, reviewProbe } = require('../../../scripts/gate1-secrets-canary');
 
@@ -20,6 +23,20 @@ const PROBE = 'c7'.repeat(32);
 const BYPASS = 'fixture_only_bypass_credential';
 const PRIVATE = 'untrusted_response_sentinel';
 const LOADER = 'a1'.repeat(16);
+const SYNTHETIC_CASES = [
+  { id: 'redis_input_missing', stage: 'redis', redisInput: 'missing',
+    fixtureId: 'synthetic_hmac_redis_absent_v1', scope: 'preview_missing_redis_only',
+    evidence: 'missing_redis_and_same_loader_failure_observed', template: 'MissingRedisTemplate',
+    option: '--template-missing-redis', confirmation: 'RUN PREVIEW MISSING REDIS ONCE' },
+  { id: 'hmac_input_malformed', stage: 'hmac', redisInput: 'missing',
+    fixtureId: 'invalid_hmac_json_redis_absent_v1', scope: 'preview_malformed_hmac_only',
+    evidence: 'malformed_hmac_and_same_loader_failure_observed', template: 'MalformedHmacTemplate',
+    option: '--template-malformed-hmac', confirmation: 'RUN PREVIEW MALFORMED HMAC ONCE' },
+  { id: 'redis_input_malformed', stage: 'redis', redisInput: 'present',
+    fixtureId: 'synthetic_hmac_invalid_redis_json_v1', scope: 'preview_malformed_redis_only',
+    evidence: 'malformed_redis_and_same_loader_failure_observed', template: 'MalformedRedisTemplate',
+    option: '--template-malformed-redis', confirmation: 'RUN PREVIEW MALFORMED REDIS ONCE' },
+];
 const directories = [];
 let nativeGuard;
 beforeAll(() => { nativeGuard = jest.spyOn(https, 'request').mockImplementation(() => { throw new Error('Network forbidden'); }); });
@@ -67,6 +84,17 @@ function reply(options, index) {
   return { status: 503, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'private, no-store',
     'x-vercel-cache': 'BYPASS', 'x-gate1-secrets-probe': JSON.stringify(facts(options.headers['User-Agent'], index === 2)) },
   body: JSON.stringify({ data: null, error: 'SERVICE_UNAVAILABLE', message: 'Service temporarily unavailable. Please try again later.' }) };
+}
+
+/** Supply controlled stage/presence facts for adversarial synthetic-case responses without HTTP. */
+function syntheticReply(options, index, spec) {
+  const response = reply(options, index);
+  if (options.path !== '/login') {
+    const value = JSON.parse(response.headers['x-gate1-secrets-probe']);
+    Object.assign(value.loader, { validationStage: spec.stage, hmacInput: 'present', redisInput: spec.redisInput });
+    response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
+  }
+  return response;
 }
 
 /** Builds the Production success contract with either observed initialization or a warm first loader. */
@@ -261,6 +289,160 @@ describe('Preview canary approval and fixed sequence', () => {
     const selected = { ...profile(), nextBuildId: BYPASS };
     const { report, calls } = await trial(undefined, { profile: selected });
     expect(report.failure).toBe('credentials'); expect(report.target).toBeNull(); expect(calls).toHaveLength(0); expectPrivate(report);
+  });
+});
+
+describe.each(SYNTHETIC_CASES)('synthetic Preview qualification: $id', (spec) => {
+  it('binds a fixed fixture and false template attestations without generating secret inputs', () => {
+    const template = profileTemplate(spec.id), selected = profile(START, spec.id), prepared = preparation(selected);
+    expect(template).toMatchObject({ caseId: spec.id, environment: 'preview', fixtureId: spec.fixtureId });
+    expect(Object.values(template.attestations).every((value) => value === false)).toBe(true);
+    expect(() => parseProfile(template)).toThrow('profile');
+    expect(prepared).toMatchObject({ scope: spec.scope, liveApproved: false, appRequests: 0, providerRequests: 0,
+      limits: LIMITS, sequence: ['buildBefore', 'probe1', 'probe2', 'buildAfter'] });
+    expect(prepared.limitations).toContain('fixture_provenance_operator_attested');
+    expect(prepared.limitations).not.toContain('no_hosted_success_or_malformed_cases');
+    expect(new Set([approvalId(profile()), ...SYNTHETIC_CASES.map((entry) => approvalId(profile(START, entry.id)))]).size).toBe(4);
+    for (const key of Object.keys(selected.attestations)) {
+      expect(() => parseProfile({ ...selected, attestations: { ...selected.attestations, [key]: false } })).toThrow('profile');
+    }
+  });
+
+  it('qualifies real local parser failure and cache reuse using only synthetic input', async () => {
+    const key = randomBytes(32).toString('base64url');
+    const hmac = JSON.stringify({ schemaVersion: 1, active: { generation: 1, keyId: 'gate1_fixture', key }, previous: null });
+    const malformed = '{';
+    expect(() => parseTemporarySessionHmacSecret(hmac)).not.toThrow();
+    expect(() => parseTemporarySessionHmacSecret(malformed)).toThrow('temporary session secrets are unavailable');
+    expect(() => parseTemporarySessionRedisSecret(malformed)).toThrow('temporary session secrets are unavailable');
+    const env = { NODE_ENV: 'production', VERCEL: '1', TEMPORARY_SESSION_CEILING_SECRET_MODE: 'vercel',
+      TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON: spec.stage === 'hmac' ? malformed : hmac,
+      ...(spec.redisInput === 'present' ? { TEMPORARY_SESSION_CEILING_UPSTASH_JSON: malformed } : {}) };
+    const events = jest.fn(), loader = createTemporarySessionSecrets({ env, onEvent: events });
+    const observations = [];
+    for (let i = 0; i < 2; i += 1) {
+      const value = facts('gate1-secrets-' + '0'.repeat(32), i === 1);
+      value.loaderStateBefore = loader.getSnapshot();
+      await expect(loader.getRuntimePair()).rejects.toThrow('temporary session secrets are unavailable');
+      value.loader = loader.getDiagnosticSnapshot(); observations.push(value);
+    }
+    expect(events).toHaveBeenCalledTimes(1);
+    const { report, calls } = await trial((options, index) => {
+      const response = reply(options, index);
+      if (options.path !== '/login') response.headers['x-gate1-secrets-probe'] = JSON.stringify({
+        ...observations[index - 1], marker: options.headers['User-Agent'] });
+      return response;
+    }, { profile: profile(START, spec.id) });
+    expect(report).toMatchObject({ result: 'completed', scope: spec.scope, secretEvidence: spec.evidence,
+      appRequests: 4, validatedRequests: 4, unvalidatedAttempts: 0, failure: null });
+    expect(calls.map((call) => call.path)).toEqual(['/login', '/api/auth/session', '/api/auth/session', '/login']);
+    expect(report.observations.map((o) => o.cacheStateBefore)).toEqual(['uninitialized', 'permanent_failure']);
+    expect(new Set(report.observations.map((o) => o.loaderId)).size).toBe(1);
+    for (const observation of report.observations) expect(observation).toMatchObject({
+      hmacInput: 'present', redisInput: spec.redisInput, validationStage: spec.stage,
+      validationAttempts: 1, hasCachedPair: false, permanentFailure: true, downstreamAttempted: false });
+    expect(JSON.stringify(report)).not.toContain(key);
+    expect(JSON.stringify(report)).not.toContain(hmac);
+    expectPrivate(report);
+  });
+
+  it.each(['production', 'fixture', 'raw_fixture', 'unknown', 'unattested'])('rejects %s profiles before storage or traffic', async (change) => {
+    const selected = profile(START, spec.id), invalid = JSON.parse(JSON.stringify(selected)), save = jest.fn();
+    if (change === 'production') invalid.environment = 'production';
+    if (change === 'fixture') invalid.fixtureId = 'unreviewed_fixture';
+    if (change === 'raw_fixture') invalid.fixture = PRIVATE;
+    if (change === 'unknown') invalid.caseId = '__proto__';
+    if (change === 'unattested') delete invalid.attestations.fixtureLocallyValidated;
+    const { report, calls } = await trial(undefined, { profile: selected, input: { profile: invalid }, deps: { store: { save } } });
+    expect(report.failure).toBe('input'); expect(calls).toHaveLength(0); expect(save).not.toHaveBeenCalled(); expectPrivate(report);
+  });
+
+  it('rejects another case approval before storage or HTTP', async () => {
+    const save = jest.fn();
+    const other = SYNTHETIC_CASES.find((entry) => entry.id !== spec.id);
+    const { report, calls } = await trial(undefined, { profile: profile(START, spec.id),
+      input: { approval: approvalId(profile(START, other.id)) }, deps: { store: { save } } });
+    expect(report.failure).toBe('approval'); expect(calls).toHaveLength(0); expect(save).not.toHaveBeenCalled(); expectPrivate(report);
+  });
+
+  it.each([
+    ['wrong stage', 'secret_contract', (v) => { v.loader.validationStage = spec.stage === 'redis' ? 'hmac' : 'redis'; }],
+    ['missing HMAC', 'secret_contract', (v) => { v.loader.hmacInput = 'missing'; }],
+    ['wrong Redis presence', 'secret_contract', (v) => { v.loader.redisInput = spec.redisInput === 'missing' ? 'present' : 'missing'; }],
+    ['unread input', 'secret_contract', (v) => { v.loader.redisInput = 'not_read'; }],
+    ['revalidation', 'secret_contract', (v) => { v.loader.validationAttempts = 2; }],
+    ['cached pair', 'secret_contract', (v) => { v.loader.hasCachedPair = true; }],
+    ['nonpermanent failure', 'secret_contract', (v) => { v.loader.permanentFailure = false; }],
+    ['identity work', 'secret_contract', (v) => { v.identityAttempted = true; }],
+    ['Redis work', 'secret_contract', (v) => { v.redisAttempted = true; }],
+    ['script work', 'secret_contract', (v) => { v.scriptAttempted = true; }],
+    ['allow', 'secret_contract', (v) => { v.allowed = true; }],
+    ['source rejection', 'source_rejected', (v) => { v.sourceResolution = 'rejected'; }],
+    ['warm first loader', 'loader_already_initialized', (v) => { v.loaderStateBefore.permanentFailure = true; }],
+    ['credential-shaped extra', 'probe_contract', (v) => { v.loader.fixtureValue = PRIVATE; }],
+  ])('rejects %s even with a 503 and stops before probe2', async (_label, failure, mutate) => {
+    const { report, calls } = await trial((options, index) => {
+      const response = syntheticReply(options, index, spec);
+      if (index === 1) {
+        const value = JSON.parse(response.headers['x-gate1-secrets-probe']); mutate(value);
+        response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
+      }
+      return response;
+    }, { profile: profile(START, spec.id) });
+    expect(report).toMatchObject({ result: 'stopped', failure, secretEvidence: 'unqualified', stoppedPhase: 'probe1' });
+    expect(report.observations).toEqual([]); expect(calls).toHaveLength(2); expectPrivate(report);
+  });
+
+  it.each(['different', 'uncached'])('rejects a %s second loader without retry', async (change) => {
+    const { report, calls } = await trial((options, index) => {
+      const response = syntheticReply(options, index, spec);
+      if (index === 2) {
+        const value = JSON.parse(response.headers['x-gate1-secrets-probe']);
+        if (change === 'different') value.loader.loaderId = 'b2'.repeat(16); else value.loaderStateBefore.permanentFailure = false;
+        response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
+      }
+      return response;
+    }, { profile: profile(START, spec.id) });
+    expect(report.failure).toBe(change === 'different' ? 'loader_changed' : 'secret_contract');
+    expect(report.secretEvidence).toBe('unqualified'); expect(calls).toHaveLength(3); expectPrivate(report);
+  });
+
+  it.each(['header_missing', 'status', 'body', 'cache', 'size', 'redirect'])('stops on %s and preserves consumed evidence', async (change) => {
+    const selected = profile(START, spec.id), location = directory(), store = createStore(selected, approvalId(selected), location);
+    const { report, calls } = await trial((options, index) => {
+      const response = syntheticReply(options, index, spec);
+      if (index === 1) {
+        if (change === 'header_missing') delete response.headers['x-gate1-secrets-probe'];
+        if (change === 'status') response.status = 200;
+        if (change === 'body') response.body = JSON.stringify({ error: PRIVATE });
+        if (change === 'cache') response.headers['x-vercel-cache'] = 'HIT';
+        if (change === 'size') response.body = PRIVATE.repeat(8192);
+        if (change === 'redirect') response.status = 307;
+      }
+      return response;
+    }, { profile: selected, deps: { store } });
+    expect(report).toMatchObject({ result: 'stopped', secretEvidence: 'unqualified', stoppedPhase: 'probe1' });
+    expect(calls).toHaveLength(2); expect(JSON.parse(fs.readFileSync(store.reportPath))).toEqual(report);
+    const fresh = profile(START + 1, spec.id);
+    expect(() => createStore(fresh, approvalId(fresh), location)).toThrow('reservation'); expectPrivate(report);
+  });
+
+  it('expires a hung session once without attempting another request', async () => {
+    jest.useFakeTimers();
+    const running = trial((options, index) => index === 1 ? { hang: true } : syntheticReply(options, index, spec),
+      { profile: profile(START, spec.id) });
+    await jest.advanceTimersByTimeAsync(10001);
+    const { report, calls } = await running;
+    expect(report.failure).toBe('deadline'); expect(calls).toHaveLength(2); expect(jest.getTimerCount()).toBe(0); expectPrivate(report);
+  });
+
+  it.each([4, 10])('does not accept or proceed after checkpoint failure %s', async (failAt) => {
+    let count = 0;
+    const save = jest.fn(() => { if (++count >= failAt) throw new Error(PRIVATE); });
+    const { report, calls } = await trial((options, index) => syntheticReply(options, index, spec),
+      { profile: profile(START, spec.id), deps: { store: { save } } });
+    expect(report).toMatchObject({ result: 'stopped', secretEvidence: 'unqualified', failure: 'local_evidence', finalCheckpoint: 'failed' });
+    expect(calls).toHaveLength(failAt === 4 ? 1 : 4); expectPrivate(report);
   });
 });
 
@@ -1030,7 +1212,8 @@ describe('bounded stdin and offline CLI', () => {
     const assertion = expect(running).rejects.toThrow('input'); await jest.advanceTimersByTimeAsync(15001); await assertion;
     expect(stream.listenerCount('data')).toBe(0);
   });
-  it.each([[], ['--template'], ['--template-production'], ['--template-diagnostic'], ['--template-preview-diagnostic'], ['--review'], ['--live'], ['--unknown']].map((args) => [args]))('keeps CLI offline without a valid live envelope (%j)', (args) => {
+  it.each([[], ['--template'], ['--template-production'], ['--template-diagnostic'], ['--template-preview-diagnostic'],
+    ...SYNTHETIC_CASES.map((spec) => [spec.option]), ['--review'], ['--live'], ['--unknown']].map((args) => [args]))('keeps CLI offline without a valid live envelope (%j)', (args) => {
     const output = spawnSync(process.execPath, [CLI, ...args], { input: args[0] === '--review' ? JSON.stringify(profile()) : '{}',
       encoding: 'utf8', timeout: 5000, maxBuffer: 32768, windowsHide: true });
     expect(output.error).toBeUndefined();
@@ -1067,6 +1250,52 @@ windows('PowerShell launcher offline fixtures', () => {
   it.each([['DiagnosticTemplate', DIAGNOSTIC_CASE], ['PreviewDiagnosticTemplate', PREVIEW_DIAGNOSTIC_CASE]])('returns an unusable %s offline', (flag, caseId) => {
     const output = powershell(`& ${quoted(LAUNCHER)} -${flag}\nexit $LASTEXITCODE`);
     expect(output.status).toBe(0); expect(JSON.parse(output.stdout)).toEqual(profileTemplate(caseId));
+  });
+
+  it.each(SYNTHETIC_CASES)('returns the fixed $id template through PowerShell without credentials', (spec) => {
+    const output = powershell(`& ${quoted(LAUNCHER)} -${spec.template}\nexit $LASTEXITCODE`);
+    expect(output.status).toBe(0); expect(JSON.parse(output.stdout)).toEqual(profileTemplate(spec.id));
+  });
+
+  it.each(SYNTHETIC_CASES)('rejects conflicting $id template switches before Node or prompts', (spec) => {
+    const output = powershell(`
+. ${quoted(LAUNCHER)}
+$${spec.template} = [switch]$true
+$Template = [switch]$true
+function Invoke-Gate1SecretsNode { throw 'Node must not run' }
+function Read-Host { throw 'Prompt must not run' }
+try { $null = Invoke-Gate1SecretsCanary; exit 2 } catch {
+    if ($_.Exception.Message -cne 'Invalid canary mode.') { exit 3 }
+}
+`);
+    expect(output.status).toBe(0);
+  });
+
+  it.each(SYNTHETIC_CASES)('independently rejects widened $id fixture metadata before prompts', (spec) => {
+    const selected = profile(START, spec.id), prepared = preparation(selected);
+    const output = powershell(`
+. ${quoted(LAUNCHER)}
+$prepared = ${quoted(JSON.stringify(prepared))} | ConvertFrom-Json
+$selected = $prepared.profile
+if (-not (Test-Gate1SecretsReview $prepared $selected)) { exit 2 }
+$rejections = @()
+foreach ($change in @('fixture', 'production', 'attestation', 'attestationType', 'extra', 'case', 'sequence')) {
+    $prepared = ${quoted(JSON.stringify(prepared))} | ConvertFrom-Json
+    $selected = $prepared.profile
+    switch ($change) {
+        'fixture' { $selected.fixtureId = 'unknown' }
+        'production' { $selected.environment = 'production' }
+        'attestation' { $selected.attestations.fixtureLocallyValidated = $false }
+        'attestationType' { $selected.attestations.fixtureLocallyValidated = 'true' }
+        'extra' { $selected | Add-Member -NotePropertyName fixturePayload -NotePropertyValue 'private_fixture' }
+        'case' { $selected.caseId = 'REDIS_INPUT_MISSING' }
+        'sequence' { $prepared.sequence = @('buildBefore', 'probe1', 'buildAfter') }
+    }
+    $rejections += -not (Test-Gate1SecretsReview $prepared $selected)
+}
+ConvertTo-Json -InputObject $rejections
+`);
+    expect(output.status).toBe(0); expect(JSON.parse(output.stdout)).toEqual(Array(7).fill(true));
   });
 
   it.each([
@@ -1113,15 +1342,16 @@ try {
     }
   });
 
-  it.each([undefined, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE].flatMap((caseId) =>
+  it.each([undefined, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE, ...SYNTHETIC_CASES.map((spec) => spec.id)].flatMap((caseId) =>
     ['approve', 'wrong_hash', 'wrong_limits', 'wrong_scope', 'wrong_case', 'cancel', 'wrong_confirmation', 'offline', 'invalid_checkout']
       .map((mode) => [mode, caseId])))('reviews before hidden prompts (%s, %s)', (mode, caseId) => {
     const selected = profile(START, caseId);
     const location = directory(), file = path.join(location, 'profile.json'); fs.writeFileSync(file, JSON.stringify(selected));
     const digest = approvalId(selected);
-    const confirmation = caseId === PREVIEW_DIAGNOSTIC_CASE ? 'RUN PREVIEW SECRET STAGE DIAGNOSTIC ONCE'
+    const confirmation = SYNTHETIC_CASES.find((spec) => spec.id === caseId)?.confirmation
+      ?? (caseId === PREVIEW_DIAGNOSTIC_CASE ? 'RUN PREVIEW SECRET STAGE DIAGNOSTIC ONCE'
       : caseId === DIAGNOSTIC_CASE ? 'RUN PRIVATE SECRET STAGE DIAGNOSTIC ONCE'
-      : caseId === SUCCESS_CASE ? 'RUN PRODUCTION CACHE CANARY ONCE' : 'RUN PREVIEW CANARY ONCE';
+      : caseId === SUCCESS_CASE ? 'RUN PRODUCTION CACHE CANARY ONCE' : 'RUN PREVIEW CANARY ONCE');
     const otherConfirmation = caseId === SUCCESS_CASE ? 'RUN PREVIEW CANARY ONCE' : 'RUN PRODUCTION CACHE CANARY ONCE';
     const output = powershell(`
 . ${quoted(LAUNCHER)}

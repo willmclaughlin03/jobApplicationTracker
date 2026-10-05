@@ -23,6 +23,20 @@ const CASE = 'both_application_secrets_missing';
 const SUCCESS_CASE = 'production_secret_success_cache';
 const DIAGNOSTIC_CASE = 'secret_probe_stage_diagnostic_only';
 const PREVIEW_DIAGNOSTIC_CASE = 'preview_secret_probe_stage_diagnostic_only';
+const SYNTHETIC_CASES = Object.freeze({
+  redis_input_missing: Object.freeze({ fixtureId: 'synthetic_hmac_redis_absent_v1',
+    stage: 'redis', hmacInput: 'present', redisInput: 'missing',
+    scope: 'preview_missing_redis_only', evidence: 'missing_redis_and_same_loader_failure_observed',
+    attestations: Object.freeze(['syntheticHmacKeyringValidated', 'redisInputAbsent']) }),
+  hmac_input_malformed: Object.freeze({ fixtureId: 'invalid_hmac_json_redis_absent_v1',
+    stage: 'hmac', hmacInput: 'present', redisInput: 'missing',
+    scope: 'preview_malformed_hmac_only', evidence: 'malformed_hmac_and_same_loader_failure_observed',
+    attestations: Object.freeze(['malformedHmacInputReviewed', 'redisInputAbsent']) }),
+  redis_input_malformed: Object.freeze({ fixtureId: 'synthetic_hmac_invalid_redis_json_v1',
+    stage: 'redis', hmacInput: 'present', redisInput: 'present',
+    scope: 'preview_malformed_redis_only', evidence: 'malformed_redis_and_same_loader_failure_observed',
+    attestations: Object.freeze(['syntheticHmacKeyringValidated', 'malformedRedisInputReviewed']) }),
+});
 const DIAGNOSTIC_LIMITS = Object.freeze({ ...LIMITS, maxAppRequests: 3, traceBytes: 1024 });
 const PROJECT = 'prj_b2nMrysMSJtpmqoeGx5g0WGgGuom';
 const TEAM = 'team_7o3efmwjZbMc2Bfy9qAzkc9q';
@@ -30,6 +44,8 @@ const ATTESTATIONS = ['sourceCodeReviewed', 'deploymentSnapshotReviewed', 'previ
   'bothApplicationSecretsAbsent', 'productionCredentialsExcluded', 'explicitVercelModes',
   'probeConfigured', 'protectionAccessApproved', 'credentialLoggingReviewed',
   'noConcurrentDeploymentsOrConfigurationChanges', 'freshLoaderTrialReviewed'];
+const SYNTHETIC_ATTESTATIONS = [...ATTESTATIONS.filter((name) => name !== 'bothApplicationSecretsAbsent'),
+  'syntheticInputsReviewed', 'fixtureLocallyValidated', 'noUsableRedisCredentials', 'productionConfigurationUnchanged'];
 const SUCCESS_ATTESTATIONS = ['sourceCodeReviewed', 'deploymentSnapshotReviewed', 'actualProductionEnvironmentReviewed',
   'bothApplicationSecretsConfigured', 'applicationSecretsUnchanged', 'explicitVercelModes',
   'probeConfigured', 'productionProbeOptInReviewed', 'protectionAccessApproved', 'credentialLoggingReviewed',
@@ -54,6 +70,10 @@ const profileFields = { schemaVersion: z.literal(1),
   gitSha: z.string().regex(/^[a-f0-9]{40}$/), nextBuildId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
   accessMode: z.literal('automation_bypass'), reviewedAt: z.string().datetime() };
 const profileSchema = z.discriminatedUnion('caseId', [
+  ...Object.entries(SYNTHETIC_CASES).map(([caseId, spec]) => z.object({ ...profileFields,
+    caseId: z.literal(caseId), environment: z.literal('preview'), fixtureId: z.literal(spec.fixtureId),
+    attestations: z.object(Object.fromEntries([...SYNTHETIC_ATTESTATIONS, ...spec.attestations]
+      .map((name) => [name, z.literal(true)]))).strict() }).strict()),
   z.object({ ...profileFields, caseId: z.literal(CASE), environment: z.literal('preview'),
     attestations: z.object(Object.fromEntries(ATTESTATIONS.map((name) => [name, z.literal(true)]))).strict() }).strict(),
   z.object({ ...profileFields, caseId: z.literal(SUCCESS_CASE), environment: z.literal('production'),
@@ -102,21 +122,29 @@ function parseProfile(value) {
 /** Identifies the two investigation-only cases; neither can qualify secret loading or reuse. */
 function isDiagnosticCase(caseId) { return caseId === DIAGNOSTIC_CASE || caseId === PREVIEW_DIAGNOSTIC_CASE; }
 
+/** Selects a fixed synthetic case by own key; unknown/prototype names cannot widen the contract. */
+function syntheticCase(caseId) { return Object.hasOwn(SYNTHETIC_CASES, caseId) ? SYNTHETIC_CASES[caseId] : null; }
+
 /** Produces an unusable local template with no inferred deployment or approvals. */
 function profileTemplate(caseId = CASE) {
-  if (![CASE, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE].includes(caseId)) throw new CanaryError('profile');
+  const synthetic = syntheticCase(caseId);
+  if (!synthetic && ![CASE, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE].includes(caseId)) throw new CanaryError('profile');
   const diagnostic = isDiagnosticCase(caseId), success = caseId === SUCCESS_CASE || caseId === DIAGNOSTIC_CASE;
   return { schemaVersion: 1, caseId, projectId: PROJECT, teamId: TEAM,
     environment: success ? 'production' : 'preview', hostname: '', deploymentId: '', gitSha: '', nextBuildId: '',
     accessMode: 'automation_bypass', reviewedAt: '',
+    ...(synthetic ? { fixtureId: synthetic.fixtureId } : {}),
     ...(diagnostic ? { trace: { schemaVersion: 1, marker: '', startsAt: '', expiresAt: '' } } : {}),
-    attestations: Object.fromEntries((caseId === PREVIEW_DIAGNOSTIC_CASE ? PREVIEW_DIAGNOSTIC_ATTESTATIONS
+    attestations: Object.fromEntries((synthetic ? [...SYNTHETIC_ATTESTATIONS, ...synthetic.attestations]
+      : caseId === PREVIEW_DIAGNOSTIC_CASE ? PREVIEW_DIAGNOSTIC_ATTESTATIONS
       : diagnostic ? DIAGNOSTIC_ATTESTATIONS : success ? SUCCESS_ATTESTATIONS : ATTESTATIONS).map((name) => [name, false])) };
 }
 
 /** Maps a validated case to its evidence scope; no other qualification is implied. */
 function evidenceScope(caseId) {
   if (isDiagnosticCase(caseId)) return caseId;
+  const synthetic = syntheticCase(caseId);
+  if (synthetic) return synthetic.scope;
   return caseId === SUCCESS_CASE ? 'production_secret_success_cache_only' : 'preview_missing_secrets_only';
 }
 
@@ -144,6 +172,7 @@ function preparation(value = null) {
   const profile = value === null ? null : parseProfile(value);
   const success = profile?.caseId === SUCCESS_CASE;
   const diagnostic = isDiagnosticCase(profile?.caseId);
+  const synthetic = syntheticCase(profile?.caseId);
   return { schemaVersion: 1, mode: 'prepare', scope: evidenceScope(profile?.caseId),
     liveApproved: false, gate1Status: 'open', appRequests: 0, providerRequests: 0,
     profile, approvalId: profile ? approvalId(profile) : null, limits: caseLimits(profile?.caseId),
@@ -154,7 +183,9 @@ function preparation(value = null) {
       ...(profile.caseId === PREVIEW_DIAGNOSTIC_CASE ? ['expected_503_only', 'warm_failure_permitted_for_diagnosis_only'] : [])]
       : ['operator_attested_snapshot_with_runtime_environment_check', 'loader_identity_only',
       ...(success ? ['warm_first_loader_does_not_prove_initialization', 'no_missing_malformed_or_environment_isolation_evidence']
-        : ['hmac_rejection_precedes_redis_validation', 'no_hosted_success_or_malformed_cases']),
+        : synthetic ? ['fixture_provenance_operator_attested', 'selected_negative_fixture_only',
+          'no_other_secret_cases_or_environment_isolation_evidence']
+          : ['hmac_rejection_precedes_redis_validation', 'no_hosted_success_or_malformed_cases']),
       'no_independent_waf_evidence'] };
 }
 
@@ -285,7 +316,8 @@ const observationSchema = z.object({ schemaVersion: z.literal(2), scope: z.liter
  * warm failure and missing observation. It never establishes initialization or cache reuse.
  */
 function reviewProbe(response, marker, firstId = null, caseId = CASE) {
-  if (![CASE, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE].includes(caseId)) throw new CanaryError('profile');
+  const synthetic = syntheticCase(caseId);
+  if (!synthetic && ![CASE, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE].includes(caseId)) throw new CanaryError('profile');
   const success = caseId === SUCCESS_CASE || caseId === DIAGNOSTIC_CASE;
   if (response.status !== (success ? 200 : 503)) throw new CanaryError('session_status');
   const cache = reviewCache(response.headers);
@@ -329,8 +361,8 @@ function reviewProbe(response, marker, firstId = null, caseId = CASE) {
   }
   if (observation.allowed || observation.reason !== 'secret_unavailable'
     || observation.identityAttempted || observation.redisAttempted || observation.scriptAttempted
-    || loader.effectiveMode !== 'vercel' || loader.validationStage !== 'hmac'
-    || loader.hmacInput !== 'missing' || loader.redisInput !== 'missing'
+    || loader.effectiveMode !== 'vercel' || loader.validationStage !== (synthetic?.stage ?? 'hmac')
+    || loader.hmacInput !== (synthetic?.hmacInput ?? 'missing') || loader.redisInput !== (synthetic?.redisInput ?? 'missing')
     || loader.hasCachedPair || !loader.permanentFailure || loader.validationAttempts !== 1) {
     throw new CanaryError('secret_contract');
   }
@@ -339,7 +371,9 @@ function reviewProbe(response, marker, firstId = null, caseId = CASE) {
   } else if (firstId === null && (before.hasCachedPair || before.permanentFailure)) throw new CanaryError('loader_already_initialized');
   if (firstId !== null && (before.hasCachedPair || !before.permanentFailure)) throw new CanaryError('secret_contract');
   return { cache, environment: 'preview', loaderId: loader.loaderId, sourceAccepted: true, secretMode: 'vercel',
-    validationStage: 'hmac', bothInputsMissing: true, validationAttempts: 1,
+    validationStage: loader.validationStage,
+    ...(synthetic ? { hmacInput: loader.hmacInput, redisInput: loader.redisInput } : { bothInputsMissing: true }),
+    validationAttempts: 1,
     hasCachedPair: false, permanentFailure: true, downstreamAttempted: false,
     cacheStateBefore: before.permanentFailure ? 'permanent_failure' : 'uninitialized' };
 }
@@ -518,8 +552,8 @@ async function runCanary(input, deps = {}) {
     await request('buildAfter');
     remaining();
     report.result = 'completed';
-    if (!diagnostic) report.secretEvidence = profile.caseId === SUCCESS_CASE
-      ? 'validated_pair_and_same_loader_cache_reuse_observed' : 'missing_both_and_same_loader_failure_observed';
+    if (!diagnostic) report.secretEvidence = syntheticCase(profile.caseId)?.evidence ?? (profile.caseId === SUCCESS_CASE
+      ? 'validated_pair_and_same_loader_cache_reuse_observed' : 'missing_both_and_same_loader_failure_observed');
     if (profile.caseId === SUCCESS_CASE) report.initializationEvidence = first.cacheStateBefore === 'uninitialized'
       ? 'observed_on_probe1' : 'already_cached_on_probe1';
     report.stoppedPhase = null;
@@ -587,9 +621,13 @@ function readInput(stream = process.stdin) {
 /** Exact offline-default CLI; only --live accepts a separately approved credential envelope. */
 async function main(args) {
   try {
-    if (args.length > 1 || (args.length && !['--prepare', '--template', '--template-production', '--template-diagnostic', '--template-preview-diagnostic', '--review', '--live'].includes(args[0]))) throw new CanaryError('arguments');
+    const syntheticTemplates = { '--template-missing-redis': 'redis_input_missing',
+      '--template-malformed-hmac': 'hmac_input_malformed', '--template-malformed-redis': 'redis_input_malformed' };
+    if (args.length > 1 || (args.length && !['--prepare', '--template', '--template-production', '--template-diagnostic', '--template-preview-diagnostic',
+      ...Object.keys(syntheticTemplates), '--review', '--live'].includes(args[0]))) throw new CanaryError('arguments');
     if (args[0] !== '--live') {
-      const value = args[0] === '--template-preview-diagnostic' ? profileTemplate(PREVIEW_DIAGNOSTIC_CASE)
+      const value = Object.hasOwn(syntheticTemplates, args[0]) ? profileTemplate(syntheticTemplates[args[0]])
+        : args[0] === '--template-preview-diagnostic' ? profileTemplate(PREVIEW_DIAGNOSTIC_CASE)
         : args[0] === '--template-diagnostic' ? profileTemplate(DIAGNOSTIC_CASE)
         : args[0] === '--template-production' ? profileTemplate(SUCCESS_CASE)
         : args[0] === '--template' ? profileTemplate() : args[0] === '--review' ? preparation(await readInput()) : preparation();
