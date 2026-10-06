@@ -284,6 +284,31 @@ export function createTemporarySessionSecrets(options = {}) {
   let redisInput = 'not_read';
   let diagnosticIdInitialized = false;
   let loaderId = null;
+  let initialization = null;
+  let initializationRecorded = false;
+
+  /**
+   * Captures the first completed validation transition once, before any observer.
+   * Only fixed scalar state is retained; failures cannot change enforcement.
+   * @param {number} attemptsBefore count captured before real validation
+   * @param {boolean} pairBefore pre-validation cached-pair state
+   * @param {boolean} failureBefore pre-validation permanent-failure state
+   * @returns {void} no credential reads, randomness, logging or transport
+   */
+  function recordInitialization(attemptsBefore, pairBefore, failureBefore) {
+    if (initializationRecorded) return;
+    initializationRecorded = true;
+    try {
+      initialization = Object.freeze({
+        schemaVersion: 1, priorHasCachedPair: pairBefore, priorPermanentFailure: failureBefore,
+        validationAttemptsBefore: attemptsBefore, validationAttempts,
+        effectiveMode, validationStage, hmacInput, redisInput,
+        hasCachedPair: cachedPair !== null, permanentFailure,
+      });
+    } catch {
+      // Missing historical evidence stays unqualified; never reconstruct it later.
+    }
+  }
 
   /**
    * Reads explicit local/test fixtures or local Redis credentials.
@@ -358,9 +383,13 @@ export function createTemporarySessionSecrets(options = {}) {
   async function getRuntimePair() {
     if (cachedPair) return cachedPair;
     if (permanentFailure) throw createUnavailableError();
+    const attemptsBefore = validationAttempts;
+    const pairBefore = cachedPair !== null;
+    const failureBefore = permanentFailure;
     try {
       validationAttempts = Math.min(2, validationAttempts + 1);
       cachedPair = loadRuntimePair();
+      recordInitialization(attemptsBefore, pairBefore, failureBefore);
       emitConfigurationEvent(
         onEvent,
         TEMPORARY_SESSION_TELEMETRY_EVENTS.CONFIGURATION_SUCCEEDED
@@ -368,6 +397,7 @@ export function createTemporarySessionSecrets(options = {}) {
       return cachedPair;
     } catch {
       permanentFailure = true;
+      recordInitialization(attemptsBefore, pairBefore, failureBefore);
       emitConfigurationEvent(
         onEvent,
         TEMPORARY_SESSION_TELEMETRY_EVENTS.CONFIGURATION_FAILED
@@ -391,6 +421,8 @@ export function createTemporarySessionSecrets(options = {}) {
     redisInput = 'not_read';
     diagnosticIdInitialized = false;
     loaderId = null;
+    initialization = null;
+    initializationRecorded = false;
   }
 
   /**
@@ -425,6 +457,7 @@ export function createTemporarySessionSecrets(options = {}) {
     return Object.freeze({
       loaderId, validationAttempts, effectiveMode, validationStage, hmacInput, redisInput,
       hasCachedPair: cachedPair !== null, permanentFailure,
+      initialization,
     });
   }
 

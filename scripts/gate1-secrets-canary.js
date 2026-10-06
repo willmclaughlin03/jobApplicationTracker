@@ -23,7 +23,13 @@ const CASE = 'both_application_secrets_missing';
 const SUCCESS_CASE = 'production_secret_success_cache';
 const DIAGNOSTIC_CASE = 'secret_probe_stage_diagnostic_only';
 const PREVIEW_DIAGNOSTIC_CASE = 'preview_secret_probe_stage_diagnostic_only';
+const RECORDED_CASE = 'redis_input_missing_recorded_initialization';
 const SYNTHETIC_CASES = Object.freeze({
+  [RECORDED_CASE]: Object.freeze({ fixtureId: 'synthetic_hmac_redis_absent_v1',
+    stage: 'redis', hmacInput: 'present', redisInput: 'missing', recorded: true,
+    scope: 'preview_missing_redis_recorded_initialization_only',
+    evidence: 'recorded_missing_redis_initialization_and_same_loader_failure_observed',
+    attestations: Object.freeze(['syntheticHmacKeyringValidated', 'redisInputAbsent', 'recordedInitializationScopeReviewed']) }),
   redis_input_missing: Object.freeze({ fixtureId: 'synthetic_hmac_redis_absent_v1',
     stage: 'redis', hmacInput: 'present', redisInput: 'missing',
     scope: 'preview_missing_redis_only', evidence: 'missing_redis_and_same_loader_failure_observed',
@@ -72,7 +78,7 @@ const profileFields = { schemaVersion: z.literal(1),
 const profileSchema = z.discriminatedUnion('caseId', [
   ...Object.entries(SYNTHETIC_CASES).map(([caseId, spec]) => z.object({ ...profileFields,
     caseId: z.literal(caseId), environment: z.literal('preview'), fixtureId: z.literal(spec.fixtureId),
-    attestations: z.object(Object.fromEntries([...SYNTHETIC_ATTESTATIONS, ...spec.attestations]
+    attestations: z.object(Object.fromEntries(syntheticAttestations(spec)
       .map((name) => [name, z.literal(true)]))).strict() }).strict()),
   z.object({ ...profileFields, caseId: z.literal(CASE), environment: z.literal('preview'),
     attestations: z.object(Object.fromEntries(ATTESTATIONS.map((name) => [name, z.literal(true)]))).strict() }).strict(),
@@ -99,7 +105,7 @@ const SECRET_FAILURE_CHECKS = Object.freeze({
     'identity_attempt_mismatch', 'redis_attempt_mismatch', 'script_attempt_mismatch', 'validation_stage_mismatch',
     'hmac_presence_mismatch', 'redis_presence_mismatch', 'cached_pair_mismatch', 'permanent_failure_mismatch',
     'prior_permanent_failure_unexpected', 'prior_cached_pair_missing', 'prior_cached_pair_unexpected',
-    'prior_permanent_failure_missing']),
+    'prior_permanent_failure_missing', 'initialization_record_mismatch', 'initialization_record_changed']),
   loader_changed: Object.freeze(['loader_changed']),
   loader_already_initialized: Object.freeze(['loader_already_initialized']),
 });
@@ -147,6 +153,12 @@ function parseProfile(value) {
   return parsed.data;
 }
 
+/** Selects explicit recorded-transition review instead of the old fresh-first attestation for the new case only. */
+function syntheticAttestations(spec) {
+  return [...SYNTHETIC_ATTESTATIONS.filter((name) => !spec.recorded || name !== 'freshLoaderTrialReviewed'),
+    ...spec.attestations];
+}
+
 /** Identifies the two investigation-only cases; neither can qualify secret loading or reuse. */
 function isDiagnosticCase(caseId) { return caseId === DIAGNOSTIC_CASE || caseId === PREVIEW_DIAGNOSTIC_CASE; }
 
@@ -163,7 +175,7 @@ function profileTemplate(caseId = CASE) {
     accessMode: 'automation_bypass', reviewedAt: '',
     ...(synthetic ? { fixtureId: synthetic.fixtureId } : {}),
     ...(diagnostic ? { trace: { schemaVersion: 1, marker: '', startsAt: '', expiresAt: '' } } : {}),
-    attestations: Object.fromEntries((synthetic ? [...SYNTHETIC_ATTESTATIONS, ...synthetic.attestations]
+    attestations: Object.fromEntries((synthetic ? syntheticAttestations(synthetic)
       : caseId === PREVIEW_DIAGNOSTIC_CASE ? PREVIEW_DIAGNOSTIC_ATTESTATIONS
       : diagnostic ? DIAGNOSTIC_ATTESTATIONS : success ? SUCCESS_ATTESTATIONS : ATTESTATIONS).map((name) => [name, false])) };
 }
@@ -212,6 +224,7 @@ function preparation(value = null) {
       : ['operator_attested_snapshot_with_runtime_environment_check', 'loader_identity_only',
       ...(success ? ['warm_first_loader_does_not_prove_initialization', 'no_missing_malformed_or_environment_isolation_evidence']
         : synthetic ? ['fixture_provenance_operator_attested', 'selected_negative_fixture_only',
+          ...(synthetic.recorded ? ['initialization_recorded_before_or_during_trial', 'initializing_request_not_observed'] : []),
           'no_other_secret_cases_or_environment_isolation_evidence']
           : ['hmac_rejection_precedes_redis_validation', 'no_hosted_success_or_malformed_cases']),
       'no_independent_waf_evidence'] };
@@ -336,15 +349,31 @@ const observationSchema = z.object({ schemaVersion: z.literal(2), scope: z.liter
   identityAttempted: z.boolean(), redisAttempted: z.boolean(), scriptAttempted: z.boolean(),
   allowed: z.boolean(), reason: z.string().max(64).nullable(),
 }).strict();
+const initializationSchema = z.object({
+  schemaVersion: z.literal(1), priorHasCachedPair: z.boolean(), priorPermanentFailure: z.boolean(),
+  validationAttemptsBefore: z.number().int().min(0).max(2), validationAttempts: z.number().int().min(0).max(2),
+  effectiveMode: z.enum(['not_attempted', 'invalid', 'local', 'vercel']),
+  validationStage: z.enum(['not_attempted', 'mode', 'payloads', 'hmac', 'redis', 'complete']),
+  hmacInput: z.enum(['not_read', 'missing', 'present']), redisInput: z.enum(['not_read', 'missing', 'present']),
+  hasCachedPair: z.boolean(), permanentFailure: z.boolean(),
+}).strict();
+const recordedObservationSchema = observationSchema.extend({ schemaVersion: z.literal(3),
+  loader: observationSchema.shape.loader.unwrap().extend({ initialization: initializationSchema.nullable() }).nullable(),
+});
+const EXPECTED_INITIALIZATION = Object.freeze({ schemaVersion: 1,
+  priorHasCachedPair: false, priorPermanentFailure: false, validationAttemptsBefore: 0, validationAttempts: 1,
+  effectiveMode: 'vercel', validationStage: 'redis', hmacInput: 'present', redisInput: 'missing',
+  hasCachedPair: false, permanentFailure: true });
 
 /**
  * Validates the case-specific body, environment and loader facts, not merely status. Provider content
  * stays transient; return only fixed facts and the nonsecret loader identifier. A failed loader
  * check carries a separate enum/boolean snapshot, never an accepted qualification observation.
- * firstId null requires fresh failure for qualification; the Preview diagnostic alone permits a
- * warm failure and missing observation. It never establishes initialization or cache reuse.
+ * Legacy qualifications require a fresh first state. The separately selected recorded case
+ * requires the actual initialization record and unchanged same-loader reuse, even after warm-up.
+ * Diagnostic-only cases continue to permit missing observations without qualification.
  */
-function reviewProbe(response, marker, firstId = null, caseId = CASE) {
+function reviewProbe(response, marker, firstId = null, caseId = CASE, firstInitialization = null) {
   const synthetic = syntheticCase(caseId);
   if (!synthetic && ![CASE, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE].includes(caseId)) throw new CanaryError('profile');
   const success = caseId === SUCCESS_CASE || caseId === DIAGNOSTIC_CASE;
@@ -366,7 +395,7 @@ function reviewProbe(response, marker, firstId = null, caseId = CASE) {
   if (typeof raw !== 'string') throw new CanaryError('probe_contract', 'header_invalid');
   if (Buffer.byteLength(raw) > LIMITS.probeBytes) throw new CanaryError('probe_contract', 'header_oversized');
   try { observation = JSON.parse(raw); } catch { throw new CanaryError('probe_contract', 'json_invalid'); }
-  const parsedObservation = observationSchema.safeParse(observation);
+  const parsedObservation = (synthetic?.recorded ? recordedObservationSchema : observationSchema).safeParse(observation);
   if (!parsedObservation.success) throw new CanaryError('probe_contract', 'schema_invalid');
   observation = parsedObservation.data;
   if (observation.marker !== marker) throw new CanaryError('probe_contract', 'marker_mismatch');
@@ -424,7 +453,14 @@ function reviewProbe(response, marker, firstId = null, caseId = CASE) {
   if (loader.redisInput !== (synthetic?.redisInput ?? 'missing')) failSecret('redis_presence_mismatch');
   if (loader.hasCachedPair) failSecret('cached_pair_mismatch');
   if (!loader.permanentFailure) failSecret('permanent_failure_mismatch');
-  if (caseId === PREVIEW_DIAGNOSTIC_CASE) {
+  if (synthetic?.recorded) {
+    if (!loader.initialization || Object.entries(EXPECTED_INITIALIZATION)
+      .some(([name, value]) => loader.initialization[name] !== value)) failSecret('initialization_record_mismatch');
+    if (firstId !== null && JSON.stringify(loader.initialization) !== JSON.stringify(firstInitialization)) {
+      failSecret('initialization_record_changed');
+    }
+    if (before.hasCachedPair) failSecret('prior_cached_pair_unexpected');
+  } else if (caseId === PREVIEW_DIAGNOSTIC_CASE) {
     if (before.hasCachedPair) failSecret('prior_cached_pair_unexpected');
   } else if (firstId === null && (before.hasCachedPair || before.permanentFailure)) {
     failSecret('loader_already_initialized', 'loader_already_initialized');
@@ -435,6 +471,7 @@ function reviewProbe(response, marker, firstId = null, caseId = CASE) {
     validationStage: loader.validationStage,
     ...(synthetic ? { hmacInput: loader.hmacInput, redisInput: loader.redisInput } : { bothInputsMissing: true }),
     validationAttempts: 1,
+    ...(synthetic?.recorded ? { initialization: Object.freeze({ ...loader.initialization }) } : {}),
     hasCachedPair: false, permanentFailure: true, downstreamAttempted: false,
     cacheStateBefore: before.permanentFailure ? 'permanent_failure' : 'uninitialized' };
 }
@@ -559,13 +596,14 @@ async function runCanary(input, deps = {}) {
     }
     checkpoint();
     /** Runs one fixed path and records only response status, duration and validated facts. */
-    async function request(nextPhase, marked = false, firstId = null) {
+    async function request(nextPhase, marked = false, firstId = null, firstInitialization = null) {
       phase = nextPhase;
       const marker = diagnostic ? profile.trace.marker : `gate1-secrets-${randomBytes(16).toString('hex')}`;
       const headers = { Accept: marked ? 'application/json' : 'text/html',
         'Accept-Encoding': 'identity', 'User-Agent': marked ? marker : 'gate1-secrets-canary',
         'x-vercel-protection-bypass': credentials.bypassSecret };
-      if (marked) { headers.Authorization = `Bearer ${credentials.probeSecret}`; headers['x-gate1-secrets-diagnostic'] = '1'; }
+      if (marked) { headers.Authorization = `Bearer ${credentials.probeSecret}`;
+        headers['x-gate1-secrets-diagnostic'] = profile.caseId === RECORDED_CASE ? '2' : '1'; }
       report.stoppedPhase = phase; report.dispatchState = 'dispatch_pending';
       checkpoint();
       remaining();
@@ -594,7 +632,7 @@ async function runCanary(input, deps = {}) {
           report.diagnostic.requestId = id;
           receipt.requestId = id;
         }
-        try { observation = reviewProbe(response, marker, firstId, profile.caseId); }
+        try { observation = reviewProbe(response, marker, firstId, profile.caseId, firstInitialization); }
         catch (error) {
           const detail = error instanceof CanaryError && error.secretFailure ? JSON.stringify(error.secretFailure) : '';
           if (detail.includes(credentials.probeSecret) || detail.includes(credentials.bypassSecret)) {
@@ -616,7 +654,7 @@ async function runCanary(input, deps = {}) {
     }
     await request('buildBefore');
     const first = await request('probe1', true);
-    if (!diagnostic) await request('probe2', true, first.loaderId);
+    if (!diagnostic) await request('probe2', true, first.loaderId, first.initialization ?? null);
     await request('buildAfter');
     remaining();
     report.result = 'completed';
@@ -624,6 +662,7 @@ async function runCanary(input, deps = {}) {
       ? 'validated_pair_and_same_loader_cache_reuse_observed' : 'missing_both_and_same_loader_failure_observed');
     if (profile.caseId === SUCCESS_CASE) report.initializationEvidence = first.cacheStateBefore === 'uninitialized'
       ? 'observed_on_probe1' : 'already_cached_on_probe1';
+    if (profile.caseId === RECORDED_CASE) report.initializationEvidence = 'recorded_by_loader_observed_via_probes';
     report.stoppedPhase = null;
   } catch (error) {
     report.failure = error instanceof CanaryError ? error.code : 'internal';
@@ -691,6 +730,7 @@ function readInput(stream = process.stdin) {
 async function main(args) {
   try {
     const syntheticTemplates = { '--template-missing-redis': 'redis_input_missing',
+      '--template-recorded-missing-redis': RECORDED_CASE,
       '--template-malformed-hmac': 'hmac_input_malformed', '--template-malformed-redis': 'redis_input_malformed' };
     if (args.length > 1 || (args.length && !['--prepare', '--template', '--template-production', '--template-diagnostic', '--template-preview-diagnostic',
       ...Object.keys(syntheticTemplates), '--review', '--live'].includes(args[0]))) throw new CanaryError('arguments');
@@ -714,6 +754,6 @@ async function main(args) {
   } catch { process.stderr.write('Canary preparation/execution failed. Do not rerun automatically.\n'); process.exitCode = 1; }
 }
 
-module.exports = { LIMITS, CASE, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE, DIAGNOSTIC_LIMITS, CanaryError, profileTemplate, parseProfile, approvalId, preparation,
+module.exports = { LIMITS, CASE, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE, RECORDED_CASE, DIAGNOSTIC_LIMITS, CanaryError, profileTemplate, parseProfile, approvalId, preparation,
   selectedHeaders, exchange, reviewProbe, evidenceDirectory, createStore, runCanary, readInput };
 if (require.main === module) void main(process.argv.slice(2));

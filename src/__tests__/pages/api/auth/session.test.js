@@ -60,7 +60,10 @@ jest.mock('../../../../shared/logger.js', () => ({
 const sessionRoute = require('../../../../pages/api/auth/session.js').default;
 const {
   temporarySessionCeiling,
+  createTemporarySessionCeiling,
 } = require('../../../../server/lib/temporarySessionCeiling.js');
+const { createTemporarySessionSecrets } = require('../../../../server/lib/temporarySessionSecrets.js');
+const { createGate1SecretsProbe, gate1SecretsProbe, GATE1_SECRETS_PROBE_HEADER } = require('../../../../server/lib/gate1SecretsProbe.js');
 const {
   createGate1RestartProbe,
   gate1RestartProbe,
@@ -227,6 +230,60 @@ describe('/api/auth/session composed v1 route', () => {
   afterEach(() => {
     jest.restoreAllMocks();
   });
+
+  /** Real composition retains missing-Redis enforcement after ordinary warm-up, regardless of probe authentication/emission. */
+  it.each(['correct', 'wrong_credential', 'header_failure'])(
+    'observes recorded initialization through the composed route (%s)', async (variant) => {
+      const secret = 'a'.repeat(64);
+      const env = { NODE_ENV: 'production', VERCEL: '1', VERCEL_ENV: 'preview',
+        TEMPORARY_SESSION_CEILING_SECRET_MODE: 'vercel', GATE1_SECRETS_PROBE_ENABLED: 'true',
+        GATE1_SECRETS_PROBE_SECRET: secret,
+        TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON: JSON.stringify({ schemaVersion: 1, previous: null,
+          active: { generation: 1, keyId: 'fixture-g1', key: Buffer.alloc(32, 3).toString('base64url') } }) };
+      const loader = createTemporarySessionSecrets({ env, onEvent: jest.fn() });
+      const identity = jest.fn(), redis = jest.fn(), script = jest.fn();
+      const ceiling = createTemporarySessionCeiling({ env, secrets: loader, sourceMode: 'vercel',
+        resolveSource: () => ({ family: 4, addressBytes: Buffer.from([192, 0, 2, 80]) }),
+        deriveIdentity: identity, getRedisClientFunction: redis, executeScript: script });
+      ceilingEvaluateSpy.mockImplementation(ceiling.evaluate);
+      jest.spyOn(gate1SecretsProbe, 'createObserver').mockImplementation(createGate1SecretsProbe({ env }).createObserver);
+      const seen = [];
+      for (let index = 0; index < 3; index++) {
+        const req = createMockRequest(), res = createMockResponse();
+        if (index) {
+          req.headers = { authorization: `Bearer ${variant === 'wrong_credential' ? 'b'.repeat(64) : secret}`,
+            'x-gate1-secrets-diagnostic': '2', 'user-agent': `gate1-secrets-${String(index).repeat(32)}` };
+          req.rawHeaders = Object.entries(req.headers).flat();
+        }
+        if (variant === 'header_failure') {
+          const original = res.setHeader.getMockImplementation();
+          res.setHeader.mockImplementation((name, value) => {
+            if (name === GATE1_SECRETS_PROBE_HEADER) throw new Error('header sentinel');
+            return original(name, value);
+          });
+        }
+        await sessionRoute(req, res);
+        expect(res.statusCode).toBe(503);
+        expect(res.body.error).toBe('SERVICE_UNAVAILABLE');
+        expectPrivateNoStore(res);
+        const header = res.getHeader(GATE1_SECRETS_PROBE_HEADER);
+        if (!index || variant !== 'correct') expect(header).toBeUndefined();
+        else seen.push(JSON.parse(header));
+      }
+      if (variant === 'correct') {
+        expect(seen).toHaveLength(2);
+        expect(seen[0].loader.loaderId).toBe(seen[1].loader.loaderId);
+        expect(seen[0].loader.initialization).toEqual(seen[1].loader.initialization);
+        for (const value of seen) expect(value).toMatchObject({ schemaVersion: 3,
+          loaderStateBefore: { hasCachedPair: false, permanentFailure: true },
+          loader: { validationAttempts: 1, initialization: { validationAttemptsBefore: 0,
+            validationAttempts: 1, validationStage: 'redis', redisInput: 'missing', permanentFailure: true } },
+          identityAttempted: false, redisAttempted: false, scriptAttempted: false });
+      }
+      expect(loader.getDiagnosticSnapshot().validationAttempts).toBe(1);
+      for (const fn of [identity, redis, script, mockCheckRateLimit, mockCreateApiRouteClient]) expect(fn).not.toHaveBeenCalled();
+      expect(JSON.stringify(seen)).not.toContain(secret);
+    });
 
   /**
    * OPTIONS and unsupported methods retain the legacy 405 before the ceiling.
