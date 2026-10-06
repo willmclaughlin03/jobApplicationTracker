@@ -157,6 +157,13 @@ function expectPrivate(report) {
   expect(report).toMatchObject({ mode: 'fixture', gate1Status: 'open', hostedEvidence: 'not_executed',
     sourceAgreement: 'not_evaluated', providerRequests: 0, configMutations: 0, wafEvidence: 'not_qualified_by_this_run' });
   if (report.failure !== 'probe_contract') expect(report.probeFailure).toBeNull();
+  if (!['secret_contract', 'loader_changed', 'loader_already_initialized'].includes(report.failure)) {
+    expect(report.secretFailure).toBeNull();
+  }
+  if (report.secretFailure) {
+    const detail = JSON.stringify(report.secretFailure);
+    for (const value of [LOADER, 'gate1-secrets-', 'loaderId"', 'marker"', 'reason"']) expect(detail).not.toContain(value);
+  }
 }
 
 /** Allocate isolated fixture files inside the current worktree, never historical evidence directories. */
@@ -988,6 +995,181 @@ describe('sanitized probe failure detail', () => {
     expect(calls).toHaveLength(2);
     expect(JSON.parse(fs.readFileSync(store.reportPath, 'utf8'))).toEqual(report); expectPrivate(report);
     const fresh = profile(START + 1, SUCCESS_CASE);
+    expect(() => createStore(fresh, approvalId(fresh), location)).toThrow('reservation');
+  });
+});
+
+describe('sanitized secret-contract failure detail', () => {
+  describe.each([null, ...SYNTHETIC_CASES])('Preview case %#', (spec) => {
+    describe.each([1, 2])('failed probe %s', (failedIndex) => {
+      it.each([
+        ['loader_not_reached', (v) => { v.loaderReached = false; }, { loaderReached: false }],
+        ['loader_missing', (v) => { v.loader = null; }, { loaderPresent: false, effectiveMode: null, validationStage: null }],
+        ['prior_state_missing', (v) => { v.loaderStateBefore = null; }, { priorStatePresent: false, priorHasCachedPair: null }],
+        ['loader_id_missing', (v) => { v.loader.loaderId = null; }, { loaderIdPresent: false }],
+        ['secret_mode_mismatch', (v) => { v.loader.effectiveMode = 'invalid'; }, { effectiveMode: 'invalid' }],
+        ['validation_attempts_mismatch', (v) => { v.loader.validationAttempts = 2; }, { validationAttempts: 2 }],
+        ['decision_allowance_mismatch', (v) => { v.allowed = true; }, { allowed: true }],
+        ['decision_reason_mismatch', (v) => { v.reason = PRIVATE; }, { expectedReasonMatches: false }],
+        ['identity_attempt_mismatch', (v) => { v.identityAttempted = true; }, { identityAttempted: true }],
+        ['redis_attempt_mismatch', (v) => { v.redisAttempted = true; }, { redisAttempted: true }],
+        ['script_attempt_mismatch', (v) => { v.scriptAttempted = true; }, { scriptAttempted: true }],
+        ['validation_stage_mismatch', (v) => { v.loader.validationStage = 'payloads'; }, { validationStage: 'payloads' }],
+        ['hmac_presence_mismatch', (v) => { v.loader.hmacInput = 'not_read'; }, { hmacInput: 'not_read' }],
+        ['redis_presence_mismatch', (v) => { v.loader.redisInput = 'not_read'; }, { redisInput: 'not_read' }],
+        ['cached_pair_mismatch', (v) => { v.loader.hasCachedPair = true; }, { hasCachedPair: true }],
+        ['permanent_failure_mismatch', (v) => { v.loader.permanentFailure = false; }, { permanentFailure: false }],
+      ])('stops on %s and persists actual fixed facts without accepting the observation', async (check, mutate, expected) => {
+        let retained;
+        const { report, calls } = await trial((options, index) => {
+          const response = spec ? syntheticReply(options, index, spec) : reply(options, index);
+          if (index === failedIndex) {
+            const value = JSON.parse(response.headers['x-gate1-secrets-probe']);
+            mutate(value); response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
+          }
+          return response;
+        }, { profile: profile(START, spec?.id), deps: { store: {
+          /** Detach checkpoints so later report mutation cannot manufacture persisted diagnostics. */
+          save(value) { retained = JSON.parse(JSON.stringify(value)); },
+        } } });
+        expect(report).toMatchObject({ result: 'stopped', failure: 'secret_contract', probeFailure: null,
+          secretFailure: { check, facts: expected }, secretEvidence: 'unqualified', initializationEvidence: 'not_observed',
+          stoppedPhase: `probe${failedIndex}`, appRequests: failedIndex + 1, validatedRequests: failedIndex, unvalidatedAttempts: 1 });
+        expect(report.secretFailure.facts).toHaveProperty('sameLoader', failedIndex === 1 || check === 'loader_missing'
+          || check === 'loader_id_missing' ? null : true);
+        expect(report.observations).toHaveLength(failedIndex - 1);
+        expect(report.receipts.at(-1).validated).toBe(false);
+        expect(calls).toHaveLength(failedIndex + 1);
+        expect(retained).toEqual(report); expectPrivate(retained);
+      });
+    });
+  });
+
+  describe.each([SUCCESS_CASE, DIAGNOSTIC_CASE])('%s', (caseId) => {
+    it.each([
+      ['decision_allowance_mismatch', (v) => { v.allowed = false; }, { allowed: false }],
+      ['decision_reason_mismatch', (v) => { v.reason = BYPASS; }, { expectedReasonMatches: false }],
+      ['identity_attempt_mismatch', (v) => { v.identityAttempted = false; }, { identityAttempted: false }],
+      ['redis_attempt_mismatch', (v) => { v.redisAttempted = false; }, { redisAttempted: false }],
+      ['script_attempt_mismatch', (v) => { v.scriptAttempted = false; }, { scriptAttempted: false }],
+      ['validation_stage_mismatch', (v) => { v.loader.validationStage = 'hmac'; }, { validationStage: 'hmac' }],
+      ['hmac_presence_mismatch', (v) => { v.loader.hmacInput = 'missing'; }, { hmacInput: 'missing' }],
+      ['redis_presence_mismatch', (v) => { v.loader.redisInput = 'missing'; }, { redisInput: 'missing' }],
+      ['cached_pair_mismatch', (v) => { v.loader.hasCachedPair = false; }, { hasCachedPair: false }],
+      ['permanent_failure_mismatch', (v) => { v.loader.permanentFailure = true; }, { permanentFailure: true }],
+      ['prior_permanent_failure_unexpected', (v) => { v.loaderStateBefore.permanentFailure = true; }, { priorPermanentFailure: true }],
+    ])('retains the %s failure with success expectations', async (check, mutate, expected) => {
+      const { report, calls } = await trial((options, index) => {
+        const response = successReply(options, index);
+        if (index === 1) {
+          response.headers['x-request-id'] = '11111111-2222-4333-8444-555555555555';
+          const value = JSON.parse(response.headers['x-gate1-secrets-probe']);
+          mutate(value); response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
+        }
+        return response;
+      }, { profile: profile(START, caseId) });
+      expect(report).toMatchObject({ result: 'stopped', failure: 'secret_contract', secretFailure: { check, facts: expected },
+        validatedRequests: 1, unvalidatedAttempts: 1, secretEvidence: 'unqualified', observations: [] });
+      expect(calls).toHaveLength(2); expectPrivate(report);
+    });
+  });
+
+  it.each([
+    [undefined, 1, 'loader_already_initialized', (v) => { v.loaderStateBefore.permanentFailure = true; },
+      { priorPermanentFailure: true, sameLoader: null }],
+    [undefined, 2, 'loader_changed', (v) => { v.loader.loaderId = 'b2'.repeat(16); }, { sameLoader: false }],
+    [undefined, 2, 'prior_cached_pair_unexpected', (v) => { v.loaderStateBefore.hasCachedPair = true; }, { priorHasCachedPair: true }],
+    [undefined, 2, 'prior_permanent_failure_missing', (v) => { v.loaderStateBefore.permanentFailure = false; },
+      { priorPermanentFailure: false }],
+    [SUCCESS_CASE, 2, 'prior_cached_pair_missing', (v) => { v.loaderStateBefore.hasCachedPair = false; }, { priorHasCachedPair: false }],
+    [PREVIEW_DIAGNOSTIC_CASE, 1, 'prior_cached_pair_unexpected', (v) => { v.loaderStateBefore.hasCachedPair = true; },
+      { priorHasCachedPair: true }],
+  ])('preserves freshness/reuse rejection %s / probe %s / %s', async (caseId, failedIndex, check, mutate, expected) => {
+    const { report, calls } = await trial((options, index) => {
+      const response = caseId === SUCCESS_CASE ? successReply(options, index) : reply(options, index);
+      if (index === failedIndex) {
+        response.headers['x-request-id'] = '11111111-2222-4333-8444-555555555555';
+        const value = JSON.parse(response.headers['x-gate1-secrets-probe']);
+        mutate(value); response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
+      }
+      return response;
+    }, { profile: profile(START, caseId) });
+    const failure = ['loader_changed', 'loader_already_initialized'].includes(check) ? check : 'secret_contract';
+    expect(report).toMatchObject({ result: 'stopped', failure, secretFailure: { check, facts: expected },
+      unvalidatedAttempts: 1, secretEvidence: 'unqualified' });
+    expect(calls).toHaveLength(failedIndex + 1); expectPrivate(report);
+  });
+
+  /** Obtain only fixed failure facts through the real review boundary for constructor/privacy tests. */
+  function secretError() {
+    const marker = 'gate1-secrets-' + '1'.repeat(32);
+    const response = reply({ path: '/api/auth/session', headers: { 'User-Agent': marker } }, 1);
+    try { reviewProbe({ ...response, text: response.body }, marker, null, 'redis_input_missing'); }
+    catch (error) { return error; }
+    throw new Error('Expected fixture mismatch');
+  }
+
+  it('identifies the first mismatch while preserving later fixed facts without raw identifiers', () => {
+    const error = secretError();
+    expect(error).toMatchObject({ code: 'secret_contract', secretFailure: { check: 'validation_stage_mismatch',
+      facts: { validationStage: 'hmac', hmacInput: 'missing', redisInput: 'missing' } } });
+    expect(JSON.stringify(error)).not.toContain(LOADER);
+    expect(JSON.stringify(error)).not.toContain('gate1-secrets-');
+  });
+
+  it.each([
+    ['unknown check', (d) => { d.check = PRIVATE; }],
+    ['wrong code', (d) => { d.check = 'loader_changed'; }],
+    ['extra field', (d) => { d.raw = PROBE; }],
+    ['extra fact', (d) => { d.facts.raw = BYPASS; }],
+    ['untrusted mode', (d) => { d.facts.effectiveMode = PRIVATE; }],
+    ['untrusted stage', (d) => { d.facts.validationStage = PRIVATE; }],
+    ['untrusted presence', (d) => { d.facts.hmacInput = PRIVATE; }],
+    ['unbounded count', (d) => { d.facts.validationAttempts = 9999; }],
+    ['nonboolean state', (d) => { d.facts.hasCachedPair = PROBE; }],
+  ])('discards %s at the error boundary', (_label, mutate) => {
+    const detail = secretError().secretFailure;
+    mutate(detail);
+    const error = new CanaryError('secret_contract', null, detail);
+    expect(error.secretFailure).toBeNull();
+    for (const value of [PRIVATE, PROBE, BYPASS]) expect(JSON.stringify(error)).not.toContain(value);
+  });
+
+  it('detaches accepted detail and rejects detail attached to unrelated errors', () => {
+    const detail = secretError().secretFailure;
+    const error = new CanaryError('secret_contract', null, detail);
+    detail.facts.validationStage = PRIVATE;
+    expect(error.secretFailure.facts.validationStage).toBe('hmac');
+    expect(new CanaryError('transport', null, error.secretFailure).secretFailure).toBeNull();
+  });
+
+  it('rejects even a fixed diagnostic that happens to echo the supplied bypass credential', async () => {
+    const bypass = 'validation_stage_mismatch';
+    const { report, calls } = await trial(reply, { profile: profile(START, 'redis_input_missing'),
+      input: { credentials: { probeSecret: PROBE, bypassSecret: bypass } } });
+    expect(report).toMatchObject({ failure: 'probe_contract', probeFailure: 'credential_echo', secretFailure: null,
+      result: 'stopped', observations: [], secretEvidence: 'unqualified' });
+    expect(JSON.stringify(report)).not.toContain(bypass);
+    expect(calls).toHaveLength(2); expectPrivate(report);
+  });
+
+  it('preserves the original loader diagnosis when the final checkpoint also fails', async () => {
+    const { report, calls } = await trial(reply, { profile: profile(START, 'redis_input_missing'), deps: { store: {
+      /** Reject final persistence without leaking the filesystem failure or enabling another request. */
+      save(value) { if (value.failure !== null) throw new Error(PRIVATE); },
+    } } });
+    expect(report).toMatchObject({ failure: 'secret_contract', secretFailure: { check: 'validation_stage_mismatch' },
+      finalCheckpoint: 'failed', result: 'stopped', secretEvidence: 'unqualified' });
+    expect(calls).toHaveLength(2); expectPrivate(report);
+  });
+
+  it('persists sanitized failure detail and keeps the deployment/case reservation consumed', async () => {
+    const location = directory(), selected = profile(START, 'redis_input_missing');
+    const store = createStore(selected, approvalId(selected), location);
+    const { report } = await trial(reply, { profile: selected, deps: { store } });
+    expect(report).toMatchObject({ failure: 'secret_contract', secretFailure: { check: 'validation_stage_mismatch' } });
+    expect(JSON.parse(fs.readFileSync(store.reportPath, 'utf8'))).toEqual(report); expectPrivate(report);
+    const fresh = profile(START + 1, 'redis_input_missing');
     expect(() => createStore(fresh, approvalId(fresh), location)).toThrow('reservation');
   });
 });

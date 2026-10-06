@@ -93,6 +93,31 @@ const CODES = new Set(['arguments', 'input', 'profile', 'approval', 'credentials
   'correlation_contract', 'trace_window']);
 const PROBE_FAILURES = new Set(['header_missing', 'header_invalid', 'header_oversized',
   'json_invalid', 'schema_invalid', 'marker_mismatch', 'credential_echo']);
+const SECRET_FAILURE_CHECKS = Object.freeze({
+  secret_contract: Object.freeze(['loader_not_reached', 'loader_missing', 'prior_state_missing', 'loader_id_missing',
+    'secret_mode_mismatch', 'validation_attempts_mismatch', 'decision_allowance_mismatch', 'decision_reason_mismatch',
+    'identity_attempt_mismatch', 'redis_attempt_mismatch', 'script_attempt_mismatch', 'validation_stage_mismatch',
+    'hmac_presence_mismatch', 'redis_presence_mismatch', 'cached_pair_mismatch', 'permanent_failure_mismatch',
+    'prior_permanent_failure_unexpected', 'prior_cached_pair_missing', 'prior_cached_pair_unexpected',
+    'prior_permanent_failure_missing']),
+  loader_changed: Object.freeze(['loader_changed']),
+  loader_already_initialized: Object.freeze(['loader_already_initialized']),
+});
+const secretFailureSchema = z.object({
+  check: z.enum(Object.values(SECRET_FAILURE_CHECKS).flat()),
+  facts: z.object({
+    loaderReached: z.boolean(), loaderPresent: z.boolean(), priorStatePresent: z.boolean(), loaderIdPresent: z.boolean(),
+    effectiveMode: z.enum(['not_attempted', 'invalid', 'local', 'vercel']).nullable(),
+    validationStage: z.enum(['not_attempted', 'mode', 'payloads', 'hmac', 'redis', 'complete']).nullable(),
+    hmacInput: z.enum(['not_read', 'missing', 'present']).nullable(),
+    redisInput: z.enum(['not_read', 'missing', 'present']).nullable(),
+    validationAttempts: z.number().int().min(0).max(2).nullable(),
+    hasCachedPair: z.boolean().nullable(), permanentFailure: z.boolean().nullable(),
+    priorHasCachedPair: z.boolean().nullable(), priorPermanentFailure: z.boolean().nullable(),
+    sameLoader: z.boolean().nullable(), allowed: z.boolean(), expectedReasonMatches: z.boolean(),
+    identityAttempted: z.boolean(), redisAttempted: z.boolean(), scriptAttempted: z.boolean(),
+  }).strict(),
+}).strict();
 const SELECTED = new Set(['content-type', 'content-length', 'content-encoding', 'set-cookie',
   'cache-control', 'cdn-cache-control', 'vercel-cdn-cache-control', 'x-vercel-cache',
   'retry-after', 'x-gate1-secrets-probe']);
@@ -105,10 +130,13 @@ const BOUND_FILES = ['scripts/gate1-secrets-canary.js', 'scripts/run-gate1-secre
 
 /** Carries an allowlisted reason only; raw errors and input are never retained. */
 class CanaryError extends Error {
-  /** Retain only known code/detail enums; probeFailure describes a check, never response contents. */
-  constructor(code, probeFailure = null) {
+  /** Detach only code-bound, schema-checked details; never retain raw errors, headers or identifiers. */
+  constructor(code, probeFailure = null, secretFailure = null) {
     super(CODES.has(code) ? code : 'internal'); this.code = this.message;
     this.probeFailure = this.code === 'probe_contract' && PROBE_FAILURES.has(probeFailure) ? probeFailure : null;
+    const parsed = secretFailureSchema.safeParse(secretFailure);
+    this.secretFailure = parsed.success && Object.hasOwn(SECRET_FAILURE_CHECKS, this.code)
+      && SECRET_FAILURE_CHECKS[this.code].includes(parsed.data.check) ? parsed.data : null;
   }
 }
 
@@ -311,7 +339,8 @@ const observationSchema = z.object({ schemaVersion: z.literal(2), scope: z.liter
 
 /**
  * Validates the case-specific body, environment and loader facts, not merely status. Provider content
- * stays transient; return only fixed facts and the nonsecret loader identifier.
+ * stays transient; return only fixed facts and the nonsecret loader identifier. A failed loader
+ * check carries a separate enum/boolean snapshot, never an accepted qualification observation.
  * firstId null requires fresh failure for qualification; the Preview diagnostic alone permits a
  * warm failure and missing observation. It never establishes initialization or cache reuse.
  */
@@ -345,31 +374,63 @@ function reviewProbe(response, marker, firstId = null, caseId = CASE) {
   if (observation.effectiveMode !== 'vercel' || observation.sourceResolution !== 'accepted'
     || ![4, 6].includes(observation.canonicalFamily)) throw new CanaryError('source_rejected');
   const loader = observation.loader, before = observation.loaderStateBefore;
-  if (!observation.loaderReached || !loader || !before || !loader.loaderId
-    || loader.effectiveMode !== 'vercel' || loader.validationAttempts !== 1) throw new CanaryError('secret_contract');
-  if (firstId !== null && loader.loaderId !== firstId) throw new CanaryError('loader_changed');
+  /** Stop at the first failed check with detached bounded facts; omit marker, IDs, raw reason and values. */
+  function failSecret(check, code = 'secret_contract') {
+    throw new CanaryError(code, null, { check, facts: {
+      loaderReached: observation.loaderReached, loaderPresent: loader !== null, priorStatePresent: before !== null,
+      loaderIdPresent: Boolean(loader?.loaderId), effectiveMode: loader?.effectiveMode ?? null,
+      validationStage: loader?.validationStage ?? null, hmacInput: loader?.hmacInput ?? null,
+      redisInput: loader?.redisInput ?? null, validationAttempts: loader?.validationAttempts ?? null,
+      hasCachedPair: loader?.hasCachedPair ?? null, permanentFailure: loader?.permanentFailure ?? null,
+      priorHasCachedPair: before?.hasCachedPair ?? null, priorPermanentFailure: before?.permanentFailure ?? null,
+      sameLoader: firstId === null || !loader?.loaderId ? null : loader.loaderId === firstId,
+      allowed: observation.allowed, expectedReasonMatches: observation.reason === (success ? null : 'secret_unavailable'),
+      identityAttempted: observation.identityAttempted, redisAttempted: observation.redisAttempted,
+      scriptAttempted: observation.scriptAttempted,
+    } });
+  }
+  if (!observation.loaderReached) failSecret('loader_not_reached');
+  if (!loader) failSecret('loader_missing');
+  if (!before) failSecret('prior_state_missing');
+  if (!loader.loaderId) failSecret('loader_id_missing');
+  if (loader.effectiveMode !== 'vercel') failSecret('secret_mode_mismatch');
+  if (loader.validationAttempts !== 1) failSecret('validation_attempts_mismatch');
+  if (firstId !== null && loader.loaderId !== firstId) failSecret('loader_changed', 'loader_changed');
   if (success) {
-    if (!observation.allowed || observation.reason !== null || !observation.identityAttempted
-      || !observation.redisAttempted || !observation.scriptAttempted || loader.validationStage !== 'complete'
-      || loader.hmacInput !== 'present' || loader.redisInput !== 'present'
-      || !loader.hasCachedPair || loader.permanentFailure || before.permanentFailure
-      || (firstId !== null && !before.hasCachedPair)) throw new CanaryError('secret_contract');
+    if (!observation.allowed) failSecret('decision_allowance_mismatch');
+    if (observation.reason !== null) failSecret('decision_reason_mismatch');
+    if (!observation.identityAttempted) failSecret('identity_attempt_mismatch');
+    if (!observation.redisAttempted) failSecret('redis_attempt_mismatch');
+    if (!observation.scriptAttempted) failSecret('script_attempt_mismatch');
+    if (loader.validationStage !== 'complete') failSecret('validation_stage_mismatch');
+    if (loader.hmacInput !== 'present') failSecret('hmac_presence_mismatch');
+    if (loader.redisInput !== 'present') failSecret('redis_presence_mismatch');
+    if (!loader.hasCachedPair) failSecret('cached_pair_mismatch');
+    if (loader.permanentFailure) failSecret('permanent_failure_mismatch');
+    if (before.permanentFailure) failSecret('prior_permanent_failure_unexpected');
+    if (firstId !== null && !before.hasCachedPair) failSecret('prior_cached_pair_missing');
     return { cache, environment: 'production', loaderId: loader.loaderId, sourceAccepted: true, secretMode: 'vercel',
       validationStage: 'complete', bothInputsPresent: true, validationAttempts: 1,
       hasCachedPair: true, permanentFailure: false, downstreamAttempted: true,
       cacheStateBefore: before.hasCachedPair ? 'cached_pair' : 'uninitialized' };
   }
-  if (observation.allowed || observation.reason !== 'secret_unavailable'
-    || observation.identityAttempted || observation.redisAttempted || observation.scriptAttempted
-    || loader.effectiveMode !== 'vercel' || loader.validationStage !== (synthetic?.stage ?? 'hmac')
-    || loader.hmacInput !== (synthetic?.hmacInput ?? 'missing') || loader.redisInput !== (synthetic?.redisInput ?? 'missing')
-    || loader.hasCachedPair || !loader.permanentFailure || loader.validationAttempts !== 1) {
-    throw new CanaryError('secret_contract');
-  }
+  if (observation.allowed) failSecret('decision_allowance_mismatch');
+  if (observation.reason !== 'secret_unavailable') failSecret('decision_reason_mismatch');
+  if (observation.identityAttempted) failSecret('identity_attempt_mismatch');
+  if (observation.redisAttempted) failSecret('redis_attempt_mismatch');
+  if (observation.scriptAttempted) failSecret('script_attempt_mismatch');
+  if (loader.validationStage !== (synthetic?.stage ?? 'hmac')) failSecret('validation_stage_mismatch');
+  if (loader.hmacInput !== (synthetic?.hmacInput ?? 'missing')) failSecret('hmac_presence_mismatch');
+  if (loader.redisInput !== (synthetic?.redisInput ?? 'missing')) failSecret('redis_presence_mismatch');
+  if (loader.hasCachedPair) failSecret('cached_pair_mismatch');
+  if (!loader.permanentFailure) failSecret('permanent_failure_mismatch');
   if (caseId === PREVIEW_DIAGNOSTIC_CASE) {
-    if (before.hasCachedPair) throw new CanaryError('secret_contract');
-  } else if (firstId === null && (before.hasCachedPair || before.permanentFailure)) throw new CanaryError('loader_already_initialized');
-  if (firstId !== null && (before.hasCachedPair || !before.permanentFailure)) throw new CanaryError('secret_contract');
+    if (before.hasCachedPair) failSecret('prior_cached_pair_unexpected');
+  } else if (firstId === null && (before.hasCachedPair || before.permanentFailure)) {
+    failSecret('loader_already_initialized', 'loader_already_initialized');
+  }
+  if (firstId !== null && before.hasCachedPair) failSecret('prior_cached_pair_unexpected');
+  if (firstId !== null && !before.permanentFailure) failSecret('prior_permanent_failure_missing');
   return { cache, environment: 'preview', loaderId: loader.loaderId, sourceAccepted: true, secretMode: 'vercel',
     validationStage: loader.validationStage,
     ...(synthetic ? { hmacInput: loader.hmacInput, redisInput: loader.redisInput } : { bothInputsMissing: true }),
@@ -449,7 +510,7 @@ async function runCanary(input, deps = {}) {
     secretEvidence: 'unqualified', initializationEvidence: 'not_observed', sourceAgreement: 'not_evaluated', wafEvidence: 'not_qualified_by_this_run',
     target: null, approvalId: null, limits: LIMITS, appRequests: 0, providerRequests: 0, configMutations: 0,
     validatedRequests: 0, unvalidatedAttempts: 0, receipts: [], observations: [],
-    failure: null, probeFailure: null, stoppedPhase: 'validation', dispatchState: 'not_started',
+    failure: null, probeFailure: null, secretFailure: null, stoppedPhase: 'validation', dispatchState: 'not_started',
     attribution: 'operator_attested_snapshot_with_runtime_environment_and_http_build_checks' };
   const now = deps.now ?? (() => performance.now()), wall = deps.wall ?? Date.now;
   let phase = 'validation', store, start, wallStart, previous;
@@ -533,7 +594,14 @@ async function runCanary(input, deps = {}) {
           report.diagnostic.requestId = id;
           receipt.requestId = id;
         }
-        observation = reviewProbe(response, marker, firstId, profile.caseId);
+        try { observation = reviewProbe(response, marker, firstId, profile.caseId); }
+        catch (error) {
+          const detail = error instanceof CanaryError && error.secretFailure ? JSON.stringify(error.secretFailure) : '';
+          if (detail.includes(credentials.probeSecret) || detail.includes(credentials.bypassSecret)) {
+            throw new CanaryError('probe_contract', 'credential_echo');
+          }
+          throw error;
+        }
         // Even schema-valid provider fields cannot echo the supplied credentials.
         const projected = JSON.stringify(observation);
         if (projected.includes(credentials.probeSecret) || projected.includes(credentials.bypassSecret)) {
@@ -560,6 +628,7 @@ async function runCanary(input, deps = {}) {
   } catch (error) {
     report.failure = error instanceof CanaryError ? error.code : 'internal';
     if (report.failure === 'probe_contract' && PROBE_FAILURES.has(error.probeFailure)) report.probeFailure = error.probeFailure;
+    if (error instanceof CanaryError) report.secretFailure = error.secretFailure;
     report.stoppedPhase = phase;
   }
   report.unvalidatedAttempts = report.appRequests - report.validatedRequests;
