@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-04
 
+- `2026-10-06` - `GATE-1 loader initialization attribution`: Updated the restart harness's reviewed baseline to `fdd6ecef` and pinned the corresponding secrets-loader hash, with a matching test expectation. All 70 restart tests pass, including source-tampering rejection and offline worker startup; historical hosted correspondence remains unverified.
+
 - `2026-10-06` - `GATE-1 recorded loader initialization`: Capture the first completed secret-validation transition once and expose bounded facts through an explicitly selected, authenticated Preview probe version. Added a separate missing-Redis case requiring the recorded transition and unchanged same-loader failure reuse, including after ordinary warm-up. Existing cases keep their acceptance criteria. All 1,100 tests across seven suites, targeted lint, syntax and whitespace checks pass. No new credential variable or live trial; GATE-1 remains open.
 
 - `2026-10-05` - `GATE-1 loader failure diagnostics`: Added a code-bound, strictly validated `secretFailure` detail containing the first failed loader check and fixed state facts. Failed observations remain unqualified; raw headers, identifiers, reason strings and credentials are excluded. All 754 tests across the canary/launcher, loader and probe suites, targeted lint, syntax and whitespace checks pass. Existing acceptance criteria, request budgets and consumed reservations remain enforced; no live trial ran for this change.
