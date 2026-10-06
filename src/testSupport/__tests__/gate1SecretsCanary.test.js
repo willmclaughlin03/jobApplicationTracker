@@ -12,7 +12,7 @@ const https = require('node:https');
 const { randomBytes } = require('node:crypto');
 const { createTemporarySessionSecrets, parseTemporarySessionHmacSecret,
   parseTemporarySessionRedisSecret } = require('../../server/lib/temporarySessionSecrets');
-const { LIMITS, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE, DIAGNOSTIC_LIMITS, CanaryError, profileTemplate, parseProfile, preparation, approvalId, selectedHeaders,
+const { LIMITS, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE, RECORDED_CASE, DIAGNOSTIC_LIMITS, CanaryError, profileTemplate, parseProfile, preparation, approvalId, selectedHeaders,
   evidenceDirectory, createStore, runCanary, readInput, reviewProbe } = require('../../../scripts/gate1-secrets-canary');
 
 const ROOT = path.resolve(__dirname, '../../..');
@@ -24,6 +24,10 @@ const BYPASS = 'fixture_only_bypass_credential';
 const PRIVATE = 'untrusted_response_sentinel';
 const LOADER = 'a1'.repeat(16);
 const SYNTHETIC_CASES = [
+  { id: RECORDED_CASE, stage: 'redis', redisInput: 'missing', recorded: true,
+    fixtureId: 'synthetic_hmac_redis_absent_v1', scope: 'preview_missing_redis_recorded_initialization_only',
+    evidence: 'recorded_missing_redis_initialization_and_same_loader_failure_observed', template: 'RecordedMissingRedisTemplate',
+    option: '--template-recorded-missing-redis', confirmation: 'RUN PREVIEW RECORDED MISSING REDIS ONCE' },
   { id: 'redis_input_missing', stage: 'redis', redisInput: 'missing',
     fixtureId: 'synthetic_hmac_redis_absent_v1', scope: 'preview_missing_redis_only',
     evidence: 'missing_redis_and_same_loader_failure_observed', template: 'MissingRedisTemplate',
@@ -92,9 +96,20 @@ function syntheticReply(options, index, spec) {
   if (options.path !== '/login') {
     const value = JSON.parse(response.headers['x-gate1-secrets-probe']);
     Object.assign(value.loader, { validationStage: spec.stage, hmacInput: 'present', redisInput: spec.redisInput });
+    if (spec.recorded) {
+      value.schemaVersion = 3;
+      value.loader.initialization = initializationRecord();
+    }
     response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
   }
   return response;
+}
+
+/** Fixed record fixture mirrors a completed first validation, without any secret values or request attribution. */
+function initializationRecord() {
+  return { schemaVersion: 1, priorHasCachedPair: false, priorPermanentFailure: false,
+    validationAttemptsBefore: 0, validationAttempts: 1, effectiveMode: 'vercel', validationStage: 'redis',
+    hmacInput: 'present', redisInput: 'missing', hasCachedPair: false, permanentFailure: true };
 }
 
 /** Builds the Production success contract with either observed initialization or a warm first loader. */
@@ -309,7 +324,7 @@ describe.each(SYNTHETIC_CASES)('synthetic Preview qualification: $id', (spec) =>
       limits: LIMITS, sequence: ['buildBefore', 'probe1', 'probe2', 'buildAfter'] });
     expect(prepared.limitations).toContain('fixture_provenance_operator_attested');
     expect(prepared.limitations).not.toContain('no_hosted_success_or_malformed_cases');
-    expect(new Set([approvalId(profile()), ...SYNTHETIC_CASES.map((entry) => approvalId(profile(START, entry.id)))]).size).toBe(4);
+    expect(new Set([approvalId(profile()), ...SYNTHETIC_CASES.map((entry) => approvalId(profile(START, entry.id)))]).size).toBe(5);
     for (const key of Object.keys(selected.attestations)) {
       expect(() => parseProfile({ ...selected, attestations: { ...selected.attestations, [key]: false } })).toThrow('profile');
     }
@@ -331,7 +346,9 @@ describe.each(SYNTHETIC_CASES)('synthetic Preview qualification: $id', (spec) =>
       const value = facts('gate1-secrets-' + '0'.repeat(32), i === 1);
       value.loaderStateBefore = loader.getSnapshot();
       await expect(loader.getRuntimePair()).rejects.toThrow('temporary session secrets are unavailable');
-      value.loader = loader.getDiagnosticSnapshot(); observations.push(value);
+      value.loader = { ...loader.getDiagnosticSnapshot() };
+      if (spec.recorded) value.schemaVersion = 3; else delete value.loader.initialization;
+      observations.push(value);
     }
     expect(events).toHaveBeenCalledTimes(1);
     const { report, calls } = await trial((options, index) => {
@@ -387,7 +404,7 @@ describe.each(SYNTHETIC_CASES)('synthetic Preview qualification: $id', (spec) =>
     ['source rejection', 'source_rejected', (v) => { v.sourceResolution = 'rejected'; }],
     ['warm first loader', 'loader_already_initialized', (v) => { v.loaderStateBefore.permanentFailure = true; }],
     ['credential-shaped extra', 'probe_contract', (v) => { v.loader.fixtureValue = PRIVATE; }],
-  ])('rejects %s even with a 503 and stops before probe2', async (_label, failure, mutate) => {
+  ].filter(([name]) => !spec.recorded || name !== 'warm first loader'))('rejects %s even with a 503 and stops before probe2', async (_label, failure, mutate) => {
     const { report, calls } = await trial((options, index) => {
       const response = syntheticReply(options, index, spec);
       if (index === 1) {
@@ -450,6 +467,74 @@ describe.each(SYNTHETIC_CASES)('synthetic Preview qualification: $id', (spec) =>
       { profile: profile(START, spec.id), deps: { store: { save } } });
     expect(report).toMatchObject({ result: 'stopped', secretEvidence: 'unqualified', failure: 'local_evidence', finalCheckpoint: 'failed' });
     expect(calls).toHaveLength(failAt === 4 ? 1 : 4); expectPrivate(report);
+  });
+});
+
+describe('recorded missing-Redis initialization qualification', () => {
+  const spec = SYNTHETIC_CASES.find((value) => value.recorded);
+
+  /** Both warm and fresh first probes require the same actual record and later failure reuse. */
+  it.each([true, false])('qualifies only recorded initialization and current same-loader reuse (warm=%s)', async (warm) => {
+    const { report, calls } = await trial((options, index) => {
+      const response = syntheticReply(options, index, spec);
+      if (index === 1 && warm) {
+        const value = JSON.parse(response.headers['x-gate1-secrets-probe']);
+        value.loaderStateBefore.permanentFailure = true;
+        response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
+      }
+      return response;
+    }, { profile: profile(START, RECORDED_CASE) });
+    expect(report).toMatchObject({ result: 'completed', secretEvidence: spec.evidence,
+      initializationEvidence: 'recorded_by_loader_observed_via_probes', failure: null });
+    expect(report.observations.map((value) => value.initialization)).toEqual([initializationRecord(), initializationRecord()]);
+    expect(report.observations[0].cacheStateBefore).toBe(warm ? 'permanent_failure' : 'uninitialized');
+    expect(calls.filter((call) => call.path === '/api/auth/session')
+      .map((call) => call.headers['x-gate1-secrets-diagnostic'])).toEqual(['2', '2']);
+    expectPrivate(report);
+    const prepared = preparation(profile(START, RECORDED_CASE));
+    expect(prepared.limitations).toContain('initializing_request_not_observed');
+    expect(prepared.profile.attestations).not.toHaveProperty('freshLoaderTrialReviewed');
+    expect(prepared.profile.attestations.recordedInitializationScopeReviewed).toBe(true);
+  });
+
+  /** Historical state is mandatory, bounded and consistent, even when the current failure looks correct. */
+  it.each([
+    ['missing', (v) => { delete v.loader.initialization; }],
+    ['null', (v) => { v.loader.initialization = null; }],
+    ['version downgrade', (v) => { v.schemaVersion = 2; delete v.loader.initialization; }],
+    ['extra data', (v) => { v.loader.initialization.credential = PRIVATE; }],
+    ...Object.entries(initializationRecord()).map(([name, value]) => [name, (v) => {
+      v.loader.initialization[name] = typeof value === 'boolean' ? !value : typeof value === 'number' ? 2
+        : name === 'effectiveMode' ? 'local' : name === 'validationStage' ? 'hmac' : 'not_read';
+    }]),
+  ].flatMap(([name, mutate]) => [1, 2].map((index) => [name, index, mutate])))(
+    'rejects %s on probe%s and retains no invalid record', async (_name, at, mutate) => {
+      const { report, calls } = await trial((options, index) => {
+        const response = syntheticReply(options, index, spec);
+        if (index === at) {
+          const value = JSON.parse(response.headers['x-gate1-secrets-probe']); mutate(value);
+          response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
+        }
+        return response;
+      }, { profile: profile(START, RECORDED_CASE) });
+      expect(report.result).toBe('stopped'); expect(report.secretEvidence).toBe('unqualified');
+      expect(report.initializationEvidence).toBe('not_observed');
+      expect(report.observations).toHaveLength(at - 1); expect(calls).toHaveLength(at + 1);
+      expectPrivate(report);
+    });
+
+  /** Reusing an accepted record from another first observation cannot bypass the explicit comparison. */
+  it('requires a matching first record for the second probe', () => {
+    const response = syntheticReply({ path: '/api/auth/session', headers: { 'User-Agent': `gate1-secrets-${'0'.repeat(32)}` } }, 2, spec);
+    expect(() => reviewProbe({ ...response, text: response.body }, `gate1-secrets-${'0'.repeat(32)}`,
+      LOADER, RECORDED_CASE, null)).toThrow('secret_contract');
+  });
+
+  /** Keeping the legacy contract strict prevents retroactive promotion of historical failures. */
+  it('rejects the new response version for the legacy missing-Redis case', async () => {
+    const { report } = await trial((options, index) => syntheticReply(options, index, spec),
+      { profile: profile(START, 'redis_input_missing') });
+    expect(report).toMatchObject({ result: 'stopped', failure: 'probe_contract', probeFailure: 'schema_invalid' });
   });
 });
 

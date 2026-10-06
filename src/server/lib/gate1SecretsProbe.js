@@ -21,7 +21,7 @@ const credentialSchema = z.string().length(64).regex(/^[a-f0-9]{64}$/);
 const markerSchema = z.string().length(46).regex(/^gate1-secrets-[a-f0-9]{32}$/);
 const stateSchema = z.object({ hasCachedPair: z.boolean(), permanentFailure: z.boolean() })
   .strict().refine((state) => !(state.hasCachedPair && state.permanentFailure));
-const loaderSchema = z.object({
+const loaderFields = {
   loaderId: z.string().length(32).regex(/^[a-f0-9]{32}$/).nullable(),
   validationAttempts: z.number().int().min(0).max(2),
   effectiveMode: z.enum(['not_attempted', 'invalid', 'local', 'vercel']),
@@ -29,9 +29,23 @@ const loaderSchema = z.object({
   hmacInput: z.enum(['not_read', 'missing', 'present']),
   redisInput: z.enum(['not_read', 'missing', 'present']),
   hasCachedPair: z.boolean(), permanentFailure: z.boolean(),
-}).strict().refine((state) => !(state.hasCachedPair && state.permanentFailure)
-  && (state.hasCachedPair === (state.validationStage === 'complete')));
-const factsSchema = z.object({
+};
+/** Rejects contradictory cache outcomes in both legacy and recorded observations. */
+function consistentLoader(state) {
+  return !(state.hasCachedPair && state.permanentFailure)
+    && (state.hasCachedPair === (state.validationStage === 'complete'));
+}
+const initializationSchema = z.object({
+  schemaVersion: z.literal(1), priorHasCachedPair: z.literal(false), priorPermanentFailure: z.literal(false),
+  validationAttemptsBefore: z.literal(0), validationAttempts: z.literal(1),
+  effectiveMode: loaderFields.effectiveMode, validationStage: loaderFields.validationStage,
+  hmacInput: loaderFields.hmacInput, redisInput: loaderFields.redisInput,
+  hasCachedPair: z.boolean(), permanentFailure: z.boolean(),
+}).strict().refine(consistentLoader);
+const loaderSchema = z.object(loaderFields).strict().refine(consistentLoader);
+const recordedLoaderSchema = z.object({ ...loaderFields, initialization: initializationSchema.nullable() })
+  .strict().refine(consistentLoader);
+const factsFields = {
   effectiveMode: z.enum(['not_observed', 'invalid', 'local', 'vercel']),
   sourceResolution: z.enum(['not_attempted', 'accepted', 'rejected']),
   canonicalFamily: z.union([z.literal(4), z.literal(6), z.null()]),
@@ -39,7 +53,10 @@ const factsSchema = z.object({
   loader: loaderSchema.nullable(), identityAttempted: z.boolean(),
   redisAttempted: z.boolean(), scriptAttempted: z.boolean(),
   allowed: z.boolean(), reason: z.enum(Object.values(TEMPORARY_SESSION_FAILURE_REASONS)).nullable(),
-}).strict().refine(consistentFacts);
+};
+const factsSchema = z.object(factsFields).strict().refine(consistentFacts);
+const recordedFactsSchema = z.object({ ...factsFields, loader: recordedLoaderSchema.nullable() })
+  .strict().refine(consistentFacts);
 
 /** Rejects contradictory stage facts; params contain only fixed sanitized fields. */
 function consistentFacts(facts) {
@@ -112,7 +129,9 @@ export function createGate1SecretsProbe(options = {}) {
       const secret = env.GATE1_SECRETS_PROBE_SECRET;
       if (!credentialSchema.safeParse(secret).success) return reject('configured_credential_invalid');
       if (!validRawMetadata(req.rawHeaders)) return reject('raw_metadata_invalid');
-      if (singleton(req, GATE1_SECRETS_DIAGNOSTIC_HEADER) !== '1') return reject('diagnostic_marker_invalid');
+      const version = singleton(req, GATE1_SECRETS_DIAGNOSTIC_HEADER);
+      if (version !== '1' && version !== '2') return reject('diagnostic_marker_invalid');
+      if (version === '2' && environment !== 'preview') return reject('runtime_ineligible');
       const authorization = singleton(req, 'authorization');
       if (typeof authorization !== 'string' || !/^Bearer [a-f0-9]{64}$/.test(authorization)) return reject('authorization_invalid');
       if (!timingSafeEqual(Buffer.from(authorization.slice(7), 'hex'), Buffer.from(secret, 'hex'))) return reject('credential_mismatch');
@@ -131,10 +150,17 @@ export function createGate1SecretsProbe(options = {}) {
         used = true;
         try {
           if (res.headersSent || res.writableEnded || res.finished) { traceStage(trace, 'emission', 'response_closed'); return; }
-          const parsed = factsSchema.safeParse(facts);
+          // Legacy responses omit only the new internal record; other unknown fields still reject.
+          let projected = facts;
+          if (version === '1' && facts?.loader && Object.hasOwn(facts.loader, 'initialization')) {
+            const legacyLoader = { ...facts.loader };
+            delete legacyLoader.initialization;
+            projected = { ...facts, loader: legacyLoader };
+          }
+          const parsed = (version === '2' ? recordedFactsSchema : factsSchema).safeParse(projected);
           if (!parsed.success) { traceStage(trace, 'emission', 'facts_rejected'); return; }
           const value = JSON.stringify({
-            schemaVersion: 2, scope: 'secret_loader_observation_only',
+            schemaVersion: version === '2' ? 3 : 2, scope: 'secret_loader_observation_only',
             environment, contextScope: 'loader', marker, ...parsed.data,
           });
           if (Buffer.byteLength(value) > 1_536) { traceStage(trace, 'emission', 'payload_oversized'); return; }

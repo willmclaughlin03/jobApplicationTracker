@@ -1,4 +1,5 @@
 import { createGate1SecretsProbe, GATE1_SECRETS_PROBE_HEADER } from '../gate1SecretsProbe.js';
+import { createTemporarySessionSecrets } from '../temporarySessionSecrets.js';
 
 const SECRET = 'a'.repeat(64);
 const MARKER = `gate1-secrets-${'b'.repeat(32)}`;
@@ -26,6 +27,56 @@ function fixture() {
 }
 
 describe('GATE-1 deployment secrets probe', () => {
+  /** Real loader capture is exposed only by the explicitly selected authenticated Preview wire version. */
+  it.each(['1', '2'])('preserves the selected diagnostic version %s after ordinary initialization', async (version) => {
+    const loader = createTemporarySessionSecrets({ env: { ...ENV, TEMPORARY_SESSION_CEILING_SECRET_MODE: 'vercel' }, onEvent: jest.fn() });
+    await loader.getRuntimePair().catch(() => undefined);
+    const { req, res } = fixture();
+    req.headers['x-gate1-secrets-diagnostic'] = version;
+    req.rawHeaders = Object.entries(req.headers).flat();
+    const state = loader.getDiagnosticSnapshot();
+    createGate1SecretsProbe({ env: ENV }).createObserver(req, res)({ ...FACTS, loader: state });
+    const text = res.getHeader(GATE1_SECRETS_PROBE_HEADER), value = JSON.parse(text);
+    expect(value.schemaVersion).toBe(version === '1' ? 2 : 3);
+    if (version === '1') expect(value.loader).not.toHaveProperty('initialization');
+    else expect(value.loader.initialization).toEqual(state.initialization);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(1536);
+    expect(text).not.toContain(SECRET);
+    expect(text).not.toContain('203.0.113.2');
+    expect(res.getHeader('Cache-Control')).toBe('private, no-store');
+  });
+
+  /** Version selection never authorizes a probe or permits the Preview amendment on Production. */
+  it.each(['no_auth', 'wrong_secret', 'duplicate', 'production', 'disabled', 'unknown_version'])(
+    'rejects recorded probe %s without emitting metadata', (change) => {
+      const { req, res } = fixture(), env = { ...ENV };
+      req.headers['x-gate1-secrets-diagnostic'] = '2';
+      if (change === 'no_auth') delete req.headers.authorization;
+      if (change === 'wrong_secret') req.headers.authorization = `Bearer ${'f'.repeat(64)}`;
+      if (change === 'production') Object.assign(env, { VERCEL_ENV: 'production', GATE1_SECRETS_PROBE_PRODUCTION_ENABLED: 'true' });
+      if (change === 'disabled') env.GATE1_SECRETS_PROBE_ENABLED = 'false';
+      if (change === 'unknown_version') req.headers['x-gate1-secrets-diagnostic'] = '3';
+      req.rawHeaders = Object.entries(req.headers).flat();
+      if (change === 'duplicate') req.rawHeaders.push('x-gate1-secrets-diagnostic', '2');
+      expect(createGate1SecretsProbe({ env }).createObserver(req, res)).toBeUndefined();
+      expect(res.setHeader).not.toHaveBeenCalled();
+    });
+
+  /** Reject unbounded or contradictory recorded facts while preserving the original response. */
+  it.each(['missing', 'extra', 'prior_failure', 'attempts'])(
+    'omits invalid initialization metadata: %s', async (change) => {
+      const loader = createTemporarySessionSecrets({ env: { ...ENV, TEMPORARY_SESSION_CEILING_SECRET_MODE: 'vercel' }, onEvent: jest.fn() });
+      await loader.getRuntimePair().catch(() => undefined);
+      const state = JSON.parse(JSON.stringify(loader.getDiagnosticSnapshot()));
+      if (change === 'missing') delete state.initialization;
+      if (change === 'extra') state.initialization.privateValue = SECRET;
+      if (change === 'prior_failure') state.initialization.priorPermanentFailure = true;
+      if (change === 'attempts') state.initialization.validationAttempts = 2;
+      const { req, res } = fixture();
+      req.headers['x-gate1-secrets-diagnostic'] = '2'; req.rawHeaders = Object.entries(req.headers).flat();
+      expect(() => createGate1SecretsProbe({ env: ENV }).createObserver(req, res)({ ...FACTS, loader: state })).not.toThrow();
+      expect(res.setHeader).not.toHaveBeenCalled();
+    });
   /** Trace the actual first rejection; later credential/header checks must stay unexecuted. */
   it.each([
     ['probe_disabled', { GATE1_SECRETS_PROBE_ENABLED: 'false' }],

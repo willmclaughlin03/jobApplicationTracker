@@ -5,7 +5,7 @@ only. No provider API, saved authentication files, deployment or configuration w
 #>
 [CmdletBinding()]
 param([switch]$Template, [switch]$ProductionTemplate, [switch]$DiagnosticTemplate, [switch]$PreviewDiagnosticTemplate,
-    [switch]$MissingRedisTemplate, [switch]$MalformedHmacTemplate, [switch]$MalformedRedisTemplate,
+    [switch]$MissingRedisTemplate, [switch]$MalformedHmacTemplate, [switch]$MalformedRedisTemplate, [switch]$RecordedMissingRedisTemplate,
     [string]$ProfilePath, [switch]$Live, [string]$Approval)
 $ErrorActionPreference = 'Stop'
 
@@ -13,7 +13,7 @@ $ErrorActionPreference = 'Stop'
 function Invoke-Gate1SecretsNode([string]$Mode, [string]$InputJson = '') {
     $utf8 = New-Object Text.UTF8Encoding($false)
     if ($Mode -cnotin @('--prepare', '--template', '--template-production', '--template-diagnostic', '--template-preview-diagnostic',
-        '--template-missing-redis', '--template-malformed-hmac', '--template-malformed-redis', '--review', '--live') -or
+        '--template-missing-redis', '--template-malformed-hmac', '--template-malformed-redis', '--template-recorded-missing-redis', '--review', '--live') -or
         $utf8.GetByteCount($InputJson) -gt 16384) { throw 'Invalid canary input.' }
     $runner = Join-Path $PSScriptRoot 'gate1-secrets-canary.js'
     $startInfo = New-Object Diagnostics.ProcessStartInfo
@@ -120,6 +120,9 @@ function Test-Gate1SecretsEqual($Actual, $Expected) {
 <# Independently pin each synthetic case's fixture, scope, attestations and typed confirmation before prompting. #>
 function Get-Gate1SyntheticCase([string]$CaseId) {
     switch -CaseSensitive ($CaseId) {
+        'redis_input_missing_recorded_initialization' { return @{ FixtureId = 'synthetic_hmac_redis_absent_v1'; Scope = 'preview_missing_redis_recorded_initialization_only';
+            Attestations = @('syntheticHmacKeyringValidated', 'redisInputAbsent', 'recordedInitializationScopeReviewed');
+            Confirmation = 'RUN PREVIEW RECORDED MISSING REDIS ONCE'; Recorded = $true } }
         'redis_input_missing' { return @{ FixtureId = 'synthetic_hmac_redis_absent_v1'; Scope = 'preview_missing_redis_only';
             Attestations = @('syntheticHmacKeyringValidated', 'redisInputAbsent'); Confirmation = 'RUN PREVIEW MISSING REDIS ONCE' } }
         'hmac_input_malformed' { return @{ FixtureId = 'invalid_hmac_json_redis_absent_v1'; Scope = 'preview_malformed_hmac_only';
@@ -142,6 +145,7 @@ function Test-Gate1SecretsReview($Prepared, $canaryProfile) {
             'productionCredentialsExcluded', 'explicitVercelModes', 'probeConfigured', 'protectionAccessApproved',
             'credentialLoggingReviewed', 'noConcurrentDeploymentsOrConfigurationChanges', 'freshLoaderTrialReviewed',
             'syntheticInputsReviewed', 'fixtureLocallyValidated', 'noUsableRedisCredentials', 'productionConfigurationUnchanged') + $synthetic.Attestations
+        if ($synthetic.Recorded) { $names = @($names | Where-Object { $_ -cne 'freshLoaderTrialReviewed' }) }
         $attestations = @{}
         foreach ($name in $names) { $attestations[$name] = $true }
         $keys = @('schemaVersion', 'caseId', 'projectId', 'teamId', 'environment', 'hostname', 'deploymentId',
@@ -194,7 +198,7 @@ function Read-Gate1SecretsCredential([string]$Prompt) {
 <# Review bounded local JSON first; only an exact approval and typed confirmation permit the stdin credential envelope. #>
 function Invoke-Gate1SecretsCanary {
     $templateCount = [int]$Template.IsPresent + [int]$ProductionTemplate.IsPresent + [int]$DiagnosticTemplate.IsPresent +
-        [int]$PreviewDiagnosticTemplate.IsPresent + [int]$MissingRedisTemplate.IsPresent + [int]$MalformedHmacTemplate.IsPresent + [int]$MalformedRedisTemplate.IsPresent
+        [int]$PreviewDiagnosticTemplate.IsPresent + [int]$MissingRedisTemplate.IsPresent + [int]$MalformedHmacTemplate.IsPresent + [int]$MalformedRedisTemplate.IsPresent + [int]$RecordedMissingRedisTemplate.IsPresent
     if ($args.Count -ne 0 -or $templateCount -gt 1 -or
         ($templateCount -gt 0 -and ($ProfilePath -or $Live -or $Approval)) -or
         ($Live -and (-not $ProfilePath -or $Approval -cnotmatch '^[a-f0-9]{64}$')) -or
@@ -204,6 +208,7 @@ function Invoke-Gate1SecretsCanary {
     if ($DiagnosticTemplate) { return Invoke-Gate1SecretsNode '--template-diagnostic' }
     if ($PreviewDiagnosticTemplate) { return Invoke-Gate1SecretsNode '--template-preview-diagnostic' }
     if ($MissingRedisTemplate) { return Invoke-Gate1SecretsNode '--template-missing-redis' }
+    if ($RecordedMissingRedisTemplate) { return Invoke-Gate1SecretsNode '--template-recorded-missing-redis' }
     if ($MalformedHmacTemplate) { return Invoke-Gate1SecretsNode '--template-malformed-hmac' }
     if ($MalformedRedisTemplate) { return Invoke-Gate1SecretsNode '--template-malformed-redis' }
     if (-not $ProfilePath) { return Invoke-Gate1SecretsNode '--prepare' }
