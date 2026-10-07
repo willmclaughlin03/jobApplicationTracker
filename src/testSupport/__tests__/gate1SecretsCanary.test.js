@@ -12,6 +12,8 @@ const https = require('node:https');
 const { randomBytes } = require('node:crypto');
 const { createTemporarySessionSecrets, parseTemporarySessionHmacSecret,
   parseTemporarySessionRedisSecret } = require('../../server/lib/temporarySessionSecrets');
+const { createTemporarySessionCeiling } = require('../../server/lib/temporarySessionCeiling');
+const { createGate1SecretsProbe } = require('../../server/lib/gate1SecretsProbe');
 const { LIMITS, SUCCESS_CASE, DIAGNOSTIC_CASE, PREVIEW_DIAGNOSTIC_CASE, RECORDED_CASE, DIAGNOSTIC_LIMITS, CanaryError, profileTemplate, parseProfile, preparation, approvalId, selectedHeaders,
   evidenceDirectory, createStore, runCanary, readInput, reviewProbe } = require('../../../scripts/gate1-secrets-canary');
 
@@ -24,10 +26,20 @@ const BYPASS = 'fixture_only_bypass_credential';
 const PRIVATE = 'untrusted_response_sentinel';
 const LOADER = 'a1'.repeat(16);
 const SYNTHETIC_CASES = [
-  { id: RECORDED_CASE, stage: 'redis', redisInput: 'missing', recorded: true,
+  { id: RECORDED_CASE, stage: 'redis', redisInput: 'missing', recorded: true, legacyId: 'redis_input_missing',
     fixtureId: 'synthetic_hmac_redis_absent_v1', scope: 'preview_missing_redis_recorded_initialization_only',
     evidence: 'recorded_missing_redis_initialization_and_same_loader_failure_observed', template: 'RecordedMissingRedisTemplate',
     option: '--template-recorded-missing-redis', confirmation: 'RUN PREVIEW RECORDED MISSING REDIS ONCE' },
+  { id: 'hmac_input_malformed_recorded_initialization', stage: 'hmac', redisInput: 'missing', recorded: true,
+    legacyId: 'hmac_input_malformed', fixtureId: 'invalid_hmac_json_redis_absent_v1',
+    scope: 'preview_malformed_hmac_recorded_initialization_only',
+    evidence: 'recorded_malformed_hmac_initialization_and_same_loader_failure_observed', template: 'RecordedMalformedHmacTemplate',
+    option: '--template-recorded-malformed-hmac', confirmation: 'RUN PREVIEW RECORDED MALFORMED HMAC ONCE' },
+  { id: 'redis_input_malformed_recorded_initialization', stage: 'redis', redisInput: 'present', recorded: true,
+    legacyId: 'redis_input_malformed', fixtureId: 'synthetic_hmac_invalid_redis_json_v1',
+    scope: 'preview_malformed_redis_recorded_initialization_only',
+    evidence: 'recorded_malformed_redis_initialization_and_same_loader_failure_observed', template: 'RecordedMalformedRedisTemplate',
+    option: '--template-recorded-malformed-redis', confirmation: 'RUN PREVIEW RECORDED MALFORMED REDIS ONCE' },
   { id: 'redis_input_missing', stage: 'redis', redisInput: 'missing',
     fixtureId: 'synthetic_hmac_redis_absent_v1', scope: 'preview_missing_redis_only',
     evidence: 'missing_redis_and_same_loader_failure_observed', template: 'MissingRedisTemplate',
@@ -98,18 +110,18 @@ function syntheticReply(options, index, spec) {
     Object.assign(value.loader, { validationStage: spec.stage, hmacInput: 'present', redisInput: spec.redisInput });
     if (spec.recorded) {
       value.schemaVersion = 3;
-      value.loader.initialization = initializationRecord();
+      value.loader.initialization = initializationRecord(spec);
     }
     response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
   }
   return response;
 }
 
-/** Fixed record fixture mirrors a completed first validation, without any secret values or request attribution. */
-function initializationRecord() {
+/** Build the selected case's independent expected record, without values or initial-request attribution. */
+function initializationRecord(spec) {
   return { schemaVersion: 1, priorHasCachedPair: false, priorPermanentFailure: false,
-    validationAttemptsBefore: 0, validationAttempts: 1, effectiveMode: 'vercel', validationStage: 'redis',
-    hmacInput: 'present', redisInput: 'missing', hasCachedPair: false, permanentFailure: true };
+    validationAttemptsBefore: 0, validationAttempts: 1, effectiveMode: 'vercel', validationStage: spec.stage,
+    hmacInput: 'present', redisInput: spec.redisInput, hasCachedPair: false, permanentFailure: true };
 }
 
 /** Builds the Production success contract with either observed initialization or a warm first loader. */
@@ -324,43 +336,67 @@ describe.each(SYNTHETIC_CASES)('synthetic Preview qualification: $id', (spec) =>
       limits: LIMITS, sequence: ['buildBefore', 'probe1', 'probe2', 'buildAfter'] });
     expect(prepared.limitations).toContain('fixture_provenance_operator_attested');
     expect(prepared.limitations).not.toContain('no_hosted_success_or_malformed_cases');
-    expect(new Set([approvalId(profile()), ...SYNTHETIC_CASES.map((entry) => approvalId(profile(START, entry.id)))]).size).toBe(5);
+    expect(new Set([approvalId(profile()), ...SYNTHETIC_CASES.map((entry) => approvalId(profile(START, entry.id)))]).size)
+      .toBe(SYNTHETIC_CASES.length + 1);
     for (const key of Object.keys(selected.attestations)) {
       expect(() => parseProfile({ ...selected, attestations: { ...selected.attestations, [key]: false } })).toThrow('profile');
     }
   });
 
-  it('qualifies real local parser failure and cache reuse using only synthetic input', async () => {
+  /** Compose real loader, ceiling and authenticated probe; only HTTP transport and downstream dependencies are mocked. */
+  it.each(spec.recorded ? [false, true] : [false])('qualifies real parser failure and reuse (warm=%s)', async (warm) => {
     const key = randomBytes(32).toString('base64url');
     const hmac = JSON.stringify({ schemaVersion: 1, active: { generation: 1, keyId: 'gate1_fixture', key }, previous: null });
     const malformed = '{';
     expect(() => parseTemporarySessionHmacSecret(hmac)).not.toThrow();
     expect(() => parseTemporarySessionHmacSecret(malformed)).toThrow('temporary session secrets are unavailable');
     expect(() => parseTemporarySessionRedisSecret(malformed)).toThrow('temporary session secrets are unavailable');
-    const env = { NODE_ENV: 'production', VERCEL: '1', TEMPORARY_SESSION_CEILING_SECRET_MODE: 'vercel',
+    const env = { NODE_ENV: 'production', VERCEL: '1', VERCEL_ENV: 'preview', TEMPORARY_SESSION_CEILING_SECRET_MODE: 'vercel',
+      GATE1_SECRETS_PROBE_ENABLED: 'true', GATE1_SECRETS_PROBE_SECRET: PROBE,
       TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON: spec.stage === 'hmac' ? malformed : hmac,
       ...(spec.redisInput === 'present' ? { TEMPORARY_SESSION_CEILING_UPSTASH_JSON: malformed } : {}) };
     const events = jest.fn(), loader = createTemporarySessionSecrets({ env, onEvent: events });
+    const deriveIdentity = jest.fn(), getRedisClientFunction = jest.fn(), executeScript = jest.fn();
+    const ceiling = createTemporarySessionCeiling({ env, sourceMode: 'vercel', secrets: loader,
+      resolveSource: jest.fn(() => ({ family: 4, addressBytes: Buffer.from([192, 0, 2, 80]) })),
+      deriveIdentity, getRedisClientFunction, executeScript,
+      telemetry: { record: jest.fn(), finish: jest.fn(), maybeRotate: jest.fn() } });
+    const expectedDecision = { allowed: false, statusCode: 503, reason: 'secret_unavailable' };
+    if (warm) await expect(ceiling.evaluate({}, { routeVersion: 'v1' })).resolves.toEqual(expectedDecision);
     const observations = [];
     for (let i = 0; i < 2; i += 1) {
-      const value = facts('gate1-secrets-' + '0'.repeat(32), i === 1);
-      value.loaderStateBefore = loader.getSnapshot();
-      await expect(loader.getRuntimePair()).rejects.toThrow('temporary session secrets are unavailable');
-      value.loader = { ...loader.getDiagnosticSnapshot() };
-      if (spec.recorded) value.schemaVersion = 3; else delete value.loader.initialization;
-      observations.push(value);
+      const observeSecrets = jest.fn();
+      await expect(ceiling.evaluate({}, { routeVersion: 'v1', observeSecrets })).resolves.toEqual(expectedDecision);
+      expect(observeSecrets).toHaveBeenCalledTimes(1);
+      observations.push(observeSecrets.mock.calls[0][0]);
     }
     expect(events).toHaveBeenCalledTimes(1);
+    expect(deriveIdentity).not.toHaveBeenCalled();
+    expect(getRedisClientFunction).not.toHaveBeenCalled();
+    expect(executeScript).not.toHaveBeenCalled();
     const { report, calls } = await trial((options, index) => {
       const response = reply(options, index);
-      if (options.path !== '/login') response.headers['x-gate1-secrets-probe'] = JSON.stringify({
-        ...observations[index - 1], marker: options.headers['User-Agent'] });
+      if (options.path !== '/login') {
+        delete response.headers['x-gate1-secrets-probe'];
+        const headers = Object.fromEntries(Object.entries(options.headers).map(([name, value]) => [name.toLowerCase(), value]));
+        const req = { method: 'GET', headers, rawHeaders: Object.entries(headers).flat() };
+        const res = { setHeader: jest.fn((name, value) => { response.headers[name.toLowerCase()] = value; }) };
+        const observer = createGate1SecretsProbe({ env }).createObserver(req, res);
+        expect(observer).toEqual(expect.any(Function));
+        observer(observations[index - 1]);
+      }
       return response;
     }, { profile: profile(START, spec.id) });
     expect(report).toMatchObject({ result: 'completed', scope: spec.scope, secretEvidence: spec.evidence,
       appRequests: 4, validatedRequests: 4, unvalidatedAttempts: 0, failure: null });
     expect(calls.map((call) => call.path)).toEqual(['/login', '/api/auth/session', '/api/auth/session', '/login']);
-    expect(report.observations.map((o) => o.cacheStateBefore)).toEqual(['uninitialized', 'permanent_failure']);
+    expect(report.observations.map((o) => o.cacheStateBefore)).toEqual([warm ? 'permanent_failure' : 'uninitialized', 'permanent_failure']);
+    expect(calls.filter((call) => call.path === '/api/auth/session')
+      .map((call) => call.headers['x-gate1-secrets-diagnostic'])).toEqual(spec.recorded ? ['2', '2'] : ['1', '1']);
+    if (spec.recorded) {
+      expect(report.initializationEvidence).toBe('recorded_by_loader_observed_via_probes');
+      expect(report.observations.map((o) => o.initialization)).toEqual([initializationRecord(spec), initializationRecord(spec)]);
+    }
     expect(new Set(report.observations.map((o) => o.loaderId)).size).toBe(1);
     for (const observation of report.observations) expect(observation).toMatchObject({
       hmacInput: 'present', redisInput: spec.redisInput, validationStage: spec.stage,
@@ -470,8 +506,7 @@ describe.each(SYNTHETIC_CASES)('synthetic Preview qualification: $id', (spec) =>
   });
 });
 
-describe('recorded missing-Redis initialization qualification', () => {
-  const spec = SYNTHETIC_CASES.find((value) => value.recorded);
+describe.each(SYNTHETIC_CASES.filter((value) => value.recorded))('recorded initialization qualification: $id', (spec) => {
 
   /** Both warm and fresh first probes require the same actual record and later failure reuse. */
   it.each([true, false])('qualifies only recorded initialization and current same-loader reuse (warm=%s)', async (warm) => {
@@ -483,15 +518,15 @@ describe('recorded missing-Redis initialization qualification', () => {
         response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
       }
       return response;
-    }, { profile: profile(START, RECORDED_CASE) });
+    }, { profile: profile(START, spec.id) });
     expect(report).toMatchObject({ result: 'completed', secretEvidence: spec.evidence,
       initializationEvidence: 'recorded_by_loader_observed_via_probes', failure: null });
-    expect(report.observations.map((value) => value.initialization)).toEqual([initializationRecord(), initializationRecord()]);
+    expect(report.observations.map((value) => value.initialization)).toEqual([initializationRecord(spec), initializationRecord(spec)]);
     expect(report.observations[0].cacheStateBefore).toBe(warm ? 'permanent_failure' : 'uninitialized');
     expect(calls.filter((call) => call.path === '/api/auth/session')
       .map((call) => call.headers['x-gate1-secrets-diagnostic'])).toEqual(['2', '2']);
     expectPrivate(report);
-    const prepared = preparation(profile(START, RECORDED_CASE));
+    const prepared = preparation(profile(START, spec.id));
     expect(prepared.limitations).toContain('initializing_request_not_observed');
     expect(prepared.profile.attestations).not.toHaveProperty('freshLoaderTrialReviewed');
     expect(prepared.profile.attestations.recordedInitializationScopeReviewed).toBe(true);
@@ -503,9 +538,9 @@ describe('recorded missing-Redis initialization qualification', () => {
     ['null', (v) => { v.loader.initialization = null; }],
     ['version downgrade', (v) => { v.schemaVersion = 2; delete v.loader.initialization; }],
     ['extra data', (v) => { v.loader.initialization.credential = PRIVATE; }],
-    ...Object.entries(initializationRecord()).map(([name, value]) => [name, (v) => {
+    ...Object.entries(initializationRecord(spec)).map(([name, value]) => [name, (v) => {
       v.loader.initialization[name] = typeof value === 'boolean' ? !value : typeof value === 'number' ? 2
-        : name === 'effectiveMode' ? 'local' : name === 'validationStage' ? 'hmac' : 'not_read';
+        : name === 'effectiveMode' ? 'local' : name === 'validationStage' ? (value === 'hmac' ? 'redis' : 'hmac') : 'not_read';
     }]),
   ].flatMap(([name, mutate]) => [1, 2].map((index) => [name, index, mutate])))(
     'rejects %s on probe%s and retains no invalid record', async (_name, at, mutate) => {
@@ -516,7 +551,7 @@ describe('recorded missing-Redis initialization qualification', () => {
           response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
         }
         return response;
-      }, { profile: profile(START, RECORDED_CASE) });
+      }, { profile: profile(START, spec.id) });
       expect(report.result).toBe('stopped'); expect(report.secretEvidence).toBe('unqualified');
       expect(report.initializationEvidence).toBe('not_observed');
       expect(report.observations).toHaveLength(at - 1); expect(calls).toHaveLength(at + 1);
@@ -527,14 +562,41 @@ describe('recorded missing-Redis initialization qualification', () => {
   it('requires a matching first record for the second probe', () => {
     const response = syntheticReply({ path: '/api/auth/session', headers: { 'User-Agent': `gate1-secrets-${'0'.repeat(32)}` } }, 2, spec);
     expect(() => reviewProbe({ ...response, text: response.body }, `gate1-secrets-${'0'.repeat(32)}`,
-      LOADER, RECORDED_CASE, null)).toThrow('secret_contract');
+      LOADER, spec.id, null)).toThrow('secret_contract');
   });
 
   /** Keeping the legacy contract strict prevents retroactive promotion of historical failures. */
-  it('rejects the new response version for the legacy missing-Redis case', async () => {
+  it('rejects the new response version for the corresponding legacy case', async () => {
     const { report } = await trial((options, index) => syntheticReply(options, index, spec),
-      { profile: profile(START, 'redis_input_missing') });
+      { profile: profile(START, spec.legacyId) });
     expect(report).toMatchObject({ result: 'stopped', failure: 'probe_contract', probeFailure: 'schema_invalid' });
+  });
+
+  /** A record from another case cannot pass even when current observations match the selected fixture. */
+  it.each(SYNTHETIC_CASES.filter((value) => value.recorded && value.id !== spec.id))('rejects a $id initialization record', async (other) => {
+    const { report, calls } = await trial((options, index) => {
+      const response = syntheticReply(options, index, spec);
+      if (index === 1) {
+        const value = JSON.parse(response.headers['x-gate1-secrets-probe']);
+        value.loader.initialization = initializationRecord(other);
+        response.headers['x-gate1-secrets-probe'] = JSON.stringify(value);
+      }
+      return response;
+    }, { profile: profile(START, spec.id) });
+    expect(report).toMatchObject({ failure: 'secret_contract', secretEvidence: 'unqualified',
+      secretFailure: { check: 'initialization_record_mismatch' } });
+    expect(report.observations).toEqual([]); expect(calls).toHaveLength(2); expectPrivate(report);
+  });
+
+  /** A new case ID cannot reuse the consumed legacy approval even when its fixture identifier is identical. */
+  it('rejects a legacy approval and fresh-first attestation for the recorded case', async () => {
+    const selected = profile(START, spec.id), save = jest.fn();
+    const { report, calls } = await trial(undefined, { profile: selected,
+      input: { approval: approvalId(profile(START, spec.legacyId)) }, deps: { store: { save } } });
+    expect(report.failure).toBe('approval'); expect(calls).toHaveLength(0); expect(save).not.toHaveBeenCalled();
+    delete selected.attestations.recordedInitializationScopeReviewed;
+    selected.attestations.freshLoaderTrialReviewed = true;
+    expect(() => parseProfile(selected)).toThrow('profile');
   });
 });
 
