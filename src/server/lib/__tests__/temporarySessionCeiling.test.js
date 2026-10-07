@@ -83,6 +83,29 @@ function createFixture(overrides = {}) {
 }
 
 describe('temporarySessionCeiling secret observations', () => {
+  /** An unmarked caller can initialize the real loader; later observers must retain that original transition. */
+  it('preserves ordinary missing-Redis initialization through concurrent authenticated observations', async () => {
+    const secrets = diagnosticLoader({ TEMPORARY_SESSION_CEILING_UPSTASH_JSON: undefined });
+    const fixture = createFixture({ secrets });
+    const expected = { allowed: false, statusCode: 503, reason: 'secret_unavailable' };
+    await expect(fixture.ceiling.evaluate({}, { routeVersion: 'v1' })).resolves.toEqual(expected);
+    const record = secrets.getDiagnosticSnapshot().initialization;
+    const first = jest.fn(), second = jest.fn();
+    await Promise.all([first, second].map(async (observeSecrets) => {
+      await expect(fixture.ceiling.evaluate({}, { routeVersion: 'v1', observeSecrets })).resolves.toEqual(expected);
+    }));
+    for (const observer of [first, second]) {
+      const value = observer.mock.calls[0][0];
+      expect(value.loader.initialization).toBe(record);
+      expect(value.loaderStateBefore).toEqual({ hasCachedPair: false, permanentFailure: true });
+      expect(value.loader.validationAttempts).toBe(1);
+      expect(value).toMatchObject({ identityAttempted: false, redisAttempted: false, scriptAttempted: false });
+    }
+    expect(first.mock.calls[0][0].loader.loaderId).toBe(second.mock.calls[0][0].loader.loaderId);
+    expect(fixture.deriveIdentity).not.toHaveBeenCalled();
+    expect(fixture.getRedisClientFunction).not.toHaveBeenCalled();
+    expect(fixture.executeScript).not.toHaveBeenCalled();
+  });
   it('does not access the loader after source rejection', async () => {
     const secrets = { getRuntimePair: jest.fn(), getSnapshot: jest.fn(), getDiagnosticSnapshot: jest.fn() };
     const fixture = createFixture({ resolveSource: () => null, secrets });

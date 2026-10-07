@@ -239,6 +239,50 @@ describe('temporarySessionSecrets instance cache', () => {
 });
 
 describe('temporarySessionSecrets value-free diagnostics', () => {
+  /** First-use capture must precede observers and survive parallel calls without re-reading configuration. */
+  it('records real initialization once before telemetry and preserves it across later observations', async () => {
+    const env = vercelEnvironment({ TEMPORARY_SESSION_CEILING_UPSTASH_JSON: undefined });
+    const read = jest.fn(() => undefined);
+    Object.defineProperty(env, 'TEMPORARY_SESSION_CEILING_UPSTASH_JSON', { get: read });
+    let atTelemetry;
+    const loader = createTemporarySessionSecrets({ env,
+      onEvent: () => { atTelemetry = loader.getDiagnosticSnapshot().initialization; } });
+    expect(loader.getDiagnosticSnapshot().initialization).toBeNull();
+    expect(read).not.toHaveBeenCalled();
+    await Promise.allSettled([loader.getRuntimePair(), loader.getRuntimePair(), loader.getRuntimePair()]);
+    expect(read).toHaveBeenCalledTimes(1);
+    const record = loader.getDiagnosticSnapshot().initialization;
+    expect(record).toBe(atTelemetry);
+    expect(record).toEqual({ schemaVersion: 1, priorHasCachedPair: false, priorPermanentFailure: false,
+      validationAttemptsBefore: 0, validationAttempts: 1, effectiveMode: 'vercel', validationStage: 'redis',
+      hmacInput: 'present', redisInput: 'missing', hasCachedPair: false, permanentFailure: true });
+    expect(Object.isFrozen(record)).toBe(true);
+    expect(() => { record.validationAttempts = 2; }).toThrow();
+    expect(JSON.stringify(record)).not.toContain(KEY_ONE);
+    loader.reset();
+    expect(loader.getDiagnosticSnapshot().initialization).toBeNull();
+  });
+
+  /** An instrumentation failure loses evidence only; cache semantics and secret decisions remain unchanged. */
+  it.each([true, false])('contains record failures without reconstructing history (success=%s)', async (success) => {
+    const loader = createTemporarySessionSecrets({ env: vercelEnvironment(success ? {} : {
+      TEMPORARY_SESSION_CEILING_UPSTASH_JSON: undefined }), onEvent: jest.fn() });
+    const freeze = Object.freeze;
+    let captureAttempts = 0;
+    const spy = jest.spyOn(Object, 'freeze').mockImplementation((value) => {
+      if (Object.hasOwn(value, 'validationAttemptsBefore')) { captureAttempts++; throw new Error('diagnostic sentinel'); }
+      return freeze(value);
+    });
+    try {
+      const results = await Promise.allSettled([loader.getRuntimePair(), loader.getRuntimePair()]);
+      expect(results.map((result) => result.status)).toEqual(Array(2).fill(success ? 'fulfilled' : 'rejected'));
+      expect(loader.getDiagnosticSnapshot()).toMatchObject({ initialization: null, validationAttempts: 1,
+        hasCachedPair: success, permanentFailure: !success });
+      expect(captureAttempts).toBe(1);
+    } finally { spy.mockRestore(); }
+    await loader.getRuntimePair().catch(() => undefined);
+    expect(loader.getDiagnosticSnapshot().initialization).toBeNull();
+  });
   it.each([
     ['both missing', { TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON: undefined,
       TEMPORARY_SESSION_CEILING_UPSTASH_JSON: undefined }, 'hmac', 'missing', 'missing'],
@@ -262,6 +306,9 @@ describe('temporarySessionSecrets value-free diagnostics', () => {
     expect(first).toEqual({
       loaderId: '07'.repeat(16), validationAttempts: 1, effectiveMode: 'vercel',
       validationStage: stage, hmacInput, redisInput, hasCachedPair: false, permanentFailure: true,
+      initialization: { schemaVersion: 1, priorHasCachedPair: false, priorPermanentFailure: false,
+        validationAttemptsBefore: 0, validationAttempts: 1, effectiveMode: 'vercel', validationStage: stage,
+        hmacInput, redisInput, hasCachedPair: false, permanentFailure: true },
     });
     env.TEMPORARY_SESSION_CEILING_HMAC_KEYRING_JSON = JSON.stringify(hmacSecret());
     env.TEMPORARY_SESSION_CEILING_UPSTASH_JSON = JSON.stringify(redisSecret());
