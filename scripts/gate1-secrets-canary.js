@@ -30,6 +30,16 @@ const SYNTHETIC_CASES = Object.freeze({
     scope: 'preview_missing_redis_recorded_initialization_only',
     evidence: 'recorded_missing_redis_initialization_and_same_loader_failure_observed',
     attestations: Object.freeze(['syntheticHmacKeyringValidated', 'redisInputAbsent', 'recordedInitializationScopeReviewed']) }),
+  hmac_input_malformed_recorded_initialization: Object.freeze({ fixtureId: 'invalid_hmac_json_redis_absent_v1',
+    stage: 'hmac', hmacInput: 'present', redisInput: 'missing', recorded: true,
+    scope: 'preview_malformed_hmac_recorded_initialization_only',
+    evidence: 'recorded_malformed_hmac_initialization_and_same_loader_failure_observed',
+    attestations: Object.freeze(['malformedHmacInputReviewed', 'redisInputAbsent', 'recordedInitializationScopeReviewed']) }),
+  redis_input_malformed_recorded_initialization: Object.freeze({ fixtureId: 'synthetic_hmac_invalid_redis_json_v1',
+    stage: 'redis', hmacInput: 'present', redisInput: 'present', recorded: true,
+    scope: 'preview_malformed_redis_recorded_initialization_only',
+    evidence: 'recorded_malformed_redis_initialization_and_same_loader_failure_observed',
+    attestations: Object.freeze(['syntheticHmacKeyringValidated', 'malformedRedisInputReviewed', 'recordedInitializationScopeReviewed']) }),
   redis_input_missing: Object.freeze({ fixtureId: 'synthetic_hmac_redis_absent_v1',
     stage: 'redis', hmacInput: 'present', redisInput: 'missing',
     scope: 'preview_missing_redis_only', evidence: 'missing_redis_and_same_loader_failure_observed',
@@ -153,7 +163,7 @@ function parseProfile(value) {
   return parsed.data;
 }
 
-/** Selects explicit recorded-transition review instead of the old fresh-first attestation for the new case only. */
+/** Selects recorded-transition review only for explicit recorded cases; legacy cases retain fresh-first review. */
 function syntheticAttestations(spec) {
   return [...SYNTHETIC_ATTESTATIONS.filter((name) => !spec.recorded || name !== 'freshLoaderTrialReviewed'),
     ...spec.attestations];
@@ -360,17 +370,17 @@ const initializationSchema = z.object({
 const recordedObservationSchema = observationSchema.extend({ schemaVersion: z.literal(3),
   loader: observationSchema.shape.loader.unwrap().extend({ initialization: initializationSchema.nullable() }).nullable(),
 });
-const EXPECTED_INITIALIZATION = Object.freeze({ schemaVersion: 1,
+const INITIALIZATION_INVARIANTS = Object.freeze({ schemaVersion: 1,
   priorHasCachedPair: false, priorPermanentFailure: false, validationAttemptsBefore: 0, validationAttempts: 1,
-  effectiveMode: 'vercel', validationStage: 'redis', hmacInput: 'present', redisInput: 'missing',
+  effectiveMode: 'vercel',
   hasCachedPair: false, permanentFailure: true });
 
 /**
  * Validates the case-specific body, environment and loader facts, not merely status. Provider content
  * stays transient; return only fixed facts and the nonsecret loader identifier. A failed loader
  * check carries a separate enum/boolean snapshot, never an accepted qualification observation.
- * Legacy qualifications require a fresh first state. The separately selected recorded case
- * requires the actual initialization record and unchanged same-loader reuse, even after warm-up.
+ * Legacy qualifications require a fresh first state. Separately selected recorded cases
+ * require the actual initialization record and unchanged same-loader reuse, even after warm-up.
  * Diagnostic-only cases continue to permit missing observations without qualification.
  */
 function reviewProbe(response, marker, firstId = null, caseId = CASE, firstInitialization = null) {
@@ -454,7 +464,10 @@ function reviewProbe(response, marker, firstId = null, caseId = CASE, firstIniti
   if (loader.hasCachedPair) failSecret('cached_pair_mismatch');
   if (!loader.permanentFailure) failSecret('permanent_failure_mismatch');
   if (synthetic?.recorded) {
-    if (!loader.initialization || Object.entries(EXPECTED_INITIALIZATION)
+    // Expected facts come only from the fixed selected case, never from the provider's record.
+    const expectedInitialization = { ...INITIALIZATION_INVARIANTS, validationStage: synthetic.stage,
+      hmacInput: synthetic.hmacInput, redisInput: synthetic.redisInput };
+    if (!loader.initialization || Object.entries(expectedInitialization)
       .some(([name, value]) => loader.initialization[name] !== value)) failSecret('initialization_record_mismatch');
     if (firstId !== null && JSON.stringify(loader.initialization) !== JSON.stringify(firstInitialization)) {
       failSecret('initialization_record_changed');
@@ -603,7 +616,7 @@ async function runCanary(input, deps = {}) {
         'Accept-Encoding': 'identity', 'User-Agent': marked ? marker : 'gate1-secrets-canary',
         'x-vercel-protection-bypass': credentials.bypassSecret };
       if (marked) { headers.Authorization = `Bearer ${credentials.probeSecret}`;
-        headers['x-gate1-secrets-diagnostic'] = profile.caseId === RECORDED_CASE ? '2' : '1'; }
+        headers['x-gate1-secrets-diagnostic'] = syntheticCase(profile.caseId)?.recorded ? '2' : '1'; }
       report.stoppedPhase = phase; report.dispatchState = 'dispatch_pending';
       checkpoint();
       remaining();
@@ -662,7 +675,7 @@ async function runCanary(input, deps = {}) {
       ? 'validated_pair_and_same_loader_cache_reuse_observed' : 'missing_both_and_same_loader_failure_observed');
     if (profile.caseId === SUCCESS_CASE) report.initializationEvidence = first.cacheStateBefore === 'uninitialized'
       ? 'observed_on_probe1' : 'already_cached_on_probe1';
-    if (profile.caseId === RECORDED_CASE) report.initializationEvidence = 'recorded_by_loader_observed_via_probes';
+    if (syntheticCase(profile.caseId)?.recorded) report.initializationEvidence = 'recorded_by_loader_observed_via_probes';
     report.stoppedPhase = null;
   } catch (error) {
     report.failure = error instanceof CanaryError ? error.code : 'internal';
@@ -731,6 +744,8 @@ async function main(args) {
   try {
     const syntheticTemplates = { '--template-missing-redis': 'redis_input_missing',
       '--template-recorded-missing-redis': RECORDED_CASE,
+      '--template-recorded-malformed-hmac': 'hmac_input_malformed_recorded_initialization',
+      '--template-recorded-malformed-redis': 'redis_input_malformed_recorded_initialization',
       '--template-malformed-hmac': 'hmac_input_malformed', '--template-malformed-redis': 'redis_input_malformed' };
     if (args.length > 1 || (args.length && !['--prepare', '--template', '--template-production', '--template-diagnostic', '--template-preview-diagnostic',
       ...Object.keys(syntheticTemplates), '--review', '--live'].includes(args[0]))) throw new CanaryError('arguments');
