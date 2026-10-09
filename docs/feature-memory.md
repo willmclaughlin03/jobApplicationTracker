@@ -16,7 +16,7 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-04
 
-- `2026-10-09` - `GATE-1 runtime hostname privacy`: Configure the application logger with PID-only base bindings while preserving request correlation, redaction and aggregate telemetry. Regression coverage exercises actual Pino serialization for singleton/child loggers, transport inputs and initialization fallback; all 25 focused logger/telemetry tests and targeted lint pass. Hosted verification remains separately approved and GATE-1 remains open.
+- `2026-10-09` - `GATE-1 runtime hostname privacy`: Configure the application logger with PID-only base bindings while preserving request correlation, redaction and aggregate telemetry. Regression coverage exercises actual Pino serialization for singleton/child loggers, transport inputs and initialization fallback. Pin the reviewed logger commit/hash in the restart harness without weakening attribution guards. All 95 focused logger/telemetry/restart tests and targeted lint pass. Hosted verification remains separately approved and GATE-1 remains open.
 
 - `2026-10-06` - `GATE-1 recorded malformed-input cases`: Added separate Preview malformed-HMAC and malformed-Redis runner/launcher cases using the existing authenticated initialization record. Require the selected validation stage and input presence, identical records and same-loader failure reuse; retain legacy fresh-first cases, bounded requests and consumed reservations. All 1,114 tests across the canary/launcher, loader and probe suites plus targeted lint, syntax and whitespace checks pass. No application code or new secret variable; hosted trials remain separately approved and GATE-1 remains open.
 
