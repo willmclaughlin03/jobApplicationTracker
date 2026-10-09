@@ -42,11 +42,18 @@ export const REDACT_CONFIG = {
   censor: '[REDACTED]',
 };
 
+/**
+ * Creates the singleton used by request loggers with shared redaction and bindings.
+ * Keeps PID attribution without Pino's default runtime hostname; the same options
+ * apply to transports and the stdout fallback if transport creation fails.
+ * @returns {import('pino').Logger} configured application logger
+ */
 function createLogger() {
   const isProduction = process.env.NODE_ENV === 'production';
 
   const options = {
     level: isProduction ? 'info' : 'debug',
+    base: { pid: process.pid },
     redact: REDACT_CONFIG,
     ...(isProduction
       ? {
