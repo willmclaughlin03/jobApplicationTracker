@@ -37,7 +37,7 @@ function request() {
 function payload() {
   const line = mockLines.find((value) => JSON.parse(value).event === 'gate1_secrets_probe_stage');
   if (!line) return null;
-  const { level: _level, time: _time, pid: _pid, hostname: _hostname, ...record } = JSON.parse(line);
+  const { level: _level, time: _time, pid: _pid, ...record } = JSON.parse(line);
   return record;
 }
 
@@ -104,7 +104,7 @@ describe('private finalization and serialization', () => {
     expect(parseGate1SecretsStageRecord(payload())).toEqual(payload());
     expect(Buffer.byteLength(JSON.stringify(payload()))).toBeLessThanOrEqual(1024);
     expect((mockLines[0].match(/"requestId":/g) || [])).toHaveLength(1);
-    expect(Object.keys(JSON.parse(mockLines[0])).sort()).toEqual([...Object.keys(RECORD), 'level', 'time', 'pid', 'hostname'].sort());
+    expect(Object.keys(JSON.parse(mockLines[0])).sort()).toEqual([...Object.keys(RECORD), 'level', 'time', 'pid'].sort());
     for (const value of [MARKER, UUID, 'credential-sentinel', 'cookie-sentinel', 'raw-sentinel', '192.0.2.40', 'header-value-sentinel']) {
       expect(mockLines[0]).not.toContain(value);
     }
