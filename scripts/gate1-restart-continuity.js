@@ -13,8 +13,8 @@ const { z } = require('zod');
 const { RestartError, failureCode, statsSchema, FAILURE_CODES } = require('./gate1-restart-transport.js');
 
 const ROOT = path.resolve(__dirname, '..');
-// Reviewed loader-initialization changes; the hosted reference below is historical.
-const APP_BASE = 'fdd6ecef3a2b737a6deb07fcdab6e6fbe4c078be';
+// Reviewed PID-only logger bindings; the hosted reference below is historical.
+const APP_BASE = '55dbccb2280e76c0df1352c6784e25740907d74e';
 const HOSTED_REFERENCE = Object.freeze({ deploymentId: 'dpl_AaGEjVjtrjaiLbHqAyCKYfdFraU6',
   gitSha: 'ba8c398c5d0af2dba9c75305397b774f946b6b1e', nextBuildId: 'VjEJE3geVJngqDN7JymXV' });
 const LIMITS = Object.freeze({ decisions: 402, concurrency: 4, clockReads: 2,
@@ -34,7 +34,7 @@ const APP_HASHES = Object.freeze({
   'src/server/lib/temporarySessionIdentity.js': 'bc41b44c8f206ec6f34acd2b7044d0ae913bc4e5dcaefada83cab8ec86f31ec0',
   'src/server/lib/temporarySessionTelemetry.js': 'ca3b16153accd047f5b4bf97c6ac8791296c70f0c7d5cf85e8ff0ba93854b6be',
   'src/server/lib/redis.js': '9218793a298873a6b75dc17926ca444793eccce4efee5a2c4769bcd304abd789',
-  'src/shared/logger.js': '1e34fe6fcef3e23366a63095cc5299062015b5175a02db4670038f05716116b2',
+  'src/shared/logger.js': '9c639293c0214062a1c3289b9bb3dae7c7dbdf1e1cf5d578e000a41d7bd0ec55',
   'package.json': 'b8964e0aa37caae2feef32cf99a1773d615c652f4eb273df456eae227d04a16a',
   'package-lock.json': 'f6af332dffbbbcbd8aca4b816201fa5756e25d2e7249e1cd2c0cd9c3343b9f1a',
 });
