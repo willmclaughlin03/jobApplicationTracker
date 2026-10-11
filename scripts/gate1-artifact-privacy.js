@@ -304,6 +304,23 @@ function createStore(approval) {
   };
 }
 
+/** Check private values against both compact report JSON and the indented representation used by the store. */
+function reportHasEcho(report, secrets) {
+  const representations = [JSON.stringify(report), JSON.stringify(report, null, 2)];
+  return secrets.some((secret) => representations.some((encoded) => encoded.includes(secret)));
+}
+
+/** Prepare a safe failure report from approval/private inputs; reject all possible count collisions before reservation. */
+function prepareFailureReport(approval, secrets) {
+  const fallback = { schemaVersion: 1, mode: 'live', result: 'stopped', gate1Status: 'open',
+    approvalId: secrets.some((secret) => approval.includes(secret)) ? null : approval,
+    appRequests: 0, failure: 'report_write' };
+  for (let appRequests = 0; appRequests <= LIMITS.maxRequests; appRequests++) {
+    if (reportHasEcho({ ...fallback, appRequests }, secrets)) throw new ArtifactError('input');
+  }
+  return fallback;
+}
+
 /** Execute the exact two-target scope with injectable offline transport and monotonic clock seams. */
 async function runScan(value, options = {}) {
   const deps = { requestImpl: https.request, now: () => performance.now(), wall: () => Date.now(),
@@ -343,8 +360,13 @@ async function runScan(value, options = {}) {
       sha256: response.sha256, bytes: response.bytes, ...findings });
     if (findings.comparisonLabels.length || findings.patterns.length) throw new ArtifactError('sensitive_content');
   }
+  let inputError;
+  try { input = parseInput(value); } catch (error) { inputError = error; }
+  const secrets = input ? [...input.comparisons.map((ref) => ref.value), ...Object.values(input.credentials)] : [];
+  // Incompatible metadata cannot be returned in an error report; reject outside the scan catch before reserving.
+  const fallback = input ? prepareFailureReport(input.approval, secrets) : null;
   try {
-    input = parseInput(value);
+    if (inputError) throw inputError;
     report.approvalId = input.approval;
     report.comparisonLabels = input.profile.comparisons;
     report.startedAt = new Date(deps.wall()).toISOString();
@@ -390,14 +412,9 @@ async function runScan(value, options = {}) {
   report.unvalidatedAttempts = report.appRequests - report.validatedRequests;
   // Replace accidental metadata echoes with a fixed failure report so the reserved attempt is saved.
   let output = report;
-  if (input) {
-    const secrets = [...input.comparisons.map((ref) => ref.value), ...Object.values(input.credentials)];
-    const encoded = JSON.stringify(report);
-    if (secrets.some((secret) => encoded.includes(secret))) {
-      output = { schemaVersion: 1, mode: 'live', result: 'stopped', gate1Status: 'open',
-        approvalId: secrets.some((secret) => report.approvalId.includes(secret)) ? null : report.approvalId,
-        appRequests: report.appRequests, failure: 'report_write' };
-    }
+  if (input && reportHasEcho(report, secrets)) {
+    output = { ...fallback, appRequests: report.appRequests };
+    if (reportHasEcho(output, secrets)) throw new ArtifactError('report_write');
   }
   return { reportPath: store ? store.save(output) : null, report: output };
 }

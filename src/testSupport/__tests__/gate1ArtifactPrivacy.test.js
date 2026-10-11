@@ -289,6 +289,47 @@ test('overall deadline includes parsing and cancellation never triggers another 
   expect(cancelled.report.failure).toBe('cancelled'); expect(cancelled.calls).toHaveLength(0);
 });
 
+/** Reject metadata substrings and serialized field collisions before consuming approval or dispatching HTTP. */
+test.each([
+  'schemaVersion', 'gate1Status', 'approvalId', 'appRequests', 'report_write', 'port_wri',
+  '"mode":"live"', '"result":"stopped"',
+  '"appRequests":0', '"appRequests":1', '"appRequests":8', '"appRequests":68', '"appRequests": 68',
+])('comparison colliding with required fallback metadata is rejected: %s', async (secret) => {
+  const input = envelope();
+  input.comparisons[0].value = secret;
+  // This independent collision forces the old report into its unsafe fallback, including report_write.
+  input.comparisons[1].value = 'not_inspected';
+  const wire = transport(), save = jest.fn();
+  const storeFactory = jest.fn(() => ({ save }));
+  await expect(runScan(input, { requestImpl: wire.requestImpl, storeFactory })).rejects.toMatchObject({ code: 'input' });
+  expect(storeFactory).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
+  expect(wire.requestImpl).not.toHaveBeenCalled();
+});
+
+/** Nulling a colliding approval ID must not introduce a different private value into the fallback JSON. */
+test('comparison colliding with redacted approval metadata is rejected before reservation', async () => {
+  const input = envelope();
+  input.comparisons[0].value = input.approval;
+  input.comparisons[1].value = '"approvalId":null';
+  const wire = transport(), storeFactory = jest.fn();
+  await expect(runScan(input, { requestImpl: wire.requestImpl, storeFactory })).rejects.toMatchObject({ code: 'input' });
+  expect(storeFactory).not.toHaveBeenCalled(); expect(wire.requestImpl).not.toHaveBeenCalled();
+});
+
+/** The saved report uses indented JSON, so collisions absent from compact JSON still need a safe fallback. */
+test('final echo guard also checks the serialized report saved by the store', async () => {
+  const input = envelope();
+  const secret = '"sha256": "' + createHash('sha256').update(html(TARGETS[0])).digest('hex');
+  input.comparisons[0].value = secret;
+  const result = await trial(reply, input);
+  expect(result.report).toEqual({ schemaVersion: 1, mode: 'live', result: 'stopped', gate1Status: 'open',
+    approvalId: input.approval, appRequests: 8, failure: 'report_write' });
+  expect(result.saved).toHaveLength(1); expect(result.saved[0]).toBe(result.report);
+  expect(result.reportPath).toBe('test-memory-report');
+  expect(JSON.stringify(result.report)).not.toContain(secret);
+  expect(JSON.stringify(result.saved[0], null, 2)).not.toContain(secret);
+});
+
 /** Exercise final metadata collisions after clean mocked HTTP; persist only the stopped outcome. */
 test.each(['comparison', 'credential'])('final %s echo saves and returns a minimal failure report', async (source) => {
   const input = envelope();
