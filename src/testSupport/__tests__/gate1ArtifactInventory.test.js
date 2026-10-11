@@ -140,6 +140,42 @@ test('four GETs return sanitized counts and validated historical attribution onl
     nextBuildIdEvidence: 'historical_profile_only_no_http_verification',
     counts: { builds: 1, outputEntries: 4, staticJavaScript: 1, sourceMaps: 1, otherStatic: 1, functions: 1, unsupported: 0 } });
   expect(result.saved).toEqual([result.report]); expectPrivate(result.report);
+  expect(result.reportPath).toBe('memory-report');
+  expect(result.report).not.toHaveProperty('reportWrite');
+});
+
+/** A storage failure must retain completed or stopped evidence without exposing exception details. */
+test.each(['completed', 'stopped'])('report write failure retains the sanitized %s outcome', async (outcome) => {
+  const input = envelope();
+  /** Simulate a write error containing private details that must never reach the returned report. */
+  const save = jest.fn(() => { throw new Error(`${TOKEN} RAW_PROVIDER_ERROR`); });
+  const result = await trial(outcome === 'completed' ? reply : () => ({ error: true }), input,
+    { storeFactory: () => ({ save }) });
+  expect(save).toHaveBeenCalledTimes(1);
+  expect(save.mock.calls[0][0]).toBe(result.report);
+  expect(result.reportPath).toBeNull();
+  expect(result.report).toMatchObject({ result: outcome, approvalId: input.approval, reportWrite: 'report_write',
+    failure: outcome === 'completed' ? null : 'transport',
+    providerRequests: outcome === 'completed' ? 4 : 1, validatedRequests: outcome === 'completed' ? 4 : 0 });
+  expect(result.report.targets).toHaveLength(outcome === 'completed' ? 2 : 1);
+  expect(result.report.receipts).toHaveLength(outcome === 'completed' ? 4 : 1);
+  expectPrivate(result.report);
+});
+
+/** A post-run credential collision must keep the fixed fallback even when its save fails. */
+test('report write failure retains only the sanitized credential fallback', async () => {
+  const input = envelope(); input.credentials.providerToken = 'historical_profile_only';
+  /** Fail persistence after the credential guard has replaced the detailed report. */
+  const save = jest.fn(() => { throw new InventoryError('report_write'); });
+  const result = await trial(reply, input, { storeFactory: () => ({ save }) });
+  expect(result.calls).toHaveLength(4);
+  expect(save).toHaveBeenCalledTimes(1);
+  expect(save.mock.calls[0][0]).toBe(result.report);
+  expect(result.reportPath).toBeNull();
+  expect(result.report).toEqual({ schemaVersion: 1, result: 'stopped', gate1Status: 'open',
+    failure: 'credentials', providerRequests: 4, appRequests: 0, reportWrite: 'report_write' });
+  expect(JSON.stringify(result.report)).not.toContain(input.credentials.providerToken);
+  expectPrivate(result.report);
 });
 
 test.each(['approval', 'liveApproved', 'credentials', 'extra'])('invalid %s stops before reservation or network', async (key) => {

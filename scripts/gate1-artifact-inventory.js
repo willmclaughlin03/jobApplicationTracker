@@ -346,7 +346,11 @@ async function runInventory(value, options = {}) {
   const output = hasEcho(report, token) ? { schemaVersion: 1, result: 'stopped', gate1Status: 'open',
     failure: 'credentials', providerRequests: report.providerRequests, appRequests: 0 } : report;
   if (hasEcho(output, token)) throw new InventoryError('credentials');
-  const reportPath = store ? store.save(output) : null;
+  let reportPath = null;
+  if (store) {
+    try { reportPath = store.save(output); }
+    catch { output.reportWrite = 'report_write'; }
+  }
   return { reportPath: hasEcho(reportPath, token) || !output.approvalId ? null : reportPath, report: output };
 }
 
