@@ -115,7 +115,8 @@ function assetUrl(reference, base, kind, target) {
 /** Parse conservative HTML attributes; malformed/duplicate syntax cannot silently expand coverage. */
 function attributes(text) {
   const result = Object.create(null);
-  const remaining = text.replace(/\s+\/$/, '').trimEnd();
+  // A self-closing slash may follow a quoted value directly; slashes in unquoted values must remain.
+  const remaining = text.replace(/(?:\s+|(?<=["']))\/$/, '').trimEnd();
   const tokens = /\s+([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/gy;
   let position = 0;
   while (position < remaining.length) {

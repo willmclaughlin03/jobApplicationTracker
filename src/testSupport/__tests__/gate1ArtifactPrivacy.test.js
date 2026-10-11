@@ -168,6 +168,36 @@ test('commented scripts are excluded, duplicate references deduplicated, modulep
   expect(() => discoverScripts('<script src="a" src="b"></script>', TARGETS[0])).toThrow('html_contract');
 });
 
+/** Valid self-closing modulepreloads must discover the same script regardless of quoting or whitespace. */
+test.each([
+  '<link rel="modulepreload" href="/_next/static/chunks/extra.js"/>',
+  "<link rel='modulepreload' href='/_next/static/chunks/extra.js'/>",
+  '<link rel="modulepreload" href="/_next/static/chunks/extra.js" crossorigin=""/>',
+  '<link rel=modulepreload href=/_next/static/chunks/extra.js />',
+])('self-closing modulepreload is discovered: %s', (link) => {
+  expect(discoverScripts(link, TARGETS[0])).toEqual([`https://${TARGETS[0].hostname}/_next/static/chunks/extra.js`]);
+});
+
+/** Stylesheet links commonly share login HTML with scripts; their self-closing syntax must not abort discovery. */
+test.each([
+  '<link rel="stylesheet" href="/_next/static/css/app.css"/>',
+  "<link rel='stylesheet' href='/_next/static/css/app.css'/>",
+  '<link rel="stylesheet" href="/_next/static/css/app.css" crossorigin=""/>',
+  '<link rel=stylesheet href=/_next/static/css/app.css />',
+])('self-closing stylesheet is ignored during script discovery: %s', (link) => {
+  expect(discoverScripts(html(TARGETS[0]) + link, TARGETS[0])).toEqual([
+    `https://${TARGETS[0].hostname}/_next/static/chunks/app.js`,
+  ]);
+});
+
+/** A slash attached to an unquoted value belongs to that value; stripping it would invent an approved reference. */
+test.each([
+  ['<link rel="modulepreload" href=/_next/static/chunks/extra.js/>', 'unsafe_reference'],
+  ['<link href="/_next/static/chunks/extra.js" rel=modulepreload/>', 'no_scripts'],
+])('unquoted attribute retains its trailing slash: %s', (link, failure) => {
+  expect(() => discoverScripts(link, TARGETS[0])).toThrow(failure);
+});
+
 test('no scripts is incomplete; no advertised maps means not discovered, never absent or passed', async () => {
   const empty = await trial(() => ({ type: 'text/html', body: html(TARGETS[0], []) }));
   expect(empty.report.failure).toBe('no_scripts');

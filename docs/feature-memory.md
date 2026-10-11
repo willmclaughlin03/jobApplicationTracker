@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-11
 
+- `2026-10-11` - `GATE-1 self-closing link parsing`: Accept trailing self-closing slashes after quoted attributes or whitespace while retaining slashes attached to unquoted values. Ten new regressions cover modulepreloads, ignored stylesheets, both quote styles, empty attributes and unquoted-value boundaries; all 97 offline tests, targeted ESLint and whitespace checks pass.
+
 - `2026-10-11` - `GATE-1 redacted report paths`: Suppress the returned report path whenever the output approval ID is null, while preserving report persistence and paths for safe IDs. Updated comparison/credential collision regressions and normal/no-store path assertions; all 87 offline tests, targeted ESLint and whitespace checks pass.
 
 - `2026-10-11` - `GATE-1 fallback report privacy validation`: Check compact and saved JSON against private values, reject incompatible fallback metadata before reservation or HTTP across all allowed request counts, and recheck the final replacement before persistence. Fifteen new regressions cover field names, substrings, serialized counters, redacted approval metadata and indented output; all 87 offline tests, targeted ESLint and whitespace checks pass.
