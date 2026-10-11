@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-10-11` - `Self-closing links aborted artifact discovery`: A slash directly after a quoted attribute triggered html_contract for valid modulepreload and stylesheet links. Approach: distinguish closing syntax from slashes belonging to unquoted values. Fix: strip the final slash only after whitespace or a quote, preserving existing reference validation. Six quoted-link regressions failed before the fix; all ten new cases and the complete 97-test offline suite pass, along with targeted ESLint and whitespace checks.
+
 - `2026-10-11` - `Artifact report paths could reveal redacted approval IDs`: A private value overlapping the approval ID was removed from report metadata but remained in the returned filename. Approach: apply approval-ID redaction to the returned path. Fix: save the sanitized report as before, then return a null path whenever its approval ID is null. Both comparison and credential regressions failed before the fix; all 87 offline tests, targeted ESLint and whitespace checks pass afterward.
 
 - `2026-10-11` - `Artifact fallback could retain or introduce private-value echoes`: Fixed metadata and the report_write failure value could collide with supplied comparisons after the original report was replaced. Approach: validate fallback compatibility before consuming approval, then validate the actual replacement again. Fix: check compact and indented JSON, reject incompatible inputs outside the scan error handler for every allowed request count, and preserve single-save behavior for safe fallback reports. All 15 new regressions failed before the fix; all 87 offline tests, targeted ESLint and whitespace checks pass afterward.
