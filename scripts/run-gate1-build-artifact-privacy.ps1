@@ -62,8 +62,17 @@ function Invoke-Gate1BuildArtifactNode([string]$Mode, [string]$InputJson = '') {
             if (-not ($process.HasExited -and $outDone -and $errDone)) { Start-Sleep -Milliseconds 20 }
         }
         $json = [Text.Encoding]::UTF8.GetString($output.ToArray())
-        try { $null = $json | ConvertFrom-Json } catch { throw 'Invalid scanner output.' }
-        return @{ Json = $json; ExitCode = $process.ExitCode }
+        $process.WaitForExit()
+        $exitCode = $process.ExitCode
+        try {
+            # ConvertFrom-Json accepts blank input; require an actual JSON payload on success.
+            if ([string]::IsNullOrWhiteSpace($json)) { throw 'Invalid scanner output.' }
+            $null = $json | ConvertFrom-Json
+        } catch {
+            if ($exitCode -eq 0) { throw 'Invalid scanner output.' }
+            $json = '{}'
+        }
+        return @{ Json = $json; ExitCode = $exitCode }
     } finally {
         if ($started -and -not $process.HasExited) { $process.Kill() }
         if ($null -ne $inputBytes) { [Array]::Clear($inputBytes, 0, $inputBytes.Length) }

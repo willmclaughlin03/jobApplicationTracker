@@ -93,10 +93,17 @@ function preparation(value) {
     historicalArtifactPrivacy: 'unverified', hostedAttribution: 'not_established' };
 }
 
-/** Expand privately supplied values using the same representations as the historical browser scan. */
+/** Expand private values for byte comparisons and echo guards, including every base64 byte alignment. */
 function representations(value) {
-  return [...new Set([value, JSON.stringify(value).slice(1, -1), encodeURIComponent(value),
-    Buffer.from(value).toString('base64'), Buffer.from(value).toString('base64url')])];
+  const raw = Buffer.from(value), forms = [value, JSON.stringify(value).slice(1, -1), encodeURIComponent(value),
+    raw.toString('base64'), raw.toString('base64url')];
+  for (let shift = 0; shift < 3; shift++) {
+    const shifted = Buffer.concat([Buffer.alloc(shift), raw]);
+    // Keep only complete six-bit groups from value bytes, excluding neighbors and padding.
+    const start = Math.ceil((shift * 8) / 6), end = Math.floor((shifted.length * 8) / 6);
+    for (const encoding of ['base64', 'base64url']) forms.push(shifted.toString(encoding).slice(start, end));
+  }
+  return [...new Set(forms)];
 }
 
 /** Match byte strings and fixed ASCII patterns; record labels only, never snippets or offsets. */
@@ -341,6 +348,11 @@ function inspectFile(bytes, entry, knownFiles, comparisons, state) {
   if (/\.(?:map|json)$/i.test(entry.relative)) {
     const value = scanJson(text, findings, comparisons, state, /\.map$/i.test(entry.relative));
     if (entry.relative === 'config.json' && (!value || value.version !== 3)) throw new ScanError('config');
+    // Function file mappings can reference deployable bytes outside the inspected directory.
+    if (path.basename(entry.relative) === '.vc-config.json' && value && typeof value === 'object' &&
+        Object.hasOwn(value, 'filePathMap') && Object.keys(value.filePathMap || {}).length) {
+      throw new ScanError('external_map');
+    }
   }
   if (/\.(?:[cm]?js|css|html)$/i.test(entry.relative)) inspectMapLinks(text, entry, knownFiles, findings, comparisons, state);
   return { findings, format: 'utf8_and_decoded_json' };

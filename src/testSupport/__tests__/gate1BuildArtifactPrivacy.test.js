@@ -13,6 +13,8 @@ const CLI = path.resolve(__dirname, '../../../scripts/gate1-build-artifact-priva
 const PS = path.resolve(__dirname, '../../../scripts/run-gate1-build-artifact-privacy.ps1');
 const PRIVATE = 'synthetic-private-sentinel-12345+/=';
 const REFS = [{ label: 'synthetic_sentinel', value: PRIVATE }];
+const BASE64_CASES = [['base64', 0], ['base64', 1], ['base64', 2],
+  ['base64url', 0], ['base64url', 1], ['base64url', 2]];
 let folder, output, guards;
 beforeAll(() => {
   guards = [https, http].map((module) => jest.spyOn(module, 'request').mockImplementation(() => { throw new Error('Network forbidden'); }));
@@ -64,6 +66,26 @@ async function trial(options = {}, input = envelope()) {
 /** Create an ordinary external map whose embedded sources can contain escaped test values. */
 function map(content = 'const fixture = true;') {
   return { version: 3, sources: ['fixture.js'], names: [], mappings: '', sourcesContent: [content] };
+}
+
+/** Embed a synthetic value at a byte offset; varied neighbors expose mixed-bit and padding assumptions. */
+function embedded(value, encoding, offset, neighbor = 255) {
+  return Buffer.concat([Buffer.alloc(offset, neighbor), Buffer.from(value),
+    Buffer.from([neighbor]), Buffer.from('trailing-data')]).toString(encoding);
+}
+
+/** Run a disposable launcher copy with controlled stdout and a delayed exit code; no real scanner runs. */
+function launcherFixture(stdout, exitCode) {
+  const launcher = path.join(folder, 'run-gate1-build-artifact-privacy.ps1');
+  fs.copyFileSync(PS, launcher);
+  fs.writeFileSync(path.join(folder, 'gate1-build-artifact-privacy.js'), `
+    process.stdout.end(${JSON.stringify(stdout)});
+    process.stderr.end(${JSON.stringify(PRIVATE)});
+    /** Exit after closing both pipes so the launcher must still wait for the actual status. */
+    setTimeout(() => { process.exitCode = ${exitCode}; }, 100);
+  `);
+  return spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', launcher, '-Template'],
+    { encoding: 'utf8', timeout: 15000 });
 }
 
 test('default template and preparation do not list or open output', () => {
@@ -140,6 +162,27 @@ test.each(representations(PRIVATE))('detect privately supplied representation wi
   file('static/app.js', `/* ${encoded} */`);
   const { report } = await trial();
   expect(report.failure).toBe('findings'); expect(report.result).toBe('stopped');
+  expect(report.files.some((f) => f.comparisonLabels.includes('synthetic_sentinel'))).toBe(true);
+  expect(JSON.stringify(report)).not.toContain(encoded);
+});
+
+test('aligned fragments retain only complete base64 characters from the value bytes', () => {
+  expect(representations('PRIVATE')).toEqual(expect.arrayContaining(['UFJJVkFUR', 'BSSVZBVE', 'QUklWQVRF']));
+});
+
+test.each(BASE64_CASES)('detect embedded %s values at byte offset %i with trailing data', async (encoding, offset) => {
+  for (const value of [PRIVATE, 'PRIVATE', 'synthetic-???-secret->>>-12345']) {
+    for (const neighbor of [0, 255]) {
+      const encoded = embedded(value, encoding, offset, neighbor);
+      expect(representations(value).some((form) => encoded.includes(form))).toBe(true);
+      expect(compareBytes(Buffer.from(encoded), [{ label: 'synthetic_sentinel', value }]))
+        .toEqual({ labels: ['synthetic_sentinel'], patterns: [] });
+    }
+  }
+  const encoded = embedded(PRIVATE, encoding, offset);
+  file('static/app.js', `/* ${encoded} */`);
+  const { report } = await trial();
+  expect(report).toMatchObject({ failure: 'findings', result: 'stopped' });
   expect(report.files.some((f) => f.comparisonLabels.includes('synthetic_sentinel'))).toBe(true);
   expect(JSON.stringify(report)).not.toContain(encoded);
 });
@@ -329,6 +372,22 @@ test.each(['missing', 'wrong_version', 'invalid_json'])('invalid Build Output co
   expect(['config', 'json']).toContain((await trial()).report.failure);
 });
 
+test('function config with external file mappings cannot report a clean scan', async () => {
+  file('functions/session.func/.vc-config.json', JSON.stringify({ runtime: 'nodejs22.x', handler: 'index.js',
+    filePathMap: { 'mapped.js': 'src/private-build-input.js' } }));
+  const { report, saved } = await trial();
+  expect(report).toMatchObject({ result: 'stopped', failure: 'external_map', artifactPrivacy: 'unqualified',
+    coverage: 'unqualified', manifestSha256: null, reportSaved: true });
+  expect(saved).toEqual([report]); expect(JSON.stringify(report)).not.toContain('src/private-build-input.js');
+});
+
+test.each([{}, { filePathMap: {} }])('function config without mapped files remains supported: %j', async (mapping) => {
+  file('functions/session.func/.vc-config.json', JSON.stringify({ runtime: 'nodejs22.x', handler: 'index.js', ...mapping }));
+  const { report } = await trial();
+  expect(report).toMatchObject({ result: 'completed', failure: null,
+    artifactPrivacy: 'no_matches_in_checked_representations' });
+});
+
 test('inspection approval is consumed before content access and cannot be retried', async () => {
   const used = new Set(); const storeFactory = jest.fn((id) => {
     if (used.has(id)) throw new Error('consumed'); used.add(id); return { save: jest.fn() };
@@ -360,6 +419,25 @@ test('secret echo in supplied provenance is rejected before content access', asy
   expect(JSON.stringify(report)).not.toContain(input.profile.provenance.gitSha);
 });
 
+test.each(BASE64_CASES)('reject embedded %s profile echoes at byte offset %i before content access', async (encoding, offset) => {
+  const encoded = embedded(PRIVATE, encoding, offset), p = profile();
+  p.outputRoot = path.join(folder, encoded, '.vercel/output');
+  const open = jest.spyOn(fs.promises, 'opendir');
+  const { report, storeFactory } = await trial({}, envelope(p));
+  expect(report.failure).toBe('comparisons');
+  expect(storeFactory).not.toHaveBeenCalled(); expect(open).not.toHaveBeenCalled();
+  expect(JSON.stringify(report)).not.toContain(encoded);
+});
+
+test.each(BASE64_CASES)('suppress embedded %s report echoes at byte offset %i before saving', async (encoding, offset) => {
+  const encoded = embedded(PRIVATE, encoding, offset);
+  jest.spyOn(Date.prototype, 'toISOString').mockReturnValue(encoded);
+  const { report, saved } = await trial();
+  expect(report).toEqual({ schemaVersion: 1, scope: scanner.SCOPE, result: 'stopped',
+    gate1Status: 'open', failure: 'private_output_suppressed', reportSaved: true });
+  expect(saved).toEqual([report]); expect(JSON.stringify(report)).not.toContain(encoded);
+});
+
 test('CLI defaults to unapproved template and invalid input has a fixed private-safe error', () => {
   const result = spawnSync(process.execPath, [CLI], { encoding: 'utf8', timeout: 10000 });
   expect(result.status).toBe(0); expect(JSON.parse(result.stdout).attestations.sourceCodeReviewed).toBe(false);
@@ -386,6 +464,29 @@ test('scanner imports no network/deployment process primitive', () => {
   const result = spawnSync('powershell.exe', ['-NoProfile', '-File', PS, '-ProfilePath', location, '-Inspect', '-Approval', 'f'.repeat(64)],
     { encoding: 'utf8', timeout: 15000 });
   expect(result.status).toBe(1); expect(result.stderr).toContain('Artifact preparation/inspection failed');
+});
+
+(process.platform === 'win32' ? test : test.skip).each(['', ' \t\r\n', PRIVATE])('PowerShell preserves failed child status with invalid stdout: %j', (stdout) => {
+  const result = launcherFixture(stdout, 23);
+  expect(result.error).toBeUndefined(); expect(result.status).toBe(23);
+  expect(result.stdout.split(/\r?\n/)[0]).toBe('{}');
+  expect(result.stdout).toContain('Scan stopped.');
+  expect(result.stdout + result.stderr).not.toContain(PRIVATE);
+});
+
+(process.platform === 'win32' ? test : test.skip).each(['', ' \t\r\n', PRIVATE])('PowerShell rejects successful child with invalid stdout: %j', (stdout) => {
+  const result = launcherFixture(stdout, 0);
+  expect(result.error).toBeUndefined(); expect(result.status).toBe(1);
+  expect(result.stdout).toBe(''); expect(result.stderr).toContain('Artifact preparation/inspection failed');
+  expect(result.stdout + result.stderr).not.toContain(PRIVATE);
+});
+
+(process.platform === 'win32' ? test : test.skip).each([0, 23])('PowerShell preserves valid JSON and delayed child exit code %i', (exitCode) => {
+  const stdout = JSON.stringify({ result: exitCode === 0 ? 'completed' : 'stopped' });
+  const result = launcherFixture(stdout, exitCode);
+  expect(result.error).toBeUndefined(); expect(result.status).toBe(exitCode);
+  expect(result.stdout.split(/\r?\n/)[0]).toBe(stdout);
+  expect(result.stdout + result.stderr).not.toContain(PRIVATE);
 });
 
 test('per-file hash represents inspected bytes without reading any private artifact', async () => {
