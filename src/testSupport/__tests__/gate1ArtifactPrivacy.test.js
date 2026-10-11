@@ -113,6 +113,7 @@ test('both deployments finish with matching before/after builds, hashes and cons
   expect(result.report.targets.every((target) => target.buildBefore && target.buildAfter)).toBe(true);
   expect(result.report.files[0].sha256).toBe(createHash('sha256').update(html(TARGETS[0])).digest('hex'));
   expect(result.storeFactory).toHaveBeenCalledTimes(1); expect(result.saved).toHaveLength(1);
+  expect(result.reportPath).toBe('test-memory-report');
   expect(result.calls.every(({ url, options }) => TARGETS.some((target) => target.hostname === url.hostname) &&
     options.method === 'GET' && !url.search && options.headers['x-vercel-protection-bypass'] === BYPASS)).toBe(true);
   expect(result.calls.every(({ url }) => url.pathname === '/login' || url.pathname.startsWith('/_next/static/'))).toBe(true);
@@ -127,6 +128,7 @@ test.each(['approval', 'liveApproved', 'credentials', 'comparisons'])('invalid %
   if (field === 'comparisons') input.comparisons.pop();
   const result = await trial(reply, input);
   expect(result.report.result).toBe('stopped'); expect(result.calls).toHaveLength(0);
+  expect(result.reportPath).toBeNull();
   expect(result.storeFactory).not.toHaveBeenCalled(); expectPrivate(result.report);
 });
 
@@ -345,8 +347,8 @@ test.each(['comparison', 'credential'])('final %s echo saves and returns a minim
   expect(JSON.stringify(result.report)).not.toContain(secret); expectPrivate(result.report);
 });
 
-/** Approval metadata can itself overlap private inputs; neither saved nor returned reports may echo it. */
-test.each(['comparison', 'credential'])('fallback omits an approval ID containing a private %s', async (source) => {
+/** Approval collisions must hide the returned path even when a mock path is safe, while still saving the report. */
+test.each(['comparison', 'credential'])('fallback omits an approval ID containing a private %s and its report path', async (source) => {
   const input = envelope();
   const secret = input.approval.slice(0, 16);
   if (source === 'comparison') input.comparisons[0].value = secret;
@@ -355,7 +357,7 @@ test.each(['comparison', 'credential'])('fallback omits an approval ID containin
   expect(result.report).toEqual({ schemaVersion: 1, mode: 'live', result: 'stopped', gate1Status: 'open',
     approvalId: null, appRequests: 8, failure: 'report_write' });
   expect(result.saved).toHaveLength(1); expect(result.saved[0]).toBe(result.report);
-  expect(result.reportPath).toBe('test-memory-report');
+  expect(result.reportPath).toBeNull();
   expect(JSON.stringify(result.report)).not.toContain(secret); expectPrivate(result.report);
 });
 
