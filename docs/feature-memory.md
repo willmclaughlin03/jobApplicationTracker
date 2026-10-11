@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-11
 
+- `2026-10-11` - `GATE-1 artifact launcher Node resolution`: Resolve node.exe as an application, require an absolute Source path, and assign it before child startup. Five new offline regressions cover a current-directory decoy, aliases/functions, missing Node and relative resolution; all 72 tests, PowerShell syntax checks, targeted ESLint and whitespace checks pass.
+
 - `2026-10-11` - `GATE-1 artifact privacy failure reports`: Replace final metadata-echo rejection with a minimal stopped report saved through the existing store flow. Preserve the request count and safe approval ID, clearing the ID if it overlaps a private value. Five new regressions cover comparison/credential collisions and cancellation; all 67 offline tests, targeted ESLint and whitespace checks pass.
 
 - `2026-10-11` - `GATE-1 browser artifact privacy runner`: Added an offline-default runner and PowerShell launcher for two pinned historical deployments. Verify login build IDs before/after inspecting referenced scripts and explicitly linked source maps, compare privately supplied values across both environments, enforce request/byte/time bounds and consume approvals once. Retain only hashes, fixed findings and explicit coverage gaps. All 62 offline tests, targeted lint and Windows PowerShell preparation checks pass. Live scanning remains separately approved; server artifacts, comprehensive privacy and GATE-1 remain open.

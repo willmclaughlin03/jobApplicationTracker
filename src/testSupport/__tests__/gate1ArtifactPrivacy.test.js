@@ -370,3 +370,61 @@ test('PowerShell launcher parses offline and preparation does not prompt or invo
   expect(review.status).toBe(0);
   expect(JSON.parse(review.stdout)).toMatchObject({ mode: 'prepare', liveApproved: false, appRequests: 0, providerRequests: 0 });
 });
+
+/** A harmless invalid executable in the child cwd must not override Node, even with session command shadows. */
+test.each(['none', 'alias', 'function'])('PowerShell resolves the Node application with a %s shadow', (shadow) => {
+  if (process.platform !== 'win32') return;
+  const root = path.resolve(__dirname, '../../../.tmp');
+  fs.mkdirSync(root, { recursive: true });
+  const directory = fs.mkdtempSync(path.join(root, 'artifact-node-test-'));
+  const decoy = path.join(directory, 'node.exe');
+  const quoted = LAUNCHER.replace(/'/g, "''");
+  const setup = shadow === 'alias' ? 'Set-Alias -Name node.exe -Value Write-Output' : shadow === 'function' ?
+    "<# Fail if command resolution selects this session function instead of the application. #>\nfunction node.exe { throw 'Unexpected function invocation.' }" : '';
+  try {
+    fs.writeFileSync(decoy, 'test-only invalid executable', { flag: 'wx' });
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `. '${quoted}'; ${setup}\n$result = Invoke-Gate1ArtifactNode '--template'; Write-Output $result.Json; exit $result.ExitCode`],
+    { cwd: directory, encoding: 'utf8', timeout: 15000 });
+    expect(result.error).toBeUndefined(); expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ scope: 'referenced_login_browser_artifacts_only',
+      attestations: { sourceCodeReviewed: false } });
+  } finally {
+    if (fs.existsSync(decoy)) fs.unlinkSync(decoy);
+    fs.rmdirSync(directory);
+  }
+});
+
+/** Missing applications and an injected relative resolution must fail before any child Process is allocated. */
+test.each(['missing', 'relative'])('PowerShell rejects a %s Node application before starting a child', (resolution) => {
+  if (process.platform !== 'win32') return;
+  const quoted = LAUNCHER.replace(/'/g, "''");
+  const setup = resolution === 'missing' ? "$env:PATH = ''" : `
+    <# Model a bad resolver result; the launcher must reject its non-absolute Source. #>
+    function Get-Command { param($Name, $CommandType, $ErrorAction) [pscustomobject]@{ Source = 'node.exe' } }
+  `;
+  const script = `
+    . '${quoted}'
+    ${setup}
+    $script:processCreated = $false
+    <# Observe process allocation without allowing this negative test to start a child. #>
+    function New-Object {
+      param($TypeName)
+      if ($TypeName -eq 'Diagnostics.Process') { $script:processCreated = $true; throw 'Unexpected child process.' }
+      Microsoft.PowerShell.Utility\\New-Object -TypeName $TypeName
+    }
+    try { $null = Invoke-Gate1ArtifactNode '--template'; exit 2 }
+    catch {
+      @{ processCreated = $script:processCreated; errorType = $_.Exception.GetType().Name; message = $_.Exception.Message } |
+        ConvertTo-Json -Compress
+      exit 0
+    }
+  `;
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+    { encoding: 'utf8', timeout: 15000 });
+  expect(result.error).toBeUndefined(); expect(result.status).toBe(0);
+  const failure = JSON.parse(result.stdout);
+  expect(failure.processCreated).toBe(false);
+  if (resolution === 'missing') expect(failure.errorType).toBe('CommandNotFoundException');
+  else expect(failure.message).toBe('Node runtime must resolve to an absolute path.');
+});

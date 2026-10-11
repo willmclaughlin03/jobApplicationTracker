@@ -7,7 +7,9 @@ function Invoke-Gate1ArtifactNode([string]$Mode, [string]$InputJson = '') {
         [Text.Encoding]::UTF8.GetByteCount($InputJson) -gt 131072) { throw 'Invalid diagnostic input.' }
     $runner = Join-Path $PSScriptRoot 'gate1-artifact-privacy.js'
     $startInfo = New-Object Diagnostics.ProcessStartInfo
-    $startInfo.FileName = 'node.exe'
+    $node = Get-Command -Name 'node.exe' -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    if (-not [IO.Path]::IsPathRooted($node.Source)) { throw 'Node runtime must resolve to an absolute path.' }
+    $startInfo.FileName = $node.Source
     $startInfo.Arguments = '"' + $runner + '" ' + $Mode
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
