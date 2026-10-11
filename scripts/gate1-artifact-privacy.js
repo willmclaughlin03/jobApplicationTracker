@@ -416,7 +416,9 @@ async function runScan(value, options = {}) {
     output = { ...fallback, appRequests: report.appRequests };
     if (reportHasEcho(output, secrets)) throw new ArtifactError('report_write');
   }
-  return { reportPath: store ? store.save(output) : null, report: output };
+  const savedPath = store ? store.save(output) : null;
+  // Saved filenames include the approval ID, so hide the path whenever that ID was redacted.
+  return { reportPath: output.approvalId === null ? null : savedPath, report: output };
 }
 
 /** Accept bounded stdin only, with a deadline and fixed errors; no credential arguments or env-file reads. */

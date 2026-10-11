@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-11
 
+- `2026-10-11` - `GATE-1 redacted report paths`: Suppress the returned report path whenever the output approval ID is null, while preserving report persistence and paths for safe IDs. Updated comparison/credential collision regressions and normal/no-store path assertions; all 87 offline tests, targeted ESLint and whitespace checks pass.
+
 - `2026-10-11` - `GATE-1 fallback report privacy validation`: Check compact and saved JSON against private values, reject incompatible fallback metadata before reservation or HTTP across all allowed request counts, and recheck the final replacement before persistence. Fifteen new regressions cover field names, substrings, serialized counters, redacted approval metadata and indented output; all 87 offline tests, targeted ESLint and whitespace checks pass.
 
 - `2026-10-11` - `GATE-1 artifact launcher Node resolution`: Resolve node.exe as an application, require an absolute Source path, and assign it before child startup. Five new offline regressions cover a current-directory decoy, aliases/functions, missing Node and relative resolution; all 72 tests, PowerShell syntax checks, targeted ESLint and whitespace checks pass.
