@@ -466,6 +466,62 @@ test('scanner imports no network/deployment process primitive', () => {
   expect(result.status).toBe(1); expect(result.stderr).toContain('Artifact preparation/inspection failed');
 });
 
+(process.platform === 'win32' ? test : test.skip).each([
+  ['unquoted keys', '"environment":', 'environment:'],
+  ['single-quoted strings', '"preview"', "'preview'"],
+  ['leading-plus numbers', '"schemaVersion":1,', '"schemaVersion":+1,'],
+])('PowerShell rejects profile JSON with %s before preparation', (_name, original, replacement) => {
+  const location = path.join(folder, 'profile-fixture.json');
+  const raw = JSON.stringify(profile()).replace(original, replacement);
+  expect(() => JSON.parse(raw)).toThrow(); fs.writeFileSync(location, raw);
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', PS, '-ProfilePath', location],
+    { encoding: 'utf8', timeout: 15000 });
+  expect(result.error).toBeUndefined(); expect(result.status).toBe(1);
+  expect(result.stdout).toBe(''); expect(result.stderr).toContain('Artifact preparation/inspection failed');
+});
+
+(process.platform === 'win32' ? test : test.skip).each([1, 2])('PowerShell preserves profile text in both handoffs with %i comparisons', (count) => {
+  const p = profile(); p.comparisonLabels = ['synthetic_sentinel', 'redis_token'].slice(0, count);
+  const raw = '\r\n' + JSON.stringify(p, null, 2).replace('"schemaVersion": 1,', '"schemaVersion": 1e0,')
+    .replace('"preview"', '"pre\\u0076iew"') + '\r\n\t';
+  const location = path.join(folder, 'profile-fixture.json'), review = preparation(p);
+  const value = 'synthetic-quote-"-and-slash-\\-012345';
+  fs.writeFileSync(location, raw);
+  const command = `
+    . '${PS.replaceAll("'", "''")}' -ProfilePath '${location.replaceAll("'", "''")}' -Inspect -Approval '${review.approvalId}'
+    $script:prepareInput = $null; $script:inspectInput = $null; $script:labels = @()
+    <# Capture transport inputs and return a synthetic review/result without inspecting any output. #>
+    function Invoke-Gate1BuildArtifactNode([string]$Mode, [string]$InputJson = '') {
+      if ($Mode -ceq '--prepare') {
+        $script:prepareInput = $InputJson
+        return @{ Json = '${JSON.stringify(review).replaceAll("'", "''")}'; ExitCode = 0 }
+      }
+      if ($Mode -cne '--inspect') { throw 'Unexpected fixture mode.' }
+      $script:inspectInput = $InputJson
+      return @{ Json = '{"result":"fixture"}'; ExitCode = 0 }
+    }
+    <# Confirm only this mocked inspection flow; no interactive approval or real scan occurs. #>
+    function Read-Host { return 'SCAN APPROVED OUTPUT ONCE' }
+    <# Record selected labels and supply synthetic comparison text to exercise JSON escaping. #>
+    function Read-Gate1BuildComparison([string]$Label) {
+      $script:labels += $Label
+      return '${value.replaceAll("'", "''")}'
+    }
+    $result = Invoke-Gate1BuildArtifactPrivacy
+    ConvertTo-Json -Depth 10 -Compress -InputObject @{
+      prepareInput = $script:prepareInput; inspectInput = $script:inspectInput; labels = $script:labels; result = $result.Json
+    }
+  `;
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command],
+    { encoding: 'utf8', timeout: 15000 });
+  expect(result.error).toBeUndefined(); expect(result.status).toBe(0); expect(result.stderr).toBe('');
+  const captured = JSON.parse(result.stdout);
+  expect(captured.prepareInput).toBe(raw); expect(captured.inspectInput).toContain(raw);
+  expect(captured.labels).toEqual(p.comparisonLabels); expect(JSON.parse(captured.result)).toEqual({ result: 'fixture' });
+  expect(JSON.parse(captured.inspectInput)).toEqual({ profile: p, approval: review.approvalId, inspectionApproved: true,
+    comparisons: p.comparisonLabels.map((label) => ({ label, value })) });
+});
+
 (process.platform === 'win32' ? test : test.skip).each(['', ' \t\r\n', PRIVATE])('PowerShell preserves failed child status with invalid stdout: %j', (stdout) => {
   const result = launcherFixture(stdout, 23);
   expect(result.error).toBeUndefined(); expect(result.status).toBe(23);
