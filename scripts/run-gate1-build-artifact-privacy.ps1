@@ -107,8 +107,10 @@ function Invoke-Gate1BuildArtifactPrivacy {
         $file.Length -gt 16384 -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         throw 'Use a bounded local JSON profile.'
     }
-    $artifactProfile = [IO.File]::ReadAllText($file.FullName) | ConvertFrom-Json
-    $review = Invoke-Gate1BuildArtifactNode '--prepare' (ConvertTo-Json -InputObject $artifactProfile -Depth 10 -Compress)
+    # Preserve the input for Node's strict JSON validation; parse only to read comparison labels.
+    $profileJson = [IO.File]::ReadAllText($file.FullName)
+    $artifactProfile = $profileJson | ConvertFrom-Json
+    $review = Invoke-Gate1BuildArtifactNode '--prepare' $profileJson
     if ($review.ExitCode -ne 0) { throw 'Profile review failed.' }
     if (-not $Inspect) {
         if ($Approval) { throw 'Approval requires explicit inspection mode.' }
@@ -136,8 +138,10 @@ function Invoke-Gate1BuildArtifactPrivacy {
             $value = $null
         }
         $envelope = ConvertTo-Json -Depth 10 -Compress -InputObject @{
-            profile = $artifactProfile; approval = $Approval; inspectionApproved = $true; comparisons = $comparisons
+            approval = $Approval; inspectionApproved = $true; comparisons = $comparisons
         }
+        # Embed the same validated JSON verbatim; serialize only the other envelope fields.
+        $envelope = '{"profile":' + $profileJson + ',' + $envelope.Substring(1)
         $result = Invoke-Gate1BuildArtifactNode '--inspect' $envelope
         foreach ($comparison in $comparisons) {
             if ($result.Json.Contains($comparison.value)) { throw 'Private output suppressed.' }
