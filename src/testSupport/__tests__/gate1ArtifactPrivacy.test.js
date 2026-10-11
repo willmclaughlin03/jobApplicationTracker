@@ -289,6 +289,47 @@ test('overall deadline includes parsing and cancellation never triggers another 
   expect(cancelled.report.failure).toBe('cancelled'); expect(cancelled.calls).toHaveLength(0);
 });
 
+/** Exercise final metadata collisions after clean mocked HTTP; persist only the stopped outcome. */
+test.each(['comparison', 'credential'])('final %s echo saves and returns a minimal failure report', async (source) => {
+  const input = envelope();
+  const secret = createHash('sha256').update(html(TARGETS[0])).digest('hex');
+  if (source === 'comparison') input.comparisons[0].value = secret;
+  else input.credentials.production = secret;
+  const result = await trial(reply, input);
+  expect(result.report).toEqual({ schemaVersion: 1, mode: 'live', result: 'stopped', gate1Status: 'open',
+    approvalId: input.approval, appRequests: 8, failure: 'report_write' });
+  expect(result.storeFactory).toHaveBeenCalledTimes(1); expect(result.saved).toHaveLength(1);
+  expect(result.saved[0]).toBe(result.report); expect(result.reportPath).toBe('test-memory-report');
+  expect(result.calls).toHaveLength(8);
+  expect(JSON.stringify(result.report)).not.toContain(secret); expectPrivate(result.report);
+});
+
+/** Approval metadata can itself overlap private inputs; neither saved nor returned reports may echo it. */
+test.each(['comparison', 'credential'])('fallback omits an approval ID containing a private %s', async (source) => {
+  const input = envelope();
+  const secret = input.approval.slice(0, 16);
+  if (source === 'comparison') input.comparisons[0].value = secret;
+  else input.credentials.production = secret;
+  const result = await trial(reply, input);
+  expect(result.report).toEqual({ schemaVersion: 1, mode: 'live', result: 'stopped', gate1Status: 'open',
+    approvalId: null, appRequests: 8, failure: 'report_write' });
+  expect(result.saved).toHaveLength(1); expect(result.saved[0]).toBe(result.report);
+  expect(result.reportPath).toBe('test-memory-report');
+  expect(JSON.stringify(result.report)).not.toContain(secret); expectPrivate(result.report);
+});
+
+/** Cancellation still consumes a reservation; a metadata collision must leave a saved zero-request outcome. */
+test('final echo guard saves a stopped report after cancellation', async () => {
+  const input = envelope(); input.comparisons[0].value = 'not_inspected';
+  const controller = new AbortController(); controller.abort();
+  const result = await trial(reply, input, { signal: controller.signal });
+  expect(result.report).toEqual({ schemaVersion: 1, mode: 'live', result: 'stopped', gate1Status: 'open',
+    approvalId: input.approval, appRequests: 0, failure: 'report_write' });
+  expect(result.saved).toHaveLength(1); expect(result.saved[0]).toBe(result.report);
+  expect(result.reportPath).toBe('test-memory-report'); expect(result.calls).toHaveLength(0);
+  expect(JSON.stringify(result.report)).not.toContain(input.comparisons[0].value);
+});
+
 test('reservation reuse rejects before network; exclusive evidence writes retain original bytes', async () => {
   const writes = [];
   const mkdir = jest.spyOn(fs, 'mkdirSync').mockImplementation(() => undefined);

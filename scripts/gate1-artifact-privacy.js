@@ -388,10 +388,18 @@ async function runScan(value, options = {}) {
   report.elapsedMs = Math.max(0, Math.round((deps.now() - state.started) * 1000) / 1000);
   report.validatedRequests = report.receipts.filter((receipt) => receipt.validated).length;
   report.unvalidatedAttempts = report.appRequests - report.validatedRequests;
-  // Final guard catches accidental echoes even in otherwise validated metadata.
-  if (input && [...input.comparisons.map((ref) => ref.value), ...Object.values(input.credentials)]
-    .some((secret) => JSON.stringify(report).includes(secret))) throw new ArtifactError('report_write');
-  return { reportPath: store ? store.save(report) : null, report };
+  // Replace accidental metadata echoes with a fixed failure report so the reserved attempt is saved.
+  let output = report;
+  if (input) {
+    const secrets = [...input.comparisons.map((ref) => ref.value), ...Object.values(input.credentials)];
+    const encoded = JSON.stringify(report);
+    if (secrets.some((secret) => encoded.includes(secret))) {
+      output = { schemaVersion: 1, mode: 'live', result: 'stopped', gate1Status: 'open',
+        approvalId: secrets.some((secret) => report.approvalId.includes(secret)) ? null : report.approvalId,
+        appRequests: report.appRequests, failure: 'report_write' };
+    }
+  }
+  return { reportPath: store ? store.save(output) : null, report: output };
 }
 
 /** Accept bounded stdin only, with a deadline and fixed errors; no credential arguments or env-file reads. */
