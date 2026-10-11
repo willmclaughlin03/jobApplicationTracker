@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-11
 
+- `2026-10-11` - `GATE-1 historical artifact metadata inventory`: Added an offline-default runner and hidden-token PowerShell launcher for two pinned historical deployments. A separately approved run permits four provider GETs with strict identity, byte, entry and time bounds, exclusive reservations and sanitized counts. All 73 offline tests, targeted lint and PowerShell syntax/launcher checks pass. Listing completeness, compiled-content access, artifact privacy and GATE-1 remain unqualified; no live inventory ran.
+
 - `2026-10-11` - `GATE-1 self-closing link parsing`: Accept trailing self-closing slashes after quoted attributes or whitespace while retaining slashes attached to unquoted values. Ten new regressions cover modulepreloads, ignored stylesheets, both quote styles, empty attributes and unquoted-value boundaries; all 97 offline tests, targeted ESLint and whitespace checks pass.
 
 - `2026-10-11` - `GATE-1 redacted report paths`: Suppress the returned report path whenever the output approval ID is null, while preserving report persistence and paths for safe IDs. Updated comparison/credential collision regressions and normal/no-store path assertions; all 87 offline tests, targeted ESLint and whitespace checks pass.
