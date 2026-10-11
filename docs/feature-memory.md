@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-11
 
+- `2026-10-11` - `GATE-1 new-build artifact scanner`: Added an offline-default scanner and hidden-input PowerShell launcher for one explicitly approved new Build Output directory. Inventory and fingerprint files, directories and permissions; inspect supplied secret representations, decoded JSON/maps and supported binary bytes with strict bounds, mutation checks and consume-once reservations. All 82 synthetic tests, focused ESLint, Node syntax and PowerShell checks pass. Actual builds, private-content inspection and deployment remain separately approved; historical artifact privacy and GATE-1 remain open.
+
 - `2026-10-11` - `GATE-1 inventory report-write recovery`: Retain sanitized inventory output when report persistence fails, add the fixed report_write marker and return a null report path. Preserve credential guards and successful-save behavior. Three new regression cases cover completed, stopped and credential-fallback outcomes; all 76 offline tests, targeted ESLint and whitespace checks pass.
 
 - `2026-10-11` - `GATE-1 historical artifact metadata inventory`: Added an offline-default runner and hidden-token PowerShell launcher for two pinned historical deployments. A separately approved run permits four provider GETs with strict identity, byte, entry and time bounds, exclusive reservations and sanitized counts. All 73 offline tests, targeted lint and PowerShell syntax/launcher checks pass. Listing completeness, compiled-content access, artifact privacy and GATE-1 remain unqualified; no live inventory ran.
