@@ -14,6 +14,10 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-10-11
+
+- `2026-10-11` - `GATE-1 browser artifact privacy runner`: Added an offline-default runner and PowerShell launcher for two pinned historical deployments. Verify login build IDs before/after inspecting referenced scripts and explicitly linked source maps, compare privately supplied values across both environments, enforce request/byte/time bounds and consume approvals once. Retain only hashes, fixed findings and explicit coverage gaps. All 62 offline tests, targeted lint and Windows PowerShell preparation checks pass. Live scanning remains separately approved; server artifacts, comprehensive privacy and GATE-1 remain open.
+
 ### Week of 2026-10-04
 
 - `2026-10-10` - `GATE-1 hostname-free trace assertions`: Align the private-stage serialization test with the logger's PID-only base bindings and stop stripping hostname from the payload helper so unexpected hostname output fails validation. All 73 focused trace/logger tests and whitespace checks pass. Full CI passes 130 of 133 suites locally; three suites fail because shared dependencies differ from the branch lockfile (missing ioredis-mock and incompatible DOMPurify/jsdom dependencies).
