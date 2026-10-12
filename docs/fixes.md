@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-10-12` - `GATE-1 qualification tests spawned Windows PowerShell on Ubuntu`: CI failed six launcher cases with `spawnSync powershell.exe ENOENT`. Approach: follow the existing Windows-only launcher test pattern. Fix: use a platform-gated test alias for the three launcher declarations, including four malformed-JSON cases, while keeping all 67 other cases unconditional. All 73 tests pass on Windows; simulated Linux/macOS registration confirms exactly six skips. Focused ESLint and whitespace checks pass.
+
 - `2026-10-12` - `New build qualification lacked supervised execution`: The artifact scanner did not supervise creation of a new Linux output or preserve execution approvals across worktrees and containers. Approach: bind each separately approved stage to reviewed source, toolchain and execution bytes. Fix: add offline Docker assembly, shared durable reservations, isolated synthetic configuration, process and resource bounds, verified teardown, protected scanner dependencies and explicit post-build inspection attestations. All 193 synthetic tests and focused lint/syntax checks pass; no real qualification build or inspection ran, and GATE-1 remains open.
 
 - `2026-10-11` - `Build artifact launcher normalized invalid JSON`: PowerShell accepted unquoted keys, single-quoted strings and leading-plus numbers, then reserialized them into JSON accepted by Node. Approach: preserve the original input at both scanner boundaries. Fix: retain profile text for preparation and inspection, serializing only the other envelope fields. All five new regressions failed before the fix; all 120 targeted tests, focused ESLint, syntax and whitespace checks pass afterward.

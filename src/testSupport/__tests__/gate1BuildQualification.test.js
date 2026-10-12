@@ -11,6 +11,8 @@ const BASE = path.resolve(__dirname, '../../../.tmp/build-qualification-test-fix
 const PS = path.resolve(__dirname, '../../../scripts/run-gate1-build-qualification.ps1');
 const SOURCE = 'a'.repeat(40), IMAGE = 'sha256:' + 'b'.repeat(64), CID = 'c'.repeat(64);
 const PRIVATE = 'synthetic-private-test-value-12345';
+// The launcher requires Windows PowerShell; keep its subprocess checks Windows-only.
+const windowsTest = process.platform === 'win32' ? test : test.skip;
 let folder, guards;
 
 beforeEach(() => {
@@ -392,7 +394,7 @@ test('bounded stdin validates original JSON and releases stream listeners', asyn
   oversized.end(Buffer.alloc(q.LIMITS.inputBytes + 1)); await expect(second).rejects.toThrow('input');
 });
 
-test('launcher template does not start Docker and preserves nonzero exits without exposing stderr', () => {
+windowsTest('launcher template does not start Docker and preserves nonzero exits without exposing stderr', () => {
   const location = path.join(folder, 'run-gate1-build-qualification.ps1'); fs.copyFileSync(PS, location);
   fs.writeFileSync(path.join(folder, 'gate1-build-qualification.js'), `process.stderr.write(${JSON.stringify(PRIVATE)}); process.exitCode=7;`);
   const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', location, '-Template'], { encoding: 'utf8', timeout: 15000 });
@@ -400,7 +402,7 @@ test('launcher template does not start Docker and preserves nonzero exits withou
   expect(result.stdout + result.stderr).not.toContain(PRIVATE);
 });
 
-test.each(['{"schemaVersion":1,"schemaVersion":1}', '{"schemaVersion":1.5}', '{schemaVersion:1}', '{"schemaVersion":+1}'])('new launcher rejects original invalid JSON %s before Docker', (json) => {
+windowsTest.each(['{"schemaVersion":1,"schemaVersion":1}', '{"schemaVersion":1.5}', '{schemaVersion:1}', '{"schemaVersion":+1}'])('new launcher rejects original invalid JSON %s before Docker', (json) => {
   const location = path.join(folder, 'profile-fixture.json'); fs.writeFileSync(location, json);
   const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', PS, '-ProfilePath', location],
     { encoding: 'utf8', timeout: 15000 });
@@ -408,7 +410,7 @@ test.each(['{"schemaVersion":1,"schemaVersion":1}', '{"schemaVersion":1.5}', '{s
   expect(result.stderr).toContain('Qualification stopped');
 });
 
-test('PowerShell preserves exact profile text through separate inspection confirmation', () => {
+windowsTest('PowerShell preserves exact profile text through separate inspection confirmation', () => {
   const raw = '{\n "schemaVersion": 1, "reviewedText": "keep formatting"\n}', approval = 'e'.repeat(64);
   const location = path.join(folder, 'profile-fixture.json'); fs.writeFileSync(location, raw);
   const command = `
