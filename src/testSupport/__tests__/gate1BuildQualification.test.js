@@ -11,8 +11,10 @@ const BASE = path.resolve(__dirname, '../../../.tmp/build-qualification-test-fix
 const PS = path.resolve(__dirname, '../../../scripts/run-gate1-build-qualification.ps1');
 const SOURCE = 'a'.repeat(40), IMAGE = 'sha256:' + 'b'.repeat(64), CID = 'c'.repeat(64);
 const PRIVATE = 'synthetic-private-test-value-12345';
-// The launcher requires Windows PowerShell; keep its subprocess checks Windows-only.
-const windowsTest = process.platform === 'win32' ? test : test.skip;
+// Probe Windows PowerShell once before registration so unavailable launchers skip only their subprocess checks.
+const powershellProbe = process.platform === 'win32' && spawnSync('powershell.exe',
+  ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], { stdio: 'ignore', timeout: 5000, windowsHide: true });
+const windowsTest = powershellProbe && !powershellProbe.error && powershellProbe.status === 0 ? test : test.skip;
 let folder, guards;
 
 beforeEach(() => {

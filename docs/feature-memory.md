@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-11
 
+- `2026-10-12` - `GATE-1 PowerShell availability check`: Probe Windows PowerShell once with a five-second timeout before registering qualification tests, enabling the six launcher cases only after a successful probe. All 73 tests pass on Windows; mocked missing, blocked, failed, timed-out and signaled probes plus Linux/macOS registration retain 67 active cases and exactly six skips. Focused ESLint and whitespace checks pass.
+
 - `2026-10-12` - `GATE-1 qualification test portability`: Limit the six Windows PowerShell launcher cases to Windows while retaining all 67 platform-independent cases. All 73 qualification tests pass on Windows; simulated Linux/macOS registration confirms exactly six skipped cases. Focused ESLint and whitespace checks pass.
 
 - `2026-10-12` - `GATE-1 local Docker qualification`: Add offline-default preparation with separately approved setup, build and inspection for a reviewed source commit and pinned Linux toolchain. Hash-checked artifacts, shared consume-once reservations, bounded Docker execution and explicit post-build attestations bind the resulting output to the existing scanner; scanner approval now includes the new execution files. All 193 synthetic tests, focused ESLint, syntax and whitespace checks pass. Actual qualification execution remains separately approved, and GATE-1 remains open.
