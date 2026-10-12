@@ -116,7 +116,9 @@ test('approval binds root, provenance, labels, executable bytes and fixed limits
   const p = profile(), digest = approvalId(p), original = fs.readFileSync;
   expect(approvalId({ ...p, outputRoot: path.join(folder, 'other/.vercel/output') })).not.toBe(digest);
   expect(approvalId({ ...p, provenance: { ...p.provenance, gitSha: 'c'.repeat(40) } })).not.toBe(digest);
-  for (const suffix of ['gate1-build-artifact-privacy.js', 'run-gate1-build-artifact-privacy.ps1', 'package-lock.json']) {
+  for (const suffix of ['gate1-build-artifact-privacy.js', 'run-gate1-build-artifact-privacy.ps1',
+    'gate1-build-qualification.js', 'run-gate1-build-qualification.ps1',
+    'gate1-build-qualification.Dockerfile', 'package-lock.json']) {
     const spy = jest.spyOn(fs, 'readFileSync').mockImplementation((name, ...args) =>
       String(name).endsWith(suffix) ? Buffer.from('reviewed-code-changed') : original(name, ...args));
     expect(approvalId(p)).not.toBe(digest); spy.mockRestore();

@@ -78,7 +78,9 @@ function parseProfile(value) {
 /** Bind exact root/provenance/attestations/limits and local executables; no artifact access occurs. */
 function approvalId(value) {
   const profile = parseProfile(value);
-  const integrity = ['gate1-build-artifact-privacy.js', 'run-gate1-build-artifact-privacy.ps1', '../package-lock.json']
+  const integrity = ['gate1-build-artifact-privacy.js', 'run-gate1-build-artifact-privacy.ps1',
+    'gate1-build-qualification.js', 'run-gate1-build-qualification.ps1',
+    'gate1-build-qualification.Dockerfile', '../package-lock.json']
     .map((name) => sha256(fs.readFileSync(path.join(__dirname, name))));
   return sha256(JSON.stringify({ profile, limits: LIMITS, integrity }));
 }
