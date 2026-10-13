@@ -66,8 +66,8 @@ function fixture() {
 
 /** Return fixed Docker metadata and stage output; every mutation is recorded without contacting an engine. */
 function dockerFixture(prepared, stage, overrides = {}) {
-  return jest.fn(async (args) => {
-    if (overrides[args[0]]) return overrides[args[0]](args);
+  return jest.fn(async (args, options) => {
+    if (overrides[args[0]]) return overrides[args[0]](args, options);
     if (args[0] === 'info') return Buffer.from(JSON.stringify({ OSType: 'linux', Architecture: 'x86_64', ID: 'fixture-daemon' }));
     if (args[0] === 'ps') return Buffer.alloc(0);
     if (args[0] === 'volume' && args[1] === 'ls') return Buffer.from(q.VOLUME);
@@ -97,6 +97,153 @@ async function executionFixture(stage = 'setup', overrides = {}) {
     envelope: { profile: f.profile, approval, authorized: true },
     dependencies: { root, prepare: jest.fn(async () => prepared), docker, assembleImage } };
 }
+
+/** Model the fixed Linux failure contract without private inputs or access to retained qualification state. */
+function terminalFailure(prepared, stage = 'build', changes = {}) {
+  return { schemaVersion: 1, stage, binding: prepared.binding, result: 'stopped', gate1Status: 'open',
+    network: 'none', rawProcessStreamsRetained: false, historicalArtifactPrivacy: 'unverified',
+    hostedAttribution: 'not_established', versions: q.VERSIONS, failure: 'child', failingStep: 'preparation',
+    exitCode: null, signal: null, ...changes };
+}
+
+/** Emit synthetic child JSON plus a stderr canary through the real supervisor; never invoke Docker or npm. */
+function terminalChild(report, exitCode, options = {}) {
+  const text = typeof report === 'string' ? report : JSON.stringify(report);
+  return q.supervise(process.execPath, ['-e', `process.stdout.write(${JSON.stringify(text)});
+    process.stderr.write(${JSON.stringify(PRIVATE)}); process.exitCode=${exitCode};`], options);
+}
+
+test.each(['setup', 'build', 'inspect'])('%s retains validated nonzero terminal evidence and consumes approval once', async (stage) => {
+  const f = await executionFixture(stage, {
+    start: (_args, options) => terminalChild(terminalFailure(f.prepared, stage, {
+      failure: 'preparation', exitCode: 23, signal: null,
+    }), 1, options),
+    inspect: () => Buffer.from(JSON.stringify({ Running: false, ExitCode: 1, OOMKilled: false, Error: '' })),
+  });
+  const result = await q.execute(stage, f.envelope, f.dependencies);
+  expect(result).toMatchObject({ result: 'stopped', failure: 'preparation', failingStep: 'preparation',
+    exitCode: 23, signal: null, stageProcess: { exitCode: 1, signal: null },
+    containerExit: { exitCode: 1, oomKilled: false }, versions: q.VERSIONS, imageId: IMAGE });
+  expect(JSON.parse(fs.readFileSync(path.join(f.root, `${SOURCE}.${stage}.receipt.json`)))).toEqual(result);
+  expect(JSON.stringify(result)).not.toContain(PRIVATE);
+  expect(fs.existsSync(path.join(f.root, 'active.lock'))).toBe(false);
+  expect(f.docker).toHaveBeenCalledWith(['rm', CID]);
+  f.docker.mockClear();
+  await expect(q.execute(stage, f.envelope, f.dependencies)).rejects.toThrow('reservation');
+  expect(f.docker).not.toHaveBeenCalled();
+});
+
+test.each([
+  ['extra field', { debug: PRIVATE }], ['nested payload', { inspection: { profile: PRIVATE } }],
+  ['binding', { binding: 'f'.repeat(64) }], ['stage', { stage: 'setup' }], ['schema', { schemaVersion: 2 }],
+  ['failure', { failure: PRIVATE }], ['step', { failingStep: PRIVATE }], ['wrong-stage step', { failingStep: 'toolchain_install' }],
+  ['negative exit', { exitCode: -1 }], ['large exit', { exitCode: 0x100000000 }],
+  ['fractional exit', { exitCode: 1.5 }], ['string exit', { exitCode: PRIVATE }], ['signal', { signal: PRIVATE }],
+  ['version', { versions: { ...q.VERSIONS, next: PRIVATE } }], ['completed', { result: 'completed' }],
+  ['missing failure', { failure: undefined }], ['raw streams', { rawProcessStreamsRetained: true }],
+])('failure report rejects %s before retaining any supplied text', (_label, changes) => {
+  const binding = 'a'.repeat(64), bytes = Buffer.from(JSON.stringify(terminalFailure({ binding }, 'build', changes)));
+  expect(() => q.failureReport(bytes, 'build', binding)).toThrow('child');
+});
+
+test('failure report rejects truncated, duplicated, invalid UTF-8 and oversized terminal bytes', () => {
+  const binding = 'a'.repeat(64), text = JSON.stringify(terminalFailure({ binding }));
+  for (const bytes of [Buffer.from(text.slice(0, -1)), Buffer.from(text.replace('"schemaVersion":1', '"schemaVersion":1,"schemaVersion":1')),
+    Buffer.concat([Buffer.from(text), Buffer.from([255])]), Buffer.alloc(q.LIMITS.reportBytes + 1)]) {
+    expect(() => q.failureReport(bytes, 'build', binding)).toThrow();
+  }
+});
+
+test.each(['truncated', 'extra', 'completed'])('nonzero %s output is discarded while the process status survives', async (kind) => {
+  const f = await executionFixture('build', { start: (_args, options) => {
+    const report = terminalFailure(f.prepared);
+    if (kind === 'extra') report.debug = PRIVATE;
+    if (kind === 'completed') report.result = 'completed';
+    return terminalChild(kind === 'truncated' ? JSON.stringify(report).slice(0, -1) : report, 9, options);
+  } });
+  const result = await q.execute('build', f.envelope, f.dependencies);
+  expect(result).toMatchObject({ result: 'stopped', failure: 'child', failingStep: 'container_start', exitCode: 9, signal: null });
+  const persisted = fs.readFileSync(path.join(f.root, `${SOURCE}.build.receipt.json`), 'utf8');
+  expect(JSON.parse(persisted)).toEqual(result); expect(persisted).not.toContain(PRIVATE);
+  expect(result).not.toHaveProperty('versions'); expect(result).not.toHaveProperty('report');
+});
+
+test('a valid stopped receipt with zero process exit remains nonpassing', async () => {
+  const f = await executionFixture('build', { start: (_args, options) => terminalChild(terminalFailure(f.prepared), 0, options) });
+  expect(await q.execute('build', f.envelope, f.dependencies)).toMatchObject({ result: 'stopped', failure: 'child', failingStep: 'preparation' });
+});
+
+test.each(['deadline', 'stdout', 'stderr'])('%s cannot retain even a valid buffered failure report', async (kind) => {
+  const report = terminalFailure({ binding: 'a'.repeat(64) }), parser = jest.fn((bytes) => q.failureReport(bytes, 'build', report.binding));
+  const tail = kind === 'deadline' ? 'setInterval(()=>{},1000)' :
+    kind === 'stdout' ? 'process.stdout.write("x".repeat(4096))' : 'process.stderr.write("x".repeat(8388609))';
+  const error = await q.supervise(process.execPath, ['-e', `process.stdout.write(${JSON.stringify(JSON.stringify(report))});${tail}`],
+    { timeoutMs: kind === 'deadline' ? 250 : 10000, outputBytes: 2048, parseFailureReport: parser }).catch((failure) => failure);
+  expect(error.code).toBe(kind === 'deadline' ? 'deadline' : 'stream_limit');
+  expect(error).not.toHaveProperty('report'); expect(error).not.toHaveProperty('stdout'); expect(parser).not.toHaveBeenCalled();
+});
+
+test.each(['postinstall', 'vercel_build'])('build records %s exit metadata without retaining private child streams or retrying', async (step) => {
+  const root = path.join(folder, 'tools/node_modules/vercel'); fs.mkdirSync(path.join(root, 'dist'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'dist/vc.js'), 'fixture');
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ bin: { vercel: 'dist/vc.js' } }));
+  const run = jest.fn(async (_command, args, options) => {
+    expect(options).toMatchObject({ capture: false, env: { PRIVATE }, uid: 1000, gid: 1000 });
+    if (step === 'vercel_build' && args[0] === 'run') return Buffer.alloc(0);
+    // Linux UID/GID and synthetic build env stay at the mocked boundary; the emitting fixture runs on Windows too.
+    return terminalChild(PRIVATE, 37, { capture: options.capture });
+  });
+  const error = await q.buildCommands(folder, () => ({ capture: false }), { PRIVATE }, run).catch((failure) => failure);
+  expect(error).toMatchObject({ code: 'child', failingStep: step, exitCode: 37, signal: null });
+  expect(run).toHaveBeenCalledTimes(step === 'postinstall' ? 1 : 2);
+  expect(JSON.stringify(error)).not.toContain(PRIVATE);
+  const report = terminalFailure({ binding: 'a'.repeat(64) });
+  q.stopReport(report, error, 'preparation');
+  expect(q.failureReport(Buffer.from(JSON.stringify(report)), 'build', report.binding)).toMatchObject({ failingStep: step, exitCode: 37 });
+});
+
+test('signals survive failure normalization and unknown errors cannot inject diagnostic strings', () => {
+  const report = terminalFailure({ binding: 'a'.repeat(64) });
+  q.stopReport(report, Object.assign(new q.QualificationError('child'), { exitCode: null, signal: 'SIGXCPU' }), 'vercel_build');
+  expect(q.failureReport(Buffer.from(JSON.stringify(report)), 'build', report.binding).signal).toBe('SIGXCPU');
+  q.stopReport(report, Object.assign(new Error(PRIVATE), { code: PRIVATE, failingStep: PRIVATE, signal: PRIVATE }), 'preparation');
+  expect(report).toMatchObject({ failure: 'internal', failingStep: 'preparation', exitCode: null, signal: null });
+  expect(JSON.stringify(report)).not.toContain(PRIVATE);
+});
+
+test('late failure retains diagnostics while success-only inspection payloads stay out of failure terminals', () => {
+  const report = { ...terminalFailure({ binding: 'a'.repeat(64) }), result: 'completed', inspection: { private: PRIVATE }, inspectionReport: { private: PRIVATE } };
+  q.stopReport(report, new q.QualificationError('persistence'), 'terminal_persistence');
+  report.persistenceFailure = 'persistence';
+  expect(q.failureReport(Buffer.from(JSON.stringify(report)), 'build', report.binding)).toMatchObject({
+    result: 'stopped', failure: 'persistence', failingStep: 'terminal_persistence', persistenceFailure: 'persistence' });
+  expect(report).not.toHaveProperty('inspection'); expect(report).not.toHaveProperty('inspectionReport');
+});
+
+test.each(['teardown', 'persistence', 'oom'])('retained failure diagnostics survive %s failure without allowing a retry', async (kind) => {
+  const f = await executionFixture('build', {
+    start: (_args, options) => terminalChild(terminalFailure(f.prepared, 'build', { failingStep: 'vercel_build', exitCode: 37 }), 1, options),
+    inspect: () => {
+      if (kind === 'teardown') throw new Error(PRIVATE);
+      return Buffer.from(JSON.stringify({ Running: false, ExitCode: kind === 'oom' ? 137 : 1, OOMKilled: kind === 'oom', Error: '' }));
+    },
+  });
+  if (kind === 'persistence') {
+    const open = fs.openSync;
+    jest.spyOn(fs, 'openSync').mockImplementation((location, ...args) => {
+      if (String(location).endsWith('.build.receipt.json')) throw new Error(PRIVATE);
+      return open(location, ...args);
+    });
+  }
+  const result = await q.execute('build', f.envelope, f.dependencies);
+  expect(result).toMatchObject({ result: 'stopped', failure: 'child', failingStep: 'vercel_build', exitCode: 37 });
+  if (kind === 'teardown') expect(result.teardownUnconfirmed).toBe(true);
+  if (kind === 'persistence') expect(result.persistenceFailure).toBe('persistence');
+  if (kind === 'oom') expect(result.containerExit).toEqual({ exitCode: 137, oomKilled: true });
+  expect(fs.existsSync(path.join(f.root, 'active.lock'))).toBe(kind === 'teardown');
+  expect(JSON.stringify(result)).not.toContain(PRIVATE);
+  await expect(q.execute('build', f.envelope, f.dependencies)).rejects.toThrow('reservation');
+});
 
 test('default template cannot attest to a real execution', async () => {
   expect(await q.main([])).toEqual(q.template());
