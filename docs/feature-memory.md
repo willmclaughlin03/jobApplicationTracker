@@ -16,6 +16,14 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-11
 
+- `2026-10-12` - `GATE-1 raw source archives`: Assemble source tar members from hash-verified Git blobs rather than attribute-sensitive archives. Preserve literal source bytes, long Unicode paths and executable modes while enforcing archive size and shared assembly deadlines. Eight new regressions cover export attributes, byte fidelity, modes, hashes and limits; native tar independently verifies extraction compatibility. All 201 focused tests, ESLint, syntax and whitespace checks pass.
+
+- `2026-10-12` - `GATE-1 PowerShell availability check`: Probe Windows PowerShell once with a five-second timeout before registering qualification tests, enabling the six launcher cases only after a successful probe. All 73 tests pass on Windows; mocked missing, blocked, failed, timed-out and signaled probes plus Linux/macOS registration retain 67 active cases and exactly six skips. Focused ESLint and whitespace checks pass.
+
+- `2026-10-12` - `GATE-1 qualification test portability`: Limit the six Windows PowerShell launcher cases to Windows while retaining all 67 platform-independent cases. All 73 qualification tests pass on Windows; simulated Linux/macOS registration confirms exactly six skipped cases. Focused ESLint and whitespace checks pass.
+
+- `2026-10-12` - `GATE-1 local Docker qualification`: Add offline-default preparation with separately approved setup, build and inspection for a reviewed source commit and pinned Linux toolchain. Hash-checked artifacts, shared consume-once reservations, bounded Docker execution and explicit post-build attestations bind the resulting output to the existing scanner; scanner approval now includes the new execution files. All 193 synthetic tests, focused ESLint, syntax and whitespace checks pass. Actual qualification execution remains separately approved, and GATE-1 remains open.
+
 - `2026-10-11` - `GATE-1 profile JSON preservation`: Pass original profile text unchanged to Node preparation and embed it verbatim in the inspection envelope, using the parsed object only for comparison labels. Added five Windows regressions for malformed JSON rejection and exact text preservation with one or two comparisons. All 120 targeted tests, focused ESLint, syntax and whitespace checks pass.
 
 - `2026-10-11` - `GATE-1 build artifact review fixes`: Detect embedded base64/base64url comparisons and echoes at all three byte alignments, reject non-empty function filePathMap references, and preserve child exit codes when launcher failure output is empty or malformed. Added synthetic coverage for trailing bytes, echo suppression, mapped-file rejection, delayed exits and JSON output handling. All 115 tests, focused ESLint, PowerShell parsing and whitespace checks pass.
