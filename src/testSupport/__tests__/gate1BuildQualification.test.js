@@ -365,6 +365,131 @@ test('ordinary npm SHA-512 cache long names work, while long-name traversal and 
   fs.writeFileSync(location, longNameTar(name, 50)); expect(() => q.checkCacheTar(location)).toThrow('artifact');
 });
 
+/** Describe synthetic raw blob bytes using Git's object hash, including the source executable bit. */
+function sourceMember(name, bytes, mode = '100644') {
+  return { name, mode, oid: createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') };
+}
+
+/** Inspect tar payloads independently of the writer, checking checksums and byte-counted PAX path records. */
+function archiveMembers(bytes) {
+  const members = new Map(); let nextPath;
+  for (let offset = 0; offset < bytes.length; ) {
+    const header = bytes.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const size = parseInt(header.toString('ascii', 124, 136), 8), type = header[156];
+    expect(header.reduce((sum, byte, index) => sum + (index >= 148 && index < 156 ? 32 : byte), 0))
+      .toBe(parseInt(header.toString('ascii', 148, 156), 8));
+    const payload = bytes.subarray(offset + 512, offset + 512 + size);
+    expect(payload.length).toBe(size);
+    if (type === 120) {
+      for (let cursor = 0; cursor < payload.length; ) {
+        const space = payload.indexOf(32, cursor), length = Number(payload.toString('ascii', cursor, space));
+        expect(Number.isSafeInteger(length) && length > space - cursor + 1).toBe(true);
+        expect(payload[cursor + length - 1]).toBe(10);
+        const field = payload.toString('utf8', space + 1, cursor + length - 1);
+        if (field.startsWith('path=')) nextPath = field.slice(5);
+        cursor += length;
+      }
+    } else if (type === 48 || type === 0) {
+      const name = nextPath ?? header.toString('utf8', 0, 100).split('\0')[0];
+      expect(members.has(name)).toBe(false);
+      members.set(name, { bytes: payload, mode: parseInt(header.toString('ascii', 100, 108), 8) });
+      nextPath = undefined;
+    } else expect([53, 103]).toContain(type); // Git archives also contain directory and global PAX headers.
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  return members;
+}
+
+/** Read fixture Git objects or create a disposable synthetic repository, with the supervisor's isolated environment. */
+async function sourceGit(args, input) {
+  return q.supervise('git', ['-C', folder, ...args], { input });
+}
+
+test('source archive preserves literal placeholders, mixed newlines, binary bytes, long Unicode paths and executable modes', async () => {
+  const entries = [
+    { name: 'src/version.js', bytes: Buffer.from('$Format:%H$\n$Id$\r\nlast\rline\n'), mode: '100755' },
+    { name: 'public/data.bin', bytes: Buffer.from([0, 255, 254, 13, 10, 128]) },
+    { name: 'src/' + 'nested/'.repeat(35) + 'é' + 'x'.repeat(90) + '.js', bytes: Buffer.from('unicode path') },
+    { name: 'src/empty file.js', bytes: Buffer.alloc(0) },
+  ];
+  const manifest = entries.map(({ name, bytes, mode }) => sourceMember(name, bytes, mode));
+  const git = jest.fn(async (_root, args) => entries[manifest.findIndex((entry) => entry.oid === args[2])].bytes);
+  const location = path.join(folder, 'source.tar');
+  await q.sourceArchive(folder, manifest, location, { git });
+  const members = archiveMembers(fs.readFileSync(location));
+  expect([...members.keys()]).toEqual(entries.map((entry) => entry.name));
+  entries.forEach((entry, index) => {
+    expect(members.get(entry.name)).toEqual({ bytes: entry.bytes, mode: index === 0 ? 0o755 : 0o644 });
+    expect(git.mock.calls[index].slice(0, 2)).toEqual([folder, ['cat-file', 'blob', manifest[index].oid]]);
+  });
+  expect(git).toHaveBeenCalledTimes(entries.length);
+});
+
+test('committed export attributes cannot transform or omit reviewed source blobs', async () => {
+  await sourceGit(['init', '--quiet']);
+  const text = Buffer.from('$Format:%H$\n$Id$\n'), binary = Buffer.from([0, 13, 10, 255]);
+  const manifest = [sourceMember('src/version.js', text, '100755'), sourceMember('src/data.bin', binary)];
+  for (const bytes of [text, binary]) await sourceGit(['hash-object', '-w', '--stdin'], bytes);
+  const attributes = (await sourceGit(['hash-object', '-w', '--stdin'],
+    Buffer.from('src/version.js export-subst text eol=crlf ident\nsrc/data.bin export-ignore\n'))).toString().trim();
+  const subtree = (await sourceGit(['mktree'], Buffer.from(manifest.map((entry) =>
+    `${entry.mode} blob ${entry.oid}\t${path.posix.basename(entry.name)}\n`).join('')))).toString().trim();
+  const tree = (await sourceGit(['mktree'], Buffer.from(
+    `100644 blob ${attributes}\t.gitattributes\n040000 tree ${subtree}\tsrc\n`))).toString().trim();
+  const commit = (await sourceGit(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit-tree', tree, '-m', 'Synthetic archive regression'])).toString().trim();
+  const legacy = archiveMembers(await sourceGit(['archive', '--format=tar', commit, '--', 'src']));
+  expect(legacy.get('src/version.js').bytes.equals(text)).toBe(false);
+  expect(legacy.get('src/version.js').bytes.toString()).toContain(commit);
+  expect(legacy.has('src/data.bin')).toBe(false);
+  const location = path.join(folder, 'source.tar');
+  await q.sourceArchive(folder, manifest, location);
+  const members = archiveMembers(fs.readFileSync(location));
+  expect(members.get('src/version.js')).toEqual({ bytes: text, mode: 0o755 });
+  expect(members.get('src/data.bin')).toEqual({ bytes: binary, mode: 0o644 });
+  const extracted = path.join(folder, 'extracted'); fs.mkdirSync(path.join(extracted, 'src'), { recursive: true });
+  for (const [name, member] of members) fs.writeFileSync(path.join(extracted, name), member.bytes, { mode: member.mode });
+  expect(() => q.verifySource(extracted, manifest)).not.toThrow();
+}, 30000);
+
+test('source archive rejects changed blob bytes and closes the failed output', async () => {
+  const manifest = [sourceMember('src/file.js', Buffer.from('reviewed'))], location = path.join(folder, 'source.tar');
+  const git = jest.fn(async () => Buffer.from('changed'));
+  await expect(q.sourceArchive(folder, manifest, location, { git })).rejects.toThrow('source');
+  expect(fs.readFileSync(location).length).toBe(0);
+  expect(() => fs.renameSync(location, path.join(folder, 'failed.tar'))).not.toThrow();
+});
+
+test.each([
+  { byteLimit: 1536, count: 1, reads: 0 },
+  { byteLimit: 3071, count: 1, reads: 1 },
+  { byteLimit: 4096, count: 2, reads: 1 },
+])('source archive caps headers, padding and cumulative bytes with %j', async ({ byteLimit, count, reads }) => {
+  const bytes = Buffer.from('x'), git = jest.fn(async () => bytes);
+  const manifest = Array.from({ length: count }, (_, index) => sourceMember(`src/file${index}.js`, bytes));
+  await expect(q.sourceArchive(folder, manifest, path.join(folder, 'source.tar'), { git, byteLimit })).rejects.toThrow('stream_limit');
+  expect(git).toHaveBeenCalledTimes(reads);
+});
+
+test('source archive accepts the exact byte limit and bounds each Git read', async () => {
+  const bytes = Buffer.from('x'), git = jest.fn(async () => bytes), location = path.join(folder, 'source.tar');
+  await q.sourceArchive(folder, [sourceMember('src/file.js', bytes)], location, { git, byteLimit: 3072, timeoutMs: 1000 });
+  expect(fs.statSync(location).size).toBe(3072);
+  expect(git.mock.calls[0][2].outputBytes).toBe(512);
+  expect(git.mock.calls[0][2].timeoutMs).toBeGreaterThan(0);
+  expect(git.mock.calls[0][2].timeoutMs).toBeLessThanOrEqual(1000);
+});
+
+test('source archive rejects oversized Git output, exhausted deadlines and attempts to raise the byte cap', async () => {
+  const bytes = Buffer.alloc(513), git = jest.fn(async () => bytes), manifest = [sourceMember('src/file.js', bytes)];
+  await expect(q.sourceArchive(folder, manifest, path.join(folder, 'oversized.tar'), { git, byteLimit: 3072 })).rejects.toThrow('stream_limit');
+  git.mockClear();
+  await expect(q.sourceArchive(folder, manifest, path.join(folder, 'deadline.tar'), { git, timeoutMs: 0 })).rejects.toThrow('deadline');
+  await expect(q.sourceArchive(folder, manifest, path.join(folder, 'cap.tar'), { git, byteLimit: q.LIMITS.sourceBytes + 1 })).rejects.toThrow('artifact');
+  expect(git).not.toHaveBeenCalled();
+});
+
 test('source verification detects changed, extra and missing exported blobs', () => {
   const root = path.join(folder, 'source'); fs.mkdirSync(root); fs.writeFileSync(path.join(root, 'file.js'), 'original');
   const manifest = [{ name: 'file.js', mode: '100644', oid: createHash('sha1').update('blob 8\0original').digest('hex') }];
