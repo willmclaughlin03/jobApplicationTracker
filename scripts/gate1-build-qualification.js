@@ -407,13 +407,16 @@ function stageReview(prepared, stage, setup, build) {
   return { ...contract, approval: sha(JSON.stringify(contract)), authorized: false, gate1Status: 'open' };
 }
 
-/** Emit a simple USTAR entry for a fixed context member; no filesystem traversal is delegated to Docker. */
-function tarHeader(name, size) {
-  if (!/^[A-Za-z0-9._/-]{1,99}$/.test(name) || name.split('/').includes('..')) throw new QualificationError('artifact');
+/** Emit a fixed-name USTAR header; source members supply their reviewed mode and PAX path records use type 120. */
+function tarHeader(name, size, mode = 0o600, type = 48) {
+  if (!/^[A-Za-z0-9._/-]{1,99}$/.test(name) || name.split('/').includes('..') ||
+      !Number.isSafeInteger(size) || size < 0 || size > 0o77777777777 ||
+      ![0o600, 0o644, 0o755].includes(mode) || ![48, 120].includes(type)) throw new QualificationError('artifact');
   const header = Buffer.alloc(512);
-  header.write(name); header.write('0000600\0', 100); header.write('0000000\0', 108); header.write('0000000\0', 116);
+  header.write(name); header.write(mode.toString(8).padStart(7, '0') + '\0', 100);
+  header.write('0000000\0', 108); header.write('0000000\0', 116);
   header.write(size.toString(8).padStart(11, '0') + '\0', 124); header.write('00000000000\0', 136);
-  header.fill(32, 148, 156); header[156] = 48; header.write('ustar\0', 257); header.write('00', 263);
+  header.fill(32, 148, 156); header[156] = type; header.write('ustar\0', 257); header.write('00', 263);
   const sum = header.reduce((total, byte) => total + byte, 0);
   header.write(sum.toString(8).padStart(6, '0') + '\0 ', 148);
   return header;
@@ -445,6 +448,41 @@ function contextTar(location, members) {
       fs.writeSync(fd, Buffer.alloc((512 - size % 512) % 512));
     }
     fs.writeSync(fd, Buffer.alloc(1024)); fs.fsyncSync(fd); return hashes;
+  } finally { fs.closeSync(fd); }
+}
+
+/** Write a bounded source tar from validated manifest OIDs, never checkout/archive conversions; options inject Git or tighter test limits. */
+async function sourceArchive(root, manifest, location, options = {}) {
+  const runGit = options.git || git, byteLimit = options.byteLimit ?? LIMITS.sourceBytes;
+  const timeoutMs = options.timeoutMs ?? LIMITS.setupMs, started = performance.now();
+  if (!Number.isSafeInteger(byteLimit) || byteLimit < 1024 || byteLimit > LIMITS.sourceBytes) throw new QualificationError('artifact');
+  const fd = fs.openSync(location, 'wx', 0o600);
+  let total = 1024;
+  try {
+    for (const { name, oid, mode } of manifest) {
+      // PAX path lengths count UTF-8 bytes, preserving long names and non-ASCII source paths without truncation.
+      const field = ` path=${name}\n`, fieldBytes = Buffer.byteLength(field);
+      let length = fieldBytes + 1;
+      while (length !== fieldBytes + String(length).length) length = fieldBytes + String(length).length;
+      const extended = Buffer.from(String(length) + field), extendedPadding = (512 - extended.length % 512) % 512;
+      const overhead = 1024 + extended.length + extendedPadding, available = byteLimit - total - overhead;
+      if (available < 0) throw new QualificationError('stream_limit');
+      const remaining = timeoutMs - (performance.now() - started);
+      if (remaining <= 0) throw new QualificationError('deadline');
+      const bytes = await runGit(root, ['cat-file', 'blob', oid], {
+        outputBytes: available, timeoutMs: Math.min(LIMITS.commandMs, remaining) });
+      const padding = (512 - bytes.length % 512) % 512;
+      if (bytes.length + padding > available) throw new QualificationError('stream_limit');
+      if (createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') !== oid) {
+        throw new QualificationError('source');
+      }
+      for (const part of [tarHeader('PaxHeaders/source', extended.length, 0o600, 120), extended, Buffer.alloc(extendedPadding),
+        tarHeader('source', bytes.length, mode === '100755' ? 0o755 : 0o644), bytes, Buffer.alloc(padding)]) {
+        fs.writeFileSync(fd, part);
+      }
+      total += overhead + bytes.length + padding;
+    }
+    fs.writeFileSync(fd, Buffer.alloc(1024)); fs.fsyncSync(fd);
   } finally { fs.closeSync(fd); }
 }
 
@@ -488,14 +526,19 @@ async function engineCheck(runDocker, stage, expectedDaemon) {
 
 /** Create the minimal image context from committed source and reviewed offline artifacts, without a package download. */
 async function assembleImage(p, prepared, root, runDocker, timeoutMs) {
+  const started = performance.now();
+  /** Share the caller's remaining stage budget across raw blob reads and Docker assembly. */
+  function remaining() {
+    const value = timeoutMs - (performance.now() - started);
+    if (value <= 0) throw new QualificationError('deadline');
+    return value;
+  }
   const base = strictJson(await runDocker(['image', 'inspect', BASE_IMAGE]));
   if (base.length !== 1 || !/^sha256:[a-f0-9]{64}$/.test(base[0].Id || '') ||
       base[0].Os !== 'linux' || base[0].Architecture !== 'amd64') throw new QualificationError('docker');
   const folder = path.join(root, p.source.gitSha + '.context'); fs.mkdirSync(folder, { mode: 0o700 });
   const sourceTar = path.join(folder, 'source.tar');
-  const roots = SOURCE_ROOTS.filter((name) => prepared.selected.some((file) => file === name || file.startsWith(name + '/')));
-  await git(p.source.root, ['archive', '--format=tar', p.source.gitSha, '--', ...roots],
-    { outputFile: sourceTar, outputBytes: LIMITS.sourceBytes });
+  await sourceArchive(p.source.root, prepared.contract.sourceManifest, sourceTar, { timeoutMs: remaining() });
   const members = [['Dockerfile', publicFile(path.join(__dirname, 'gate1-build-qualification.Dockerfile'))],
     ['source.tar', sourceTar], ['review.json', Buffer.from(JSON.stringify(prepared))],
     ['package-lock.json', publicFile(path.join(ROOT, 'package-lock.json'))],
@@ -514,7 +557,7 @@ async function assembleImage(p, prepared, root, runDocker, timeoutMs) {
   if ((await prepare(p)).binding !== prepared.binding) throw new QualificationError('approval');
   await runDocker(['build', '--network=none', '--pull=false', '--no-cache', '--build-arg',
     `QUALIFICATION_BASE=${base[0].Id}`, '--iidfile', iid, '-'],
-    { timeoutMs, inputFile: context, capture: false, outputBytes: LIMITS.logBytes,
+    { timeoutMs: remaining(), inputFile: context, capture: false, outputBytes: LIMITS.logBytes,
       env: { ...hostEnvironment(), DOCKER_BUILDKIT: '0' } });
   const imageId = publicFile(iid, 128).toString().trim();
   if (!/^sha256:[a-f0-9]{64}$/.test(imageId)) throw new QualificationError('docker');
@@ -669,7 +712,7 @@ function syntheticInputs() {
       url: 'https://synthetic-gate1.upstash.io', token: values.redis_token }) } };
 }
 
-/** Verify every exported source blob before installing anything; Git archive attributes cannot substitute build bytes. */
+/** Verify every transferred source blob and executable mode against the reviewed manifest before installing anything. */
 function verifySource(root, manifest) {
   const expected = new Map(manifest.map((entry) => [entry.name, entry])), seen = new Set(), queue = [root];
   let total = 0;
@@ -858,5 +901,5 @@ if (require.main === module) {
 module.exports = { SCOPE, CONTEXT, VOLUME, CONTAINER, BASE_IMAGE, NODE_ARCHIVE, NODE_SHA, VERSIONS, TOOL_DEPS,
   FILES, LIMITS, ATTESTATIONS, SCAN_ATTESTATIONS, LABELS, SETTINGS, QualificationError, strictJson, safePath, forbidden, publicFile,
   fileHash, template, parseProfile, supervise, sourceSelection, checkLock, checkCacheTar, executionIntegrity,
-  prepare, writeOnce, reserve, stageReview, tarHeader, contextTar, containerArgs, engineCheck, execute,
+  prepare, writeOnce, reserve, stageReview, tarHeader, contextTar, sourceArchive, containerArgs, engineCheck, execute,
   storageCheck, syntheticInputs, verifySource, vercelEntry, confirmInspection, readInput, main };
