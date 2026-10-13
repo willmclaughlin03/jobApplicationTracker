@@ -49,11 +49,53 @@ const SETTINGS = Object.freeze({ projectId: 'prj_gate1_synthetic_local', orgId: 
     installCommand: 'node -e "process.exit(0)"', devCommand: null, outputDirectory: null, rootDirectory: null } });
 const CODES = new Set(['input', 'profile', 'source', 'forbidden', 'lock', 'artifact', 'approval', 'reservation',
   'persistence', 'child', 'deadline', 'stream_limit', 'storage', 'docker', 'toolchain', 'preparation', 'internal']);
+// Linux terminal reports must validate on Windows too; do not derive this allowlist from the host OS.
+const SIGNALS = Object.freeze(['SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGILL', 'SIGTRAP', 'SIGABRT', 'SIGIOT',
+  'SIGBUS', 'SIGFPE', 'SIGKILL', 'SIGUSR1', 'SIGSEGV', 'SIGUSR2', 'SIGPIPE', 'SIGALRM', 'SIGTERM',
+  'SIGCHLD', 'SIGCONT', 'SIGSTOP', 'SIGTSTP', 'SIGTTIN', 'SIGTTOU', 'SIGURG', 'SIGXCPU', 'SIGXFSZ',
+  'SIGVTALRM', 'SIGPROF', 'SIGWINCH', 'SIGIO', 'SIGPOLL', 'SIGPWR', 'SIGSYS', 'SIGSTKFLT', 'SIGBREAK']);
+const FAILURE_STEPS = Object.freeze({
+  setup: ['preparation', 'toolchain_install', 'application_install', 'application_ownership', 'version_check',
+    'stage_receipt', 'storage_check', 'terminal_persistence'],
+  build: ['preparation', 'version_check', 'postinstall', 'vercel_build', 'inspection_preparation',
+    'stage_receipt', 'storage_check', 'terminal_persistence'],
+  inspect: ['preparation', 'version_check', 'inspection', 'storage_check', 'terminal_persistence'],
+});
 
 /** Retain only fixed diagnostic codes, never raw child errors, filenames or input values. */
 class QualificationError extends Error {
   /** Map unexpected errors to a stable non-sensitive failure category. */
   constructor(code) { super(CODES.has(code) ? code : 'internal'); this.code = this.message; }
+}
+
+/** Normalize OS exit metadata only; absent/unsupported values never become arbitrary report strings. */
+function exitStatus(code, signal) {
+  return { exitCode: Number.isInteger(code) && code >= 0 && code <= 0xffffffff ? code : null,
+    signal: SIGNALS.includes(signal) ? signal : null };
+}
+
+/** Copy only fixed failure codes and bounded exit metadata; callers supply a constant operation label. */
+function failureDetails(error, step) {
+  return { failure: error instanceof QualificationError && CODES.has(error.code) ? error.code : 'internal',
+    failingStep: step, ...exitStatus(error instanceof QualificationError ? error.exitCode : null,
+      error instanceof QualificationError ? error.signal : null) };
+}
+
+/** Validate a bounded failure receipt before retaining nonzero stdout; reject extra fields and wrong attribution. */
+function failureReport(bytes, stage, binding) {
+  if (!Buffer.isBuffer(bytes) || bytes.length > LIMITS.reportBytes || !FAILURE_STEPS[stage]) throw new QualificationError('child');
+  const { z } = require('zod');
+  const parsed = z.object({ schemaVersion: z.literal(1), stage: z.literal(stage), binding: z.literal(binding),
+    result: z.literal('stopped'), gate1Status: z.literal('open'), network: z.literal('none'),
+    rawProcessStreamsRetained: z.literal(false), historicalArtifactPrivacy: z.literal('unverified'),
+    hostedAttribution: z.literal('not_established'),
+    versions: z.object(Object.fromEntries(Object.entries(VERSIONS).map(([key, value]) => [key, z.literal(value)]))).strict().optional(),
+    failure: z.enum([...CODES]), failingStep: z.enum(FAILURE_STEPS[stage]),
+    exitCode: z.number().int().min(0).max(0xffffffff).nullable(), signal: z.enum(SIGNALS).nullable(),
+    persistenceFailure: z.literal('persistence').optional(),
+  }).strict().safeParse(strictJson(bytes));
+  if (!parsed.success) throw new QualificationError('child');
+  return parsed.data;
 }
 
 /** Hash public source/toolchain contracts; private comparison values are never hashed into reports. */
@@ -177,7 +219,7 @@ function hostEnvironment() {
 /** Supervise one child with monotonic deadline, bounded streams and group termination; discard raw stderr. */
 function supervise(command, args, options = {}) {
   const { timeoutMs = LIMITS.commandMs, outputBytes = LIMITS.reportBytes, input, cwd = ROOT,
-    env = hostEnvironment(), capture = true, outputFile, inputFile, uid, gid, poll } = options;
+    env = hostEnvironment(), capture = true, outputFile, inputFile, uid, gid, poll, parseFailureReport } = options;
   return new Promise((resolve, reject) => {
     const started = performance.now(), chunks = [];
     let child, settled = false, size = 0, errSize = 0, timer, fd, inputStream;
@@ -186,14 +228,21 @@ function supervise(command, args, options = {}) {
       if (!child?.pid) return;
       try { if (process.platform === 'linux') process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); } catch { /* Already exited. */ }
     }
-    /** Close persistent output and resolve only after clean exit; failures never return raw child text. */
-    function finish(error) {
+    /** Close output and retain only an explicitly validated report on a normal nonzero close, never raw text. */
+    function finish(error, status) {
       if (settled) return; settled = true; clearInterval(timer);
       inputStream?.destroy(); kill();
       if (fd !== undefined) {
         try { fs.fsyncSync(fd); } catch { error = new QualificationError('persistence'); }
         try { fs.closeSync(fd); } catch { error = new QualificationError('persistence'); }
       }
+      if (error && status) {
+        Object.assign(error, status);
+        if (error.code === 'child' && parseFailureReport && capture && !outputFile) {
+          try { error.report = parseFailureReport(Buffer.concat(chunks)); } catch { /* Invalid reports remain discarded. */ }
+        }
+      }
+      if (error) chunks.length = 0;
       if (error) reject(error); else resolve(Buffer.concat(chunks));
     }
     try {
@@ -212,7 +261,7 @@ function supervise(command, args, options = {}) {
         errSize += bytes.length;
         if (errSize > LIMITS.logBytes) finish(new QualificationError('stream_limit'));
       });
-      child.once('close', (code, signal) => finish(code === 0 && !signal ? null : new QualificationError('child')));
+      child.once('close', (code, signal) => finish(code === 0 && !signal ? null : new QualificationError('child'), exitStatus(code, signal)));
       timer = setInterval(() => {
         if (performance.now() - started >= timeoutMs) return finish(new QualificationError('deadline'));
         try { if (poll) poll(); } catch { finish(new QualificationError('storage')); }
@@ -571,7 +620,9 @@ async function teardown(runDocker, containerId) {
   const finalState = strictJson(await runDocker(['inspect', '--format', '{{json .State}}', containerId]));
   if (finalState.Running) throw new QualificationError('docker');
   await runDocker(['rm', containerId]);
-  return !state.Running && finalState.ExitCode === 0 && finalState.OOMKilled === false && !finalState.Error;
+  return { cleanExit: !state.Running && finalState.ExitCode === 0 && finalState.OOMKilled === false && !finalState.Error,
+    exitCode: exitStatus(finalState.ExitCode, null).exitCode,
+    oomKilled: typeof finalState.OOMKilled === 'boolean' ? finalState.OOMKilled : null };
 }
 
 /** Execute a single separately approved stage with durable host reservation and verified container teardown. */
@@ -588,7 +639,7 @@ async function execute(stage, envelope, dependencies = {}) {
   reserve(root, p.source.gitSha, stage, envelope.approval);
   const lock = path.join(root, 'active.lock');
   writeOnce(lock, { stage, sourceSha: p.source.gitSha, approval: envelope.approval });
-  let containerId, stopped = false;
+  let containerId, imageId, daemonId, stopped = false, step = 'engine_check';
   const started = performance.now(), ceiling = stage === 'inspect' ? LIMITS.inspectMs : LIMITS[`${stage}Ms`];
   /** Carry one stage budget across image assembly and the container, without resetting it between commands. */
   function remaining() {
@@ -598,36 +649,65 @@ async function execute(stage, envelope, dependencies = {}) {
   }
   let result = { schemaVersion: 1, stage, binding: prepared.binding, result: 'stopped', gate1Status: 'open' };
   try {
-    const daemonId = await engineCheck(runDocker, stage, setup?.daemonId);
-    const imageId = stage === 'setup' ? await (dependencies.assembleImage || assembleImage)(p, prepared, root, runDocker, remaining()) : setup.imageId;
+    daemonId = await engineCheck(runDocker, stage, setup?.daemonId);
+    step = 'image_assembly';
+    imageId = stage === 'setup' ? await (dependencies.assembleImage || assembleImage)(p, prepared, root, runDocker, remaining()) : setup.imageId;
+    step = 'image_check';
     const inspected = strictJson(await runDocker(['image', 'inspect', imageId]));
     if (inspected.length !== 1 || inspected[0].Id !== imageId || inspected[0].Os !== 'linux' || inspected[0].Architecture !== 'amd64') {
       throw new QualificationError('docker');
     }
+    step = 'container_create';
     const created = (await runDocker(containerArgs(imageId, stage, p.source.gitSha))).toString().trim();
     if (!/^[a-f0-9]{64}$/.test(created)) throw new QualificationError('docker');
     containerId = created;
+    step = 'container_start';
     const bytes = await runDocker(['start', '-ai', containerId], {
-      timeoutMs: remaining(),
+      timeoutMs: remaining(), parseFailureReport: (output) => failureReport(output, stage, prepared.binding),
       input: Buffer.from(JSON.stringify({ binding: prepared.binding, stage, approval: envelope.approval,
         inspection: stage === 'inspect' ? review.inspection : null })) });
     const terminal = strictJson(bytes);
     if (terminal.binding !== prepared.binding || terminal.stage !== stage || terminal.gate1Status !== 'open' ||
         !['completed', 'stopped'].includes(terminal.result)) throw new QualificationError('child');
-    result = { ...terminal, imageId, daemonId };
+    result = { ...(terminal.result === 'stopped' ? failureReport(bytes, stage, prepared.binding) : terminal), imageId, daemonId };
     if (terminal.persistenceFailure) result.result = 'stopped';
-  } catch (error) { result.failure = error instanceof QualificationError ? error.code : 'internal'; }
+  } catch (error) {
+    Object.assign(result, failureDetails(error, step));
+    if (error instanceof QualificationError && error.report) {
+      try {
+        result = { ...failureReport(Buffer.from(JSON.stringify(error.report)), stage, prepared.binding), imageId, daemonId,
+          stageProcess: exitStatus(error.exitCode, error.signal) };
+      } catch { /* Injected or changed failure objects cannot bypass the host report boundary. */ }
+    }
+    result.result = 'stopped';
+  }
   finally {
     if (containerId) {
       try {
-        const cleanExit = await teardown(runDocker, containerId); stopped = true;
-        if (!cleanExit) { result.result = 'stopped'; result.failure ||= 'child'; }
-      } catch { result.result = 'stopped'; result.failure = 'docker'; result.teardownUnconfirmed = true; }
+        const finalState = await teardown(runDocker, containerId); stopped = true;
+        result.containerExit = { exitCode: finalState.exitCode, oomKilled: finalState.oomKilled };
+        if (!finalState.cleanExit) {
+          result.result = 'stopped';
+          if (!result.failure) Object.assign(result, failureDetails(
+            Object.assign(new QualificationError('child'), { exitCode: finalState.exitCode }), 'container_teardown'));
+        }
+      } catch {
+        result.result = 'stopped'; result.teardownUnconfirmed = true;
+        if (!result.failure) Object.assign(result, failureDetails(new QualificationError('docker'), 'container_teardown'));
+      }
     } else stopped = true;
     try { writeOnce(path.join(root, `${p.source.gitSha}.${stage}.receipt.json`), result); }
-    catch { result.result = 'stopped'; result.persistenceFailure = 'persistence'; }
+    catch {
+      result.result = 'stopped'; result.persistenceFailure = 'persistence';
+      if (!result.failure) Object.assign(result, failureDetails(new QualificationError('persistence'), 'host_receipt'));
+    }
     // A failed teardown keeps the global lock for owner review. Consumed reservations are never removed.
-    if (stopped) { try { fs.unlinkSync(lock); } catch { result.result = 'stopped'; result.persistenceFailure = 'persistence'; } }
+    if (stopped) {
+      try { fs.unlinkSync(lock); } catch {
+        result.result = 'stopped'; result.persistenceFailure = 'persistence';
+        if (!result.failure) Object.assign(result, failureDetails(new QualificationError('persistence'), 'lock_release'));
+      }
+    }
   }
   return result;
 }
@@ -767,6 +847,28 @@ function confirmInspection(draft, confirmed, scanner) {
   return profile;
 }
 
+/** Run the approved build sequence once; preserve its failing operation without retaining command output or inputs. */
+async function buildCommands(folder, childOptions, env, run = supervise) {
+  let step = 'postinstall';
+  try {
+    await run('/opt/node-v22.23.3-linux-x64/bin/npm', ['run', 'postinstall', '--offline'],
+      { ...childOptions(), env, uid: 1000, gid: 1000 });
+    step = 'vercel_build';
+    await run(process.execPath, [vercelEntry(folder), 'build', '--standalone', '--target=preview'],
+      { ...childOptions(), env, uid: 1000, gid: 1000 });
+  } catch (error) {
+    const details = failureDetails(error, step);
+    throw Object.assign(new QualificationError(details.failure), details);
+  }
+}
+
+/** Keep failure terminals to the diagnostic schema; separate Linux inspection receipt handling is unchanged. */
+function stopReport(report, error, step) {
+  const failingStep = error instanceof QualificationError && FAILURE_STEPS[report.stage].includes(error.failingStep) ? error.failingStep : step;
+  Object.assign(report, { result: 'stopped' }, failureDetails(error, failingStep));
+  delete report.inspection; delete report.inspectionReport;
+}
+
 /** Run one Linux stage from immutable image metadata; never accept host paths, commands or environment values. */
 async function inside(stage, envelope) {
   if (process.platform !== 'linux' || process.arch !== 'x64' || process.getuid() !== 0 ||
@@ -779,7 +881,7 @@ async function inside(stage, envelope) {
   const report = { schemaVersion: 1, stage, binding: prepared.binding, result: 'stopped', gate1Status: 'open',
     network: 'none', rawProcessStreamsRetained: false, historicalArtifactPrivacy: 'unverified', hostedAttribution: 'not_established' };
   const started = performance.now(), ceiling = stage === 'inspect' ? LIMITS.inspectMs : LIMITS[`${stage}Ms`];
-  let lastPoll = -Infinity;
+  let lastPoll = -Infinity, step = 'preparation';
   /** Enforce the remaining stage deadline across children and periodically count the persistent volume. */
   function childOptions() {
     const remaining = ceiling - (performance.now() - started);
@@ -802,16 +904,23 @@ async function inside(stage, envelope) {
       fs.mkdirSync('/tmp/home', { mode: 0o777 });
       const npm = '/opt/node-v22.23.3-linux-x64/bin/npm';
       const args = ['ci', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'];
+      step = 'toolchain_install';
       await supervise(npm, args, { ...childOptions(), cwd: `${folder}/tools` });
+      step = 'application_install';
       await supervise(npm, args, childOptions());
       // npm ran as root with lifecycle scripts disabled. Give only the app tree to the later unprivileged build.
+      step = 'application_ownership';
       await supervise('/usr/bin/chown', ['-R', '-h', '1000:1000', app], childOptions());
+      step = 'version_check';
       report.versions = actualVersions(folder);
+      step = 'stage_receipt';
       writeOnce(`${folder}/setup.receipt.json`, { binding: prepared.binding, versions: report.versions });
     } else {
       const setup = strictJson(publicFile(`${folder}/setup.receipt.json`));
       if (setup.binding !== prepared.binding) throw new QualificationError('preparation');
+      step = 'version_check';
       report.versions = actualVersions(folder);
+      step = 'preparation';
       writeOnce(`${folder}/${stage}.reservation.json`, { binding: prepared.binding, approval: envelope.approval, consumed: true });
       if (stage === 'build') {
         if (fs.existsSync(`${app}/.vercel`) || fs.existsSync(`${app}/.next`)) throw new QualificationError('preparation');
@@ -823,17 +932,17 @@ async function inside(stage, envelope) {
         fs.mkdirSync('/tmp/home', { mode: 0o700 }); fs.chownSync('/tmp/home', 1000, 1000);
         // All lifecycle execution occurs in this separately approved, disconnected build stage.
         const env = linuxEnvironment(sourceSha, { ...inputs.env, NODE_ENV: 'production', VERCEL: '1', VERCEL_ENV: 'preview' });
-        await supervise('/opt/node-v22.23.3-linux-x64/bin/npm', ['run', 'postinstall', '--offline'],
-          { ...childOptions(), env, uid: 1000, gid: 1000 });
-        await supervise(process.execPath, [vercelEntry(folder), 'build', '--standalone', '--target=preview'],
-          { ...childOptions(), env, uid: 1000, gid: 1000 });
+        await buildCommands(folder, childOptions, env);
+        step = 'inspection_preparation';
         report.inspection = inspectionPreparation(prepared, folder);
+        step = 'stage_receipt';
         writeOnce(`${folder}/build.receipt.json`, { binding: prepared.binding, inspection: report.inspection });
       } else {
         const build = strictJson(publicFile(`${folder}/build.receipt.json`));
         if (build.binding !== prepared.binding) throw new QualificationError('approval');
         const scanProfile = confirmInspection(build.inspection, envelope.inspection, require('./gate1-build-artifact-privacy'));
         const comparisons = strictJson(publicFile(`${folder}/private/comparisons.json`));
+        step = 'inspection';
         const bytes = await supervise(process.execPath, [path.join(__dirname, 'gate1-build-artifact-privacy.js'), '--inspect'], {
           ...childOptions(), capture: true, outputBytes: LIMITS.reportBytes + 2,
           env: { ...linuxEnvironment(sourceSha), NODE_PATH: `${folder}/tools/node_modules` },
@@ -844,10 +953,14 @@ async function inside(stage, envelope) {
             report.inspectionReport.reportSaved !== true) throw new QualificationError('persistence');
       }
     }
+    step = 'storage_check';
     storageCheck('/state'); report.result = 'completed';
-  } catch (error) { report.failure = error instanceof QualificationError ? error.code : 'internal'; }
+  } catch (error) { stopReport(report, error, step); }
   try { writeOnce(`${folder}/${stage}.terminal.json`, report); }
-  catch { report.result = 'stopped'; report.persistenceFailure = 'persistence'; }
+  catch {
+    if (report.result !== 'stopped') stopReport(report, new QualificationError('persistence'), 'terminal_persistence');
+    report.persistenceFailure = 'persistence';
+  }
   return report;
 }
 
@@ -902,4 +1015,4 @@ module.exports = { SCOPE, CONTEXT, VOLUME, CONTAINER, BASE_IMAGE, NODE_ARCHIVE, 
   FILES, LIMITS, ATTESTATIONS, SCAN_ATTESTATIONS, LABELS, SETTINGS, QualificationError, strictJson, safePath, forbidden, publicFile,
   fileHash, template, parseProfile, supervise, sourceSelection, checkLock, checkCacheTar, executionIntegrity,
   prepare, writeOnce, reserve, stageReview, tarHeader, contextTar, sourceArchive, containerArgs, engineCheck, execute,
-  storageCheck, syntheticInputs, verifySource, vercelEntry, confirmInspection, readInput, main };
+  storageCheck, syntheticInputs, verifySource, vercelEntry, confirmInspection, buildCommands, stopReport, failureReport, readInput, main };
