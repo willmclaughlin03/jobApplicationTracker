@@ -4,6 +4,7 @@ const path = require('node:path');
 const http = require('node:http');
 const https = require('node:https');
 const { spawnSync } = require('node:child_process');
+const { runInNewContext } = require('node:vm');
 const d = require('../../../scripts/gate1-vercel-build-diagnostic');
 const q = require('../../../scripts/gate1-build-qualification');
 const lib = d.readerLibrary();
@@ -29,6 +30,17 @@ afterEach(() => {
   if (!resolved.startsWith(BASE + path.sep) || resolved === BASE) throw new Error('Unsafe fixture cleanup');
   fs.rmSync(resolved, { recursive: true, force: true });
 });
+
+/** Substitute public limits/dependency in memory to test module-load guards without running the CLI or changing files. */
+function loadDiagnostic(limitChanges = {}, qualification = q) {
+  const location = path.resolve(__dirname, '../../../scripts/gate1-vercel-build-diagnostic.js');
+  const source = fs.readFileSync(location, 'utf8').replace(/const LIMITS = Object\.freeze\(\{[\s\S]*?\}\);/,
+    `const LIMITS = Object.freeze(${JSON.stringify({ ...d.LIMITS, ...limitChanges })});`);
+  const context = { module: { exports: {} }, __dirname: path.dirname(location), Buffer,
+    require: (name) => name === './gate1-build-qualification' ? qualification : require(name) };
+  runInNewContext(source, context, { filename: location });
+  return context.module.exports;
+}
 
 /** Build metadata with private distractors; only finite categories may escape classification. */
 function metadata(error = { name: 'NowBuildError', code: 'BUILD_UTILS_SPAWN_1' }) {
@@ -350,6 +362,24 @@ test('template and invalid/default modes cannot access Docker or retained output
   expect(q.supervise).not.toHaveBeenCalled();
 });
 
+test.each(['fileBytes', 'jsonDepth', 'jsonNodes', 'stderrBytes'])('module load rejects declared %s drift before host commands', (key) => {
+  expect(() => loadDiagnostic({ [key]: d.LIMITS[key] + 1 })).toThrow('provenance');
+  expect(q.supervise).not.toHaveBeenCalled();
+});
+
+test('module load rejects supervisor stderr enforcement drift', () => {
+  const qualification = { ...q, LIMITS: { ...q.LIMITS, logBytes: q.LIMITS.logBytes + 1 } };
+  expect(() => loadDiagnostic({}, qualification)).toThrow('provenance');
+  expect(q.supervise).not.toHaveBeenCalled();
+});
+
+test('container timeout follows the declared Linux seconds', () => {
+  const changed = loadDiagnostic({ linuxSeconds: 7 });
+  const args = changed.containerArgs();
+  expect(args.slice(args.indexOf('--signal=KILL'), args.indexOf('--signal=KILL') + 2)).toEqual(['--signal=KILL', '7s']);
+  expect(q.supervise).not.toHaveBeenCalled();
+});
+
 test('isolated Docker arguments fix every resource, mount, runtime and network control', () => {
   const args = d.containerArgs();
   expect(args).toEqual(['create', '--name', d.CONTAINER, '--pull=never', '--platform=linux/amd64', '--network=none', '--read-only',
@@ -552,6 +582,10 @@ windowsTest.each([
   ['--template', '{"result":"stopped"}', 1], ['--prepare', '{"result":"stopped"}', 1],
   ['--execute', '{"result":"stopped"}', 2], ['--execute', '{"result":"completed"}', 1],
   ['--execute', '{}', 1], ['--execute', 'null', 1], ['--execute', '{"result":"Stopped"}', 1],
+  ['--execute', '[]', 1], ['--execute', '[{"result":"stopped"}]', 1],
+  ['--execute', '[{"result":"completed"},{"result":"stopped"}]', 1],
+  ['--execute', '"stopped"', 1], ['--execute', '1', 1], ['--execute', 'true', 1],
+  ['--execute', '{"result":["stopped"]}', 1],
 ])('launcher rejects invalid output or unexpected nonzero status %#', (mode, json, exitCode) => {
   const result = launcherResult(mode, json, exitCode);
   expect(result.error).toBeUndefined(); expect(result.status).toBe(1); expect(result.stdout).toBe('');
