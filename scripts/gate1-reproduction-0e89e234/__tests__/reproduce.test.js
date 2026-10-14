@@ -169,7 +169,7 @@ test('container timeout leaves reporting time within the host deadline for both 
     const args = r.containerArgs(stage), timeout = args[args.indexOf('--signal=KILL') + 1];
     assert.match(timeout, /^\d+s$/);
     const timeoutMs = Number(timeout.slice(0, -1)) * 1000;
-    assert.ok(timeoutMs > r.LIMITS.stageMs);
+    assert.ok(timeoutMs >= r.LIMITS.stageMs + 20000);
     assert.ok(timeoutMs < r.LIMITS.stageMs + 30000);
   }
 });
