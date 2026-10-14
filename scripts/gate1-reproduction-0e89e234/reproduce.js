@@ -280,6 +280,7 @@ async function inside(envelope) {
       fs.mkdirSync('/tmp/home', { mode: 0o700 }); fs.chownSync('/tmp/home', 1000, 1000);
       const env = linuxEnvironment({ ...inputs.env, NODE_ENV: 'production', VERCEL: '1', VERCEL_ENV: 'preview' });
       await run('postinstall', NPM, ['run', 'postinstall', '--offline'], APP, env, 1000);
+      report.failingStep = 'versions';
       if (q.vercelEntry(FOLDER) !== COMMANDS.vercel_build[1]) fail('versions');
       await run('vercel_build', NODE, COMMANDS.vercel_build.slice(1), APP, env, 1000);
     }
@@ -387,7 +388,7 @@ function containerArgs(stage) {
     '--security-opt=no-new-privileges', '--ulimit=nofile=4096:4096', '--ulimit=core=0:0',
     '--tmpfs', '/tmp:rw,nosuid,nodev,size=536870912,mode=1777', '--mount', `type=volume,src=${VOLUME},dst=/state,volume-nocopy`,
     '--mount', `type=volume,src=${VOLUME},dst=/opt/gate1/.tmp,volume-nocopy`, '--entrypoint', '/usr/bin/timeout', '-i', IMAGE,
-    '--signal=KILL', '1800s', '/usr/bin/env', '-i', 'PATH=/opt/node-v22.23.3-linux-x64/bin:/usr/bin:/bin', NODE, '-'];
+    '--signal=KILL', `${Math.ceil((LIMITS.stageMs + 20000) / 1000)}s`, '/usr/bin/env', '-i', 'PATH=/opt/node-v22.23.3-linux-x64/bin:/usr/bin:/bin', NODE, '-'];
 }
 /** Confirm the created container's enforced controls before starting any package process. */
 async function verifyContainer(q, docker, cid) {
