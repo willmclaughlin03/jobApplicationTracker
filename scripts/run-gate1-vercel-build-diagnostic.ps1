@@ -77,7 +77,7 @@ function Invoke-Gate1DiagnosticNode([string]$Mode, [string]$InputJson = '') {
         if ([string]::IsNullOrWhiteSpace($json)) { throw 'Diagnostic stopped.' }
         $parsed = $json | ConvertFrom-Json
         $stoppedReport = $Mode -ceq '--execute' -and $process.ExitCode -eq 1 -and
-            $parsed -is [Management.Automation.PSCustomObject] -and [string]$parsed.result -ceq 'stopped'
+            $parsed -is [Management.Automation.PSCustomObject] -and $parsed.result -is [string] -and $parsed.result -ceq 'stopped'
         if ($process.ExitCode -ne 0 -and -not $stoppedReport) { throw 'Diagnostic stopped.' }
         return @{ Json = $json; ExitCode = $process.ExitCode }
     } finally {

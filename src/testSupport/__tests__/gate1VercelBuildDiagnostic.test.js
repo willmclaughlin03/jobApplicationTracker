@@ -585,6 +585,7 @@ windowsTest.each([
   ['--execute', '[]', 1], ['--execute', '[{"result":"stopped"}]', 1],
   ['--execute', '[{"result":"completed"},{"result":"stopped"}]', 1],
   ['--execute', '"stopped"', 1], ['--execute', '1', 1], ['--execute', 'true', 1],
+  ['--execute', '{"result":["stopped"]}', 1],
 ])('launcher rejects invalid output or unexpected nonzero status %#', (mode, json, exitCode) => {
   const result = launcherResult(mode, json, exitCode);
   expect(result.error).toBeUndefined(); expect(result.status).toBe(1); expect(result.stdout).toBe('');
