@@ -163,6 +163,16 @@ test('container arguments cannot mount the failed volume or enable network', () 
   assert.equal(args.includes(r.IMAGE), true); assert.equal(args.includes('/usr/bin/env'), true);
   assert.throws(() => r.containerArgs('inspect'));
 });
+/** Keep both container hard stops after stage reporting and before the host's attach cutoff. */
+test('container timeout leaves reporting time within the host deadline for both stages', () => {
+  for (const stage of ['prepare', 'build']) {
+    const args = r.containerArgs(stage), timeout = args[args.indexOf('--signal=KILL') + 1];
+    assert.match(timeout, /^\d+s$/);
+    const timeoutMs = Number(timeout.slice(0, -1)) * 1000;
+    assert.ok(timeoutMs > r.LIMITS.stageMs);
+    assert.ok(timeoutMs < r.LIMITS.stageMs + 30000);
+  }
+});
 test('child environment has fixed offline values and no inherited token', () => {
   const env = r.linuxEnvironment();
   assert.equal(env.npm_config_offline, 'true'); assert.equal(env.npm_config_logs_max, '0');
@@ -281,6 +291,12 @@ function containerState() {
 }
 test('created container controls are checked before start', async () => {
   await r.verifyContainer(q, async () => Buffer.from(JSON.stringify(containerState())), 'c'.repeat(64));
+});
+/** Reject a mocked container retaining the old timeout so inspection enforces the reporting margin. */
+test('created container with the old timeout is rejected before start', async () => {
+  const state = containerState(), command = state[0].Config.Cmd;
+  command[command.indexOf('--signal=KILL') + 1] = '1800s';
+  await assert.rejects(r.verifyContainer(q, async () => Buffer.from(JSON.stringify(state)), 'c'.repeat(64)));
 });
 for (const mutate of [v => { v[0].HostConfig.NetworkMode = 'bridge'; }, v => { v[0].HostConfig.Memory = 0; },
   v => { v[0].Mounts[0].Name = 'gate1-build-qualification-v1'; }, v => { v[0].Config.Cmd = ['sh']; },
