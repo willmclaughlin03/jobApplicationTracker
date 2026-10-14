@@ -74,9 +74,10 @@ function Invoke-Gate1DiagnosticNode([string]$Mode, [string]$InputJson = '') {
         }
         $process.WaitForExit()
         $json = (New-Object Text.UTF8Encoding($false, $true)).GetString($output.ToArray())
-        if ($process.ExitCode -ne 0) { throw 'Diagnostic stopped.' }
-        if ([string]::IsNullOrWhiteSpace($json)) { throw 'Empty supervisor output.' }
-        $null = $json | ConvertFrom-Json
+        if ([string]::IsNullOrWhiteSpace($json)) { throw 'Diagnostic stopped.' }
+        $parsed = $json | ConvertFrom-Json
+        $stoppedReport = $Mode -ceq '--execute' -and $process.ExitCode -eq 1 -and $parsed.result -ceq 'stopped'
+        if ($process.ExitCode -ne 0 -and -not $stoppedReport) { throw 'Diagnostic stopped.' }
         return @{ Json = $json; ExitCode = $process.ExitCode }
     } finally {
         if ($started -and -not $process.HasExited) { $process.Kill() }

@@ -504,6 +504,61 @@ test('serialized public Linux reader is standalone with built-ins only and no fi
   expect(d.validateReport(bytes, APPROVAL).outcome).toBe('provenance_mismatch');
 });
 
+/** Run the real launcher against a disposable supervisor with chosen stdout/exit status; no Docker or retained evidence is used. */
+function launcherResult(mode, output, exitCode) {
+  const location = path.join(folder, 'run-gate1-vercel-build-diagnostic.ps1');
+  const profilePath = path.join(folder, 'profile-fixture.json');
+  fs.copyFileSync(LAUNCHER, location); fs.writeFileSync(profilePath, '{}');
+  fs.writeFileSync(path.join(folder, 'gate1-vercel-build-diagnostic.js'), `
+    process.stdin.resume();
+    if (${JSON.stringify(mode)} === '--execute' && process.argv[2] === '--prepare') {
+      process.stdout.write(${JSON.stringify(JSON.stringify({ approval: APPROVAL, gate1Status: 'open' }))});
+    } else {
+      process.stdout.write(${JSON.stringify(output)});
+      process.stderr.write(${JSON.stringify(PRIVATE)});
+      process.exitCode = ${exitCode};
+    }
+  `);
+  const args = mode === '--template' ? '-Template'
+    : `-ProfilePath '${profilePath.replace(/'/g, "''")}'${mode === '--execute' ? ` -Execute -Approval '${APPROVAL}'` : ''}`;
+  const script = `
+    $ProgressPreference = 'SilentlyContinue'
+    <# Supply only the synthetic fixture's confirmation so the real execution handoff is exercised. #>
+    function Read-Host { return 'READ APPROVED VERCEL FAILURE METADATA ONCE' }
+    & '${location.replace(/'/g, "''")}' ${args}
+    exit $LASTEXITCODE`;
+  return spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+    { encoding: 'utf8', timeout: 15000, windowsHide: true });
+}
+
+windowsTest('launcher preserves stopped supervisor JSON and exit code 1 during execution', () => {
+  const json = '{ "result": "stopped", "teardownUnconfirmed": true, "persistenceFailure": true }\n';
+  const result = launcherResult('--execute', json, 1);
+  expect(result.error).toBeUndefined(); expect(result.status).toBe(1);
+  expect(result.stdout).toBe(json + '\r\n'); expect(result.stderr).toBe('');
+});
+
+windowsTest.each(['--template', '--prepare', '--execute'])('launcher preserves successful %s output and exit code', (mode) => {
+  const json = '{ "result": "completed", "gate1Status": "open" }\n';
+  const result = launcherResult(mode, json, 0);
+  expect(result.error).toBeUndefined(); expect(result.status).toBe(0);
+  expect(result.stdout).toBe(json + '\r\n'); expect(result.stderr).toBe('');
+});
+
+windowsTest.each([
+  ['--execute', '', 0], ['--execute', '', 1],
+  ['--execute', ' \r\n\t', 0], ['--execute', ' \r\n\t', 1],
+  ['--execute', '{"result":"stopped",', 0], ['--execute', '{"result":"stopped",', 1],
+  ['--template', '{"result":"stopped"}', 1], ['--prepare', '{"result":"stopped"}', 1],
+  ['--execute', '{"result":"stopped"}', 2], ['--execute', '{"result":"completed"}', 1],
+  ['--execute', '{}', 1], ['--execute', 'null', 1], ['--execute', '{"result":"Stopped"}', 1],
+])('launcher rejects invalid output or unexpected nonzero status %#', (mode, json, exitCode) => {
+  const result = launcherResult(mode, json, exitCode);
+  expect(result.error).toBeUndefined(); expect(result.status).toBe(1); expect(result.stdout).toBe('');
+  expect(result.stderr).toContain('Diagnostic stopped. Preserve evidence and reservations; no automatic retry.');
+  expect(result.stderr).not.toContain(PRIVATE);
+});
+
 windowsTest('launcher preserves duplicate keys and numeric types in its original JSON handoff', async () => {
   const location = path.join(folder, 'profile-fixture.json');
   const original = '{"schemaVersion":1,"schemaVersion":1,"scope":"fixture","number":1.0}'; fs.writeFileSync(location, original);

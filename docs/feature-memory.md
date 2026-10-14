@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-11
 
+- `2026-10-14` - `GATE-1 diagnostic stopped-report preservation`: Preserve original supervisor JSON and exit code 1 for stopped execution reports after rejecting empty or malformed output. Other nonzero exits remain rejected and successful output is unchanged. Seventeen new synthetic launcher regressions bring the diagnostic suite to 241 passing tests; focused ESLint, PowerShell syntax and whitespace checks pass.
+
 - `2026-10-14` - `GATE-1 bounded Vercel failure diagnostic`: Add a separately approved, once-only reader for one fixed failed-build metadata file, with exact receipt/code provenance, bounded filesystem and JSON checks, finite sanitized reports, shared locking and verified container teardown. The PowerShell launcher preserves original JSON and separates preparation from execution. All 460 targeted tests (224 new diagnostic cases), focused ESLint, syntax and whitespace checks pass. Actual metadata inspection remains separately approved; GATE-1 remains open.
 
 - `2026-10-13` - `GATE-1 build failure diagnostics`: Retain strictly validated failure terminals after nonzero stage exits, identify postinstall/Vercel and supervisor steps, and distinguish bounded child, Docker-start and container exit/OOM observations. Reject malformed, mismatched and unexpected report fields without retaining raw process streams. Preserve consumed approvals and nonpassing cleanup/persistence outcomes. All 236 targeted tests (35 new regressions), focused ESLint, syntax and whitespace checks pass; no qualification retry or artifact inspection ran, and GATE-1 remains open.
