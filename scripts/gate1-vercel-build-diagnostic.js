@@ -33,6 +33,7 @@ class DiagnosticError extends Error {
 /** Self-contained Linux library: serialized source uses Node built-ins only, with an injectable filesystem for fixtures. */
 function readerLibrary() {
   const { TextDecoder } = require('node:util');
+  const limits = Object.freeze({ fileBytes: 262144, jsonDepth: 16, jsonNodes: 4096 });
   const fixed = Object.freeze({ sourceSha: '0e89e234b483b9dc6ab1c374b2064532af8fb789',
     failedBuildApproval: 'dfeb059430b7fa18eae6ef15689450d10651838ea8f859f06bade0654d8ee66a',
     qualificationBinding: 'b4cecd83cca0db031dd1dba608cad4790c04bc82afbe7d19f7c18b19a552a76f',
@@ -50,7 +51,7 @@ function readerLibrary() {
     'provenance_mismatch', 'no_error_record', 'unrecognized_error', 'container_failure'];
 
   /** Reject duplicate keys and bound structural work before returning parsed untrusted JSON; never expose parser text. */
-  function parse(bytes, cap = 262144) {
+  function parse(bytes, cap = limits.fileBytes) {
     try {
       if (!Buffer.isBuffer(bytes) || bytes.length > cap) throw new Error();
       const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
@@ -65,7 +66,7 @@ function readerLibrary() {
           if (!keys || keys.has(key)) throw new Error();
           keys.add(key);
         } else if (token !== ':' && token !== ',') nodes++;
-        if (stack.length > 16 || nodes > 4096) throw new Error();
+        if (stack.length > limits.jsonDepth || nodes > limits.jsonNodes) throw new Error();
       }
       return JSON.parse(text);
     } catch { throw new Error('metadata_rejected'); }
@@ -140,7 +141,7 @@ function readerLibrary() {
       }
       const stat = io.lstatSync(target);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.dev !== before[0].dev ||
-          !Number.isSafeInteger(stat.size) || stat.size < 0 || stat.size > 262144 || !io.constants.O_NOFOLLOW) return report;
+          !Number.isSafeInteger(stat.size) || stat.size < 0 || stat.size > limits.fileBytes || !io.constants.O_NOFOLLOW) return report;
       fd = io.openSync(target, io.constants.O_RDONLY | io.constants.O_NOFOLLOW | io.constants.O_NONBLOCK);
       if (!same(stat, io.fstatSync(fd))) return report;
       const bytes = Buffer.alloc(stat.size + 1); let count = 0;
@@ -158,10 +159,13 @@ function readerLibrary() {
         ['EACCES', 'EPERM'].includes(error?.code) ? 'metadata_unreadable' : 'metadata_rejected' };
     } finally { if (fd !== undefined) { try { io.closeSync(fd); } catch { /* No data escapes a close failure. */ } } }
   }
-  return { fixed, target, names, codes, signals, tools, outcomes, parse, object, base, classify, read };
+  return { fixed, limits, target, names, codes, signals, tools, outcomes, parse, object, base, classify, read };
 }
 
 const lib = readerLibrary();
+// Refuse approval contracts whose declared limits differ from reader or supervisor enforcement.
+if (['fileBytes', 'jsonDepth', 'jsonNodes'].some((key) => LIMITS[key] !== lib.limits[key]) ||
+    LIMITS.stderrBytes !== q.LIMITS.logBytes) throw new DiagnosticError('provenance');
 const FIXED = lib.fixed;
 const KEY = `${FIXED.sourceSha}.vercel-diagnostic.${FIXED.failedBuildApproval}`;
 
@@ -215,7 +219,7 @@ function containerArgs() {
     '--cpus=1', '--memory=134217728', '--memory-swap=134217728', '--pids-limit=32', '--ulimit=core=0:0',
     '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=8388608,mode=1777',
     '--mount', `type=volume,src=${q.VOLUME},dst=/evidence,readonly,volume-nocopy`,
-    '--entrypoint', '/usr/bin/timeout', '-i', FIXED.imageId, '--signal=KILL', '20s',
+    '--entrypoint', '/usr/bin/timeout', '-i', FIXED.imageId, '--signal=KILL', `${LIMITS.linuxSeconds}s`,
     '/usr/bin/env', '-i', '/opt/node-v22.23.3-linux-x64/bin/node', '-'];
 }
 

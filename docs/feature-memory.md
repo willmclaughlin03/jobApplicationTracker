@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-11
 
+- `2026-10-14` - `GATE-1 diagnostic review hardening`: Check declared file, JSON and stderr limits against runtime enforcement and derive the Linux timeout from its declared budget. Pin LF checkouts for all three execution files to preserve bounded reads and provenance hashes. Require an object-shaped stopped report before preserving nonzero launcher output. Twelve new regressions bring the diagnostic suite to 253 passing tests; Windows checkout-byte and syntax checks pass.
+
 - `2026-10-14` - `GATE-1 diagnostic stopped-report preservation`: Preserve original supervisor JSON and exit code 1 for stopped execution reports after rejecting empty or malformed output. Other nonzero exits remain rejected and successful output is unchanged. Seventeen new synthetic launcher regressions bring the diagnostic suite to 241 passing tests; focused ESLint, PowerShell syntax and whitespace checks pass.
 
 - `2026-10-14` - `GATE-1 bounded Vercel failure diagnostic`: Add a separately approved, once-only reader for one fixed failed-build metadata file, with exact receipt/code provenance, bounded filesystem and JSON checks, finite sanitized reports, shared locking and verified container teardown. The PowerShell launcher preserves original JSON and separates preparation from execution. All 460 targeted tests (224 new diagnostic cases), focused ESLint, syntax and whitespace checks pass. Actual metadata inspection remains separately approved; GATE-1 remains open.

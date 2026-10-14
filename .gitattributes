@@ -1,0 +1,3 @@
+scripts/gate1-build-qualification.js text eol=lf
+scripts/gate1-vercel-build-diagnostic.js text eol=lf
+scripts/run-gate1-vercel-build-diagnostic.ps1 text eol=lf
