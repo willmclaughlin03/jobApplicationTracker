@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-11
 
+- `2026-10-14` - `GATE-1 original-source reproduction helper`: Publish the exact local helper and 63 synthetic tests for one separately authorized offline preparation/build against original source `0e89e234`. Reuse pinned inputs in a fresh volume, preserve consumed historical approvals, and retain only bounded reconstructed diagnostics with public references. Add usage/prerequisite notes and LF rules without publishing local review/evidence records. No reproduction has run; GATE-1 remains open.
+
 - `2026-10-14` - `GATE-1 stopped-report result type`: Require the diagnostic launcher's result field to be a string before matching stopped, preserving valid stopped reports while rejecting array-valued results. The new launcher regression failed before the fix; all 254 diagnostic tests, focused lint, syntax and whitespace checks pass.
 
 - `2026-10-14` - `GATE-1 diagnostic review hardening`: Check declared file, JSON and stderr limits against runtime enforcement and derive the Linux timeout from its declared budget. Pin LF checkouts for all three execution files to preserve bounded reads and provenance hashes. Require an object-shaped stopped report before preserving nonzero launcher output. Twelve new regressions bring the diagnostic suite to 253 passing tests; Windows checkout-byte and syntax checks pass.
