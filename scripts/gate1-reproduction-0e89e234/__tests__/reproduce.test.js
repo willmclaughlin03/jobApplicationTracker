@@ -6,11 +6,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { execFileSync } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const r = require('../reproduce');
-const repoRoot = path.dirname(path.resolve(__dirname, execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: __dirname, encoding: 'utf8', windowsHide: true }).trim()));
-const qualificationFile = path.join(repoRoot, '.tmp/worktrees/gate1-qualification-main-0e89e234-lf/scripts/gate1-build-qualification.js');
+const repoRoot = path.resolve(__dirname, '../../..');
+const qualificationFile = path.join(repoRoot, 'scripts/gate1-build-qualification.js');
 assert.equal(crypto.createHash('sha256').update(fs.readFileSync(qualificationFile)).digest('hex'), 'dd665377170f160f7edb012d2cabde690730b8622f49a19ff353345e2dca4736');
 const q = require(qualificationFile);
 const dictionary = { locations: { 'src/pages/index.js': 80, 'scripts/validate-build-env.js': 90 },
@@ -22,7 +21,7 @@ const fontSummary = 'Failed to fetch Inter from Google Fonts.';
 const buildCommand = 'npm run build:preflight && next build';
 const preflightCommand = 'node scripts/validate-build-env.js';
 
-/** Construct synthetic fixtures under the root's .tmp, never inside source or historical evidence. */
+/** Construct synthetic fixtures under this checkout's .tmp, never inside source or historical evidence. */
 function fixture(t) {
   fs.mkdirSync(fixtureParent, { recursive: true });
   const root = fs.mkdtempSync(path.join(fixtureParent, 'case-'));
@@ -47,6 +46,25 @@ function terminal(stage = 'build', completed = false) {
     children: steps.map((step, i) => ({ step, reason: 'closed', exitCode: completed || i < steps.length - 1 ? 0 : 1, signal: null,
       sizes: { stdout: 0, stderr: 0 }, diagnostics: [], observations: [] })) };
 }
+
+/** Load the suite using only checked-in helpers; block ancestor Git discovery so local worktrees cannot hide missing inputs. */
+test('suite registers without a local qualification worktree or Git metadata', async t => {
+  const checkout = fixture(t);
+  for (const file of ['scripts/gate1-build-qualification.js', 'scripts/gate1-reproduction-0e89e234/reproduce.js',
+    'scripts/gate1-reproduction-0e89e234/__tests__/reproduce.test.js']) {
+    const target = path.join(checkout, file);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(path.join(path.resolve(__dirname, '../../..'), file), target);
+  }
+  const output = await q.supervise(process.execPath, ['--test', '--test-reporter=tap',
+    '--test-name-pattern=^missing module retains the public reference and original file/line$',
+    'scripts/gate1-reproduction-0e89e234/__tests__/reproduce.test.js'],
+  { cwd: checkout, env: { ...childOptions().env, GIT_CEILING_DIRECTORIES: checkout }, timeoutMs: 10000, outputBytes: 32768 });
+  assert.match(output.toString(), /ok \d+ - missing module retains the public reference and original file\/line/);
+  assert.match(output.toString(), /# pass 1\b/);
+  assert.equal(fs.existsSync(path.join(checkout, '.git')), false);
+  assert.equal(fs.existsSync(path.join(checkout, '.tmp/worktrees')), false);
+});
 
 test('missing module retains the public reference and original file/line', () => {
   const found = extract("./src/pages/index.js:12:3\nModule not found: Can't resolve '@/lib/missing'");
