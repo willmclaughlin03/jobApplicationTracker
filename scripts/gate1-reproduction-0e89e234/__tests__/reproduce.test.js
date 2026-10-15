@@ -5,15 +5,24 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const r = require('../reproduce');
-const q = r.qualification();
+const repoRoot = path.dirname(path.resolve(__dirname, execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: __dirname, encoding: 'utf8', windowsHide: true }).trim()));
+const qualificationFile = path.join(repoRoot, '.tmp/worktrees/gate1-qualification-main-0e89e234-lf/scripts/gate1-build-qualification.js');
+assert.equal(crypto.createHash('sha256').update(fs.readFileSync(qualificationFile)).digest('hex'), 'dd665377170f160f7edb012d2cabde690730b8622f49a19ff353345e2dca4736');
+const q = require(qualificationFile);
 const dictionary = { locations: { 'src/pages/index.js': 80, 'scripts/validate-build-env.js': 90 },
   modules: ['next', '@/lib/missing', './component'], literals: ['Supabase URL is required.'] };
 const secret = 'synthetic-SECRET-private-0123456789-value';
-const fixtureParent = path.resolve(__dirname, '../fixtures');
+const fixtureParent = path.join(repoRoot, '.tmp/gate1-font-failure-observation-fixtures');
+const fontTitle = 'Error: next/font: error:';
+const fontSummary = 'Failed to fetch Inter from Google Fonts.';
+const buildCommand = 'npm run build:preflight && next build';
+const preflightCommand = 'node scripts/validate-build-env.js';
 
-/** Construct a fixture inside this approved local helper directory, never inside historical evidence. */
+/** Construct synthetic fixtures under the root's .tmp, never inside source or historical evidence. */
 function fixture(t) {
   fs.mkdirSync(fixtureParent, { recursive: true });
   const root = fs.mkdtempSync(path.join(fixtureParent, 'case-'));
@@ -36,7 +45,7 @@ function terminal(stage = 'build', completed = false) {
   return { scope: r.SCOPE, sourceSha: r.SOURCE, approval: 'a'.repeat(64), stage, result: completed ? 'completed' : 'stopped',
     failingStep: completed ? null : steps.at(-1), versions: q.VERSIONS, failure: completed ? null : 'child', rawStreamsRetained: false, gate1Status: 'open',
     children: steps.map((step, i) => ({ step, reason: 'closed', exitCode: completed || i < steps.length - 1 ? 0 : 1, signal: null,
-      sizes: { stdout: 0, stderr: 0 }, diagnostics: [] })) };
+      sizes: { stdout: 0, stderr: 0 }, diagnostics: [], observations: [] })) };
 }
 
 test('missing module retains the public reference and original file/line', () => {
@@ -68,6 +77,92 @@ test('ordinary Unicode banner does not erase a later safe diagnostic', () => {
 test('SGR styling is removed and arbitrary terminal control lines are dropped', () => {
   assert.equal(extract("\u001b[31mModule not found: Can't resolve 'next'\u001b[0m").detail, 'next');
   assert.equal(extract("\u001b[2JModule not found: Can't resolve 'next'"), null);
+});
+/** Exercise the exact pinned plain/SGR formats; Code spans contain color, not backticks. */
+test('plain and ANSI production Inter pairs retain only the fixed font diagnostic', () => {
+  for (const text of [fontTitle + '\n' + fontSummary,
+    'Error: \u001b[32mnext/font:\u001b[0m error:\nFailed to fetch \u001b[32mInter\u001b[0m from Google Fonts.']) {
+    const found = extract(text);
+    assert.deepEqual(found, { kind: 'font_fetch', detail: 'Inter', message: fontSummary, stream: 'stderr', observedCommand: null, sourceLocation: null });
+    assert.equal(r.validDiagnostic(found, dictionary), true);
+  }
+});
+/** Production titles must be adjacent to the exact production summary, with no warning/fallback alternative. */
+test('font warnings, fallback text, unknown fonts and incomplete or interrupted pairs are rejected', () => {
+  for (const text of ['Warning: next/font: warning:\n' + fontSummary,
+    'Warning: next/font: warning:\nFailed to download Inter from Google Fonts. Using a fallback font instead.',
+    'Warning: next/font: error:\n' + fontSummary,
+    fontTitle + '\nFailed to download Inter from Google Fonts. Using a fallback font instead.',
+    fontTitle + '\nFailed to fetch Roboto from Google Fonts.',
+    fontTitle, fontSummary, fontSummary + '\n' + fontTitle,
+    fontTitle + '\n\n' + fontSummary,
+    fontTitle + '\nError: another issue:\n' + fontSummary,
+    fontTitle + '\nWarning: another issue:\n' + fontSummary,
+    fontTitle + '\nFailed to fetch `Inter` from Google Fonts.',
+    fontTitle + '\n' + fontSummary + ' ' + secret,
+    fontTitle + ' ' + secret + '\n' + fontSummary,
+    fontTitle + '\n\u001b[2J' + fontSummary]) assert.equal(extract(text), null);
+});
+/** Generic build wrappers do not displace the first actionable fixed font error. */
+test('generic Next and Turbopack headings do not shadow an actionable Inter pair', () => {
+  const headings = '> Build error occurred\nError: Turbopack build failed with 1 errors:\n';
+  assert.equal(extract(headings), null);
+  assert.equal(extract(headings + fontTitle + '\n' + fontSummary).kind, 'font_fetch');
+});
+/** Only a real immediately preceding original source reference can attribute the font issue. */
+test('font source attribution never invents or borrows a neighboring issue location', () => {
+  assert.deepEqual(extract('./src/pages/index.js:12:3\n' + fontTitle + '\n' + fontSummary).sourceLocation,
+    { file: 'src/pages/index.js', line: 12, column: 3 });
+  for (const text of [fontTitle + '\n' + fontSummary + '\n./src/pages/index.js:12:3',
+    './src/pages/index.js:12:3\nError: another issue:\n' + fontTitle + '\n' + fontSummary,
+    '.next/server/a.js:1:1\n' + fontTitle + '\n' + fontSummary]) assert.equal(extract(text).sourceLocation, null);
+});
+/** The host independently checks font enums and reconstructed text, including arbitrary suffixes. */
+test('host rejects forged font diagnostic categories, details and messages', () => {
+  const found = extract(fontTitle + '\n' + fontSummary);
+  for (const forged of [{ ...found, kind: 'font_warning' }, { ...found, detail: 'Roboto' },
+    { ...found, message: fontSummary + ' ' + secret }, { ...found, raw: fontSummary },
+    { ...found, message: 'Failed to download Inter from Google Fonts. Using a fallback font instead.' }]) {
+    assert.equal(r.validDiagnostic(forged, dictionary), false);
+    const value = terminal(); value.children[1].diagnostics = [forged];
+    assert.throws(() => r.validateReport(value, 'build', 'a'.repeat(64), dictionary, q));
+  }
+});
+/** Fixed observations retain both commands independently, bounded and deduplicated per stream. */
+test('independent command observations survive absent diagnostics without claiming completion', () => {
+  const text = `> ${buildCommand}\n> ${preflightCommand}\n> ${buildCommand}\n`;
+  assert.equal(extract(text), null);
+  const observed = r.observations(Buffer.from(text), 'stdout', [secret]);
+  assert.deepEqual(observed, [{ kind: 'command', detail: buildCommand, stream: 'stdout' },
+    { kind: 'command', detail: preflightCommand, stream: 'stdout' }]);
+  assert.equal(r.validObservations(observed), true);
+  assert.equal(r.validObservations([...observed, ...observed.map(item => ({ ...item, stream: 'stderr' }))]), true);
+});
+/** Exact banners are the whole observation allowlist; suffixes and arbitrary command output are rejected. */
+test('observations strip SGR but reject unknown commands, suffixes and terminal controls', () => {
+  assert.deepEqual(r.observations(Buffer.from(`\u001b[32m> ${buildCommand}\u001b[0m`), 'stderr', [secret]),
+    [{ kind: 'command', detail: buildCommand, stream: 'stderr' }]);
+  for (const text of [`> ${buildCommand} ${secret}`, `> ${preflightCommand} && done`,
+    `> echo ${secret}`, `completed: ${buildCommand}`, `\u001b[2J> ${buildCommand}`]) {
+    assert.deepEqual(r.observations(Buffer.from(text), 'stdout', [secret]), []);
+  }
+});
+/** Known secrets can suppress otherwise approved fixed messages and observations. */
+test('secret rejection covers the new font and command fields', () => {
+  assert.throws(() => extract(fontTitle + '\n' + fontSummary, ['Inter']), /Reproduction stopped/);
+  assert.throws(() => r.observations(Buffer.from(`> ${buildCommand}`), 'stdout', [buildCommand]), /Reproduction stopped/);
+});
+/** Forged reports cannot add raw fields, outcome claims, duplicates or unbounded observations. */
+test('host rejects forged, duplicate and over-limit command observations', () => {
+  const item = { kind: 'command', detail: buildCommand, stream: 'stdout' };
+  assert.equal(r.validObservations([]), true);
+  for (const observations of [null, {}, [null], [{ ...item, kind: 'completed' }], [{ ...item, detail: secret }],
+    [{ ...item, stream: 'combined' }], [{ ...item, raw: secret }], [{ ...item, completed: true }],
+    [item, item], Array(5).fill(item)]) {
+    assert.equal(r.validObservations(observations), false);
+    const value = terminal(); value.children[1].observations = observations;
+    assert.throws(() => r.validateReport(value, 'build', 'a'.repeat(64), dictionary, q));
+  }
 });
 for (const input of [secret, Buffer.from(secret).toString('base64'), Buffer.from(secret).toString('hex'), encodeURIComponent(secret), secret.slice(0, 12)]) {
   test('unknown secret-derived module or error text cannot be retained: ' + input.length, () => {
@@ -104,6 +199,39 @@ test('stderr and stdout survive normal nonzero child exit only as safe diagnosti
   assert.deepEqual(result.diagnostics.map(d => d.stream), ['stdout', 'stderr']);
   assert.equal(Object.hasOwn(result, 'raw'), false);
 });
+/** Separate streams retain attribution without transferring a command to the stderr diagnostic. */
+test('stdout banners and stderr font errors remain independent on normal failure', async () => {
+  const script = `process.stdout.write(${JSON.stringify(`> ${buildCommand}\n> ${preflightCommand}\n`)});process.stderr.write(${JSON.stringify(fontTitle + '\n' + fontSummary)});process.exitCode=1;`;
+  const result = await r.capture(process.execPath, ['-e', script], childOptions());
+  assert.equal(result.reason, 'closed'); assert.equal(result.exitCode, 1);
+  assert.equal(result.diagnostics.length, 1); assert.equal(result.diagnostics[0].stream, 'stderr');
+  assert.equal(result.diagnostics[0].observedCommand, null);
+  assert.deepEqual(result.observations, [{ kind: 'command', detail: buildCommand, stream: 'stdout' },
+    { kind: 'command', detail: preflightCommand, stream: 'stdout' }]);
+});
+/** A displayed command alone is useful, while separately split title/summary lines are not one issue. */
+test('normal failure retains standalone banners but never joins a font pair across streams', async () => {
+  const script = `process.stdout.write(${JSON.stringify(`> ${buildCommand}\n${fontTitle}\n`)});process.stderr.write(${JSON.stringify(fontSummary)});process.exitCode=1;`;
+  const result = await r.capture(process.execPath, ['-e', script], childOptions());
+  assert.equal(result.reason, 'closed'); assert.deepEqual(result.diagnostics, []);
+  assert.deepEqual(result.observations, [{ kind: 'command', detail: buildCommand, stream: 'stdout' }]);
+  const value = terminal(); value.children[1] = { step: 'vercel_build', ...result };
+  assert.equal(r.validateReport(value, 'build', 'a'.repeat(64), dictionary, q), value);
+});
+/** Both streams can display each fixed command, but repeated banners never increase the four-item bound. */
+test('capture bounds observations independently in each stream', async () => {
+  const text = `> ${buildCommand}\n> ${preflightCommand}\n`.repeat(8);
+  const script = `process.stdout.write(${JSON.stringify(text)});process.stderr.write(${JSON.stringify(text)});process.exitCode=1;`;
+  const result = await r.capture(process.execPath, ['-e', script], childOptions());
+  assert.equal(result.observations.length, 4); assert.equal(r.validObservations(result.observations), true);
+  assert.deepEqual(result.diagnostics, []);
+});
+/** An unsafe field in either stream clears all retained observations and diagnostics together. */
+test('known-secret font output suppresses previously collected stdout observations', async () => {
+  const script = `process.stdout.write(${JSON.stringify(`> ${buildCommand}\n`)});process.stderr.write(${JSON.stringify(fontTitle + '\n' + fontSummary)});process.exitCode=1;`;
+  const result = await r.capture(process.execPath, ['-e', script], childOptions({ secrets: ['Inter'] }));
+  assert.equal(result.reason, 'unsafe_output'); assert.deepEqual(result.diagnostics, []); assert.deepEqual(result.observations, []);
+});
 test('secret split across chunks and multiline output is not emitted', async () => {
   const script = `process.stderr.write("Cannot find module '${secret.slice(0, 12)}");setTimeout(()=>{process.stderr.write("${secret.slice(12)}'\\nCannot find module 'next'\\n");process.exitCode=1},20)`;
   const result = await r.capture(process.execPath, ['-e', script], childOptions());
@@ -111,8 +239,9 @@ test('secret split across chunks and multiline output is not emitted', async () 
 });
 test('both stream caps stop execution without promoting buffered diagnostics', async () => {
   for (const stream of ['stdout', 'stderr']) {
-    const result = await r.capture(process.execPath, ['-e', `process.${stream}.write("Cannot find module 'next'\\n"+'x'.repeat(512));setInterval(()=>{},1000)`], childOptions({ streamLimit: 64 }));
-    assert.equal(result.reason, 'stream_limit'); assert.deepEqual(result.diagnostics, []);
+    const text = `> ${buildCommand}\nCannot find module 'next'\n`;
+    const result = await r.capture(process.execPath, ['-e', `process.${stream}.write(${JSON.stringify(text)}+'x'.repeat(512));setInterval(()=>{},1000)`], childOptions({ streamLimit: 64 }));
+    assert.equal(result.reason, 'stream_limit'); assert.deepEqual(result.diagnostics, []); assert.deepEqual(result.observations, []);
   }
 });
 test('stage byte budget is shared across child processes', async () => {
@@ -121,8 +250,9 @@ test('stage byte budget is shared across child processes', async () => {
   assert.equal(result.reason, 'stream_limit');
 });
 test('deadline stops a stalled child without retaining partial diagnostics', async () => {
-  const result = await r.capture(process.execPath, ['-e', "process.stderr.write(\"Cannot find module 'next'\\n\");setInterval(()=>{},1000)"], childOptions({ timeoutMs: 150 }));
-  assert.equal(result.reason, 'deadline'); assert.deepEqual(result.diagnostics, []);
+  const text = `> ${buildCommand}\nCannot find module 'next'\n`;
+  const result = await r.capture(process.execPath, ['-e', `process.stderr.write(${JSON.stringify(text)});setInterval(()=>{},1000)`], childOptions({ timeoutMs: 150 }));
+  assert.equal(result.reason, 'deadline'); assert.deepEqual(result.diagnostics, []); assert.deepEqual(result.observations, []);
 });
 test('storage monitor failure stops child output', async () => {
   const result = await r.capture(process.execPath, ['-e', 'setInterval(()=>{},1000)'], childOptions({ poll() { throw new Error(secret); } }));
@@ -130,15 +260,26 @@ test('storage monitor failure stops child output', async () => {
 });
 test('spawn failure does not expose exception details', async () => {
   const result = await r.capture('not-used', [], childOptions({ spawn() { throw new Error(secret); } }));
-  assert.equal(result.reason, 'spawn'); assert.deepEqual(result.diagnostics, []);
+  assert.equal(result.reason, 'spawn'); assert.deepEqual(result.diagnostics, []); assert.deepEqual(result.observations, []);
 });
 test('invalid UTF-8 on normal failure yields a safe suppression result', async () => {
-  const result = await r.capture(process.execPath, ['-e', 'process.stderr.write(Buffer.from([255]));process.exitCode=1'], childOptions());
-  assert.equal(result.reason, 'unsafe_output'); assert.deepEqual(result.diagnostics, []);
+  const script = `process.stdout.write(${JSON.stringify(`> ${buildCommand}\n`)});process.stderr.write(Buffer.from([255]));process.exitCode=1`;
+  const result = await r.capture(process.execPath, ['-e', script], childOptions());
+  assert.equal(result.reason, 'unsafe_output'); assert.deepEqual(result.diagnostics, []); assert.deepEqual(result.observations, []);
 });
 test('successful child output is discarded', async () => {
-  const result = await r.capture(process.execPath, ['-e', "process.stderr.write(\"Cannot find module 'next'\\n\")"], childOptions());
-  assert.equal(result.exitCode, 0); assert.deepEqual(result.diagnostics, []);
+  const text = `> ${buildCommand}\nCannot find module 'next'\n`;
+  const result = await r.capture(process.execPath, ['-e', `process.stderr.write(${JSON.stringify(text)})`], childOptions());
+  assert.equal(result.exitCode, 0); assert.deepEqual(result.diagnostics, []); assert.deepEqual(result.observations, []);
+});
+/** A compromised child cannot bypass the host's suppression rule with otherwise valid observations. */
+test('host rejects observations attached to success or non-normal failure', () => {
+  for (const reason of ['unsafe_output', 'deadline', 'stream_limit', 'spawn', 'storage', 'closed']) {
+    const value = terminal(); value.children[1].reason = reason;
+    value.children[1].observations = [{ kind: 'command', detail: buildCommand, stream: 'stdout' }];
+    if (reason === 'closed') { value.children[1].exitCode = 0; value.result = 'completed'; value.failure = null; value.failingStep = null; }
+    assert.throws(() => r.validateReport(value, 'build', 'a'.repeat(64), dictionary, q));
+  }
 });
 test('host validates a stopped report with an actionable diagnostic', () => {
   const value = terminal(); value.children[1].diagnostics.push(extract("Cannot find module 'next'"));
@@ -201,7 +342,10 @@ test('unconfirmed running container blocks cleanup success', async () => {
 function executionFixture(t, options = {}) {
   const registry = fixture(t), calls = [], cid = 'c'.repeat(64), digest = 'a'.repeat(64);
   const evidence = path.join(registry, 'original.reservation.json'); fs.writeFileSync(evidence, '{"consumed":true}');
-  const contract = { preservedEvidence: { [evidence]: q.fileHash(evidence) } };
+  const previous = ['reservation', 'report'].map(kind => path.join(registry, r.SOURCE + '.troubleshooting-reproduction-v1.' + kind + '.json'));
+  for (const file of previous) fs.writeFileSync(file, JSON.stringify({ scope: 'gate1_single_reproduction_v1', approval: r.PRIOR, consumed: true }));
+  const preserved = [evidence, ...previous];
+  const contract = { preservedEvidence: Object.fromEntries(preserved.map(file => [file, q.fileHash(file)])) };
   const prepared = { digest, contract, dictionary, code: Buffer.from('// synthetic fixture, not executable\n') };
   let starts = 0;
   const docker = async (args, opts) => {
@@ -221,24 +365,59 @@ function executionFixture(t, options = {}) {
     }
     return Buffer.from('');
   };
-  return { registry, calls, evidence, digest, prepared,
-    deps: { prepare: async () => prepared, review: contract, registry, docker, readiness: async () => {}, verifyContainer: async () => {} } };
+  return { registry, calls, evidence, preserved, digest, prepared,
+    deps: { qualification: () => q, prepare: async () => prepared, review: contract, registry, docker, readiness: async () => {}, verifyContainer: async () => {} } };
 }
 test('wrong approval or phrase makes no Docker calls and no reservation', async t => {
   const f = executionFixture(t);
   await assert.rejects(r.execute(f.digest, 'wrong', f.deps)); assert.equal(f.calls.length, 0);
-  await assert.rejects(r.execute('b'.repeat(64), r.PHRASE, f.deps)); assert.equal(fs.readdirSync(f.registry).length, 1);
+  await assert.rejects(r.execute('b'.repeat(64), r.PHRASE, f.deps)); assert.equal(fs.readdirSync(f.registry).length, f.preserved.length);
+});
+/** The new proposal uses a distinct scope, key, volume, container and explicit confirmation. */
+test('font observation identities remain separate from the consumed reproduction', () => {
+  assert.equal(r.SCOPE, 'gate1_font_failure_observation_v1');
+  assert.equal(r.KEY, r.SOURCE + '.font-failure-observation-v1');
+  assert.equal(r.VOLUME, 'gate1-font-failure-observation-0e89e234-v1');
+  assert.equal(r.NAME, 'gate1-font-failure-observation-0e89e234-owner-v1');
+  assert.equal(r.PHRASE, 'OBSERVE ORIGINAL OFFLINE FONT FAILURE AND SAFE COMMAND BANNERS ONCE');
+  assert.equal(r.PRIOR, '4eaf0aae995a391892f81e0a412bf54f72702548f2b20033eb9cf0df7bf0ccb8');
+  assert.equal(r.containerArgs('build').includes('gate1-reproduction-0e89e234-once-v1'), false);
+});
+/** A consumed approval or old confirmation cannot authorize the proposed attempt, even in a synthetic registry. */
+test('old approval and confirmation reject before Docker and preserve prior attempts', async t => {
+  const f = executionFixture(t), before = f.preserved.map(file => fs.readFileSync(file));
+  await assert.rejects(r.execute(r.PRIOR, r.PHRASE, f.deps));
+  await assert.rejects(r.execute(f.digest, 'REPRODUCE ORIGINAL OFFLINE BUILD AND REVIEW SAFE DIAGNOSTICS ONCE', f.deps));
+  assert.equal(f.calls.length, 0); assert.equal(fs.readdirSync(f.registry).length, f.preserved.length);
+  f.preserved.forEach((file, i) => assert.deepEqual(fs.readFileSync(file), before[i]));
 });
 test('one failed reproduction retains safe output, consumes approval and preserves original evidence', async t => {
-  const f = executionFixture(t), before = fs.readFileSync(f.evidence);
+  const f = executionFixture(t), before = f.preserved.map(file => fs.readFileSync(file));
   const result = await r.execute(f.digest, r.PHRASE, f.deps);
   assert.equal(result.result, 'stopped'); assert.equal(result.failure, 'stage');
   assert.equal(result.stages[1].terminal.children[1].diagnostics[0].detail, 'next');
   assert.equal(result.teardownUnconfirmed, false); assert.equal(result.persistenceFailure, false);
-  assert.deepEqual(fs.readFileSync(f.evidence), before); assert.equal(fs.existsSync(path.join(f.registry, 'active.lock')), false);
+  f.preserved.forEach((file, i) => assert.deepEqual(fs.readFileSync(file), before[i]));
+  assert.equal(fs.existsSync(path.join(f.registry, 'active.lock')), false);
+  const reservation = JSON.parse(fs.readFileSync(path.join(f.registry, r.KEY + '.reservation.json'), 'utf8'));
+  assert.equal(reservation.scope, r.SCOPE); assert.equal(reservation.approval, f.digest);
+  assert.equal(reservation.consumedReproductionApproval, r.PRIOR); assert.equal(reservation.consumed, true);
   assert.equal(JSON.stringify(result).includes(secret), false);
   const count = f.calls.length; await assert.rejects(r.execute(f.digest, r.PHRASE, f.deps));
   assert.equal(f.calls.length, count); assert.equal(f.calls.filter(a => a[0] === 'start').length, 2);
+  f.preserved.forEach((file, i) => assert.deepEqual(fs.readFileSync(file), before[i]));
+});
+/** Either new attempt record is sufficient to prevent reuse; no existing evidence is rewritten. */
+test('an existing proposed-attempt reservation or report blocks all Docker calls', async t => {
+  for (const kind of ['reservation', 'report']) {
+    const f = executionFixture(t), file = path.join(f.registry, r.KEY + '.' + kind + '.json');
+    const bytes = Buffer.from('{"consumed":true,"synthetic":true}'); fs.writeFileSync(file, bytes);
+    const before = f.preserved.map(evidence => fs.readFileSync(evidence));
+    await assert.rejects(r.execute(f.digest, r.PHRASE, f.deps));
+    assert.equal(f.calls.length, 0); assert.deepEqual(fs.readFileSync(file), bytes);
+    assert.equal(fs.existsSync(path.join(f.registry, 'active.lock')), false);
+    f.preserved.forEach((evidence, i) => assert.deepEqual(fs.readFileSync(evidence), before[i]));
+  }
 });
 test('ambiguous create retains the shared lock and consumes the attempt without retry', async t => {
   const f = executionFixture(t, { createFails: true }); const result = await r.execute(f.digest, r.PHRASE, f.deps);
