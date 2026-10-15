@@ -13,11 +13,12 @@ const DAEMON = 'd9e0f885-82f3-4431-9ac7-6c20e8435536';
 const BINDING = 'b4cecd83cca0db031dd1dba608cad4790c04bc82afbe7d19f7c18b19a552a76f';
 const FAILED = 'dfeb059430b7fa18eae6ef15689450d10651838ea8f859f06bade0654d8ee66a';
 const DIAGNOSTIC = 'd211085a4fe7623d364b4ececc313e6a95d2b32c87947ba8a21a9bf28084a1ef';
-const SCOPE = 'gate1_single_reproduction_v1';
-const VOLUME = 'gate1-reproduction-0e89e234-once-v1';
-const NAME = 'gate1-reproduction-0e89e234-owner-v1';
-const KEY = SOURCE + '.troubleshooting-reproduction-v1';
-const PHRASE = 'REPRODUCE ORIGINAL OFFLINE BUILD AND REVIEW SAFE DIAGNOSTICS ONCE';
+const PRIOR = '4eaf0aae995a391892f81e0a412bf54f72702548f2b20033eb9cf0df7bf0ccb8';
+const SCOPE = 'gate1_font_failure_observation_v1';
+const VOLUME = 'gate1-font-failure-observation-0e89e234-v1';
+const NAME = 'gate1-font-failure-observation-0e89e234-owner-v1';
+const KEY = SOURCE + '.font-failure-observation-v1';
+const PHRASE = 'OBSERVE ORIGINAL OFFLINE FONT FAILURE AND SAFE COMMAND BANNERS ONCE';
 const ROOT = process.platform === 'linux' ? '/opt/gate1' : path.resolve(__dirname, '../..');
 const CHECKOUT = path.join(ROOT, '.tmp/worktrees/gate1-qualification-main-0e89e234-lf');
 const QFILE = process.platform === 'linux' ? '/opt/gate1/scripts/gate1-build-qualification.js' : path.join(CHECKOUT, 'scripts/gate1-build-qualification.js');
@@ -37,6 +38,9 @@ const COMMANDS = Object.freeze({ toolchain_install: [NPM, 'ci', '--offline', '--
 const ENV_NAMES = ['NEXT_PUBLIC_SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'CSRF_SECRET'];
 const CODES = ['ENOTCACHED', 'ENETUNREACH', 'EAI_AGAIN', 'ENOTFOUND', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EACCES', 'ENOENT'];
 const STEPS = ['preparation', 'toolchain_install', 'application_install', 'ownership', 'versions', 'postinstall', 'vercel_build', 'storage'];
+const OBSERVED_COMMANDS = ['node scripts/validate-build-env.js', 'npm run build:preflight && next build'];
+const FONT_TITLE = 'Error: next/font: error:';
+const FONT_MESSAGE = 'Failed to fetch Inter from Google Fonts.';
 
 /** Hash public bytes for review identities; raw build streams are never hashed or persisted. */
 function sha(bytes) { return crypto.createHash('sha256').update(bytes).digest('hex'); }
@@ -124,7 +128,26 @@ function message(item) {
   if (item.kind === 'system_code') return 'Reported system/cache code: ' + item.detail;
   if (item.kind === 'preflight') return 'Missing required build environment variables: ' + item.detail;
   if (item.kind === 'public_source_error') return item.detail;
+  if (item.kind === 'font_fetch') return FONT_MESSAGE;
   fail('report');
+}
+/** Retain only deduplicated public npm banners per stream; display proves neither completion nor failure. */
+function observations(bytes, stream, secrets) {
+  const result = [], denied = secretVariants(secrets);
+  for (const line of cleanLines(bytes)) {
+    const detail = OBSERVED_COMMANDS.find(command => line.trim() === '> ' + command);
+    if (!detail || result.some(item => item.detail === detail)) continue;
+    const item = { kind: 'command', detail, stream };
+    if (denied.some(value => JSON.stringify(item).includes(value))) fail('unsafe_output');
+    result.push(item);
+  }
+  return result;
+}
+/** Independently reject forged/duplicate observation fields on the host; two commands times two streams bounds retention. */
+function validObservations(items) {
+  return Array.isArray(items) && items.length <= OBSERVED_COMMANDS.length * 2 && items.every(item =>
+    keys(item, ['kind', 'detail', 'stream']) && item.kind === 'command' && OBSERVED_COMMANDS.includes(item.detail) &&
+    ['stdout', 'stderr'].includes(item.stream)) && new Set(items.map(item => item.stream + ':' + item.detail)).size === items.length;
 }
 /** Select the first recognized error per stream, preserving uncertainty about cross-stream and unknown earlier errors. */
 function extract(bytes, stream, dictionary, secrets) {
@@ -136,7 +159,8 @@ function extract(bytes, stream, dictionary, secrets) {
     if (loc) { currentLocation = loc; currentAt = i; }
     if (line === '> node scripts/validate-build-env.js') observedCommand = 'node scripts/validate-build-env.js';
     if (line === '> npm run build:preflight && next build') observedCommand = 'npm run build:preflight && next build';
-    let found = candidate(line, dictionary);
+    // Next 16.3.3 prints this source-less issue's title immediately before its description, with only SGR styling.
+    let found = line === FONT_TITLE ? (lines[i + 1]?.trim() === FONT_MESSAGE ? { kind: 'font_fetch', detail: 'Inter' } : null) : candidate(line, dictionary);
     if (line === 'Missing required build environment variables:') {
       const names = []; let j = i + 1;
       while (j < lines.length && /^- /.test(lines[j].trim())) { names.push(lines[j].trim().slice(2)); j++; }
@@ -146,8 +170,8 @@ function extract(bytes, stream, dictionary, secrets) {
       }
     }
     if (!found) continue;
-    let sourceLocation = i - currentAt <= 8 ? currentLocation : null;
-    if (!sourceLocation) for (const next of lines.slice(i + 1, i + 9)) { sourceLocation = location(next, dictionary); if (sourceLocation) break; }
+    let sourceLocation = found.kind === 'font_fetch' ? location(lines[i - 1] || '', dictionary) : i - currentAt <= 8 ? currentLocation : null;
+    if (!sourceLocation && found.kind !== 'font_fetch') for (const next of lines.slice(i + 1, i + 9)) { sourceLocation = location(next, dictionary); if (sourceLocation) break; }
     const result = { ...found, message: message(found), stream, observedCommand, sourceLocation };
     const serialized = JSON.stringify(result);
     if (denied.some(value => serialized.includes(value))) fail('unsafe_output');
@@ -163,6 +187,7 @@ function validDiagnostic(item, dictionary) {
   const allowed = (item.kind === 'missing_module' && dictionary.modules.includes(item.detail)) ||
     (item.kind === 'public_source_error' && dictionary.literals.includes(item.detail)) ||
     (item.kind === 'system_code' && CODES.includes(item.detail)) ||
+    (item.kind === 'font_fetch' && item.detail === 'Inter') ||
     (item.kind === 'syntax' && /^(?:Unexpected token|Expected token) [{}()[\]:;,<>+=*/?!.-]$/.test(item.detail)) ||
     (item.kind === 'preflight' && item.detail.split(', ').length <= 4 && item.detail.split(', ').every(n => ENV_NAMES.includes(n)));
   if (!allowed || item.message !== message(item)) return false;
@@ -182,16 +207,18 @@ function capture(command, args, options) {
     /** Emit only fixed state and validated diagnostics, including when a process fails normally. */
     function finish(reason, code = null, signal = null) {
       if (finished) return; finished = true; clearInterval(timer); kill();
-      const diagnostics = [];
+      const diagnostics = [], observed = [];
       if (reason === 'closed' && code !== 0) {
         try { for (const stream of ['stdout', 'stderr']) {
-          const item = extract(Buffer.concat(chunks[stream]), stream, options.dictionary, options.secrets || []);
+          const bytes = Buffer.concat(chunks[stream]);
+          observed.push(...observations(bytes, stream, options.secrets || []));
+          const item = extract(bytes, stream, options.dictionary, options.secrets || []);
           if (item) diagnostics.push(item);
-        } } catch { reason = 'unsafe_output'; diagnostics.length = 0; }
+        } } catch { reason = 'unsafe_output'; diagnostics.length = 0; observed.length = 0; }
       }
       for (const stream of ['stdout', 'stderr']) { for (const bytes of chunks[stream]) bytes.fill(0); chunks[stream].length = 0; }
       resolve({ reason, exitCode: Number.isInteger(code) && code >= 0 && code <= 255 ? code : null,
-        signal: [null, 'SIGKILL', 'SIGTERM', 'SIGABRT', 'SIGSEGV', 'SIGINT', 'SIGBUS', 'SIGILL'].includes(signal) ? signal : 'unknown', sizes, diagnostics });
+        signal: [null, 'SIGKILL', 'SIGTERM', 'SIGABRT', 'SIGSEGV', 'SIGINT', 'SIGBUS', 'SIGILL'].includes(signal) ? signal : 'unknown', sizes, diagnostics, observations: observed });
     }
     try {
       child = (options.spawn || spawn)(command, args, { cwd: options.cwd, env: options.env, shell: false, windowsHide: true,
@@ -299,15 +326,16 @@ function validateReport(value, stage, digest, dictionary, q) {
   if (value.children.length > sequence.length) fail('report');
   let total = 0;
   for (const [i, child] of value.children.entries()) {
-    if (!keys(child, ['step', 'reason', 'exitCode', 'signal', 'sizes', 'diagnostics']) || child.step !== sequence[i] ||
+    if (!keys(child, ['step', 'reason', 'exitCode', 'signal', 'sizes', 'diagnostics', 'observations']) || child.step !== sequence[i] ||
         !['closed', 'spawn', 'deadline', 'storage', 'stream_limit', 'unsafe_output'].includes(child.reason) ||
         !(child.exitCode === null || (Number.isInteger(child.exitCode) && child.exitCode >= 0 && child.exitCode <= 255)) ||
         ![null, 'SIGKILL', 'SIGTERM', 'SIGABRT', 'SIGSEGV', 'SIGINT', 'SIGBUS', 'SIGILL', 'unknown'].includes(child.signal) ||
         !keys(child.sizes, ['stdout', 'stderr']) || !Object.values(child.sizes).every(n => Number.isSafeInteger(n) && n >= 0 && n <= LIMITS.stageStreamBytes * 2) ||
-        !Array.isArray(child.diagnostics) || child.diagnostics.length > 2 || !child.diagnostics.every(d => validDiagnostic(d, dictionary))) fail('report');
+        !Array.isArray(child.diagnostics) || child.diagnostics.length > 2 || !child.diagnostics.every(d => validDiagnostic(d, dictionary)) ||
+        !validObservations(child.observations)) fail('report');
     total += child.sizes.stdout + child.sizes.stderr;
     const success = child.reason === 'closed' && child.exitCode === 0 && child.signal === null;
-    if (child.diagnostics.length && (child.reason !== 'closed' || child.exitCode === 0)) fail('report');
+    if ((child.diagnostics.length || child.observations.length) && (child.reason !== 'closed' || child.exitCode === 0)) fail('report');
     if (i < value.children.length - 1 && !success) fail('report');
     if (value.result === 'completed' && !success) fail('report');
     if (!success && value.failingStep !== child.step) fail('report');
@@ -346,12 +374,14 @@ async function prepare() {
     [SOURCE + '.build.receipt.json']: '88479ea799581cd8c10ec7ad869544eeaf3fafbb22f9f7cd8c7a40b6ebcac5d3',
     [SOURCE + '.build.reservation.json']: 'b15e2bfddd03e5f4881ca6be4e114d36ea4b8511395b81ed3d70cc82a5ec905f',
     [SOURCE + '.vercel-diagnostic.' + FAILED + '.report.json']: '165f21d422e26109b50adb864fc98cb8d0939c6802ce4f5b9992a4b253d80398',
-    [SOURCE + '.vercel-diagnostic.' + FAILED + '.reservation.json']: '9c2b0ef7a366cf12bc5251adbdde3930fdf7a9fa3c83ed1e123304f254df70d1' })) evidence[path.join(registry, name)] = hash;
+    [SOURCE + '.vercel-diagnostic.' + FAILED + '.reservation.json']: '9c2b0ef7a366cf12bc5251adbdde3930fdf7a9fa3c83ed1e123304f254df70d1',
+    [SOURCE + '.troubleshooting-reproduction-v1.report.json']: 'd23e87405ac843a1249da579b1ef751caa017c1fa69f2412c25999633d0f8301',
+    [SOURCE + '.troubleshooting-reproduction-v1.reservation.json']: 'fdae42a8f358b16ae0dbaea1b8645d1298528e35f2ec5f26d65dd7764cce15fe' })) evidence[path.join(registry, name)] = hash;
   for (const [file, hash] of Object.entries(evidence)) if (q.fileHash(file) !== hash) fail('evidence');
   const dictionary = catalog(q, CHECKOUT, q.strictJson(manifestBytes), q.strictJson(readPublic(q, path.join(inputs, 'toolchain-lock.json'))));
   const code = readPublic(q, __filename, LIMITS.inputBytes), testHash = q.fileHash(path.join(__dirname, '__tests__/reproduce.test.js'));
   const contract = { schemaVersion: 1, scope: SCOPE, sourceSha: SOURCE, originalBinding: BINDING,
-    consumedBuildApproval: FAILED, consumedDiagnosticApproval: DIAGNOSTIC, helperRevision: 'local_bytes_sha256',
+    consumedBuildApproval: FAILED, consumedDiagnosticApproval: DIAGNOSTIC, consumedReproductionApproval: PRIOR, helperRevision: 'local_bytes_sha256',
     helperSha256: sha(code), testSha256: testHash, qualificationHelperSha256: QHASH,
     sourceManifestSha256: sha(manifestBytes), cachedInputs: hashes, preservedEvidence: evidence,
     catalogSha256: sha(JSON.stringify(dictionary)), versions: q.VERSIONS, settings: q.SETTINGS,
@@ -361,16 +391,16 @@ async function prepare() {
     network: 'none', rawStreamsRetained: false, attempts: 1, reservationKey: KEY,
     policy: { name: 'fixed_templates_public_references_only_v1', buffering: 'Linux supervisor memory only; no raw file or Docker log',
       rawStreams: 'stdout and stderr separately; 8 MiB each per child; 16 MiB aggregate per stage, 32 MiB per attempt',
-      report: '32 KiB per container and host result; at most first recognized candidate per stream of failing child',
+      report: '32 KiB per container and host result; first recognized candidate and at most two deduplicated command banners per stream of failing child',
       text: 'reconstructed fixed template plus exact public dictionary entry; never raw lines, environment dumps or code frames',
       locations: 'original source path, valid line and optional column; generated/dependency/foreign locations omitted',
       secrets: 'fresh generated comparison values; exact, URL, JSON-escaped, hex, base64/base64url and Unicode-escaped deny checks on reconstructed candidates',
-      chunks: 'decode complete bounded per-stream buffer strictly as UTF-8; CRLF and SGR normalization; multiline preflight names only',
-      unsafe: 'invalid UTF-8, overlong line or secret match suppresses all diagnostics for that child; stream overflow/deadline stops child and suppresses partial diagnostics',
+      chunks: 'decode complete bounded per-stream buffer strictly as UTF-8; CRLF and SGR normalization; multiline preflight names and adjacent production Inter title/summary only',
+      unsafe: 'invalid UTF-8, overlong line or secret match suppresses all diagnostics and observations for that child; stream overflow/deadline stops child and suppresses partial output',
       limits: 'arbitrary encodings/covert channels are not proven safe; no raw text permitted; unsupported error formats may remain inconclusive; RAM secure erasure and host swap excluded',
       generatedFiles: 'new build files and private comparison values stay in retained new volume, uninspected and not exported',
       access: 'Linux root supervisor only for raw buffers; private comparison directory 0700; host sanitized files owner-local (Windows inherited ACL)',
-      chat: 'validated failing phase, command label, first recognized candidate per stream, public source location, exit/signal and uncertainty only' },
+      chat: 'validated child step, fixed observed command banners (not completion or failing-command evidence), first recognized candidate per stream, public source location, exit/signal and uncertainty only' },
     unknownOutput: 'discard_and_report_inconclusive',
     crossStreamOrder: 'not_established', originalVolumeMounted: false, download: false, artifactInspection: false,
     retention: 'new_volume_private_and_sanitized_host_records_until_separately_reviewed_cleanup',
@@ -417,7 +447,7 @@ async function readiness(q, docker) {
     const data = q.strictJson(await docker(['image', 'inspect', '--format', '{{json .}}', id]));
     if (data.Id !== id || data.Os !== 'linux' || data.Architecture !== 'amd64') fail('image');
   }
-  for (const name of [NAME, 'gate1-vercel-diagnostic-owner-v1']) if ((await docker(['ps', '-aq', '--filter', `name=^/${name}$`])).toString().trim()) fail('occupied');
+  for (const name of [NAME, 'gate1-reproduction-0e89e234-owner-v1', 'gate1-vercel-diagnostic-owner-v1']) if ((await docker(['ps', '-aq', '--filter', `name=^/${name}$`])).toString().trim()) fail('occupied');
   if ((await docker(['volume', 'ls', '--format', '{{.Name}}', '--filter', `name=^${VOLUME}$`])).toString().trim()) fail('occupied');
   const disk = fs.statfsSync(ROOT); if (disk.bavail * disk.bsize < LIMITS.headroomBytes) fail('capacity');
   const capacity = (await q.supervise('wsl.exe', ['-d', 'docker-desktop', '-e', 'df', '-B1', '/mnt/host/wsl/docker-desktop-data/isocache'])).toString();
@@ -460,7 +490,7 @@ async function execute(digest, phrase, deps = {}) {
     return baseDocker(args, { ...options, timeoutMs: Math.min(options.timeoutMs || 30000, remaining) });
   }
   try {
-    q.writeOnce(reservation, { scope: SCOPE, sourceSha: SOURCE, originalBuildApproval: FAILED, approval: digest, consumed: true });
+    q.writeOnce(reservation, { scope: SCOPE, sourceSha: SOURCE, originalBuildApproval: FAILED, consumedReproductionApproval: PRIOR, approval: digest, consumed: true });
     await docker(['volume', 'create', '--driver', 'local', '--label', `gate1.scope=${SCOPE}`, VOLUME]);
     const volume = q.strictJson(await docker(['volume', 'inspect', VOLUME]));
     if (volume.length !== 1 || volume[0].Name !== VOLUME || volume[0].Driver !== 'local' || Object.keys(volume[0].Options || {}).length || volume[0].Labels?.['gate1.scope'] !== SCOPE) fail('volume');
@@ -532,6 +562,6 @@ if (require.main === module || globalThis.__gate1Envelope) {
   }).catch(() => { process.stderr.write('Reproduction stopped; preserve evidence and approvals.\n'); process.exitCode = 1; });
 }
 
-module.exports = { sha, keys, catalog, cleanLines, location, secretVariants, candidate, extract, validDiagnostic, capture,
+module.exports = { sha, keys, catalog, cleanLines, location, secretVariants, candidate, extract, validDiagnostic, observations, validObservations, capture,
   linuxEnvironment, validateReport, containerArgs, readiness, cleanup, verifyContainer, execute, prepare, main, qualification,
-  SOURCE, IMAGE, DAEMON, VOLUME, NAME, KEY, PHRASE, LIMITS, COMMANDS, SCOPE };
+  SOURCE, IMAGE, DAEMON, VOLUME, NAME, KEY, PHRASE, PRIOR, LIMITS, COMMANDS, SCOPE };
