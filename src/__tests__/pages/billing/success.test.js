@@ -28,8 +28,9 @@ const mockUseAuth = jest.fn();
 const mockApiPost = jest.fn();
 
 /** Keep the real shared shell in page tests without invoking Next's font loader. */
-jest.mock('next/font/google', () => ({
-  Inter: jest.fn().mockReturnValue({ variable: 'mock-public-font-variable' }),
+jest.mock('next/font/local', () => ({
+  __esModule: true,
+  default: jest.fn().mockReturnValue({ variable: 'mock-public-font-variable' }),
 }));
 
 jest.mock('next/router', () => ({

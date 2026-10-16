@@ -86,8 +86,9 @@ jest.mock('next/router', () => ({
 /**
  * Replace Next's build-time font loader with deterministic dashboard CSS hooks.
  */
-jest.mock('next/font/google', () => ({
-  Inter: jest.fn().mockReturnValue({
+jest.mock('next/font/local', () => ({
+  __esModule: true,
+  default: jest.fn().mockReturnValue({
     className: 'mock-dashboard-font',
     variable: 'mock-dashboard-font-variable',
   }),
