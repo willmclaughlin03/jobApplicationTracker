@@ -16,6 +16,10 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-11
 
+- `2026-10-15` - `Portable GATE-1 reproduction tests`: Load the byte-verified checked-in qualification helper and derive the fixture root from the test location, removing test-registration dependencies on Git and an untracked local worktree. Add an isolated-checkout regression that blocks ancestor Git discovery and runs a named parser test using only three checked-in files. The regression failed before the fix; all 83 focused tests, zero-warning lint, syntax and whitespace checks pass.
+
+- `2026-10-15` - `GATE-1 font diagnostic and command observations`: Recognize the pinned production Inter title/summary pair and retain two fixed npm command banners independently by stream, with bounded deduplication, host validation and unsafe-output suppression. Give the proposed font-observation attempt distinct approval/once-only identities and bind the prior consumed reproduction evidence. All 82 focused synthetic tests, zero-warning lint, syntax and whitespace checks pass. No new reproduction ran; the historical cause is unknown and GATE-1 remains open.
+
 - `2026-10-14` - `GATE-1 timeout margin regression`: Require at least 20 seconds between the stage budget and container timeout for both stages, retaining the strict host upper bound. All 65 focused tests, Node syntax and whitespace checks pass.
 
 - `2026-10-14` - `GATE-1 reproduction failure reporting`: Attribute Vercel entry mismatches to the versions step and derive the container timeout from the stage budget with 20 seconds for reporting before the host cutoff. Add two synthetic regressions for timeout ordering across both stages and rejection of the old container command. All 65 focused tests, Node syntax and whitespace checks pass.
