@@ -7,7 +7,11 @@ jest.mock('../../server/lib/supabaseServer.js', () => ({
   getUserFromRequest: (...args) => mockGetUserFromRequest(...args),
 }));
 jest.mock('../../client/contexts/AuthContext', () => ({ useAuth: jest.fn() }));
-jest.mock('next/font/google', () => ({ Inter: () => ({ className: 'fixture-font', variable: 'fixture-font-variable' }) }));
+/** Keep real page shells and their shared font module without invoking Next's build-time loader. */
+jest.mock('next/font/local', () => ({
+  __esModule: true,
+  default: jest.fn().mockReturnValue({ className: 'fixture-font', variable: 'fixture-font-variable' }),
+}));
 
 describe('protected page request-time exports', () => {
   it.each(inventory.filter((entry) => entry.policy === 'protected-page'))(

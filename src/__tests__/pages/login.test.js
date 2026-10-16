@@ -26,8 +26,9 @@ jest.mock('next/router', () => ({
 }));
 
 /** Replace Next's font loader with a deterministic public-shell CSS hook. */
-jest.mock('next/font/google', () => ({
-  Inter: jest.fn().mockReturnValue({
+jest.mock('next/font/local', () => ({
+  __esModule: true,
+  default: jest.fn().mockReturnValue({
     className: 'mock-login-font',
     variable: 'mock-login-font-variable',
   }),

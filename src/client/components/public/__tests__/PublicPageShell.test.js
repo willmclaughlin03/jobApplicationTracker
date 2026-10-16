@@ -13,8 +13,10 @@ const { createRoot } = require('react-dom/client');
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-jest.mock('next/font/google', () => ({
-  Inter: jest.fn().mockReturnValue({
+/** Replace Next's local font loader while exercising the shared font module and real shell. */
+jest.mock('next/font/local', () => ({
+  __esModule: true,
+  default: jest.fn().mockReturnValue({
     className: 'mock-public-font',
     variable: 'mock-public-font-variable',
   }),
