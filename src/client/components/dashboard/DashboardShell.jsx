@@ -1,10 +1,4 @@
-import { Inter } from 'next/font/google';
-
-const dashboardFont = Inter({
-  subsets: ['latin'],
-  display: 'swap',
-  variable: '--font-dashboard',
-});
+import { inter as dashboardFont } from '../../styles/fonts/inter';
 
 /**
  * Provide the dashboard-only visual root and responsive application geometry.

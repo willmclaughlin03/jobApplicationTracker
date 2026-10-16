@@ -1,12 +1,6 @@
-import { Inter } from 'next/font/google';
+import { inter as publicPageFont } from '../../styles/fonts/inter';
 import { ChartNoAxesCombined } from 'lucide-react';
 import PublicDottedWave from './PublicDottedWave';
-
-const publicPageFont = Inter({
-  subsets: ['latin'],
-  display: 'swap',
-  variable: '--font-dashboard',
-});
 
 export const PUBLIC_PRIMARY_ACTION_CLASS_NAME = [
   'dashboard-focus-ring inline-flex min-h-11 w-full items-center rounded-dashboard-control',
