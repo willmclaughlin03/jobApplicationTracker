@@ -13,6 +13,7 @@ const { TextDecoder } = require('node:util');
 const { z } = require('zod');
 
 const SCOPE = 'new_build_output_comparisons_only';
+const LINK_POLICY = 'internal_directory_aliases_v1';
 const LIMITS = Object.freeze({ maxAppRequests: 0, maxProviderRequests: 0, maxConfigMutations: 0,
   maxBuilds: 0, maxDeployments: 0, maxFiles: 25000, maxEntries: 50000, maxDepth: 64,
   fileBytes: 67108864, totalBytes: 1073741824, overallMs: 120000, concurrency: 1,
@@ -25,12 +26,14 @@ const ATTESTATIONS = Object.freeze(['sourceCodeReviewed', 'newBuildProvenanceRev
 const CODES = new Set(['profile', 'input', 'approval', 'comparisons', 'reservation', 'report_write',
   'overall_deadline', 'entry_limit', 'file_limit', 'depth_limit', 'file_size', 'total_bytes',
   'forbidden_file', 'link', 'path', 'file_type', 'unreadable', 'changed', 'unsupported_format',
-  'encoding', 'json', 'map_contract', 'external_map', 'config', 'findings', 'internal']);
+  'encoding', 'json', 'map_contract', 'external_map', 'config', 'findings', 'internal',
+  'alias_target', 'alias_chain', 'alias_cycle']);
 const hex = z.string().regex(/^[a-f0-9]{64}$/);
 const version = z.string().regex(/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/).max(64);
 const profileSchema = z.object({ schemaVersion: z.literal(1), scope: z.literal(SCOPE),
   runId: z.string().regex(/^[a-f0-9]{32}$/), environment: z.literal('preview'),
   outputRoot: z.string().min(1).max(1024).refine((s) => !hasControl(s)),
+  linkPolicy: z.enum(['reject', LINK_POLICY]).optional(),
   provenance: z.object({ gitSha: z.string().regex(/^[a-f0-9]{40}$/), lockSha256: hex,
     nodeVersion: version, nextVersion: version, vercelCliVersion: version }).strict(),
   comparisonLabels: z.array(z.enum(LABELS)).min(1).max(LABELS.length)
@@ -159,6 +162,7 @@ function forbidden(name) {
 /** Inventory only regular single-link files; streams bound directory entries before allocation grows. */
 async function inventory(root, state) {
   await checkAncestors(root, state);
+  const rootStat = await fs.promises.lstat(root);
   const entries = [], queue = [{ absolute: root, relative: '', depth: 0 }];
   let files = 0, bytes = 0;
   while (queue.length) {
@@ -171,11 +175,24 @@ async function inventory(root, state) {
       checkTime(state);
       if (entries.length >= state.limits.maxEntries) throw new ScanError('entry_limit');
       if (forbidden(entry.name)) throw new ScanError('forbidden_file');
-      if (entry.name.includes(':') || hasControl(entry.name)) throw new ScanError('path');
+      if (/[\\:]/.test(entry.name) || hasControl(entry.name)) throw new ScanError('path');
       const absolute = path.join(dir.absolute, entry.name);
       const relative = path.join(dir.relative, entry.name);
       const stat = await fs.promises.lstat(absolute);
-      if (stat.isSymbolicLink()) throw new ScanError('link');
+      if (stat.dev !== rootStat.dev) throw new ScanError('path');
+      if (stat.isSymbolicLink()) {
+        if (state.linkPolicy !== LINK_POLICY) throw new ScanError('link');
+        if (stat.size > Math.min(4096, state.limits.fileBytes)) throw new ScanError('file_size');
+        const bytes = await fs.promises.readlink(absolute, { encoding: 'buffer' });
+        if (bytes.length > Math.min(4096, state.limits.fileBytes)) throw new ScanError('file_size');
+        charge(state, bytes.length, true);
+        const target = decode(bytes);
+        await checkAncestors(dir.absolute, state);
+        if (stamp(await fs.promises.lstat(absolute)) !== stamp(stat)) throw new ScanError('changed');
+        entries.push({ relative, absolute, directory: false, alias: true, target,
+          stamp: stamp(stat), size: stat.size, mode: stat.mode & 0o777 });
+        continue;
+      }
       if (!stat.isFile() && !stat.isDirectory()) throw new ScanError('file_type');
       if (stat.isFile()) {
         if (stat.nlink !== 1) throw new ScanError('link');
@@ -187,7 +204,94 @@ async function inventory(root, state) {
       entries.push({ relative, absolute, directory: stat.isDirectory(), stamp: stamp(stat), size: stat.size, mode: stat.mode & 0o777 });
     }
   }
-  return entries.sort((a, b) => a.relative < b.relative ? -1 : a.relative > b.relative ? 1 : 0);
+  entries.sort((a, b) => a.relative < b.relative ? -1 : a.relative > b.relative ? 1 : 0);
+  entries.rootStamp = stamp(rootStat);
+  if (state.linkPolicy === LINK_POLICY) resolveAliases(entries, state);
+  return entries;
+}
+
+/** Resolve relative targets against independently inventoried directories, never following a link on disk.
+ * Each component is checked before processing the next (including '..'); no outside metadata is requested.
+ */
+function resolveAliases(entries, state) {
+  const physical = new Map(entries.map((entry) => [entry.relative, entry]));
+  for (const alias of entries.filter((entry) => entry.alias)) {
+    checkTime(state);
+    if (!alias.target || path.isAbsolute(alias.target) || /[\\:]/.test(alias.target) || hasControl(alias.target)) {
+      throw new ScanError('alias_target');
+    }
+    const parts = alias.target.split('/');
+    if (parts.length > state.limits.maxDepth) throw new ScanError('depth_limit');
+    const resolved = path.dirname(alias.relative) === '.' ? [] : path.dirname(alias.relative).split(path.sep);
+    for (const part of parts) {
+      checkTime(state);
+      if (!part || part === '.') continue;
+      if (part === '..') {
+        if (!resolved.length) throw new ScanError('alias_target');
+        resolved.pop();
+      } else {
+        if (forbidden(part)) throw new ScanError('forbidden_file');
+        resolved.push(part);
+        const target = physical.get(resolved.join(path.sep));
+        if (target?.alias) throw new ScanError('alias_chain');
+        if (!target?.directory) throw new ScanError('alias_target');
+      }
+      if (resolved.length > state.limits.maxDepth) throw new ScanError('depth_limit');
+    }
+    alias.targetRelative = resolved.join(path.sep);
+    alias.targetStamp = alias.targetRelative ? physical.get(alias.targetRelative)?.stamp : entries.rootStamp;
+    if (!alias.targetStamp) throw new ScanError('alias_target');
+  }
+}
+
+/** Record only finite findings for physical names, link text and expanded logical paths; charge all bytes. */
+function inspectPathText(text, comparisons, state) {
+  const bytes = Buffer.from(text.split(path.sep).join('/')); charge(state, bytes.length, true);
+  const matches = compareBytes(bytes, comparisons);
+  if ((matches.labels.length || matches.patterns.length) && state.directoryFindings.length >= state.limits.maxEntries) {
+    throw new ScanError('entry_limit');
+  }
+  if (matches.labels.length || matches.patterns.length) state.directoryFindings.push({
+    id: state.directoryFindings.length + 1, comparisonLabels: matches.labels, patterns: matches.patterns });
+}
+
+/** Expand a bounded logical directory graph without filesystem traversal; every logical file maps to one
+ * physical inventory entry. Repeated directory ancestry rejects cycles, while independent aliases share reads.
+ */
+function aliasCoverage(entries, comparisons, state) {
+  const children = new Map(), knownFiles = new Set(), locations = new Map();
+  for (const entry of entries) {
+    const parent = path.dirname(entry.relative) === '.' ? '' : path.dirname(entry.relative);
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(entry);
+    if (entry.alias) inspectPathText(entry.target, comparisons, state);
+  }
+  const queue = [{ physical: '', logical: '', ancestors: [''], depth: 0 }];
+  let count = 0, files = 0;
+  while (queue.length) {
+    checkTime(state);
+    const dir = queue.shift();
+    for (const entry of children.get(dir.physical) || []) {
+      checkTime(state);
+      if (count >= state.limits.maxEntries) throw new ScanError('entry_limit');
+      state.logicalEntries = ++count;
+      const relative = path.join(dir.logical, path.basename(entry.relative));
+      if (dir.depth + 1 > state.limits.maxDepth) throw new ScanError('depth_limit');
+      inspectPathText(relative, comparisons, state);
+      if (entry.directory || entry.alias) {
+        const target = entry.alias ? entry.targetRelative : entry.relative;
+        if (dir.ancestors.includes(target)) throw new ScanError('alias_cycle');
+        queue.push({ physical: target, logical: relative, ancestors: [...dir.ancestors, target], depth: dir.depth + 1 });
+      } else {
+        if (++files > state.limits.maxFiles) throw new ScanError('file_limit');
+        knownFiles.add(relative);
+        if (!locations.has(entry.relative)) locations.set(entry.relative, []);
+        locations.get(entry.relative).push(relative);
+      }
+    }
+  }
+  state.logicalEntries = count;
+  return { knownFiles, locations };
 }
 
 /** Open the inventoried inode with no-follow when supported, cap reads, and reject any observed mutation. */
@@ -363,32 +467,39 @@ function inspectFile(bytes, entry, knownFiles, comparisons, state) {
 /** Enumerate before/after, inspect each file, and fingerprint relative paths privately with content hashes. */
 async function scanOutput(profile, comparisons, state) {
   const before = await inventory(profile.outputRoot, state);
-  const files = before.filter((entry) => !entry.directory);
-  const knownFiles = new Set(files.map((entry) => entry.relative));
+  const files = before.filter((entry) => !entry.directory && !entry.alias);
+  const coverage = state.linkPolicy === LINK_POLICY ? aliasCoverage(before, comparisons, state) : null;
+  const knownFiles = coverage?.knownFiles || new Set(files.map((entry) => entry.relative));
   if (!knownFiles.has('config.json')) throw new ScanError('config');
   const fingerprint = createHash('sha256');
+  for (const entry of before.filter((item) => item.alias)) {
+    fingerprint.update(JSON.stringify([entry.relative.split(path.sep).join('/'), 'directory_alias',
+      entry.target, entry.targetRelative.split(path.sep).join('/')]) + '\n');
+  }
   for (const entry of before.filter((item) => item.directory)) {
-    const nameBytes = Buffer.from(entry.relative.split(path.sep).join('/')); charge(state, nameBytes.length, true);
-    const names = compareBytes(nameBytes, comparisons);
-    if (names.labels.length || names.patterns.length) {
-      state.directoryFindings.push({ id: state.directoryFindings.length + 1,
-        comparisonLabels: names.labels, patterns: names.patterns });
-    }
+    if (!coverage) inspectPathText(entry.relative, comparisons, state);
     fingerprint.update(JSON.stringify([entry.relative.split(path.sep).join('/'), 'directory', entry.mode]) + '\n');
   }
   for (const entry of files) {
     const bytes = await readStable(entry, state);
     const contentHash = sha256(bytes);
     const { findings, format } = inspectFile(bytes, entry, knownFiles, comparisons, state);
+    if (coverage && /\.(?:[cm]?js|css|html)$/i.test(entry.relative) && format === 'utf8_and_decoded_json') {
+      for (const relative of coverage.locations.get(entry.relative) || []) {
+        if (relative !== entry.relative) inspectMapLinks(decode(bytes), { relative }, knownFiles, findings, comparisons, state);
+      }
+    }
     fingerprint.update(JSON.stringify([entry.relative.split(path.sep).join('/'), 'file', entry.mode, bytes.length, contentHash]) + '\n');
     state.files.push({ id: state.files.length + 1, category: category(entry.relative), bytes: bytes.length,
       sha256: contentHash, mode: entry.mode, format, comparisonLabels: [...findings.labels].sort(), patterns: [...findings.patterns].sort() });
     bytes.fill(0); checkTime(state);
   }
   const after = await inventory(profile.outputRoot, state);
-  if (before.length !== after.length || before.some((entry, i) => entry.relative !== after[i].relative ||
-      entry.directory !== after[i].directory || entry.stamp !== after[i].stamp)) throw new ScanError('changed');
+  if (before.rootStamp !== after.rootStamp || before.length !== after.length || before.some((entry, i) => entry.relative !== after[i].relative ||
+      entry.directory !== after[i].directory || entry.stamp !== after[i].stamp || entry.target !== after[i].target ||
+      entry.targetRelative !== after[i].targetRelative || entry.targetStamp !== after[i].targetStamp)) throw new ScanError('changed');
   checkTime(state);
+  state.aliasesVerified = before.filter((entry) => entry.alias).length;
   return fingerprint.digest('hex');
 }
 
@@ -441,6 +552,8 @@ async function runInspection(input, options = {}) {
     if (!parsed.success) throw new ScanError('input');
     comparisons = parsed.data.comparisons;
     const profile = parseProfile(parsed.data.profile);
+    state.linkPolicy = profile.linkPolicy || 'reject';
+    if (state.linkPolicy === LINK_POLICY) Object.assign(report, { linkPolicy: LINK_POLICY, aliasesVerified: 0, logicalEntries: 0 });
     if (comparisons.length !== profile.comparisonLabels.length || new Set(comparisons.map((r) => r.label)).size !== comparisons.length ||
         !comparisons.every((r) => profile.comparisonLabels.includes(r.label))) throw new ScanError('comparisons');
     if (hasEcho(profile, comparisons)) throw new ScanError('comparisons');
@@ -456,6 +569,7 @@ async function runInspection(input, options = {}) {
   } catch (error) { report.failure = error instanceof ScanError ? error.code : 'unreadable'; }
   Object.assign(report, { bytesRead: state.bytesRead, bytesInspected: state.bytesInspected,
     decodedBytes: state.decodedBytes, inlineMaps: state.inlineMaps, elapsedMs: Math.round((now() - state.started) * 1000) / 1000 });
+  if (report.linkPolicy) Object.assign(report, { aliasesVerified: state.aliasesVerified || 0, logicalEntries: state.logicalEntries || 0 });
   let output = report;
   if (hasEcho(report, comparisons)) output = { schemaVersion: 1, scope: SCOPE, result: 'stopped', gate1Status: 'open', failure: 'private_output_suppressed' };
   if (store) {
@@ -508,6 +622,6 @@ if (require.main === module) {
   }).catch(() => { process.stderr.write('Artifact preparation/inspection failed; preserve any consumed reservation.\n'); process.exitCode = 1; });
 }
 
-module.exports = { SCOPE, LIMITS, LABELS, ATTESTATIONS, ScanError, profileTemplate, parseProfile,
+module.exports = { SCOPE, LINK_POLICY, LIMITS, LABELS, ATTESTATIONS, ScanError, profileTemplate, parseProfile,
   approvalId, preparation, compareBytes, representations, inventory, readStable,
   inspectFile, scanOutput, runInspection, createStore, main };

@@ -15,11 +15,12 @@ const PRIVATE = 'synthetic-private-sentinel-12345+/=';
 const REFS = [{ label: 'synthetic_sentinel', value: PRIVATE }];
 const BASE64_CASES = [['base64', 0], ['base64', 1], ['base64', 2],
   ['base64url', 0], ['base64url', 1], ['base64url', 2]];
-let folder, output, guards;
+let folder, output, guards, aliasTargets;
 beforeAll(() => {
   guards = [https, http].map((module) => jest.spyOn(module, 'request').mockImplementation(() => { throw new Error('Network forbidden'); }));
 });
 beforeEach(() => {
+  aliasTargets = new Map();
   fs.mkdirSync(BASE, { recursive: true }); folder = fs.mkdtempSync(path.join(BASE, 'fixture-'));
   output = path.join(folder, '.vercel/output'); fs.mkdirSync(output, { recursive: true });
   file('config.json', '{"version":3}'); file('static/app.js', 'self.fixture = true;');
@@ -288,6 +289,180 @@ test('directory links and multiply linked files are refused', async () => {
   fs.unlinkSync(path.join(output, 'alias'));
   fs.linkSync(path.join(output, 'static/app.js'), path.join(output, 'static/hardlink.js'));
   expect((await trial()).report.failure).toBe('link');
+});
+
+/** Use real POSIX symlinks where supported. Windows uses real junction metadata with mocked relative
+ * readlink bytes, because unprivileged Windows cannot create relative symlinks. Nothing follows these links.
+ */
+function alias(name, target) {
+  const location = path.join(output, name); fs.mkdirSync(path.dirname(location), { recursive: true });
+  if (process.platform === 'win32') {
+    if (!aliasTargets.size) {
+      const original = fs.promises.readlink;
+      jest.spyOn(fs.promises, 'readlink').mockImplementation(async (name, options) =>
+        aliasTargets.has(name) ? Buffer.from(aliasTargets.get(name)) : original(name, options));
+    }
+    aliasTargets.set(location, target);
+    fs.symlinkSync(path.join(output, 'static'), location, 'junction');
+  } else fs.symlinkSync(target, location, 'dir');
+  return location;
+}
+
+/** Explicitly opt in so unchanged/default profiles keep rejecting every link. */
+function aliasEnvelope() { return envelope({ ...profile(), linkPolicy: scanner.LINK_POLICY }); }
+
+test('directory alias policy is explicit and approval-bound', async () => {
+  const p = profile();
+  expect(approvalId({ ...p, linkPolicy: scanner.LINK_POLICY })).not.toBe(approvalId(p));
+  expect(() => parseProfile({ ...p, linkPolicy: 'follow_all' })).toThrow('profile');
+  alias('alias', 'static');
+  expect((await trial()).report.failure).toBe('link');
+  const input = aliasEnvelope(); input.profile.linkPolicy = 'reject';
+  expect((await trial({}, input)).report.failure).toBe('approval');
+});
+
+test('independent aliases scan physical content once and retain no alias names or targets', async () => {
+  alias('first-alias', 'static'); alias('second-alias', 'static');
+  const open = jest.spyOn(fs.promises, 'open');
+  const { report } = await trial({}, aliasEnvelope());
+  expect(report).toMatchObject({ result: 'completed', aliasesVerified: 2, linkPolicy: scanner.LINK_POLICY });
+  expect(report.files).toHaveLength(3);
+  expect(open.mock.calls.filter(([p]) => String(p).endsWith('app.js'))).toHaveLength(1);
+  expect(JSON.stringify(report)).not.toMatch(/first-alias|second-alias|app\.js/);
+});
+
+test('a canary in a directory with multiple aliases is still found', async () => {
+  file('static/app.js', PRIVATE); alias('first', 'static'); alias('second', 'static');
+  const { report, saved } = await trial({}, aliasEnvelope());
+  expect(report.failure).toBe('findings'); expect(report.aliasesVerified).toBe(2);
+  expect(report.files.filter((f) => f.comparisonLabels.length)).toHaveLength(1);
+  expect(saved[0].failure).toBe('findings');
+});
+
+test.each(['name', 'target', 'logical'])('alias %s canary is detected without echo', async (where) => {
+  const value = 'synthetic-alias-canary-123456';
+  if (where === 'name') alias(value, 'static');
+  if (where === 'target') {
+    fs.mkdirSync(path.join(output, value)); alias('target-alias', `${value}/../static`);
+  }
+  if (where === 'logical') { file('static/canary-123456/file.js', 'true'); alias('synthetic-alias', 'static'); }
+  const input = aliasEnvelope(); input.comparisons = [{ label: 'synthetic_sentinel',
+    value: where === 'logical' ? 'synthetic-alias/canary-123456' : where === 'target' ? `${value}/../static` : value }];
+  const { report } = await trial({}, input);
+  expect(report.failure).toBe('findings'); expect(report.directoryFindings.length).toBeGreaterThan(0);
+  expect(JSON.stringify(report)).not.toContain(input.comparisons[0].value);
+});
+
+test.each([
+  ['outside', '../output-lookalike', 'alias_target'], ['absolute', '/outside', 'alias_target'],
+  ['dangling', 'missing', 'alias_target'], ['dot-trick', 'missing/../static', 'alias_target'],
+  ['escape-return', '../output/static', 'alias_target'], ['file-target', 'static/app.js', 'alias_target'],
+  ['file-parent', 'static/app.js/../', 'alias_target'], ['self', 'self', 'alias_chain'],
+  ['root-cycle', '.', 'alias_cycle'], ['parent-cycle', 'static/..', 'alias_cycle'],
+])('reject unsafe directory alias %s without opening content', async (name, target, code) => {
+  alias(name, target);
+  const open = jest.spyOn(fs.promises, 'open');
+  const { report } = await trial({}, aliasEnvelope());
+  expect(report.failure).toBe(code); expect(report.result).toBe('stopped');
+  expect(open).not.toHaveBeenCalled(); expect(report.aliasesVerified).toBe(0);
+});
+
+test('reject an intermediate link before a parent component can erase it', async () => {
+  alias('first', 'static'); alias('second', 'first/../static');
+  expect((await trial({}, aliasEnvelope())).report.failure).toBe('alias_chain');
+});
+
+test('reject cross-directory cycles in logical expansion', async () => {
+  fs.mkdirSync(path.join(output, 'one')); fs.mkdirSync(path.join(output, 'two'));
+  alias('one/a', '../two'); alias('two/b', '../one');
+  expect((await trial({}, aliasEnvelope())).report.failure).toBe('alias_cycle');
+});
+
+test('ordinary parent components stay supported when each component exists inside the root', async () => {
+  alias('functions/alias', '../static');
+  expect((await trial({}, aliasEnvelope())).report.result).toBe('completed');
+});
+
+test('alias source maps resolve against the complete logical inventory', async () => {
+  file('static/app.js.map', JSON.stringify(map())); alias('maps', 'static');
+  file('static/app.js', '//# sourceMappingURL=../maps/app.js.map');
+  expect((await trial({}, aliasEnvelope())).report.result).toBe('completed');
+  file('static/app.js', '//# sourceMappingURL=../maps/missing.js.map');
+  expect((await trial({}, aliasEnvelope())).report.failure).toBe('external_map');
+});
+
+test('a map available only for the physical path cannot hide an uncovered logical reference', async () => {
+  file('static/app.js', '//# sourceMappingURL=../only.map'); file('only.map', JSON.stringify(map()));
+  fs.mkdirSync(path.join(output, 'nested')); alias('nested/alias', '../static');
+  expect((await trial({}, aliasEnvelope())).report.failure).toBe('external_map');
+});
+
+test.each(['link', 'target'])('replacing an alias %s during content scanning invalidates coverage', async (kind) => {
+  const location = alias('alias', 'static');
+  const original = fs.promises.open; let mutated = false;
+  jest.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+    if (!mutated) {
+      mutated = true;
+      if (kind === 'link') { fs.unlinkSync(location); alias('alias', 'functions'); }
+      else { fs.renameSync(path.join(output, 'static'), path.join(output, 'previous')); fs.mkdirSync(path.join(output, 'static')); }
+    }
+    return original(...args);
+  });
+  const { report } = await trial({}, aliasEnvelope());
+  expect(report.result).toBe('stopped'); expect(report.manifestSha256).toBeNull(); expect(report.aliasesVerified).toBe(0);
+});
+
+test.each([['maxEntries', 7, 'entry_limit'], ['maxFiles', 3, 'file_limit'], ['maxDepth', 2, 'depth_limit'],
+  ['fileBytes', 1, 'file_size'], ['totalBytes', 1, 'total_bytes'], ['overallMs', 0, 'overall_deadline']])(
+  'alias processing respects %s', async (key, limit, code) => {
+    alias('alias', 'static');
+    expect((await trial({ limits: { [key]: limit } }, aliasEnvelope())).report.failure).toBe(code);
+  });
+
+test('cross-device inventory and hard-linked regular files remain rejected under alias policy', async () => {
+  alias('alias', 'static');
+  const original = fs.promises.lstat;
+  const spy = jest.spyOn(fs.promises, 'lstat').mockImplementation(async (...args) => {
+    const stat = await original(...args); if (args[0] === path.join(output, 'static')) stat.dev += 1; return stat;
+  });
+  expect((await trial({}, aliasEnvelope())).report.failure).toBe('path'); spy.mockRestore();
+  fs.linkSync(path.join(output, 'static/app.js'), path.join(output, 'hardlink.js'));
+  expect((await trial({}, aliasEnvelope())).report.failure).toBe('link');
+});
+
+test('alias policy still rejects ancestor junctions before scanning', async () => {
+  const p = aliasEnvelope(), linked = path.join(folder, 'linked');
+  fs.symlinkSync(path.join(folder, '.vercel'), linked, process.platform === 'win32' ? 'junction' : 'dir');
+  p.profile.outputRoot = path.join(linked, '.vercel/output'); p.approval = approvalId(p.profile);
+  expect((await trial({}, p)).report.failure).toBe('link');
+});
+
+test('link target text with a credential pattern is a sanitized finding', async () => {
+  const value = 'sk_live_0123456789abcdefgh';
+  fs.mkdirSync(path.join(output, value)); alias('alias', `${value}/../static`);
+  const { report } = await trial({}, aliasEnvelope());
+  expect(report.failure).toBe('findings');
+  expect(report.directoryFindings.some(f => f.patterns.includes('secret_token_pattern'))).toBe(true);
+  expect(JSON.stringify(report)).not.toContain(value);
+});
+
+test('alias target mutation while reading link text is rejected', async () => {
+  alias('alias', 'static');
+  const original = fs.promises.readlink.getMockImplementation?.() || fs.promises.readlink;
+  let replaced = false;
+  jest.spyOn(fs.promises, 'readlink').mockImplementation(async (...args) => {
+    const bytes = await original(...args);
+    if (!replaced) { replaced = true; fs.unlinkSync(path.join(output, 'alias')); alias('alias', 'functions'); }
+    return bytes;
+  });
+  expect((await trial({}, aliasEnvelope())).report.failure).toBe('changed');
+});
+
+test('alias target length and expansion bytes cannot bypass caps', async () => {
+  alias('alias', 'static');
+  // Exercise the reader cap without relying on the host filesystem accepting an oversized symlink.
+  jest.spyOn(fs.promises, 'readlink').mockResolvedValue(Buffer.from('./'.repeat(2100) + 'static'));
+  const { report } = await trial({}, aliasEnvelope()); expect(report.failure).toBe('file_size');
 });
 
 test('unreadable file errors cannot expose paths or exception contents', async () => {
