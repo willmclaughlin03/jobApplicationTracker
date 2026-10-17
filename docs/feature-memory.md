@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-11
 
+- `2026-10-17` - `Bounded artifact directory aliases`: Add an approval-bound policy for relative internal directory aliases while keeping default link rejection. Resolve targets through the independent physical inventory, bound logical path/source-map coverage, scan physical contents once, and verify link/target stability. Add 34 regressions for coverage, privacy, escapes, cycles, mutation and limits; all 154 scanner tests, focused lint, syntax and whitespace checks passed. No revised retained-output scan has run; GATE-1 remains open.
+
 - `2026-10-15` - `Repository-local Inter`: Share one `next/font/local` loader between the dashboard and public shells, preserving their font variable and layout contracts. Bundle a commit-pinned, hash-verified Inter asset with its upstream license and provenance, and update nine existing font mocks. Focused validation passed 117 tests with one dependency-parsing failure reproduced on untouched staging; lint, Babel syntax, asset and whitespace checks passed. Offline build and visual qualification remain pending; GATE-1 stays open.
 
 - `2026-10-15` - `Portable GATE-1 reproduction tests`: Load the byte-verified checked-in qualification helper and derive the fixture root from the test location, removing test-registration dependencies on Git and an untracked local worktree. Add an isolated-checkout regression that blocks ancestor Git discovery and runs a named parser test using only three checked-in files. The regression failed before the fix; all 83 focused tests, zero-warning lint, syntax and whitespace checks pass.
