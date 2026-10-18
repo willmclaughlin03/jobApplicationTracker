@@ -565,6 +565,155 @@ test.each([{}, { filePathMap: {} }])('function config without mapped files remai
     artifactPrivacy: 'no_matches_in_checked_representations' });
 });
 
+/** Opt in to the pinned mapping policy; alias traversal remains an independently explicit policy. */
+function mappingEnvelope() {
+  return envelope({ ...profile(), linkPolicy: scanner.LINK_POLICY, filePathMapPolicy: scanner.FILE_PATH_MAP_POLICY });
+}
+
+/** Write synthetic function mappings without inspecting a retained build or private comparisons. */
+function functionMap(value, relative = 'functions/session.func/.vc-config.json') {
+  file(relative, JSON.stringify({ runtime: 'nodejs22.x', handler: 'index.js', filePathMap: value }));
+}
+
+test('mapping policy is separately approval-bound and restricted to pinned Vercel semantics', async () => {
+  functionMap({ 'app.js': '.vercel/output/static/app.js' });
+  expect((await trial()).report.failure).toBe('external_map');
+  const input = mappingEnvelope();
+  expect(input.approval).not.toBe(approvalId({ ...input.profile, filePathMapPolicy: 'reject' }));
+  input.profile.filePathMapPolicy = 'reject';
+  expect((await trial({}, input)).report.failure).toBe('approval');
+  expect(() => parseProfile({ ...profile(), filePathMapPolicy: 'follow_anything' })).toThrow('profile');
+  expect(() => parseProfile({ ...mappingEnvelope().profile, provenance: { ...profile().provenance, vercelCliVersion: '51.0.0' } })).toThrow('profile');
+});
+
+test('inventoried file mappings receive full content coverage and finite reporting', async () => {
+  functionMap({ 'app.js': '.vercel/output/static/app.js' });
+  const { report } = await trial({}, mappingEnvelope());
+  expect(report).toMatchObject({ result: 'completed', filePathMaps: 1, mappingReferences: 1,
+    mappedEntries: 1, mappingsVerified: 1, filePathMapPolicy: scanner.FILE_PATH_MAP_POLICY });
+  expect(report.files).toHaveLength(4);
+  expect(JSON.stringify(report)).not.toMatch(/app\.js|filePathMap.*static/);
+});
+
+test('regular-file mappings do not implicitly authorize filesystem aliases', async () => {
+  functionMap({ 'app.js': '.vercel/output/static/app.js' });
+  const p = { ...profile(), filePathMapPolicy: scanner.FILE_PATH_MAP_POLICY };
+  expect((await trial({}, envelope(p))).report.result).toBe('completed');
+  alias('alias', 'static');
+  expect((await trial({}, envelope(p))).report.failure).toBe('link');
+});
+
+test('directory aliases nested logical aliases and shared descendants are covered without duplicate content reads', async () => {
+  file('shared/pkg/lib.js', 'safe'); alias('shared/inner', 'pkg'); alias('outer', 'shared');
+  functionMap({ vendor: '.vercel/output/outer', other: '.vercel/output/outer/inner',
+    'vendor/pkg/lib.js': '.vercel/output/shared/pkg/lib.js' });
+  const open = jest.spyOn(fs.promises, 'open');
+  const { report } = await trial({}, mappingEnvelope());
+  expect(report).toMatchObject({ result: 'completed', mappingsVerified: 3, aliasesVerified: 2 });
+  expect(open.mock.calls.filter(([name]) => String(name).endsWith('lib.js'))).toHaveLength(1);
+});
+
+test('empty ordinary and aliased directories have explicit inventory and logical-name coverage', async () => {
+  fs.mkdirSync(path.join(output, 'empty')); alias('empty-alias', 'empty');
+  functionMap({ empty: '.vercel/output/empty', aliased: '.vercel/output/empty-alias' });
+  expect((await trial({}, mappingEnvelope())).report).toMatchObject({ result: 'completed', mappingsVerified: 2, mappedEntries: 2 });
+});
+
+test.each(['absent.js', 'static/absent.js'])('missing inventoried target stops: %s', async target => {
+  functionMap({ 'app.js': '.vercel/output/' + target });
+  expect((await trial({}, mappingEnvelope())).report).toMatchObject({ failure: 'external_map', mappingsVerified: 0, coverage: 'unqualified' });
+});
+
+test.each(['/static/app.js', '../static/app.js', 'static/../static/app.js', './static/app.js',
+  'static//app.js', 'static/app.js/', 'static/app.js?', 'static/app.js#x', 'static/app%2ejs',
+  'static/app\\x.js', 'https://example.invalid/x.js', 'static/app.js.', 'static/app.js ', 'static/\u0000.js'])('noncanonical map target stops: %s', async target => {
+  functionMap({ 'app.js': '.vercel/output/' + target });
+  expect((await trial({}, mappingEnvelope())).report.result).toBe('stopped');
+});
+
+test.each(['static/app.js', '.vercel/outputs/static/app.js', '/.vercel/output/static/app.js',
+  './.vercel/output/static/app.js', 'https://example.invalid/static/app.js'])('unreviewed resolution base stops: %s', async target => {
+  functionMap({ 'app.js': target });
+  expect((await trial({}, mappingEnvelope())).report.failure).toBe('external_map');
+});
+
+test.each(['../app.js', '/app.js', 'C:/app.js', 'x\\app.js', 'x//app.js', '%61pp.js', '', '.env'])('unsafe mapping key stops: %s', async key => {
+  functionMap({ [key]: '.vercel/output/static/app.js' });
+  expect((await trial({}, mappingEnvelope())).report.result).toBe('stopped');
+});
+
+test.each([null, [], true, 5, 'value', { 'app.js': null }, { 'app.js': 5 }])('invalid mapping shape stops: %j', async value => {
+  functionMap(value);
+  expect((await trial({}, mappingEnvelope())).report.result).toBe('stopped');
+});
+
+test('reference expansion path depth and byte bounds cannot be enlarged by mappings', async () => {
+  functionMap({ vendor: '.vercel/output/static' });
+  for (const limits of [{ mappingReferences: 0 }, { mappedEntries: 1 }, { mappingPathBytes: 4 }, { totalBytes: 1 }]) {
+    expect((await trial({ limits }, mappingEnvelope())).report.result).toBe('stopped');
+  }
+  functionMap({ ['a/'.repeat(65) + 'app.js']: '.vercel/output/static/app.js' });
+  expect((await trial({}, mappingEnvelope())).report.failure).toBe('depth_limit');
+  functionMap({ ['a'.repeat(4097)]: '.vercel/output/static/app.js' });
+  expect((await trial({}, mappingEnvelope())).report.failure).toBe('external_map');
+});
+
+test.each([false, true])('conflicting file ancestors stop regardless of map insertion order: %s', async reverse => {
+  const pairs = [['app.js', '.vercel/output/static/app.js'], ['app.js/child.js', '.vercel/output/static/app.js']];
+  functionMap(Object.fromEntries(reverse ? pairs.reverse() : pairs));
+  expect((await trial({}, mappingEnvelope())).report.failure).toBe('external_map');
+});
+
+test('mapping conflicts and changed file interpretation remain unsupported', async () => {
+  functionMap({ 'index.js': '.vercel/output/static/app.js' });
+  expect((await trial({}, mappingEnvelope())).report.failure).toBe('external_map');
+  functionMap({ 'app.json': '.vercel/output/static/app.js' });
+  expect((await trial({}, mappingEnvelope())).report.failure).toBe('external_map');
+  functionMap({ '.vc-config.json': '.vercel/output/functions/session.func/.vc-config.json' });
+  expect((await trial({}, mappingEnvelope())).report.failure).toBe('external_map');
+});
+
+test('mapped source-map context must also have complete supported coverage', async () => {
+  file('static/app.js', '//# sourceMappingURL=app.js.map'); file('static/app.js.map', JSON.stringify(map()));
+  functionMap({ 'app.js': '.vercel/output/static/app.js' });
+  expect((await trial({}, mappingEnvelope())).report.failure).toBe('external_map');
+  functionMap({ 'app.js': '.vercel/output/static/app.js', 'app.js.map': '.vercel/output/static/app.js.map' });
+  expect((await trial({}, mappingEnvelope())).report.result).toBe('completed');
+  file('static/app.js.map', JSON.stringify({ version: 3, sections: [{ url: 'outside.map' }] }));
+  expect((await trial({}, mappingEnvelope())).report.failure).toBe('external_map');
+});
+
+test.each(['contents', 'key', 'value', 'composed_name', 'overwritten_literal'])('mapped privacy comparison remains effective: %s', async where => {
+  const secret = 'mapping-private-sentinel-12345';
+  if (where === 'contents') file('static/app.js', secret);
+  if (where === 'value') file(`static/${secret}.js`, 'safe');
+  if (where === 'composed_name') { file('shared/tail.js', 'safe'); functionMap({ 'mapping-private-sentinel-12345': '.vercel/output/shared' }); }
+  else functionMap({ [where === 'key' ? secret + '.js' : 'app.js']: `.vercel/output/static/${where === 'value' ? secret : 'app'}.js` });
+  if (where === 'overwritten_literal') file('functions/session.func/.vc-config.json',
+    `{"filePathMap":{"ignored":"${secret.replace(/./g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'))}"},"filePathMap":{"app.js":".vercel/output/static/app.js"}}`);
+  const input = mappingEnvelope(); input.comparisons = [{ label: 'synthetic_sentinel', value: secret }];
+  const { report } = await trial({}, input);
+  expect(report.failure).toBe('findings'); expect(JSON.stringify(report)).not.toContain(secret);
+});
+
+test('hard links and alias escapes still reject under the mapping policy', async () => {
+  functionMap({ vendor: '.vercel/output/static' });
+  fs.linkSync(path.join(output, 'static/app.js'), path.join(output, 'static/copy.js'));
+  expect((await trial({}, mappingEnvelope())).report.failure).toBe('link');
+  fs.unlinkSync(path.join(output, 'static/copy.js')); alias('escape', '../outside');
+  expect((await trial({}, mappingEnvelope())).report.failure).toBe('alias_target');
+});
+
+test('a mapped descendant disappearing after inventory cannot produce a pass', async () => {
+  functionMap({ vendor: '.vercel/output/static' });
+  const original = fs.promises.open; let changed = false;
+  jest.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+    if (!changed && String(args[0]).endsWith('.vc-config.json')) { changed = true; fs.unlinkSync(path.join(output, 'static/app.js')); }
+    return original(...args);
+  });
+  expect((await trial({}, mappingEnvelope())).report).toMatchObject({ result: 'stopped', mappingsVerified: 0 });
+});
+
 test('inspection approval is consumed before content access and cannot be retried', async () => {
   const used = new Set(); const storeFactory = jest.fn((id) => {
     if (used.has(id)) throw new Error('consumed'); used.add(id); return { save: jest.fn() };
