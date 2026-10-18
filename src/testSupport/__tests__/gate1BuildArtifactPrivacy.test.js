@@ -696,6 +696,21 @@ test.each(['contents', 'key', 'value', 'composed_name', 'overwritten_literal'])(
   expect(report.failure).toBe('findings'); expect(JSON.stringify(report)).not.toContain(secret);
 });
 
+/** Split the sentinel across mapping and descendant names so only destination projection can match it. */
+test('mapped privacy comparison detects a sentinel formed only in the projected destination', async () => {
+  const secret = 'mapping-private/sentinel-12345';
+  file('shared/sentinel-12345/tail.js', 'safe');
+  functionMap({ 'mapping-private': '.vercel/output/shared' });
+  const input = mappingEnvelope(); input.comparisons = [{ label: 'synthetic_sentinel', value: secret }];
+  const { report } = await trial({}, input);
+  expect(report).toMatchObject({ result: 'stopped', failure: 'findings', mappingsVerified: 1 });
+  expect(report.directoryFindings).toEqual(expect.arrayContaining([
+    expect.objectContaining({ comparisonLabels: ['synthetic_sentinel'] }),
+  ]));
+  for (const entry of report.files) expect(entry.comparisonLabels).toEqual([]);
+  expect(JSON.stringify(report)).not.toContain(secret);
+});
+
 test('hard links and alias escapes still reject under the mapping policy', async () => {
   functionMap({ vendor: '.vercel/output/static' });
   fs.linkSync(path.join(output, 'static/app.js'), path.join(output, 'static/copy.js'));
