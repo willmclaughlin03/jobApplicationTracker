@@ -822,6 +822,7 @@ function inspectionPreparation(prepared, folder) {
   const scanner = require('./gate1-build-artifact-privacy');
   const profile = { schemaVersion: 1, scope: scanner.SCOPE, runId: prepared.binding.slice(0, 32),
     environment: 'preview', outputRoot: path.join(folder, 'app/.vercel/output'),
+    sourceMapPolicy: scanner.SOURCE_MAP_POLICY,
     provenance: { gitSha: prepared.contract.sourceSha, lockSha256: prepared.contract.lockSha256,
       nodeVersion: VERSIONS.node, nextVersion: VERSIONS.next, vercelCliVersion: VERSIONS.vercel },
     comparisonLabels: LABELS, attestations: Object.fromEntries(scanner.ATTESTATIONS.map((key) => [key, false])) };
@@ -1015,4 +1016,4 @@ module.exports = { SCOPE, CONTEXT, VOLUME, CONTAINER, BASE_IMAGE, NODE_ARCHIVE, 
   FILES, LIMITS, ATTESTATIONS, SCAN_ATTESTATIONS, LABELS, SETTINGS, QualificationError, strictJson, safePath, forbidden, publicFile,
   fileHash, template, parseProfile, supervise, sourceSelection, checkLock, checkCacheTar, executionIntegrity,
   prepare, writeOnce, reserve, stageReview, tarHeader, contextTar, sourceArchive, containerArgs, engineCheck, execute,
-  storageCheck, syntheticInputs, verifySource, vercelEntry, confirmInspection, buildCommands, stopReport, failureReport, readInput, main };
+  storageCheck, syntheticInputs, verifySource, vercelEntry, inspectionPreparation, confirmInspection, buildCommands, stopReport, failureReport, readInput, main };

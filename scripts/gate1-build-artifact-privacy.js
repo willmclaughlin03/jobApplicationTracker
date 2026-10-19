@@ -351,8 +351,8 @@ function coverFilePathMap(value, entry, coverage, comparisons, state, projected)
       checkTime(state);
       if (state.mappedEntries + queue.length - head >= state.limits.mappedEntries) throw new ScanError('entry_limit');
       const logical = destinationName.split(path.sep).join('/');
-      mappingPath(logical, state);
       const length = Buffer.byteLength(logical);
+      if (length > state.limits.mappingPathBytes) throw new ScanError('external_map');
       if (state.mappedPathBytes + length > state.limits.mappedPathBytes) throw new ScanError('total_bytes');
       charge(state, length, true); state.mappedPathBytes += length;
       queue.push({ source: sourceName, destination: destinationName });

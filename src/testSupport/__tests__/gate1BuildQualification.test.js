@@ -440,18 +440,33 @@ test('post-build inspection assertions require owner input and do not silently a
     profile: { attestations: f.profile.inspectionAttestations } });
 });
 
-test('only explicit assertions for the exact draft can reach scanner inspection', () => {
+/** Exercise the generated draft through confirmation and a synthetic absent-map scan without Docker or builds. */
+test('only explicit assertions for the exact draft can reach scanner inspection', async () => {
   const scanner = require('../../../scripts/gate1-build-artifact-privacy');
   expect(q.SCAN_ATTESTATIONS).toEqual(scanner.ATTESTATIONS);
-  const profile = { ...scanner.profileTemplate(), outputRoot: path.join(folder, '.vercel/output'),
+  const draft = q.inspectionPreparation({ binding: 'a'.repeat(64),
+    contract: { sourceSha: SOURCE, lockSha256: 'b'.repeat(64) } }, folder);
+  const profile = { ...draft.profile,
     attestations: Object.fromEntries(scanner.ATTESTATIONS.map((key) => [key, true])) };
-  const draft = { ...scanner.preparation(profile), profile: { ...profile,
-    attestations: Object.fromEntries(scanner.ATTESTATIONS.map((key) => [key, false])) }, attestationsConfirmed: false };
   const confirmed = { ...draft, profile, attestationsConfirmed: true };
-  expect(q.confirmInspection(draft, confirmed, scanner)).toEqual(profile);
+  const scanProfile = q.confirmInspection(draft, confirmed, scanner);
+  expect(scanProfile).toEqual(profile);
   expect(() => q.confirmInspection(draft, draft, scanner)).toThrow('approval');
   expect(() => q.confirmInspection(draft, { ...confirmed, profile: { ...profile,
     outputRoot: path.join(folder, 'other/.vercel/output') } }, scanner)).toThrow('approval');
+  expect(() => q.confirmInspection(draft, { ...confirmed, profile: { ...profile,
+    sourceMapPolicy: 'reject' } }, scanner)).toThrow('approval');
+
+  fs.mkdirSync(path.join(profile.outputRoot, 'static'), { recursive: true });
+  fs.writeFileSync(path.join(profile.outputRoot, 'config.json'), '{"version":3}');
+  fs.writeFileSync(path.join(profile.outputRoot, 'static/app.js'), '//# sourceMappingURL=app.js.map');
+  const save = jest.fn();
+  const report = await scanner.runInspection({ profile: scanProfile, approval: draft.approvalId,
+    inspectionApproved: true, comparisons: q.LABELS.map(label => ({ label, value: PRIVATE })) },
+  { storeFactory: () => ({ save }) });
+  expect(report).toMatchObject({ result: 'completed', failure: null, sourceMapPolicy: scanner.SOURCE_MAP_POLICY,
+    missingLocalMapReferences: 1, sourceMapAvailability: 'absent_local_targets', reportSaved: true });
+  expect(save).toHaveBeenCalledWith(report);
 });
 
 test('container contract enforces isolation and an independent Linux timeout with persistent storage', () => {
