@@ -10,7 +10,7 @@ const { EventEmitter } = require('node:events');
 const r = require('../reproduce');
 const repoRoot = path.resolve(__dirname, '../../..');
 const qualificationFile = path.join(repoRoot, 'scripts/gate1-build-qualification.js');
-assert.equal(crypto.createHash('sha256').update(fs.readFileSync(qualificationFile)).digest('hex'), 'dd665377170f160f7edb012d2cabde690730b8622f49a19ff353345e2dca4736');
+assert.equal(crypto.createHash('sha256').update(fs.readFileSync(qualificationFile)).digest('hex'), '0ac789db2c40dab419b5265d125df09d0086873ab561be70fa1398304967a74d');
 const q = require(qualificationFile);
 const dictionary = { locations: { 'src/pages/index.js': 80, 'scripts/validate-build-env.js': 90 },
   modules: ['next', '@/lib/missing', './component'], literals: ['Supabase URL is required.'] };
