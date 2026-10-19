@@ -619,6 +619,16 @@ test('empty ordinary and aliased directories have explicit inventory and logical
   expect((await trial({}, mappingEnvelope())).report).toMatchObject({ result: 'completed', mappingsVerified: 2, mappedEntries: 2 });
 });
 
+/** Inventoried descendant names may contain characters forbidden in explicit mapping keys and targets. */
+test.each(['percent%name', 'hash#name'])('directory mappings cover inventory-valid descendant names: %s', async name => {
+  file(`shared/${name}/${name}.js`, 'safe');
+  functionMap({ vendor: '.vercel/output/shared' });
+  const { report } = await trial({}, mappingEnvelope());
+  expect(report).toMatchObject({ result: 'completed', failure: null, mappingsVerified: 1, mappedEntries: 3 });
+  expect(report.files).toHaveLength(5);
+  expect(JSON.stringify(report)).not.toContain(name);
+});
+
 test.each(['absent.js', 'static/absent.js'])('missing inventoried target stops: %s', async target => {
   functionMap({ 'app.js': '.vercel/output/' + target });
   expect((await trial({}, mappingEnvelope())).report).toMatchObject({ failure: 'external_map', mappingsVerified: 0, coverage: 'unqualified' });
@@ -637,7 +647,7 @@ test.each(['static/app.js', '.vercel/outputs/static/app.js', '/.vercel/output/st
   expect((await trial({}, mappingEnvelope())).report.failure).toBe('external_map');
 });
 
-test.each(['../app.js', '/app.js', 'C:/app.js', 'x\\app.js', 'x//app.js', '%61pp.js', '', '.env'])('unsafe mapping key stops: %s', async key => {
+test.each(['../app.js', '/app.js', 'C:/app.js', 'x\\app.js', 'x//app.js', '%61pp.js', 'app?.js', 'app#.js', '', '.env'])('unsafe mapping key stops: %s', async key => {
   functionMap({ [key]: '.vercel/output/static/app.js' });
   expect((await trial({}, mappingEnvelope())).report.result).toBe('stopped');
 });
@@ -757,6 +767,18 @@ test.each([-1, 0, 1])('projected destination bytes include duplicate visits and 
   expect(report.mappedPathBytes).toBeLessThanOrEqual(report.decodedBytes);
   if (delta >= 0) expect(report).toMatchObject({ mappedEntries: 3, mappingReferences: 2, mappedPathBytes: required });
   else expect(report).toMatchObject({ failure: 'total_bytes', mappingsVerified: 0, inspectedCopyManifestSha256: null });
+});
+
+/** Bound each expanded UTF-8 path independently of the shorter explicit key and target. */
+test.each([-1, 0, 1])('expanded descendant path byte boundary remains enforced: %s', async delta => {
+  file('shared/caf\u00e9%file.js', 'safe');
+  functionMap({ vendor: '.vercel/output/shared' });
+  const required = Buffer.byteLength('functions/session.func/vendor/caf\u00e9%file.js');
+  const { report } = await trial({ limits: { mappingPathBytes: required + delta } }, mappingEnvelope());
+  expect(report.result).toBe(delta < 0 ? 'stopped' : 'completed');
+  if (delta < 0) expect(report).toMatchObject({ failure: 'external_map', mappingsVerified: 0, inspectedCopyManifestSha256: null });
+  else expect(report).toMatchObject({ failure: null, mappingsVerified: 1, mappedEntries: 2,
+    mappedPathBytes: Buffer.byteLength('functions/session.func/vendor') + required });
 });
 
 test('pending directory expansion stops before allocating beyond the remaining work budget', async () => {

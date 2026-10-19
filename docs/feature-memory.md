@@ -16,6 +16,10 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-18
 
+- `2026-10-19` - `Qualification helper checksum follow-up`: Refresh the diagnostic and standalone synthetic-test pins for the updated qualification helper. Preserve exact-byte rejection and the reproduction runner's original-source pin; GATE-1 remains open.
+
+- `2026-10-19` - `Qualification inspection review follow-ups`: Accept inventory-valid descendant names when expanding directory mappings while retaining per-path and cumulative byte limits, explicit key/target validation and alias-depth checks. Include the emitted-inventory source-map policy in generated qualification drafts so confirmation preserves the intended missing-map behavior. Add filename, UTF-8 boundary and draft-to-inspection regressions; GATE-1 remains open.
+
 - `2026-10-19` - `Explicit emitted-source-map privacy policy`: Add approval-bound `emitted_inventory_v1` handling for absent, validated local `.map` targets while preserving strict defaults and complete emitted-inventory scanning. Report missing-reference/context counts and coverage limits; reject directories, implicit projected parents, escapes and later unsafe contexts. Include the bounded mapping-capacity changes (100,000 references, 200,000 visits, 64 MiB projected names), per-run comparison caching and shared source-map parsing. The 256-test scanner/launcher suite passed; GATE-1 and retained-output privacy remain unqualified.
 
 - `2026-10-18` - `Projected artifact destination privacy coverage`: Add a synthetic mapping regression whose complete sentinel appears only when the destination is projected from separate path components. Require a sanitized directory finding and no file comparison matches. All 208 scanner tests, focused ESLint and whitespace checks pass.
