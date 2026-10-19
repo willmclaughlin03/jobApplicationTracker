@@ -230,7 +230,7 @@ async function prepare(value, dependencies = {}) {
   const evidence = verifyEvidence(root, dependencies.read);
   const read = dependencies.read || q.publicFile;
   const integrity = Object.fromEntries(EXECUTION_FILES.map((name) => [name, hash(read(path.join(__dirname, name), 65536))]));
-  if (integrity['gate1-build-qualification.js'] !== 'dd665377170f160f7edb012d2cabde690730b8622f49a19ff353345e2dca4736') {
+  if (integrity['gate1-build-qualification.js'] !== '0ac789db2c40dab419b5265d125df09d0086873ab561be70fa1398304967a74d') {
     throw new DiagnosticError('provenance');
   }
   const revision = (dependencies.revision || (await q.supervise('git', ['-C', ROOT, 'rev-parse', 'HEAD'], { outputBytes: 128 })).toString().trim());

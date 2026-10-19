@@ -619,6 +619,16 @@ test('empty ordinary and aliased directories have explicit inventory and logical
   expect((await trial({}, mappingEnvelope())).report).toMatchObject({ result: 'completed', mappingsVerified: 2, mappedEntries: 2 });
 });
 
+/** Inventoried descendant names may contain characters forbidden in explicit mapping keys and targets. */
+test.each(['percent%name', 'hash#name'])('directory mappings cover inventory-valid descendant names: %s', async name => {
+  file(`shared/${name}/${name}.js`, 'safe');
+  functionMap({ vendor: '.vercel/output/shared' });
+  const { report } = await trial({}, mappingEnvelope());
+  expect(report).toMatchObject({ result: 'completed', failure: null, mappingsVerified: 1, mappedEntries: 3 });
+  expect(report.files).toHaveLength(5);
+  expect(JSON.stringify(report)).not.toContain(name);
+});
+
 test.each(['absent.js', 'static/absent.js'])('missing inventoried target stops: %s', async target => {
   functionMap({ 'app.js': '.vercel/output/' + target });
   expect((await trial({}, mappingEnvelope())).report).toMatchObject({ failure: 'external_map', mappingsVerified: 0, coverage: 'unqualified' });
@@ -637,7 +647,7 @@ test.each(['static/app.js', '.vercel/outputs/static/app.js', '/.vercel/output/st
   expect((await trial({}, mappingEnvelope())).report.failure).toBe('external_map');
 });
 
-test.each(['../app.js', '/app.js', 'C:/app.js', 'x\\app.js', 'x//app.js', '%61pp.js', '', '.env'])('unsafe mapping key stops: %s', async key => {
+test.each(['../app.js', '/app.js', 'C:/app.js', 'x\\app.js', 'x//app.js', '%61pp.js', 'app?.js', 'app#.js', '', '.env'])('unsafe mapping key stops: %s', async key => {
   functionMap({ [key]: '.vercel/output/static/app.js' });
   expect((await trial({}, mappingEnvelope())).report.result).toBe('stopped');
 });
@@ -729,6 +739,78 @@ test('a mapped descendant disappearing after inventory cannot produce a pass', a
   expect((await trial({}, mappingEnvelope())).report).toMatchObject({ result: 'stopped', mappingsVerified: 0 });
 });
 
+test('mapping capacity is approval-bound and fixture seams cannot enlarge any ceiling', async () => {
+  expect(LIMITS).toMatchObject({ mappingReferences: 100000, mappedEntries: 200000, mappedPathBytes: 67108864 });
+  for (const key of ['mappingReferences', 'mappedEntries', 'mappedPathBytes']) {
+    expect((await trial({ limits: { [key]: LIMITS[key] + 1 } }, mappingEnvelope())).report.failure).toBe('input');
+  }
+});
+
+test.each([-1, 0, 1])('reference and expansion boundaries retain complete-or-stopped coverage: %s', async delta => {
+  functionMap({ 'a.js': '.vercel/output/static/app.js', 'b.js': '.vercel/output/static/app.js' });
+  for (const key of ['mappingReferences', 'mappedEntries']) {
+    const { report } = await trial({ limits: { [key]: 2 + delta } }, mappingEnvelope());
+    expect(report.result).toBe(delta < 0 ? 'stopped' : 'completed');
+    expect(report.mappingsVerified).toBe(delta < 0 ? 0 : 2);
+    if (delta < 0) expect(report.failure).toBe('entry_limit');
+  }
+});
+
+test.each([-1, 0, 1])('projected destination bytes include duplicate visits and exact UTF-8 lengths: %s', async delta => {
+  file('shared/app.js', 'safe');
+  functionMap({ 'caf\u00e9': '.vercel/output/shared', 'caf\u00e9/app.js': '.vercel/output/shared/app.js' });
+  const required = ['functions/session.func/caf\u00e9', 'functions/session.func/caf\u00e9/app.js',
+    'functions/session.func/caf\u00e9/app.js'].reduce((sum, name) => sum + Buffer.byteLength(name), 0);
+  const { report } = await trial({ limits: { mappedPathBytes: required + delta } }, mappingEnvelope());
+  expect(report.result).toBe(delta < 0 ? 'stopped' : 'completed');
+  expect(report.mappedPathBytes).toBeLessThanOrEqual(required + delta);
+  expect(report.mappedPathBytes).toBeLessThanOrEqual(report.decodedBytes);
+  if (delta >= 0) expect(report).toMatchObject({ mappedEntries: 3, mappingReferences: 2, mappedPathBytes: required });
+  else expect(report).toMatchObject({ failure: 'total_bytes', mappingsVerified: 0, inspectedCopyManifestSha256: null });
+});
+
+/** Bound each expanded UTF-8 path independently of the shorter explicit key and target. */
+test.each([-1, 0, 1])('expanded descendant path byte boundary remains enforced: %s', async delta => {
+  file('shared/caf\u00e9%file.js', 'safe');
+  functionMap({ vendor: '.vercel/output/shared' });
+  const required = Buffer.byteLength('functions/session.func/vendor/caf\u00e9%file.js');
+  const { report } = await trial({ limits: { mappingPathBytes: required + delta } }, mappingEnvelope());
+  expect(report.result).toBe(delta < 0 ? 'stopped' : 'completed');
+  if (delta < 0) expect(report).toMatchObject({ failure: 'external_map', mappingsVerified: 0, inspectedCopyManifestSha256: null });
+  else expect(report).toMatchObject({ failure: null, mappingsVerified: 1, mappedEntries: 2,
+    mappedPathBytes: Buffer.byteLength('functions/session.func/vendor') + required });
+});
+
+test('pending directory expansion stops before allocating beyond the remaining work budget', async () => {
+  for (let i = 0; i < 20; i++) file(`shared/file-${i}.js`, 'safe');
+  functionMap({ vendor: '.vercel/output/shared' });
+  const { report } = await trial({ limits: { mappedEntries: 2 } }, mappingEnvelope());
+  expect(report).toMatchObject({ result: 'stopped', failure: 'entry_limit', mappedEntries: 1, mappingsVerified: 0 });
+  expect(report.mappedPathBytes).toBe(Buffer.byteLength('functions/session.func/vendor') +
+    Buffer.byteLength('functions/session.func/vendor/file-0.js'));
+});
+
+test('shared inline maps are inspected once while distinct external-map contexts remain required', async () => {
+  const inline = Buffer.from(JSON.stringify(map())).toString('base64');
+  file('static/app.js', `safe;\n//# sourceMappingURL=data:application/json;base64,${inline}`);
+  functionMap({ 'a.js': '.vercel/output/static/app.js', 'nested/b.js': '.vercel/output/static/app.js' });
+  expect((await trial({}, mappingEnvelope())).report).toMatchObject({ result: 'completed', inlineMaps: 1, mappingsVerified: 2 });
+  file('static/app.js', 'safe;\n//# sourceMappingURL=app.js.map');
+  file('static/app.js.map', JSON.stringify(map()));
+  file('functions/session.func/app.js.map', JSON.stringify(map()));
+  expect((await trial({}, mappingEnvelope())).report.failure).toBe('external_map');
+  file('functions/session.func/nested/app.js.map', JSON.stringify(map()));
+  expect((await trial({}, mappingEnvelope())).report.result).toBe('completed');
+});
+
+test('comparison encodings stay per-run and encoded findings survive location reuse', async () => {
+  functionMap({ 'a.js': '.vercel/output/static/app.js', 'b.js': '.vercel/output/static/app.js' });
+  file('static/app.js', JSON.stringify({ value: Buffer.from(PRIVATE).toString('base64') }));
+  expect((await trial({}, mappingEnvelope())).report.failure).toBe('findings');
+  const next = mappingEnvelope(); next.comparisons = [{ label: 'synthetic_sentinel', value: 'different-synthetic-comparison-12345' }];
+  expect((await trial({}, next)).report.result).toBe('completed');
+});
+
 test('inspection approval is consumed before content access and cannot be retried', async () => {
   const used = new Set(); const storeFactory = jest.fn((id) => {
     if (used.has(id)) throw new Error('consumed'); used.add(id); return { save: jest.fn() };
@@ -738,6 +820,121 @@ test('inspection approval is consumed before content access and cannot be retrie
   const open = jest.spyOn(fs.promises, 'opendir');
   const second = await runInspection(input, { storeFactory });
   expect(second.failure).toBe('reservation'); expect(open).not.toHaveBeenCalled();
+});
+
+/** Opt in explicitly without changing the default strict-reference fixtures or consumed approvals. */
+function emittedEnvelope(mapped = false) {
+  const p = mapped ? mappingEnvelope().profile : profile();
+  return envelope({ ...p, sourceMapPolicy: scanner.SOURCE_MAP_POLICY });
+}
+
+test('emitted-map policy is optional, strict, and separately approval-bound', async () => {
+  file('static/app.js', '//# sourceMappingURL=missing.map');
+  expect((await trial()).report.failure).toBe('external_map');
+  const input = emittedEnvelope();
+  expect(input.approval).not.toBe(approvalId({ ...input.profile, sourceMapPolicy: 'reject' }));
+  input.profile.sourceMapPolicy = 'reject';
+  expect((await trial({}, input)).report.failure).toBe('approval');
+  expect(() => parseProfile({ ...profile(), sourceMapPolicy: 'ignore_all' })).toThrow('profile');
+});
+
+test.each(['missing.map', '/maps/missing.map', 'missing%2Emap', '../missing/nested.map'])(
+  'absent safe local map is counted with explicit coverage limits: %s', async ref => {
+    file('static/app.js', '//# sourceMappingURL=' + ref);
+    const { report } = await trial({}, emittedEnvelope());
+    expect(report).toMatchObject({ result: 'completed', sourceMapPolicy: 'emitted_inventory_v1',
+      sourceMapReferences: 1, sourceMapContexts: 1, missingLocalMapReferences: 1, missingLocalMapContexts: 1,
+      sourceMapAvailability: 'absent_local_targets', gate1Status: 'open',
+      artifactPrivacy: 'no_matches_in_checked_representations' });
+    expect(report.files).toHaveLength(3);
+    expect(report.limitations).toEqual(expect.arrayContaining(scanner.SOURCE_MAP_LIMITATIONS));
+    expect(JSON.stringify(report)).not.toContain(ref);
+  });
+
+test.each(['https://private.invalid/a.map', '//private.invalid/a.map', '../../../../outside.map',
+  '%2e%2e/%2e%2e/%2e%2e/outside.map', '%2f%2fprivate.invalid/a.map', 'bad%GG.map',
+  'bad%5cpath.map', 'bad%3fquery.map', 'bad%23fragment.map', 'bad%3ascheme.map', 'bad%00.map',
+  'missing.js', 'missing.map?query', 'missing.map#fragment', '../..named.map'])(
+  'emitted-only policy still rejects unsupported references: %s', async ref => {
+    file('static/app.js', '//# sourceMappingURL=' + ref);
+    expect((await trial({}, emittedEnvelope())).report).toMatchObject({ result: 'stopped', failure: 'external_map',
+      sourceMapAvailability: 'unqualified', artifactPrivacy: 'unqualified' });
+  });
+
+test.each(['physical', 'alias', 'projected', 'implicit_parent', 'file_parent'])(
+  'non-file or structurally impossible target is not absent: %s', async kind => {
+    let ref = 'occupied.map';
+    if (kind === 'physical') fs.mkdirSync(path.join(output, 'static/occupied.map'));
+    if (kind === 'alias') { fs.mkdirSync(path.join(output, 'empty')); alias('static/occupied.map', '../empty'); }
+    if (kind === 'projected') { fs.mkdirSync(path.join(output, 'empty')); functionMap({ 'occupied.map': '.vercel/output/empty' }); }
+    if (kind === 'implicit_parent') functionMap({ 'occupied.map/child.js': '.vercel/output/static/app.js' });
+    if (kind === 'file_parent') { file('static/occupied.map', JSON.stringify(map())); ref += '/missing.map'; }
+    const source = ['projected', 'implicit_parent'].includes(kind) ? 'functions/session.func/index.js' : 'static/app.js';
+    file(source, '//# sourceMappingURL=' + ref);
+    expect((await trial({}, emittedEnvelope(true))).report.failure).toBe('external_map');
+  });
+
+test('missing contexts are counted once per match without skipping emitted maps elsewhere', async () => {
+  file('static/app.js', '//# sourceMappingURL=app.js.map'); file('static/app.js.map', JSON.stringify(map()));
+  functionMap({ 'a.js': '.vercel/output/static/app.js', 'nested/b.js': '.vercel/output/static/app.js' });
+  const { report } = await trial({}, emittedEnvelope(true));
+  expect(report).toMatchObject({ result: 'completed', sourceMapReferences: 1, sourceMapContexts: 3,
+    missingLocalMapReferences: 1, missingLocalMapContexts: 2, sourceMapAvailability: 'absent_local_targets' });
+  expect(report.files.some(f => f.category === 'source_map')).toBe(true);
+  file('static/app.js.map', JSON.stringify(map(PRIVATE)));
+  expect((await trial({}, emittedEnvelope(true))).report.failure).toBe('findings');
+});
+
+test.each(['directory', 'escape'])('an allowed first absence does not hide a later %s context', async kind => {
+  if (kind === 'directory') {
+    file('static/app.js', '//# sourceMappingURL=target.map');
+    functionMap({ 'app.js': '.vercel/output/static/app.js' });
+    fs.mkdirSync(path.join(output, 'functions/session.func/target.map'));
+  } else {
+    file('shared/deep/pkg/app.js', '//# sourceMappingURL=../../../missing.map');
+    functionMap({ 'app.js': '.vercel/output/shared/deep/pkg/app.js' });
+  }
+  const { report } = await trial({}, emittedEnvelope(true));
+  expect(report).toMatchObject({ failure: 'external_map', missingLocalMapReferences: 1,
+    missingLocalMapContexts: 1, sourceMapAvailability: 'unqualified' });
+});
+
+test.each(['inline', 'unreferenced', 'indexed', 'duplicate_json', 'other_file', 'name', 'resolved_reference'])(
+  'missing map never hides privacy findings or malformed maps: %s', async kind => {
+    file('static/app.js', '//# sourceMappingURL=missing.map');
+    let expected = 'findings';
+    if (kind === 'inline') file('static/other.js', '//# sourceMappingURL=data:application/json;base64,' + Buffer.from(JSON.stringify(map(PRIVATE))).toString('base64'));
+    if (kind === 'unreferenced') file('static/other.map', JSON.stringify(map(PRIVATE)));
+    if (kind === 'indexed') { file('static/other.map', JSON.stringify({ version: 3, sections: [{ url: 'missing.map' }] })); expected = 'external_map'; }
+    if (kind === 'duplicate_json') file('static/other.json', '{"x":' + JSON.stringify(PRIVATE) + ',"x":"safe"}');
+    if (kind === 'other_file') file('static/other.txt', PRIVATE);
+    if (kind === 'name') file('static/' + PRIVATE + '.txt', 'safe');
+    if (kind === 'resolved_reference') file('static/app.js', '//# sourceMappingURL=' + [...PRIVATE].map(c => '%' + c.charCodeAt(0).toString(16)).join('') + '.map');
+    expect((await trial({}, emittedEnvelope())).report.failure).toBe(expected);
+  });
+
+test('regex text in strings remains conservatively checked and explicitly limited', async () => {
+  file('static/app.js', 'const value = "//# sourceMappingURL=absent.map ";');
+  const { report } = await trial({}, emittedEnvelope());
+  expect(report).toMatchObject({ result: 'completed', missingLocalMapReferences: 1 });
+  expect(report.limitations).toContain('source_mapping_url_matches_are_syntactic_not_lexical');
+});
+
+test('resolved context bytes stay inside the existing total budget', async () => {
+  file('static/app.js', '//# sourceMappingURL=missing.map');
+  const { report } = await trial({}, emittedEnvelope());
+  expect((await trial({ limits: { totalBytes: report.bytesInspected } }, emittedEnvelope())).report.result).toBe('completed');
+  expect((await trial({ limits: { totalBytes: report.bytesInspected - 1 } }, emittedEnvelope())).report.failure).toBe('total_bytes');
+});
+
+test('a map appearing after the initial inventory invalidates an absent-target result', async () => {
+  file('static/app.js', '//# sourceMappingURL=missing.map');
+  const original = fs.promises.open; let changed = false;
+  jest.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+    if (!changed && args[0] === path.join(output, 'static/app.js')) { changed = true; file('static/missing.map', JSON.stringify(map())); }
+    return original(...args);
+  });
+  expect((await trial({}, emittedEnvelope())).report).toMatchObject({ failure: 'changed', sourceMapAvailability: 'unqualified' });
 });
 
 test('storage uses exclusive creation for reservation and report without paths in public results', () => {
