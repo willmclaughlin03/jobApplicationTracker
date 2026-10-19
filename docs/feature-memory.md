@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-18
 
+- `2026-10-19` - `Explicit emitted-source-map privacy policy`: Add approval-bound `emitted_inventory_v1` handling for absent, validated local `.map` targets while preserving strict defaults and complete emitted-inventory scanning. Report missing-reference/context counts and coverage limits; reject directories, implicit projected parents, escapes and later unsafe contexts. Include the bounded mapping-capacity changes (100,000 references, 200,000 visits, 64 MiB projected names), per-run comparison caching and shared source-map parsing. The 256-test scanner/launcher suite passed; GATE-1 and retained-output privacy remain unqualified.
+
 - `2026-10-18` - `Projected artifact destination privacy coverage`: Add a synthetic mapping regression whose complete sentinel appears only when the destination is projected from separate path components. Require a sanitized directory finding and no file comparison matches. All 208 scanner tests, focused ESLint and whitespace checks pass.
 
 - `2026-10-18` - `Inventoried artifact filePathMap targets`: Add an approval-bound policy for pinned Vercel 50.33.1 mappings to inventoried files, directories and internal directory aliases. Bound mapped descendants and logical-name/source-map coverage, preserve default rejection and filesystem guards, and fingerprint the exact scanned bytes for independent-copy verification. All 207 targeted tests, focused lint, syntax and whitespace checks pass. GATE-1 remains open; the retained-output scan stopped at the 25,000 mapping-reference cap.

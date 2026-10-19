@@ -15,11 +15,14 @@ const { z } = require('zod');
 const SCOPE = 'new_build_output_comparisons_only';
 const LINK_POLICY = 'internal_directory_aliases_v1';
 const FILE_PATH_MAP_POLICY = 'inventoried_output_targets_v1';
+const SOURCE_MAP_POLICY = 'emitted_inventory_v1';
+const SOURCE_MAP_LIMITATIONS = Object.freeze(['absent_local_source_maps_not_inspected',
+  'source_mapping_url_matches_are_syntactic_not_lexical']);
 const LIMITS = Object.freeze({ maxAppRequests: 0, maxProviderRequests: 0, maxConfigMutations: 0,
   maxBuilds: 0, maxDeployments: 0, maxFiles: 25000, maxEntries: 50000, maxDepth: 64,
   fileBytes: 67108864, totalBytes: 1073741824, overallMs: 120000, concurrency: 1,
   inputBytes: 65536, reportBytes: 8388608, jsonNodes: 100000, inputMs: 10000,
-  mappingReferences: 25000, mappedEntries: 50000, mappingPathBytes: 4096 });
+  mappingReferences: 100000, mappedEntries: 200000, mappingPathBytes: 4096, mappedPathBytes: 67108864 });
 const LABELS = Object.freeze(['ceiling_hmac', 'redis_token', 'supabase_service_role', 'csrf_secret',
   'secrets_probe', 'automation_bypass', 'synthetic_sentinel']);
 const ATTESTATIONS = Object.freeze(['sourceCodeReviewed', 'newBuildProvenanceReviewed',
@@ -37,6 +40,7 @@ const profileSchema = z.object({ schemaVersion: z.literal(1), scope: z.literal(S
   outputRoot: z.string().min(1).max(1024).refine((s) => !hasControl(s)),
   linkPolicy: z.enum(['reject', LINK_POLICY]).optional(),
   filePathMapPolicy: z.enum(['reject', FILE_PATH_MAP_POLICY]).optional(),
+  sourceMapPolicy: z.enum(['reject', SOURCE_MAP_POLICY]).optional(),
   provenance: z.object({ gitSha: z.string().regex(/^[a-f0-9]{40}$/), lockSha256: hex,
     nodeVersion: version, nextVersion: version, vercelCliVersion: version }).strict(),
   comparisonLabels: z.array(z.enum(LABELS)).min(1).max(LABELS.length)
@@ -115,10 +119,15 @@ function representations(value) {
   return [...new Set(forms)];
 }
 
-/** Match byte strings and fixed ASCII patterns; record labels only, never snippets or offsets. */
-function compareBytes(bytes, comparisons) {
-  const labels = comparisons.filter((ref) => representations(ref.value)
-    .some((s) => bytes.includes(Buffer.from(s)))).map((ref) => ref.label);
+/** Prepare transient per-run comparison encodings; callers erase these private buffers after inspection. */
+function compileComparisons(comparisons) {
+  return comparisons.map(ref => ({ label: ref.label, forms: representations(ref.value).map(value => Buffer.from(value)) }));
+}
+
+/** Match byte strings and fixed ASCII patterns; cached encodings never enter reports or module state. */
+function compareBytes(bytes, comparisons, compiled) {
+  const labels = compiled ? compiled.filter(ref => ref.forms.some(value => bytes.includes(value))).map(ref => ref.label) :
+    comparisons.filter(ref => representations(ref.value).some(value => bytes.includes(Buffer.from(value)))).map(ref => ref.label);
   const text = bytes.toString('latin1'), patterns = [];
   if (/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(text)) patterns.push('private_key');
   if (/\b(?:sk_live_|sk_test_|sb_secret_)[A-Za-z0-9_-]{16,}/.test(text)) patterns.push('secret_token_pattern');
@@ -250,9 +259,10 @@ function resolveAliases(entries, state) {
 }
 
 /** Record only finite findings for physical names, link text and expanded logical paths; charge all bytes. */
-function inspectPathText(text, comparisons, state) {
-  const bytes = Buffer.from(text.split(path.sep).join('/')); charge(state, bytes.length, true);
-  const matches = compareBytes(bytes, comparisons);
+function inspectPathText(text, comparisons, state, charged = false) {
+  const bytes = Buffer.from(text.split(path.sep).join('/'));
+  if (!charged) charge(state, bytes.length, true);
+  const matches = compareBytes(bytes, comparisons, state.compiledComparisons);
   if ((matches.labels.length || matches.patterns.length) && state.directoryFindings.length >= state.limits.maxEntries) {
     throw new ScanError('entry_limit');
   }
@@ -273,9 +283,9 @@ function aliasCoverage(entries, comparisons, state) {
   }
   const queue = [{ physical: '', logical: '', ancestors: [''], depth: 0 }];
   let count = 0, files = 0;
-  while (queue.length) {
+  for (let head = 0; head < queue.length; head++) {
     checkTime(state);
-    const dir = queue.shift();
+    const dir = queue[head]; queue[head] = undefined;
     for (const entry of children.get(dir.physical) || []) {
       checkTime(state);
       if (count >= state.limits.maxEntries) throw new ScanError('entry_limit');
@@ -293,8 +303,8 @@ function aliasCoverage(entries, comparisons, state) {
       } else {
         if (++files > state.limits.maxFiles) throw new ScanError('file_limit');
         knownFiles.add(relative);
-        if (!locations.has(entry.relative)) locations.set(entry.relative, []);
-        locations.get(entry.relative).push(relative);
+        if (!locations.has(entry.relative)) locations.set(entry.relative, new Set());
+        locations.get(entry.relative).add(relative);
       }
     }
   }
@@ -335,15 +345,26 @@ function coverFilePathMap(value, entry, coverage, comparisons, state, projected)
     if (typeof target !== 'string' || !target.startsWith('.vercel/output/')) throw new ScanError('external_map');
     mappingPath(target, state);
     const source = mappingPath(target.slice(15), state), destination = path.join(parent, local);
-    const queue = [{ source, destination }];
-    while (queue.length) {
+    const queue = []; let head = 0;
+    /** Reserve pending expansion and destination bytes before queue growth; duplicate visits still count. */
+    function enqueue(sourceName, destinationName) {
       checkTime(state);
-      if (state.mappedEntries >= state.limits.mappedEntries) throw new ScanError('entry_limit');
+      if (state.mappedEntries + queue.length - head >= state.limits.mappedEntries) throw new ScanError('entry_limit');
+      const logical = destinationName.split(path.sep).join('/');
+      mappingPath(logical, state);
+      const length = Buffer.byteLength(logical);
+      if (state.mappedPathBytes + length > state.limits.mappedPathBytes) throw new ScanError('total_bytes');
+      charge(state, length, true); state.mappedPathBytes += length;
+      queue.push({ source: sourceName, destination: destinationName });
+    }
+    enqueue(source, destination);
+    while (head < queue.length) {
+      checkTime(state);
       state.mappedEntries++;
-      const item = queue.shift(), node = coverage.nodes.get(item.source);
+      const item = queue[head]; queue[head++] = undefined;
+      const node = coverage.nodes.get(item.source);
       if (!node) throw new ScanError('external_map');
-      mappingPath(item.destination.split(path.sep).join('/'), state);
-      inspectPathText(item.destination, comparisons, state);
+      inspectPathText(item.destination, comparisons, state, true);
       const directory = node.directory || node.alias;
       const identity = directory ? (node.alias ? node.targetRelative : node.relative) : node.relative;
       const existing = projected.get(item.destination) || coverage.nodes.get(item.destination);
@@ -362,7 +383,7 @@ function coverFilePathMap(value, entry, coverage, comparisons, state, projected)
       projected.set(item.destination, { directory: Boolean(directory), relative: identity });
       if (directory) {
         for (const child of coverage.children.get(item.source) || []) {
-          queue.push({ source: child, destination: path.join(item.destination, path.basename(child)) });
+          enqueue(child, path.join(item.destination, path.basename(child)));
         }
       } else {
         if (path.extname(node.relative).toLowerCase() !== path.extname(item.destination).toLowerCase() ||
@@ -372,7 +393,7 @@ function coverFilePathMap(value, entry, coverage, comparisons, state, projected)
         coverage.knownFiles.add(item.destination);
         const locations = coverage.locations.get(node.relative);
         if (!locations) throw new ScanError('external_map');
-        if (!locations.includes(item.destination)) locations.push(item.destination);
+        locations.add(item.destination);
       }
     }
   }
@@ -404,6 +425,7 @@ async function prepareFilePathMaps(files, coverage, comparisons, state) {
       ancestor = path.dirname(ancestor);
     }
   }
+  coverage.projected = projected;
 }
 
 /** Open the inventoried inode with no-follow when supported, cap reads, and reject any observed mutation. */
@@ -448,7 +470,7 @@ function inspectJson(value, findings, comparisons, state) {
     if (++nodes > state.limits.jsonNodes || item.depth > state.limits.maxDepth) throw new ScanError('json');
     if (typeof item.value === 'string') {
       const bytes = Buffer.from(item.value); charge(state, bytes.length, true);
-      const result = compareBytes(bytes, comparisons);
+      const result = compareBytes(bytes, comparisons, state.compiledComparisons);
       result.labels.forEach((s) => findings.labels.add(s)); result.patterns.forEach((s) => findings.patterns.add(s));
     } else if (item.value && typeof item.value === 'object') {
       const pairs = Object.entries(item.value);
@@ -456,7 +478,7 @@ function inspectJson(value, findings, comparisons, state) {
       for (const [key, child] of pairs) {
         // Object keys can themselves contain encoded private data.
         const bytes = Buffer.from(key); charge(state, bytes.length, true);
-        const result = compareBytes(bytes, comparisons);
+        const result = compareBytes(bytes, comparisons, state.compiledComparisons);
         result.labels.forEach((s) => findings.labels.add(s)); result.patterns.forEach((s) => findings.patterns.add(s));
         stack.push({ value: child, depth: item.depth + 1 });
       }
@@ -492,15 +514,40 @@ function scanJson(text, findings, comparisons, state, isMap) {
   for (const match of text.matchAll(/"(?:\\.|[^"\\])*"/gs)) {
     if (++literals > state.limits.jsonNodes) throw new ScanError('json');
     const bytes = Buffer.from(JSON.parse(match[0])); charge(state, bytes.length, true);
-    const result = compareBytes(bytes, comparisons);
+    const result = compareBytes(bytes, comparisons, state.compiledComparisons);
     result.labels.forEach((s) => findings.labels.add(s)); result.patterns.forEach((s) => findings.patterns.add(s));
   }
   inspectJson(value, findings, comparisons, state);
   return value;
 }
 
-/** Resolve advertised local maps within the inventory, or inspect inline data maps without network access. */
-function inspectMapLinks(text, entry, knownFiles, findings, comparisons, state) {
+/** Classify absence using only inventoried names, including implicit projected parents. Binary
+ * searches avoid expanding every parent; known file ancestors cannot masquerade as absent targets.
+ */
+function absentMapTarget(relative, knownFiles, state) {
+  const names = state.sourceMapPaths;
+  if (!Array.isArray(names)) throw new ScanError('external_map');
+  for (const query of [relative, relative + path.sep]) {
+    let low = 0, high = names.length;
+    while (low < high) {
+      checkTime(state); const middle = Math.floor((low + high) / 2);
+      if (names[middle] < query) low = middle + 1; else high = middle;
+    }
+    if (names[low] === relative || (query !== relative && names[low]?.startsWith(query))) return false;
+  }
+  let ancestor = path.dirname(relative);
+  while (ancestor !== '.') {
+    checkTime(state);
+    if (knownFiles.has(ancestor)) return false;
+    ancestor = path.dirname(ancestor);
+  }
+  return true;
+}
+
+/** Parse each physical file's references once. Inline data is context-independent; every logical
+ * destination still resolves each external reference against the complete inventory, with deadline checks.
+ */
+function inspectMapLinks(text, entry, knownFiles, findings, comparisons, state, locations = [entry.relative]) {
   const matches = text.matchAll(/(?:\/\/[#@]|\/\*[#@])\s*sourceMappingURL\s*=\s*([^\s*]+)/g);
   for (const match of matches) {
     checkTime(state); const ref = match[1];
@@ -519,13 +566,32 @@ function inspectMapLinks(text, entry, knownFiles, findings, comparisons, state) 
       charge(state, bytes.length, true);
       scanJson(decode(bytes), findings, comparisons, state, true); state.inlineMaps++;
     } else {
+      const emitted = state.sourceMapPolicy === SOURCE_MAP_POLICY;
+      if (emitted && ++state.sourceMapReferences > state.limits.totalBytes) throw new ScanError('total_bytes');
       if (/[\\?#:]/.test(ref) || ref.startsWith('//')) throw new ScanError('external_map');
       let local;
       try { local = decodeURIComponent(ref); } catch { throw new ScanError('external_map'); }
       if (/[\\?#:]/.test(local) || hasControl(local) || local.startsWith('//')) throw new ScanError('external_map');
-      const relative = local.startsWith('/') ? path.join('static', local.slice(1)) : path.join(path.dirname(entry.relative), local);
-      if (relative.startsWith('..') || path.isAbsolute(relative) || !knownFiles.has(relative) || !/\.map$/i.test(relative)) {
-        throw new ScanError('external_map');
+      let missingReference = false;
+      for (const location of locations) {
+        checkTime(state);
+        const relative = local.startsWith('/') ? path.join('static', local.slice(1)) : path.join(path.dirname(location), local);
+        if (emitted) {
+          const bytes = Buffer.from(relative.split(path.sep).join('/'));
+          charge(state, bytes.length, true);
+          if (++state.sourceMapContexts > state.limits.totalBytes) throw new ScanError('total_bytes');
+          const result = compareBytes(bytes, comparisons, state.compiledComparisons);
+          result.labels.forEach(s => findings.labels.add(s)); result.patterns.forEach(s => findings.patterns.add(s));
+          bytes.fill(0);
+        }
+        if (relative.startsWith('..') || path.isAbsolute(relative) || !/\.map$/i.test(relative)) {
+          throw new ScanError('external_map');
+        }
+        if (!knownFiles.has(relative)) {
+          if (!emitted || !absentMapTarget(relative, knownFiles, state)) throw new ScanError('external_map');
+          state.missingLocalMapContexts++;
+          if (!missingReference) { state.missingLocalMapReferences++; missingReference = true; }
+        }
       }
     }
   }
@@ -552,12 +618,12 @@ function binaryFormat(bytes, name) {
 }
 
 /** Compare all bytes, decode known text/maps, and distinguish opaque binary coverage from decoded coverage. */
-function inspectFile(bytes, entry, knownFiles, comparisons, state) {
-  const raw = compareBytes(bytes, comparisons);
+function inspectFile(bytes, entry, knownFiles, comparisons, state, locations) {
+  const raw = compareBytes(bytes, comparisons, state.compiledComparisons);
   const findings = { labels: new Set(raw.labels), patterns: new Set(raw.patterns) };
   const nameBytes = Buffer.from(entry.relative.split(path.sep).join('/'));
   charge(state, nameBytes.length, true);
-  const names = compareBytes(nameBytes, comparisons);
+  const names = compareBytes(nameBytes, comparisons, state.compiledComparisons);
   names.labels.forEach((s) => findings.labels.add(s)); names.patterns.forEach((s) => findings.patterns.add(s));
   if (binaryFormat(bytes, entry.relative)) return { findings, format: 'binary_raw_only' };
   if (/\.(?:zip|gz|tgz|br|7z|tar|bz2|xz)$/i.test(entry.relative)) throw new ScanError('unsupported_format');
@@ -573,7 +639,7 @@ function inspectFile(bytes, entry, knownFiles, comparisons, state) {
       throw new ScanError('external_map');
     }
   }
-  if (/\.(?:[cm]?js|css|html)$/i.test(entry.relative)) inspectMapLinks(text, entry, knownFiles, findings, comparisons, state);
+  if (/\.(?:[cm]?js|css|html)$/i.test(entry.relative)) inspectMapLinks(text, entry, knownFiles, findings, comparisons, state, locations);
   return { findings, format: 'utf8_and_decoded_json' };
 }
 
@@ -584,6 +650,13 @@ async function scanOutput(profile, comparisons, state) {
   const coverage = state.linkPolicy === LINK_POLICY || state.filePathMapPolicy === FILE_PATH_MAP_POLICY ? aliasCoverage(before, comparisons, state) : null;
   if (state.filePathMapPolicy === FILE_PATH_MAP_POLICY) await prepareFilePathMaps(files, coverage, comparisons, state);
   const knownFiles = coverage?.knownFiles || new Set(files.map((entry) => entry.relative));
+  if (state.sourceMapPolicy === SOURCE_MAP_POLICY) {
+    // At most the existing logical-entry and mapped-visit caps; no new filesystem enumeration.
+    state.sourceMapPaths = [...new Set([...before.map(entry => entry.relative),
+      ...(coverage?.nodes.keys() || []), ...(coverage?.projected?.keys() || [])])].sort();
+    if (state.sourceMapPaths.length > state.limits.maxEntries * 2 + state.limits.mappedEntries) throw new ScanError('entry_limit');
+    checkTime(state);
+  }
   if (!knownFiles.has('config.json')) throw new ScanError('config');
   const fingerprint = createHash('sha256');
   for (const entry of before.filter((item) => item.alias)) {
@@ -598,12 +671,7 @@ async function scanOutput(profile, comparisons, state) {
     const bytes = await readStable(entry, state);
     const contentHash = sha256(bytes);
     entry.contentHash = contentHash;
-    const { findings, format } = inspectFile(bytes, entry, knownFiles, comparisons, state);
-    if (coverage && /\.(?:[cm]?js|css|html)$/i.test(entry.relative) && format === 'utf8_and_decoded_json') {
-      for (const relative of coverage.locations.get(entry.relative) || []) {
-        if (relative !== entry.relative) inspectMapLinks(decode(bytes), { relative }, knownFiles, findings, comparisons, state);
-      }
-    }
+    const { findings, format } = inspectFile(bytes, entry, knownFiles, comparisons, state, coverage?.locations.get(entry.relative));
     fingerprint.update(JSON.stringify([entry.relative.split(path.sep).join('/'), 'file', entry.mode, bytes.length, contentHash]) + '\n');
     state.files.push({ id: state.files.length + 1, category: category(entry.relative), bytes: bytes.length,
       sha256: contentHash, mode: entry.mode, format, comparisonLabels: [...findings.labels].sort(), patterns: [...findings.patterns].sort() });
@@ -670,7 +738,8 @@ async function runInspection(input, options = {}) {
   const limits = { ...LIMITS };
   const now = options.now || (() => performance.now());
   const state = { limits, now, started: now(), bytesRead: 0, bytesInspected: 0, decodedBytes: 0, inlineMaps: 0,
-    mappingReferences: 0, mappedEntries: 0, filePathMaps: 0, mappingsVerified: 0,
+    mappingReferences: 0, mappedEntries: 0, mappedPathBytes: 0, filePathMaps: 0, mappingsVerified: 0,
+    sourceMapReferences: 0, sourceMapContexts: 0, missingLocalMapReferences: 0, missingLocalMapContexts: 0,
     files: report.files, directoryFindings: report.directoryFindings };
   try {
     if (options.limits) for (const [key, value] of Object.entries(options.limits)) {
@@ -684,12 +753,18 @@ async function runInspection(input, options = {}) {
     const profile = parseProfile(parsed.data.profile);
     state.linkPolicy = profile.linkPolicy || 'reject';
     state.filePathMapPolicy = profile.filePathMapPolicy || 'reject';
+    state.sourceMapPolicy = profile.sourceMapPolicy || 'reject';
+    if (state.sourceMapPolicy === SOURCE_MAP_POLICY) {
+      report.sourceMapPolicy = SOURCE_MAP_POLICY;
+      report.limitations.push(...SOURCE_MAP_LIMITATIONS);
+    }
     if (state.filePathMapPolicy === FILE_PATH_MAP_POLICY) report.filePathMapPolicy = FILE_PATH_MAP_POLICY;
     if (state.linkPolicy === LINK_POLICY) Object.assign(report, { linkPolicy: LINK_POLICY, aliasesVerified: 0, logicalEntries: 0 });
     if (comparisons.length !== profile.comparisonLabels.length || new Set(comparisons.map((r) => r.label)).size !== comparisons.length ||
         !comparisons.every((r) => profile.comparisonLabels.includes(r.label))) throw new ScanError('comparisons');
     if (hasEcho(profile, comparisons)) throw new ScanError('comparisons');
     if (parsed.data.approval !== approvalId(profile)) throw new ScanError('approval');
+    state.compiledComparisons = compileComparisons(comparisons);
     report.approvalId = parsed.data.approval;
     try { store = (options.storeFactory || createStore)(report.approvalId); } catch { throw new ScanError('reservation'); }
     report.target = { environment: profile.environment, ...profile.provenance };
@@ -699,12 +774,19 @@ async function runInspection(input, options = {}) {
     if (report.directoryFindings.length || report.files.some((f) => f.comparisonLabels.length || f.patterns.length)) throw new ScanError('findings');
     report.result = 'completed'; report.artifactPrivacy = 'no_matches_in_checked_representations';
   } catch (error) { report.failure = error instanceof ScanError ? error.code : 'unreadable'; }
+  finally { for (const ref of state.compiledComparisons || []) for (const bytes of ref.forms) bytes.fill(0); }
   Object.assign(report, { bytesRead: state.bytesRead, bytesInspected: state.bytesInspected,
     decodedBytes: state.decodedBytes, inlineMaps: state.inlineMaps, elapsedMs: Math.round((now() - state.started) * 1000) / 1000 });
   if (report.linkPolicy) Object.assign(report, { aliasesVerified: state.aliasesVerified || 0, logicalEntries: state.logicalEntries || 0 });
   if (report.filePathMapPolicy) Object.assign(report, { filePathMaps: state.filePathMaps,
-    mappingReferences: state.mappingReferences, mappedEntries: state.mappedEntries, mappingsVerified: state.mappingsVerified,
+    mappingReferences: state.mappingReferences, mappedEntries: state.mappedEntries, mappedPathBytes: state.mappedPathBytes,
+    mappingsVerified: state.mappingsVerified,
     inspectedCopyManifestSha256: state.inspectedCopyManifestSha256 || null });
+  if (report.sourceMapPolicy) Object.assign(report, { sourceMapReferences: state.sourceMapReferences,
+    sourceMapContexts: state.sourceMapContexts, missingLocalMapReferences: state.missingLocalMapReferences,
+    missingLocalMapContexts: state.missingLocalMapContexts,
+    sourceMapAvailability: report.coverage === 'unqualified' ? 'unqualified' :
+      state.missingLocalMapContexts ? 'absent_local_targets' : 'all_matched_targets_present' });
   let output = report;
   if (hasEcho(report, comparisons)) output = { schemaVersion: 1, scope: SCOPE, result: 'stopped', gate1Status: 'open', failure: 'private_output_suppressed' };
   if (store) {
@@ -757,6 +839,6 @@ if (require.main === module) {
   }).catch(() => { process.stderr.write('Artifact preparation/inspection failed; preserve any consumed reservation.\n'); process.exitCode = 1; });
 }
 
-module.exports = { SCOPE, LINK_POLICY, FILE_PATH_MAP_POLICY, LIMITS, LABELS, ATTESTATIONS, ScanError, profileTemplate, parseProfile,
+module.exports = { SCOPE, LINK_POLICY, FILE_PATH_MAP_POLICY, SOURCE_MAP_POLICY, SOURCE_MAP_LIMITATIONS, LIMITS, LABELS, ATTESTATIONS, ScanError, profileTemplate, parseProfile,
   approvalId, preparation, compareBytes, representations, inventory, readStable,
   inspectFile, scanOutput, runInspection, createStore, main };
