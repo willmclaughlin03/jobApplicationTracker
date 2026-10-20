@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-18
 
+- `2026-10-19` - `Local source-map diagnostic and lexical scaffold`: Publish exact source/test snapshots of the completed v2 diagnostic and step-1 lexical reader, with local-evidence prerequisites documented. The scaffold binds the consumed baseline and keeps execution unconditionally disabled. Validation covers 34 v2 host tests, 75 synthetic Linux fixtures and 13 scaffold tests; evidence and approval records remain local. Artifact privacy is unqualified and GATE-1 remains open.
+
 - `2026-10-19` - `Qualification helper checksum follow-up`: Refresh the diagnostic and standalone synthetic-test pins for the updated qualification helper. Preserve exact-byte rejection and the reproduction runner's original-source pin; GATE-1 remains open.
 
 - `2026-10-19` - `Qualification inspection review follow-ups`: Accept inventory-valid descendant names when expanding directory mappings while retaining per-path and cumulative byte limits, explicit key/target validation and alias-depth checks. Include the emitted-inventory source-map policy in generated qualification drafts so confirmation preserves the intended missing-map behavior. Add filename, UTF-8 boundary and draft-to-inspection regressions; GATE-1 remains open.
