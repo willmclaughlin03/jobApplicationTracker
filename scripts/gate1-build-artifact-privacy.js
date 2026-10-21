@@ -16,6 +16,7 @@ const SCOPE = 'new_build_output_comparisons_only';
 const LINK_POLICY = 'internal_directory_aliases_v1';
 const FILE_PATH_MAP_POLICY = 'inventoried_output_targets_v1';
 const SOURCE_MAP_POLICY = 'emitted_inventory_v1';
+const SOURCE_MAP_POLICY_V2 = 'emitted_inventory_v2';
 const SOURCE_MAP_LIMITATIONS = Object.freeze(['absent_local_source_maps_not_inspected',
   'source_mapping_url_matches_are_syntactic_not_lexical']);
 const LIMITS = Object.freeze({ maxAppRequests: 0, maxProviderRequests: 0, maxConfigMutations: 0,
@@ -40,7 +41,7 @@ const profileSchema = z.object({ schemaVersion: z.literal(1), scope: z.literal(S
   outputRoot: z.string().min(1).max(1024).refine((s) => !hasControl(s)),
   linkPolicy: z.enum(['reject', LINK_POLICY]).optional(),
   filePathMapPolicy: z.enum(['reject', FILE_PATH_MAP_POLICY]).optional(),
-  sourceMapPolicy: z.enum(['reject', SOURCE_MAP_POLICY]).optional(),
+  sourceMapPolicy: z.enum(['reject', SOURCE_MAP_POLICY, SOURCE_MAP_POLICY_V2]).optional(),
   provenance: z.object({ gitSha: z.string().regex(/^[a-f0-9]{40}$/), lockSha256: hex,
     nodeVersion: version, nextVersion: version, vercelCliVersion: version }).strict(),
   comparisonLabels: z.array(z.enum(LABELS)).min(1).max(LABELS.length)
@@ -527,6 +528,8 @@ function scanJson(text, findings, comparisons, state, isMap) {
 function absentMapTarget(relative, knownFiles, state) {
   const names = state.sourceMapPaths;
   if (!Array.isArray(names)) throw new ScanError('external_map');
+  // The output root always exists but is omitted from its own descendant inventory.
+  if (relative === '.') return false;
   for (const query of [relative, relative + path.sep]) {
     let low = 0, high = names.length;
     while (low < high) {
@@ -566,7 +569,7 @@ function inspectMapLinks(text, entry, knownFiles, findings, comparisons, state, 
       charge(state, bytes.length, true);
       scanJson(decode(bytes), findings, comparisons, state, true); state.inlineMaps++;
     } else {
-      const emitted = state.sourceMapPolicy === SOURCE_MAP_POLICY;
+      const emitted = [SOURCE_MAP_POLICY, SOURCE_MAP_POLICY_V2].includes(state.sourceMapPolicy);
       if (emitted && ++state.sourceMapReferences > state.limits.totalBytes) throw new ScanError('total_bytes');
       if (/[\\?#:]/.test(ref) || ref.startsWith('//')) throw new ScanError('external_map');
       let local;
@@ -584,10 +587,16 @@ function inspectMapLinks(text, entry, knownFiles, findings, comparisons, state, 
           result.labels.forEach(s => findings.labels.add(s)); result.patterns.forEach(s => findings.patterns.add(s));
           bytes.fill(0);
         }
-        if (relative.startsWith('..') || path.isAbsolute(relative) || !/\.map$/i.test(relative)) {
+        if (relative.startsWith('..') || path.isAbsolute(relative) || local.endsWith('/') || relative.endsWith(path.sep)) {
           throw new ScanError('external_map');
         }
-        if (!knownFiles.has(relative)) {
+        const present = knownFiles.has(relative);
+        // V2 removes only the suffix condition for a proved-absent local target.
+        // Present files still require .map; every context must independently pass absence checks.
+        if (!/\.map$/i.test(relative) && (present || state.sourceMapPolicy !== SOURCE_MAP_POLICY_V2)) {
+          throw new ScanError('external_map');
+        }
+        if (!present) {
           if (!emitted || !absentMapTarget(relative, knownFiles, state)) throw new ScanError('external_map');
           state.missingLocalMapContexts++;
           if (!missingReference) { state.missingLocalMapReferences++; missingReference = true; }
@@ -650,7 +659,7 @@ async function scanOutput(profile, comparisons, state) {
   const coverage = state.linkPolicy === LINK_POLICY || state.filePathMapPolicy === FILE_PATH_MAP_POLICY ? aliasCoverage(before, comparisons, state) : null;
   if (state.filePathMapPolicy === FILE_PATH_MAP_POLICY) await prepareFilePathMaps(files, coverage, comparisons, state);
   const knownFiles = coverage?.knownFiles || new Set(files.map((entry) => entry.relative));
-  if (state.sourceMapPolicy === SOURCE_MAP_POLICY) {
+  if ([SOURCE_MAP_POLICY, SOURCE_MAP_POLICY_V2].includes(state.sourceMapPolicy)) {
     // At most the existing logical-entry and mapped-visit caps; no new filesystem enumeration.
     state.sourceMapPaths = [...new Set([...before.map(entry => entry.relative),
       ...(coverage?.nodes.keys() || []), ...(coverage?.projected?.keys() || [])])].sort();
@@ -754,8 +763,8 @@ async function runInspection(input, options = {}) {
     state.linkPolicy = profile.linkPolicy || 'reject';
     state.filePathMapPolicy = profile.filePathMapPolicy || 'reject';
     state.sourceMapPolicy = profile.sourceMapPolicy || 'reject';
-    if (state.sourceMapPolicy === SOURCE_MAP_POLICY) {
-      report.sourceMapPolicy = SOURCE_MAP_POLICY;
+    if ([SOURCE_MAP_POLICY, SOURCE_MAP_POLICY_V2].includes(state.sourceMapPolicy)) {
+      report.sourceMapPolicy = state.sourceMapPolicy;
       report.limitations.push(...SOURCE_MAP_LIMITATIONS);
     }
     if (state.filePathMapPolicy === FILE_PATH_MAP_POLICY) report.filePathMapPolicy = FILE_PATH_MAP_POLICY;
@@ -839,6 +848,6 @@ if (require.main === module) {
   }).catch(() => { process.stderr.write('Artifact preparation/inspection failed; preserve any consumed reservation.\n'); process.exitCode = 1; });
 }
 
-module.exports = { SCOPE, LINK_POLICY, FILE_PATH_MAP_POLICY, SOURCE_MAP_POLICY, SOURCE_MAP_LIMITATIONS, LIMITS, LABELS, ATTESTATIONS, ScanError, profileTemplate, parseProfile,
+module.exports = { SCOPE, LINK_POLICY, FILE_PATH_MAP_POLICY, SOURCE_MAP_POLICY, SOURCE_MAP_POLICY_V2, SOURCE_MAP_LIMITATIONS, LIMITS, LABELS, ATTESTATIONS, ScanError, profileTemplate, parseProfile,
   approvalId, preparation, compareBytes, representations, inventory, readStable,
   inspectFile, scanOutput, runInspection, createStore, main };

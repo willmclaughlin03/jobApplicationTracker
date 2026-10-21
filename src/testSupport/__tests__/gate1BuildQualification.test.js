@@ -446,6 +446,7 @@ test('only explicit assertions for the exact draft can reach scanner inspection'
   expect(q.SCAN_ATTESTATIONS).toEqual(scanner.ATTESTATIONS);
   const draft = q.inspectionPreparation({ binding: 'a'.repeat(64),
     contract: { sourceSha: SOURCE, lockSha256: 'b'.repeat(64) } }, folder);
+  expect(draft.profile.sourceMapPolicy).toBe('emitted_inventory_v1');
   const profile = { ...draft.profile,
     attestations: Object.fromEntries(scanner.ATTESTATIONS.map((key) => [key, true])) };
   const confirmed = { ...draft, profile, attestationsConfirmed: true };
@@ -456,6 +457,8 @@ test('only explicit assertions for the exact draft can reach scanner inspection'
     outputRoot: path.join(folder, 'other/.vercel/output') } }, scanner)).toThrow('approval');
   expect(() => q.confirmInspection(draft, { ...confirmed, profile: { ...profile,
     sourceMapPolicy: 'reject' } }, scanner)).toThrow('approval');
+  expect(() => q.confirmInspection(draft, { ...confirmed, profile: { ...profile,
+    sourceMapPolicy: scanner.SOURCE_MAP_POLICY_V2 } }, scanner)).toThrow('approval');
 
   fs.mkdirSync(path.join(profile.outputRoot, 'static'), { recursive: true });
   fs.writeFileSync(path.join(profile.outputRoot, 'config.json'), '{"version":3}');

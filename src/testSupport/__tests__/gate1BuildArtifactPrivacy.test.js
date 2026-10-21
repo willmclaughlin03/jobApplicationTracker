@@ -828,6 +828,130 @@ function emittedEnvelope(mapped = false) {
   return envelope({ ...p, sourceMapPolicy: scanner.SOURCE_MAP_POLICY });
 }
 
+/** Select V2 only for synthetic cases; V1/default fixtures keep their original policy meaning. */
+function absentLocalEnvelope(mapped = false) {
+  return envelope({ ...emittedEnvelope(mapped).profile, sourceMapPolicy: scanner.SOURCE_MAP_POLICY_V2 });
+}
+
+test('V2 is separately approval-bound and leaves V1 and strict profiles unchanged', async () => {
+  expect(scanner.SOURCE_MAP_POLICY).toBe('emitted_inventory_v1');
+  expect(scanner.SOURCE_MAP_POLICY_V2).toBe('emitted_inventory_v2');
+  expect(profileTemplate().sourceMapPolicy).toBeUndefined();
+  file('static/app.js', '//# sourceMappingURL=absent.js');
+  for (const input of [envelope(), envelope({ ...profile(), sourceMapPolicy: 'reject' }), emittedEnvelope()]) {
+    expect((await trial({}, input)).report.failure).toBe('external_map');
+  }
+  const input = absentLocalEnvelope();
+  expect(input.approval).not.toBe(approvalId({ ...input.profile, sourceMapPolicy: scanner.SOURCE_MAP_POLICY }));
+  input.profile.sourceMapPolicy = scanner.SOURCE_MAP_POLICY;
+  expect((await trial({}, input)).report.failure).toBe('approval');
+});
+
+test.each(['absent.map', 'absent.js', 'synthetic-absent-target-fixture', '/maps/absent.txt', 'absent%2Ecss', '../missing/absent'])(
+  'V2 permits only verified absence and reports its coverage limits: %s', async ref => {
+    file('static/app.js', '//# sourceMappingURL=' + ref);
+    const { report } = await trial({}, absentLocalEnvelope());
+    expect(report).toMatchObject({ result: 'completed', sourceMapPolicy: 'emitted_inventory_v2',
+      sourceMapReferences: 1, sourceMapContexts: 1, missingLocalMapReferences: 1, missingLocalMapContexts: 1,
+      sourceMapAvailability: 'absent_local_targets', gate1Status: 'open' });
+    expect(report.limitations).toEqual(expect.arrayContaining(scanner.SOURCE_MAP_LIMITATIONS));
+    expect(JSON.stringify(report)).not.toContain(ref);
+  });
+
+test.each(['present.js', 'present', 'present.json', 'PRESENT.MAP.txt'])(
+  'V2 still rejects a present non-map file: %s', async ref => {
+    file('static/' + ref, 'safe'); file('static/app.js', '//# sourceMappingURL=' + ref);
+    expect((await trial({}, absentLocalEnvelope())).report.failure).toBe('external_map');
+  });
+
+test.each(['physical', 'alias', 'projected', 'implicit_parent', 'file_parent', 'output_root'])(
+  'V2 never treats an occupied non-map target as absent: %s', async kind => {
+    let ref = 'occupied';
+    if (kind === 'output_root') ref = '..';
+    if (kind === 'physical') fs.mkdirSync(path.join(output, 'static/occupied'));
+    if (kind === 'alias') { fs.mkdirSync(path.join(output, 'empty')); alias('static/occupied', '../empty'); }
+    if (kind === 'projected') { fs.mkdirSync(path.join(output, 'empty')); functionMap({ occupied: '.vercel/output/empty' }); }
+    if (kind === 'implicit_parent') functionMap({ 'occupied/child.js': '.vercel/output/static/app.js' });
+    if (kind === 'file_parent') { file('static/occupied', 'safe'); ref += '/missing'; }
+    const source = ['projected', 'implicit_parent'].includes(kind) ? 'functions/session.func/index.js' : 'static/app.js';
+    file(source, '//# sourceMappingURL=' + ref);
+    expect((await trial({}, absentLocalEnvelope(true))).report.failure).toBe('external_map');
+  });
+
+/** Reject raw and decoded trailing separators before occupied targets can count as absent. */
+test.each(['present.js/', 'occupied/', '../', 'present.js%2f', 'occupied%2f', '..%2f'])(
+  'V2 rejects trailing separators on existing files, directories and the output root: %s', async ref => {
+    file('static/present.js', 'safe'); fs.mkdirSync(path.join(output, 'static/occupied'));
+    file('static/app.js', '//# sourceMappingURL=' + ref);
+    expect((await trial({}, absentLocalEnvelope())).report).toMatchObject({ failure: 'external_map',
+      missingLocalMapReferences: 0, missingLocalMapContexts: 0,
+      sourceMapAvailability: 'unqualified', artifactPrivacy: 'unqualified' });
+  });
+
+test.each(['https://outside.invalid/a', '//outside.invalid/a', '../../../../outside',
+  '%2e%2e/%2e%2e/%2e%2e/%2e%2e/outside', '%2f%2foutside.invalid/a', 'bad%GG', 'bad%5cpath',
+  'bad%3fquery', 'bad%23fragment', 'bad%3ascheme', 'bad%00', 'bad%7f', 'absent?query', 'absent#fragment', '../..named'])(
+  'V2 preserves raw, decoded and containment rejection: %s', async ref => {
+    file('static/app.js', '//# sourceMappingURL=' + ref);
+    expect((await trial({}, absentLocalEnvelope())).report).toMatchObject({ failure: 'external_map',
+      sourceMapAvailability: 'unqualified', artifactPrivacy: 'unqualified' });
+  });
+
+test.each(['directory', 'present_file', 'escape'])(
+  'V2 checks a later unsafe %s context after permitted absence', async kind => {
+    if (kind === 'escape') {
+      file('shared/deep/pkg/app.js', '//# sourceMappingURL=../../../absent');
+      functionMap({ 'app.js': '.vercel/output/shared/deep/pkg/app.js' });
+    } else {
+      file('static/app.js', '//# sourceMappingURL=target');
+      functionMap({ 'app.js': '.vercel/output/static/app.js' });
+      if (kind === 'directory') fs.mkdirSync(path.join(output, 'functions/session.func/target'));
+      else file('functions/session.func/target', 'safe');
+    }
+    expect((await trial({}, absentLocalEnvelope(true))).report).toMatchObject({ failure: 'external_map',
+      missingLocalMapReferences: 1, missingLocalMapContexts: 1, sourceMapAvailability: 'unqualified' });
+  });
+
+test('V2 counts all projected absence contexts and keeps existing maps inspected', async () => {
+  file('static/app.js', '//# sourceMappingURL=missing'); file('static/ordinary.map', JSON.stringify(map()));
+  functionMap({ 'a.js': '.vercel/output/static/app.js', 'nested/b.js': '.vercel/output/static/app.js' });
+  const { report } = await trial({}, absentLocalEnvelope(true));
+  expect(report).toMatchObject({ result: 'completed', sourceMapContexts: 3, missingLocalMapContexts: 3,
+    missingLocalMapReferences: 1 });
+  expect(report.files.some(f => f.category === 'source_map')).toBe(true);
+  file('static/ordinary.map', JSON.stringify(map(PRIVATE)));
+  expect((await trial({}, absentLocalEnvelope(true))).report.failure).toBe('findings');
+});
+
+test.each(['raw', 'inline', 'present_map', 'malformed_map', 'indexed_url', 'resolved_name'])(
+  'V2 absence preserves remaining content and format checks: %s', async kind => {
+    file('static/app.js', '//# sourceMappingURL=absent'); let failure = 'findings';
+    if (kind === 'raw') file('static/other.txt', PRIVATE);
+    if (kind === 'inline') file('static/other.js', '//# sourceMappingURL=data:application/json;base64,' + Buffer.from(JSON.stringify(map(PRIVATE))).toString('base64'));
+    if (kind === 'present_map') file('static/other.map', JSON.stringify(map(PRIVATE)));
+    if (kind === 'malformed_map') { file('static/other.map', '{'); failure = 'json'; }
+    if (kind === 'indexed_url') { file('static/other.map', '{"version":3,"sections":[{"url":"absent"}]}'); failure = 'external_map'; }
+    if (kind === 'resolved_name') file('static/app.js', '//# sourceMappingURL=' + [...PRIVATE].map(c => '%' + c.charCodeAt(0).toString(16)).join(''));
+    expect((await trial({}, absentLocalEnvelope())).report.failure).toBe(failure);
+  });
+
+test('V2 charges resolved names and stops at the unchanged byte budget', async () => {
+  file('static/app.js', '//# sourceMappingURL=missing');
+  const { report } = await trial({}, absentLocalEnvelope());
+  expect((await trial({ limits: { totalBytes: report.bytesInspected } }, absentLocalEnvelope())).report.result).toBe('completed');
+  expect((await trial({ limits: { totalBytes: report.bytesInspected - 1 } }, absentLocalEnvelope())).report.failure).toBe('total_bytes');
+});
+
+test('V2 rejects an absent target becoming present during the scan', async () => {
+  file('static/app.js', '//# sourceMappingURL=missing');
+  const original = fs.promises.open; let changed = false;
+  jest.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+    if (!changed && args[0] === path.join(output, 'static/app.js')) { changed = true; file('static/missing', 'safe'); }
+    return original(...args);
+  });
+  expect((await trial({}, absentLocalEnvelope())).report).toMatchObject({ failure: 'changed', sourceMapAvailability: 'unqualified' });
+});
+
 test('emitted-map policy is optional, strict, and separately approval-bound', async () => {
   file('static/app.js', '//# sourceMappingURL=missing.map');
   expect((await trial()).report.failure).toBe('external_map');
