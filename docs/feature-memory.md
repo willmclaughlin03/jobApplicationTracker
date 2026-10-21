@@ -16,6 +16,10 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-18
 
+- `2026-10-21` - `Self-check cleanup failure attribution`: Preserve an existing STOPPED reason and record sanitized native cleanup errors in cleanupFailure. Otherwise-PASS runs still become STOPPED with the cleanup reason. Updated regression coverage for stopped and successful runs with absent, known and unexpected cleanup errors; all 33 offline tests, focused lint, syntax and whitespace checks passed.
+
+- `2026-10-21` - `Browser startup retries and cleanup reports`: Retry empty or invalid DevToolsActivePort content within the existing startup deadline, retaining integer port bounds and ENOENT handling. Preserve self-check observations when native cleanup fails, return a sanitized STOPPED reason and await fixture shutdown. All 33 offline tests, focused lint, syntax and whitespace checks passed.
+
 - `2026-10-21` - `Browser qualification freshness and dispatch timing`: Require both login build probes to satisfy the static route's explicit cache policy and fresh cache status, preserving cached_target on violations and using unique probe URLs. Measure startup spread from each tab's first current-phase document reservation while retaining concurrent navigation. All 28 offline tests, focused lint, syntax and whitespace checks passed.
 
 - `2026-10-21` - `Bounded browser-tab qualification runner`: Publish the GATE-1 1/2/4/8-tab runner, built-in Node unit tests and loopback-only native Edge fixture. Reserve request budgets before dispatch, compare test identities privately and label session full-response versus CSRF response-header latency. Require explicit local tool paths; hosted execution remains separately authorized and GATE-1 remains open.

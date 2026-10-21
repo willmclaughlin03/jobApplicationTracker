@@ -4,7 +4,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const { readFile } = require('node:fs/promises');
 const path = require('node:path');
+const { compileFunction } = require('node:vm');
 const { RequestBudget, IdentityObserver, BrowserObserver, classifyRequest, validateBuild, checkBuild,
   summarizeDurations, waitUntil, waitForChecks, withTimeout, exerciseProfile, runProfiles, parseCli, main, TARGET, PROFILES, SCHEDULE, LIVE_APPROVAL } = require('../runner.cjs');
 
@@ -359,6 +361,180 @@ test('offline CLI requires explicit absolute tool paths and never accepts a live
   assert.throws(() => parseCli(['--self-check', '--playwright-core', './relative', '--edge-executable', browserPath]), /tool_path/);
   assert.throws(() => parseCli(['--self-check', '--playwright-core', corePath, '--edge-executable', './relative']), /tool_path/);
   assert.throws(() => parseCli(['--self-check', '--playwright-core', `${corePath}\0`, '--edge-executable', browserPath]), /tool_path/);
+});
+
+/** Load the actual launcher with fake file/process/clock dependencies; no browser or filesystem mutations occur. */
+async function nativeLaunchFixture(t, contents) {
+  const runnerPath = require.resolve('../runner.cjs');
+  const source = await readFile(runnerPath, 'utf8');
+  const corePath = path.resolve('fixture-playwright-core');
+  const profilePath = path.resolve('fixture-root', 'edge-fixture-test');
+  const child = new EventEmitter(); child.exitCode = null; child.signalCode = null;
+  let now = 0; let reads = 0; const delays = [];
+  /** End only the fake process when startup cleanup reaches its existing grace deadline. */
+  child.kill = t.mock.fn(() => { child.exitCode = 0; });
+  const connected = new Error('fixture_connected');
+  /** Stop at the CDP boundary so tests inspect the chosen port without building a browser double. */
+  const connectOverCDP = t.mock.fn(async () => { child.exitCode = 0; throw connected; });
+  const fakeFs = {
+    /** Profile setup is inert; all paths stay synthetic. */
+    async mkdir() {},
+    /** Return the owned fake profile for the launcher's existing cleanup path guard. */
+    async mkdtemp() { return profilePath; },
+    /** Resolve only the synthetic root and profile, without inspecting actual browser storage. */
+    async realpath(value) { return value === profilePath ? profilePath : path.dirname(profilePath); },
+    /** Replay partial writes or read errors, retaining the last result until the outer deadline. */
+    async readFile(file, encoding) {
+      assert.equal(file, path.join(profilePath, 'DevToolsActivePort')); assert.equal(encoding, 'utf8');
+      const result = contents[Math.min(reads++, contents.length - 1)];
+      if (result instanceof Error) throw result;
+      return result;
+    },
+    /** Record cleanup without deleting any real paths. */
+    rm: t.mock.fn(async () => {}),
+  };
+  const dependencies = new Map([
+    ['node:fs/promises', fakeFs], ['node:child_process', { spawn: () => child }],
+    ['node:perf_hooks', { performance: { now: () => now } }],
+    // Advance only the host polling/cleanup clock; retain real acknowledgement timers.
+    ['node:timers/promises', { setTimeout: async ms => { delays.push(ms); now += ms; } }],
+    [path.join(corePath, 'package.json'), { name: 'playwright-core', version: '1.62.0-alpha-1783623505000' }],
+    [corePath, { chromium: { connectOverCDP } }],
+  ]);
+  /** Substitute external effects while executing the full current module, including its internal launcher. */
+  const fixtureRequire = name => dependencies.has(name) ? dependencies.get(name) : require(name);
+  const launch = compileFunction(`${source}\nreturn launchNativeBrowser;`, ['require', 'module', '__dirname'],
+    { filename: runnerPath })(fixtureRequire, { exports: {} }, path.dirname(runnerPath));
+  return { connectOverCDP, connected, delays, child, fakeFs,
+    /** Invoke the real startup/cleanup flow with the mocked local runtime. */
+    run: () => launch({ corePath, browserPath: path.resolve('fixture-edge') }),
+    /** Expose read count so a deadline test catches both early failure and unbounded retry. */
+    reads: () => reads };
+}
+
+/** Empty/invalid partial writes and ENOENT must retry before connecting at either valid port boundary. */
+test('native browser port polling retries not-ready content before connecting', async (t) => {
+  for (const port of [1, 65535]) {
+    const missing = Object.assign(new Error('fixture_missing'), { code: 'ENOENT' });
+    const notReady = [missing, '', '\r\n', ' \n', '0\n', '-1\n', '65536\n', '1.5\n', 'NaN\n', 'Infinity\n', 'partial\n'];
+    const fixture = await nativeLaunchFixture(t, [...notReady, `${port}\r\n/devtools/browser/fixture`]);
+    await assert.rejects(fixture.run(), error => error === fixture.connected);
+    assert.equal(fixture.reads(), notReady.length + 1);
+    assert.deepEqual(fixture.delays, Array(notReady.length).fill(50));
+    assert.deepEqual(fixture.connectOverCDP.mock.calls[0].arguments,
+      [`http://127.0.0.1:${port}`, { noDefaults: true, timeout: 5000 }]);
+    assert.equal(fixture.connectOverCDP.mock.callCount(), 1);
+    assert.equal(fixture.fakeFs.rm.mock.callCount(), 1);
+  }
+});
+
+/** Persistent unreadiness must still stop at the ten-second startup deadline and clean up. */
+test('native browser port polling remains bounded by the startup deadline', async (t) => {
+  for (const content of ['', 'invalid', Object.assign(new Error('fixture_missing'), { code: 'ENOENT' })]) {
+    const fixture = await nativeLaunchFixture(t, [content]);
+    await assert.rejects(fixture.run(), { code: 'browser_startup' });
+    assert.equal(fixture.reads(), 200); assert.equal(fixture.connectOverCDP.mock.callCount(), 0);
+    assert.ok(fixture.delays.every(ms => ms === 50));
+    assert.equal(fixture.child.kill.mock.callCount(), 1); assert.equal(fixture.fakeFs.rm.mock.callCount(), 1);
+  }
+});
+
+/** File failures other than ENOENT remain fatal instead of being masked as startup retries. */
+test('native browser port polling propagates non-ENOENT read failures', async (t) => {
+  const denied = Object.assign(new Error('fixture_denied'), { code: 'EACCES' });
+  const fixture = await nativeLaunchFixture(t, [denied]);
+  await assert.rejects(fixture.run(), error => error === denied);
+  assert.equal(fixture.reads(), 1); assert.equal(fixture.connectOverCDP.mock.callCount(), 0);
+  assert.equal(fixture.fakeFs.rm.mock.callCount(), 1);
+});
+
+/** Exercise the current selfCheck with synthetic browser work while retaining real budget reports and error sanitization. */
+async function selfCheckFixture(t, { stopped = false, cleanupFailure, closeFixture } = {}) {
+  const runnerPath = require.resolve('../runner.cjs');
+  const source = await readFile(runnerPath, 'utf8');
+  const fixture = { origin: 'http://127.0.0.1:1234', counts: new Map([['/redirect', 1]]),
+    /** Let tests observe or hold fixture shutdown without opening a listening socket. */
+    close: t.mock.fn(closeFixture || (async () => {})) };
+  let loaded;
+  const native = { context: {},
+    /** Model both a fixed runner error and an OS failure carrying private diagnostic text. */
+    close: t.mock.fn(async () => {
+      if (cleanupFailure === 'known') throw new loaded.QualificationError('cleanup_path');
+      if (cleanupFailure === 'unknown') throw new Error('PRIVATE_PROFILE_PATH');
+    }) };
+  /** Supply only the observer operations selfCheck needs so its report and finally flow remain real. */
+  class FixtureObserver {
+    /** Keep the real budget available for the synthetic redirect check. */
+    constructor(_context, budget) {
+      this.budget = budget; this.visibility = [];
+      this.cleanupSummary = { closeErrors: 0, pagesStillOpen: 0 };
+    }
+    /** No actual browser resources exist in this report-focused fixture. */
+    async close() {}
+    /** Model a redirect cap failure after earlier checks have already produced report data. */
+    async newPage() {
+      return {
+        /** Simulate the original redirect consuming its one permitted dispatch. */
+        goto: async () => { this.budget.counts.app = stopped ? 0 : 1; this.budget.stop('profile_budget'); },
+      };
+    }
+  }
+  const replacements = {
+    /** Replace only external fixture setup; no socket or browser is launched. */
+    startFixture: async () => fixture,
+    /** Supply owned cleanup with selectable failure behavior. */
+    launchNativeBrowser: async () => native,
+    /** Populate a completed profile while leaving selfCheck's validation/report logic intact. */
+    exerciseProfile: async observer => { observer.budget.counts.session = 6; return { fixtureMetric: 42 }; },
+    BrowserObserver: FixtureObserver,
+  };
+  // Rebind collaborators in an isolated module instance without modifying the function under test.
+  loaded = compileFunction(`${source}\n
+    startFixture = replacements.startFixture;
+    launchNativeBrowser = replacements.launchNativeBrowser;
+    exerciseProfile = replacements.exerciseProfile;
+    BrowserObserver = replacements.BrowserObserver;
+    return { selfCheck, QualificationError };`, ['require', 'module', '__dirname', 'replacements'],
+  { filename: runnerPath })(require, { exports: {} }, path.dirname(runnerPath), replacements);
+  return { run: loaded.selfCheck, native, fixture };
+}
+
+/** Preserve existing stop reasons and record sanitized cleanup failures for both stopped and otherwise successful runs. */
+test('self-check preserves stop reasons and reports sanitized native cleanup failures', async (t) => {
+  for (const stopped of [true, false]) {
+    for (const cleanupFailure of [undefined, 'known', 'unknown']) {
+      const fixture = await selfCheckFixture(t, { stopped, cleanupFailure });
+      const result = await fixture.run({});
+      const expectedCleanup = cleanupFailure === 'known' ? 'cleanup_path'
+        : cleanupFailure === 'unknown' ? 'tool_failure' : undefined;
+      assert.equal(result.outcome, stopped || cleanupFailure ? 'STOPPED' : 'PASS');
+      assert.equal(result.reason, stopped ? 'redirect_cap_failed' : expectedCleanup);
+      assert.equal(result.cleanupFailure, expectedCleanup);
+      assert.equal(Object.hasOwn(result, 'cleanupFailure'), Boolean(cleanupFailure));
+      assert.equal(result.scope, 'loopback_fixture_only'); assert.equal(result.hostedRequests, 0);
+      assert.equal(result.checks.length, stopped ? 2 : 3);
+      assert.deepEqual(result.checks[0].metrics, { fixtureMetric: 42 });
+      assert.equal((stopped ? result.measurements[0] : result.measurements).dispatched.session, 6);
+      assert.doesNotMatch(JSON.stringify(result), /PRIVATE_PROFILE_PATH|Error:|stack/);
+      assert.equal(fixture.native.close.mock.callCount(), 1); assert.equal(fixture.fixture.close.mock.callCount(), 1);
+    }
+  }
+});
+
+/** A rejected native cleanup must still wait for the fixture socket shutdown before returning its report. */
+test('self-check awaits fixture shutdown after native cleanup fails', async (t) => {
+  let release; let started;
+  const shutdown = new Promise(resolve => { release = resolve; });
+  const closing = new Promise(resolve => { started = resolve; });
+  const fixture = await selfCheckFixture(t, { cleanupFailure: 'unknown',
+    /** Signal entry into fixture.close, then hold it pending until the assertion releases shutdown. */
+    closeFixture: async () => { started(); await shutdown; } });
+  let settled = false;
+  const result = fixture.run({}).finally(() => { settled = true; });
+  await closing;
+  try { assert.equal(settled, false); } finally { release(); }
+  const report = await result;
+  assert.equal(report.reason, 'tool_failure'); assert.equal(report.cleanupFailure, 'tool_failure');
 });
 
 /** Minimal protocol/page doubles exercise stop cleanup without launching or reading a browser profile. */
