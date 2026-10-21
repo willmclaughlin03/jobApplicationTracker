@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-18
 
+- `2026-10-21` - `Bounded browser-tab qualification runner`: Publish the GATE-1 1/2/4/8-tab runner, built-in Node unit tests and loopback-only native Edge fixture. Reserve request budgets before dispatch, compare test identities privately and label session full-response versus CSRF response-header latency. Require explicit local tool paths; hosted execution remains separately authorized and GATE-1 remains open.
+
 - `2026-10-20` - `Source-map trailing-separator rejection`: Reject decoded local references and resolved paths ending in a separator before the V2 absence check, preserving existing external and absolute-path guards. Add six regressions for present files, occupied directories and the output root, including percent-encoded separators; rejected references retain zero missing-target counts and unqualified coverage.
 
 - `2026-10-20` - `Inventoried absent source-map targets`: Add opt-in `emitted_inventory_v2` so complete inventory can prove a local target absent regardless of suffix, while strict/v1 behavior and generated qualification drafts remain unchanged. Preserve context, containment, directory/root, link, mutation and privacy protections. Publish exact local adapter/test/policy snapshots with their local-evidence prerequisites. Validation passed 423 targeted tests, 42 adapter tests and 67 synthetic Linux fixtures. The one approved retained-copy scan stopped at `map_contract` after 1,196 files; artifact privacy is unqualified and GATE-1 remains open.
