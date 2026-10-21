@@ -619,8 +619,8 @@ async function launchNativeBrowser({ corePath, browserPath }) {
       try {
         const text = await fs.readFile(path.join(profilePath, 'DevToolsActivePort'), 'utf8');
         const candidate = Number(text.split(/\r?\n/)[0]);
-        requireCondition(Number.isInteger(candidate) && candidate > 0 && candidate <= 65535, 'browser_port');
-        port = candidate;
+        if (Number.isInteger(candidate) && candidate > 0 && candidate <= 65535) port = candidate;
+        else await delay(50);
       } catch (error) { if (error.code !== 'ENOENT') throw error; await delay(50); }
     }
     browser = await runtime.chromium.connectOverCDP(`http://127.0.0.1:${port}`, { noDefaults: true, timeout: 5000 });
@@ -683,7 +683,7 @@ async function startFixture() {
 
 /** Offline browser qualification: real tabs, synthetic identities, redirect cap, and owned cleanup. */
 async function selfCheck(options) {
-  const fixture = await startFixture(); let native;
+  const fixture = await startFixture(); let native; let result; let cleanupError;
   const checks = []; const budgets = []; const observers = [];
   try {
     native = await launchNativeBrowser(options);
@@ -712,19 +712,22 @@ async function selfCheck(options) {
     requireCondition(redirectBudget.reason === 'profile_budget' && redirectBudget.counts.app === 1
       && fixture.counts.get('/redirect') === 1 && !fixture.counts.has('/redirect-target'), 'redirect_cap_failed');
     checks.push({ case: 'redirect_blocked_before_dispatch', outcome: 'PASS', dispatched: 1, targetRequests: 0 });
-    return { outcome: 'PASS', scope: 'loopback_fixture_only', hostedRequests: 0, checks,
+    result = { outcome: 'PASS', scope: 'loopback_fixture_only', hostedRequests: 0, checks,
       measurements: budget.report(), limitations: ['cold_http_cache', 'child_targets_stop_run', 'no_hosted_account_or_target_qualification'] };
   } catch (error) {
     for (const budget of budgets) budget.stop(safeCode(error));
     // Failed fixture runs retain the same sanitized observations as successful runs.
-    return { outcome: 'STOPPED', scope: 'loopback_fixture_only', hostedRequests: 0, reason: safeCode(error), checks,
+    result = { outcome: 'STOPPED', scope: 'loopback_fixture_only', hostedRequests: 0, reason: safeCode(error), checks,
       measurements: budgets.map(budget => budget.report()) };
   } finally {
     for (const observer of observers) await observer.close();
     for (const budget of budgets) budget.dispose();
     try { if (native) await native.close(); }
+    catch (error) { cleanupError = safeCode(error); }
     finally { await fixture.close(); }
   }
+  // Retain collected observations, but never report success when owned-browser cleanup fails.
+  return cleanupError ? { ...result, outcome: 'STOPPED', reason: cleanupError } : result;
 }
 
 /** Validate the offline mode and explicit local tool paths before any fixture or browser starts. */
