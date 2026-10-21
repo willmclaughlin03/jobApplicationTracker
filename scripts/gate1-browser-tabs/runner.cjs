@@ -726,8 +726,9 @@ async function selfCheck(options) {
     catch (error) { cleanupError = safeCode(error); }
     finally { await fixture.close(); }
   }
-  // Retain collected observations, but never report success when owned-browser cleanup fails.
-  return cleanupError ? { ...result, outcome: 'STOPPED', reason: cleanupError } : result;
+  // Preserve the original stop reason; cleanup failure alone must still stop an otherwise successful run.
+  return cleanupError ? { ...result, outcome: 'STOPPED',
+    reason: result.outcome === 'STOPPED' ? result.reason : cleanupError, cleanupFailure: cleanupError } : result;
 }
 
 /** Validate the offline mode and explicit local tool paths before any fixture or browser starts. */

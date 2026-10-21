@@ -499,15 +499,18 @@ async function selfCheckFixture(t, { stopped = false, cleanupFailure, closeFixtu
   return { run: loaded.selfCheck, native, fixture };
 }
 
-/** Cleanup failures must retain both successful and stopped reports, with only a sanitized stop reason changed. */
-test('self-check preserves reports and sanitizes native cleanup failures', async (t) => {
-  for (const stopped of [false, true]) {
+/** Preserve existing stop reasons and record sanitized cleanup failures for both stopped and otherwise successful runs. */
+test('self-check preserves stop reasons and reports sanitized native cleanup failures', async (t) => {
+  for (const stopped of [true, false]) {
     for (const cleanupFailure of [undefined, 'known', 'unknown']) {
       const fixture = await selfCheckFixture(t, { stopped, cleanupFailure });
       const result = await fixture.run({});
+      const expectedCleanup = cleanupFailure === 'known' ? 'cleanup_path'
+        : cleanupFailure === 'unknown' ? 'tool_failure' : undefined;
       assert.equal(result.outcome, stopped || cleanupFailure ? 'STOPPED' : 'PASS');
-      assert.equal(result.reason, cleanupFailure === 'known' ? 'cleanup_path'
-        : cleanupFailure === 'unknown' ? 'tool_failure' : stopped ? 'redirect_cap_failed' : undefined);
+      assert.equal(result.reason, stopped ? 'redirect_cap_failed' : expectedCleanup);
+      assert.equal(result.cleanupFailure, expectedCleanup);
+      assert.equal(Object.hasOwn(result, 'cleanupFailure'), Boolean(cleanupFailure));
       assert.equal(result.scope, 'loopback_fixture_only'); assert.equal(result.hostedRequests, 0);
       assert.equal(result.checks.length, stopped ? 2 : 3);
       assert.deepEqual(result.checks[0].metrics, { fixtureMetric: 42 });
@@ -530,7 +533,8 @@ test('self-check awaits fixture shutdown after native cleanup fails', async (t) 
   const result = fixture.run({}).finally(() => { settled = true; });
   await closing;
   try { assert.equal(settled, false); } finally { release(); }
-  assert.equal((await result).reason, 'tool_failure');
+  const report = await result;
+  assert.equal(report.reason, 'tool_failure'); assert.equal(report.cleanupFailure, 'tool_failure');
 });
 
 /** Minimal protocol/page doubles exercise stop cleanup without launching or reading a browser profile. */
