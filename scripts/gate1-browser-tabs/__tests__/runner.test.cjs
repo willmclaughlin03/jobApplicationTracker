@@ -1,12 +1,12 @@
 'use strict';
-/* global Headers, clearTimeout, setTimeout */
+/* global Headers, Response, URL, clearTimeout, setTimeout */
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const path = require('node:path');
-const { RequestBudget, IdentityObserver, BrowserObserver, classifyRequest, validateBuild,
-  summarizeDurations, waitUntil, waitForChecks, withTimeout, runProfiles, parseCli, main, TARGET, PROFILES } = require('../runner.cjs');
+const { RequestBudget, IdentityObserver, BrowserObserver, classifyRequest, validateBuild, checkBuild,
+  summarizeDurations, waitUntil, waitForChecks, withTimeout, exerciseProfile, runProfiles, parseCli, main, TARGET, PROFILES, SCHEDULE, LIVE_APPROVAL } = require('../runner.cjs');
 
 /** Supply a deterministic clock and generous phase limits without starting timers or I/O. */
 function budgetFixture(overrides = {}) {
@@ -86,6 +86,83 @@ test('startup readiness waits for completed session and CSRF events', async () =
   await assert.rejects(waitForChecks(empty, 1, 1, 25), /missing_observation/);
 });
 
+/** Model two concurrent navigations with injectable document dispatches and completed auth checks. */
+function startupFixture(dispatch) {
+  const fixture = budgetFixture(); const navigations = [];
+  const observer = { budget: fixture.budget,
+    /** Supply inert pages whose dispatch occurs only after both goto calls have started. */
+    async newPage(tab) {
+      return {
+        /** Yield before reserving requests to expose differences between invocation and dispatch time. */
+        async goto() {
+          navigations.push({ tab, at: fixture.budget.clock() });
+          await Promise.resolve();
+          assert.equal(navigations.length, 2, 'both navigations must start before either dispatches');
+          dispatch(tab, fixture);
+          for (const kind of ['session', 'csrf']) {
+            const record = fixture.budget.reserve(kind, tab); record.finished = true; record.durationMs = 1;
+          }
+        },
+      };
+    },
+    /** All mocked requests finish within goto, so no protocol drain is needed. */
+    async settled() {},
+    /** Keep activation inert so startup observations can be tested without a browser. */
+    async activate() {},
+  };
+  return { ...fixture, observer, navigations,
+    schedule: { ...SCHEDULE, rounds: 0, observationMs: 0, slotMs: 0 } };
+}
+
+/** Simultaneous goto calls must not hide dispatch skew beyond the approved startup spread. */
+test('startup spread uses document dispatch times rather than goto invocation times', async () => {
+  /** Delay only the second dispatch while keeping both navigation calls concurrent. */
+  const fixture = startupFixture((tab, { budget, advance }) => {
+    if (tab === 2) advance(SCHEDULE.startupSpreadMs + 1);
+    budget.reserve('document', tab).finished = true;
+  });
+  await assert.rejects(exerciseProfile(fixture.observer, { tabs: 2 }, 'https://example.test', fixture.schedule),
+    { code: 'startup_spread' });
+  assert.deepEqual(fixture.navigations, [{ tab: 1, at: 0 }, { tab: 2, at: 0 }]);
+});
+
+/** Accept the exact spread boundary using the first current-phase document for each tab only. */
+test('startup spread ignores prior phases, neutral tabs and later document requests', async () => {
+  /** Put the first dispatches at the boundary, then add a later request that must not replace them. */
+  const fixture = startupFixture((tab, { budget, advance }) => {
+    if (tab === 2) advance(SCHEDULE.startupSpreadMs);
+    budget.reserve('document', tab).finished = true;
+    if (tab === 2) {
+      advance(SCHEDULE.startupSpreadMs + 1);
+      budget.reserve('document', 1).finished = true;
+    }
+  });
+  fixture.budget.reserve('document', 1).finished = true;
+  fixture.advance(SCHEDULE.startupSpreadMs + 1);
+  fixture.budget.reserve('document', 2).finished = true;
+  fixture.budget.begin('startup', { app: 100, static: 100, session: 100 }, 100_000);
+  fixture.budget.reserve('document', 0).finished = true;
+  fixture.advance(SCHEDULE.startupSpreadMs + 1);
+  const result = await exerciseProfile(fixture.observer, { tabs: 2 }, 'https://example.test', fixture.schedule);
+  assert.equal(result.session.count, 2); assert.equal(result.csrf.count, 2);
+});
+
+/** A previous-phase record or malformed timestamp cannot substitute for a current document observation. */
+test('startup requires a finite document reservation timestamp for every tab', async () => {
+  for (const timestamp of [undefined, null, NaN, Infinity, '0']) {
+    /** Omit the second document or corrupt its timestamp while leaving auth checks complete. */
+    const fixture = startupFixture((tab, { budget }) => {
+      if (tab === 2 && timestamp === undefined) return;
+      const record = budget.reserve('document', tab); record.finished = true;
+      if (tab === 2) record.startedMs = timestamp;
+    });
+    fixture.budget.reserve('document', 2).finished = true;
+    fixture.budget.begin('startup', { app: 100, static: 100, session: 100 }, 100_000);
+    await assert.rejects(exerciseProfile(fixture.observer, { tabs: 2 }, 'https://example.test', fixture.schedule),
+      { code: 'missing_observation' }, `timestamp: ${String(timestamp)}`);
+  }
+});
+
 /** Reports must remain fixed even if cleanup receives late protocol callbacks. */
 test('report snapshots cannot change after delivery or retain extra raw fields', () => {
   const { budget } = budgetFixture(); const record = budget.reserve('session');
@@ -124,12 +201,130 @@ test('identity comparison exports booleans only and rejects changed/absent ident
 /** Stop target drift and stale documents; valid build IDs alone cannot override bad status/cache evidence. */
 test('build attribution rejects stale, missing, mismatched and redirected documents', () => {
   const html = `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ buildId: TARGET.build, props: { private: 'DO_NOT_RETAIN' } })}</script>`;
-  assert.equal(validateBuild(html, 200, new Headers()), true);
+  const headers = freshBuildHeaders();
+  assert.equal(validateBuild(html, 200, headers), true);
   assert.throws(() => validateBuild(html, 302, new Headers()), /target_status/);
-  assert.throws(() => validateBuild(html, 200, new Headers({ 'x-vercel-cache': 'HIT' })), /cached_target/);
-  assert.throws(() => validateBuild(html, 200, new Headers({ age: '1' })), /cached_target/);
-  assert.throws(() => validateBuild(html, 200, new Headers(), 'different-build'), /build_mismatch/);
-  assert.throws(() => validateBuild('<html></html>', 200, new Headers()), /build_missing/);
+  assert.throws(() => validateBuild(html, 200, new Headers()), /cached_target/);
+  assert.throws(() => validateBuild(html, 200, headers, 'different-build'), /build_mismatch/);
+  assert.throws(() => validateBuild('<html></html>', 200, headers), /build_missing/);
+  assert.throws(() => validateBuild('<script id="__NEXT_DATA__">{broken</script>', 200, headers), /build_schema/);
+});
+
+/** Model the static login response, with optional header deletion/overrides for invalid cases. */
+function freshBuildHeaders(overrides = {}) {
+  const headers = new Headers({ 'cache-control': 'public, max-age=0, must-revalidate', 'x-vercel-cache': 'MISS', age: '0' });
+  for (const [name, value] of Object.entries(overrides)) {
+    if (value === null) headers.delete(name);
+    else headers.set(name, value);
+  }
+  return headers;
+}
+
+/** Exercise the static route's exact policy while accepting harmless formatting and fresh CDN states. */
+test('build freshness accepts revalidation policy and explicit fresh cache states', () => {
+  const html = `<script id="__NEXT_DATA__">${JSON.stringify({ buildId: TARGET.build })}</script>`;
+  for (const status of ['MISS', 'BYPASS', 'REVALIDATED', ' miss ']) {
+    for (const age of [null, '0']) {
+      assert.equal(validateBuild(html, 200, freshBuildHeaders({
+        'cache-control': 'MUST-REVALIDATE, Public, max-age = 0', 'x-vercel-cache': status, age,
+      })), true);
+    }
+  }
+});
+
+/** Missing, ambiguous or cacheable headers must not authorize even a correctly attributed build. */
+test('build freshness rejects incomplete, conflicting and stale cache evidence', () => {
+  const html = `<script id="__NEXT_DATA__">${JSON.stringify({ buildId: TARGET.build })}</script>`;
+  const invalid = {
+    'cache-control': [null, '', 'public', 'public, max-age=0', 'max-age=0, must-revalidate',
+      'private, no-store', 'public, max-age=60, must-revalidate',
+      'public, max-age=0, must-revalidate, max-age=60', 'public, max-age=0, must-revalidate, s-maxage=60',
+      'public, max-age=0, must-revalidate, stale-while-revalidate=60',
+      'public, max-age=0, must-revalidate, stale-if-error=60'],
+    'x-vercel-cache': [null, '', 'HIT', 'stale', 'PRERENDER', 'UNKNOWN', 'MISS, HIT'],
+    age: ['', '1', '-1', 'invalid', '0, 1'],
+  };
+  for (const [name, values] of Object.entries(invalid)) {
+    for (const value of values) {
+      assert.throws(() => validateBuild(html, 200, freshBuildHeaders({ [name]: value })),
+        { code: 'cached_target' }, `${name}: ${value}`);
+    }
+  }
+});
+
+/** Stub every fetch so both target probes enforce the contract without sending hosted traffic. */
+test('both login probes request fresh responses and preserve cached_target on failure', async (t) => {
+  const html = `<script id="__NEXT_DATA__">${JSON.stringify({ buildId: TARGET.build })}</script>`;
+  let responseHeaders = freshBuildHeaders();
+  /** Return only synthetic HTML; mock call records verify credentials, redirects and probe uniqueness. */
+  const fetchMock = t.mock.method(globalThis, 'fetch', async () => new Response(html, { headers: responseHeaders }));
+  for (const origin of [TARGET.origin, TARGET.immutableOrigin]) {
+    const { budget } = budgetFixture();
+    responseHeaders = freshBuildHeaders();
+    await checkBuild(budget, origin);
+    assert.equal(budget.reason, null); assert.equal(budget.records[0].finished, true);
+    responseHeaders = freshBuildHeaders({ 'cache-control': null });
+    await assert.rejects(checkBuild(budget, origin), { code: 'cached_target' });
+    assert.equal(budget.reason, 'cached_target'); assert.equal(budget.counts.app, 2);
+    assert.equal(budget.records[1].finished, true); assert.equal(budget.records[1].status, 200);
+  }
+  const calls = fetchMock.mock.calls;
+  /** Compare dispatched URLs to catch reused probe values within each origin. */
+  assert.equal(new Set(calls.map(call => call.arguments[0])).size, 4);
+  assert.notEqual(new URL(calls[0].arguments[0]).search, new URL(calls[2].arguments[0]).search);
+  for (const [index, call] of calls.entries()) {
+    const [rawUrl, options] = call.arguments; const url = new URL(rawUrl);
+    assert.equal(url.origin, index < 2 ? TARGET.origin : TARGET.immutableOrigin);
+    assert.equal(url.pathname, '/login'); assert.ok(url.searchParams.get('gate1_build'));
+    assert.equal(options.credentials, 'omit'); assert.equal(options.redirect, 'manual');
+    assert.equal(options.cache, 'no-store');
+    assert.equal(options.headers['Cache-Control'], 'no-cache, no-store, max-age=0');
+    assert.equal(options.headers.Pragma, 'no-cache');
+  }
+});
+
+/** Failure on either preflight host must stop runProfiles before any browser page is created. */
+test('both target freshness checks precede browser execution', async (t) => {
+  for (const failingOrigin of [TARGET.origin, TARGET.immutableOrigin]) {
+    /** Each subtest owns its mocks so production clocks and global fetch are restored afterward. */
+    await t.test(failingOrigin === TARGET.origin ? 'canonical' : 'immutable', async (subtest) => {
+      const originalCheck = RequestBudget.prototype.check; let skippedQuietPeriod = false;
+      /** Advance only the preflight quiet period; retain the real deadline and budget guards. */
+      subtest.mock.method(RequestBudget.prototype, 'check', function check() {
+        if (this.phase === 'tabs_1' && !skippedQuietPeriod) {
+          const clock = this.clock;
+          /** Offset the monotonic clock so the real quiet wait completes without a long test delay. */
+          this.clock = () => clock() + SCHEDULE.quietMs; skippedQuietPeriod = true;
+        }
+        return originalCheck.call(this);
+      });
+      const calls = [];
+      /** Both responses have the correct build; only the selected host violates freshness. */
+      subtest.mock.method(globalThis, 'fetch', async (rawUrl) => {
+        const origin = new URL(rawUrl).origin; calls.push(origin);
+        return new Response(`<script id="__NEXT_DATA__">${JSON.stringify({ buildId: TARGET.build })}</script>`, {
+          headers: freshBuildHeaders(origin === failingOrigin ? { 'cache-control': null } : {}),
+        });
+      });
+      const context = {
+        /** Provide only the prepared blank context required by the live entry point. */
+        pages() { return [{
+          /** Identify the sole prepared page without reading any actual browser state. */
+          url() { return 'about:blank'; },
+        }]; },
+        /** Model the required absence of service workers without starting a browser. */
+        serviceWorkers() { return []; },
+        /** Any attempted browser work would mean an invalid probe passed authorization. */
+        newPage: subtest.mock.fn(() => { throw new Error('browser_must_not_start'); }),
+      };
+      const result = await runProfiles({ context, approvedProfiles: [1, 2, 4, 8],
+        approval: LIVE_APPROVAL, approvedUserId: 'fixture-user' });
+      assert.equal(result.reason, 'cached_target'); assert.equal(result.outcome, 'STOPPED');
+      assert.equal(result.profiles.length, 0); assert.equal(context.newPage.mock.callCount(), 0);
+      assert.deepEqual(calls, failingOrigin === TARGET.origin ? [TARGET.origin] : [TARGET.origin, TARGET.immutableOrigin]);
+      assert.ok(result.records.every(record => record.observationComplete));
+    });
+  }
 });
 
 /** Freeze percentile semantics and return explicit missing values for empty observations. */

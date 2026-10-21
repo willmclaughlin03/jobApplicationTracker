@@ -51,6 +51,14 @@ Credentialless canonical and immutable host probes compare that build before and
 after each profile. A changed or cached probe stops qualification; these constants
 are not a claim that the current staging branch matches the deployed target.
 
+Both `/login` probes use a unique query value and request revalidation. Before any
+profile browser work, each response must have the static route's expected
+`Cache-Control: public, max-age=0, must-revalidate` (case, spacing and directive
+order may vary), `x-vercel-cache: MISS`, `BYPASS` or `REVALIDATED`, and absent or
+zero `Age`. Missing or conflicting policy/status headers, other cache states and
+nonzero or malformed ages stop with `cached_target`, even when the build matches.
+The same contract applies to the probes after each profile.
+
 The proposed whole-run limits are 55 minutes, 1,000 application requests, 1,280
 static requests and 364 session requests, including readiness allowances. These
 limits need their own hosted approval and do not override an earlier traffic ceiling.

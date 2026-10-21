@@ -8,6 +8,7 @@
  * No credential files, environment values, browser storage, or raw logs are read.
  */
 const { performance } = require('node:perf_hooks');
+const { randomUUID } = require('node:crypto');
 const { setTimeout: delay } = require('node:timers/promises');
 const http = require('node:http');
 const path = require('node:path');
@@ -21,6 +22,11 @@ const TARGET = Object.freeze({
   deployment: 'dpl_B7x6hUkkdoXpMCWVaMfxbGZgLiJo',
   commit: '3e33fea683271a5232bc93e1eedac29826ed31e9',
   build: 'h3VsmNyDZ322h7VCK7Gqs',
+});
+// Static /login uses Vercel's default revalidation policy, not protected-page no-store.
+const BUILD_FRESHNESS = Object.freeze({
+  cacheControl: 'max-age=0,must-revalidate,public',
+  cacheStatuses: Object.freeze(['MISS', 'BYPASS', 'REVALIDATED']),
 });
 const PROFILES = Object.freeze([
   Object.freeze({ tabs: 1, session: 24, app: 80, static: 80 }),
@@ -210,7 +216,12 @@ async function waitUntil(budget, targetMs) {
 /** Check a fresh HTML build document in memory without preserving its props or body. */
 function validateBuild(html, status, headers, expected = TARGET.build) {
   requireCondition(status === 200, 'target_status');
-  requireCondition(!['HIT', 'STALE'].includes((headers.get('x-vercel-cache') || '').toUpperCase()), 'cached_target');
+  // Require affirmative freshness evidence; a matching build ID alone is insufficient.
+  const cacheControl = (headers.get('cache-control') || '').split(',')
+    /** Normalize directive formatting while preserving duplicate or unexpected policy tokens. */
+    .map(directive => directive.trim().toLowerCase().replace(/\s*=\s*/g, '=')).sort().join(',');
+  requireCondition(cacheControl === BUILD_FRESHNESS.cacheControl, 'cached_target');
+  requireCondition(BUILD_FRESHNESS.cacheStatuses.includes((headers.get('x-vercel-cache') || '').trim().toUpperCase()), 'cached_target');
   const age = headers.get('age');
   requireCondition(age === null || age === '0', 'cached_target');
   const script = /<script\b[^>]*\bid=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i.exec(html);
@@ -241,9 +252,10 @@ async function checkBuild(budget, origin, expected = TARGET.build) {
   const record = budget.reserve('document'); const start = budget.clock();
   const signal = AbortSignal.any([budget.controller.signal, AbortSignal.timeout(SCHEDULE.requestMs)]);
   try {
-    const response = await fetch(`${origin}/login?gate1_build=${record.sequence}`, {
+    // Sequence numbers repeat across runs; use a unique probe and still validate response headers.
+    const response = await fetch(`${origin}/login?gate1_build=${randomUUID()}`, {
       redirect: 'manual', credentials: 'omit', cache: 'no-store', signal,
-      headers: { 'Cache-Control': 'no-cache, no-store', Pragma: 'no-cache' },
+      headers: { 'Cache-Control': 'no-cache, no-store, max-age=0', Pragma: 'no-cache' },
     });
     record.status = response.status;
     validateBuild(await boundedText(response), response.status, response.headers, expected);
@@ -482,12 +494,13 @@ async function exerciseProfile(observer, profile, origin, schedule = SCHEDULE) {
   const budget = observer.budget; const pages = [];
   const neutral = await observer.newPage(0);
   for (let tab = 1; tab <= profile.tabs; tab++) pages.push(await observer.newPage(tab));
-  const starts = []; const startup = budget.clock();
-  // Start all page navigations together; no account mutation or UI submission occurs.
-  await Promise.all(pages.map(async page => {
-    starts.push(budget.clock());
-    await page.goto(origin, { waitUntil: 'load', timeout: schedule.startupMs });
-  }));
+  const startup = budget.clock();
+  /** Start all page navigations together; no account mutation or UI submission occurs. */
+  await Promise.all(pages.map(page => page.goto(origin, { waitUntil: 'load', timeout: schedule.startupMs })));
+  /** Use each tab's first gated document dispatch in this phase, excluding preflight probes. */
+  const starts = pages.map((_, index) => budget.records.find(record => record.profile === budget.phase
+    && record.tab === index + 1 && record.kind === 'document')?.startedMs);
+  requireCondition(starts.every(Number.isFinite), 'missing_observation');
   requireCondition(Math.max(...starts) - Math.min(...starts) <= schedule.startupSpreadMs, 'startup_spread');
   await waitForChecks(observer, profile.tabs, 1, Math.max(1, schedule.startupMs - (budget.clock() - startup)));
   requireCondition(budget.clock() - startup <= schedule.startupMs, 'startup_deadline');
