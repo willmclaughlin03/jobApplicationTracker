@@ -587,7 +587,7 @@ function inspectMapLinks(text, entry, knownFiles, findings, comparisons, state, 
           result.labels.forEach(s => findings.labels.add(s)); result.patterns.forEach(s => findings.patterns.add(s));
           bytes.fill(0);
         }
-        if (relative.startsWith('..') || path.isAbsolute(relative)) {
+        if (relative.startsWith('..') || path.isAbsolute(relative) || local.endsWith('/') || relative.endsWith(path.sep)) {
           throw new ScanError('external_map');
         }
         const present = knownFiles.has(relative);

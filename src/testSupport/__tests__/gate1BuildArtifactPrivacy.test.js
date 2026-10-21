@@ -878,6 +878,16 @@ test.each(['physical', 'alias', 'projected', 'implicit_parent', 'file_parent', '
     expect((await trial({}, absentLocalEnvelope(true))).report.failure).toBe('external_map');
   });
 
+/** Reject raw and decoded trailing separators before occupied targets can count as absent. */
+test.each(['present.js/', 'occupied/', '../', 'present.js%2f', 'occupied%2f', '..%2f'])(
+  'V2 rejects trailing separators on existing files, directories and the output root: %s', async ref => {
+    file('static/present.js', 'safe'); fs.mkdirSync(path.join(output, 'static/occupied'));
+    file('static/app.js', '//# sourceMappingURL=' + ref);
+    expect((await trial({}, absentLocalEnvelope())).report).toMatchObject({ failure: 'external_map',
+      missingLocalMapReferences: 0, missingLocalMapContexts: 0,
+      sourceMapAvailability: 'unqualified', artifactPrivacy: 'unqualified' });
+  });
+
 test.each(['https://outside.invalid/a', '//outside.invalid/a', '../../../../outside',
   '%2e%2e/%2e%2e/%2e%2e/%2e%2e/outside', '%2f%2foutside.invalid/a', 'bad%GG', 'bad%5cpath',
   'bad%3fquery', 'bad%23fragment', 'bad%3ascheme', 'bad%00', 'bad%7f', 'absent?query', 'absent#fragment', '../..named'])(
