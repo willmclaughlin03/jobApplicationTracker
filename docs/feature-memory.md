@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-18
 
+- `2026-10-21` - `Protected browser qualification preparation`: Publish the validated manual-first Edge sign-in/same-profile restart, scoped generated-host protection-cookie probes and updated recorded target pins. Accept deployment-cached static login hits only with the pinned build, expected policy and valid age; preserve bounded requests, private identity checks and owned cleanup. Update the operator README and regressions; 51 offline tests and the native loopback fixture passed. Hosted authentication/load qualification and GATE-1 remain open.
+
 - `2026-10-21` - `Self-check cleanup failure attribution`: Preserve an existing STOPPED reason and record sanitized native cleanup errors in cleanupFailure. Otherwise-PASS runs still become STOPPED with the cleanup reason. Updated regression coverage for stopped and successful runs with absent, known and unexpected cleanup errors; all 33 offline tests, focused lint, syntax and whitespace checks passed.
 
 - `2026-10-21` - `Browser startup retries and cleanup reports`: Retry empty or invalid DevToolsActivePort content within the existing startup deadline, retaining integer port bounds and ENOENT handling. Preserve self-check observations when native cleanup fails, return a sanitized STOPPED reason and await fixture shutdown. All 33 offline tests, focused lint, syntax and whitespace checks passed.

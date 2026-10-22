@@ -43,25 +43,74 @@ separate explicit authorization, the complete `[1, 2, 4, 8]` profile list, an
 owner-approved test identity and an exclusively prepared browser context with exactly
 one blank page and no service workers. The approval marker is a caller assertion,
 not a substitute for that authorization. Account preparation and authentication are
-outside this helper. Never supply a personal browser context.
+outside `runProfiles`. Never supply a personal browser context.
 
-The frozen target is deployment `dpl_B7x6hUkkdoXpMCWVaMfxbGZgLiJo`, commit
-`3e33fea683271a5232bc93e1eedac29826ed31e9`, build `h3VsmNyDZ322h7VCK7Gqs`.
-Credentialless canonical and immutable host probes compare that build before and
-after each profile. A changed or cached probe stops qualification; these constants
-are not a claim that the current staging branch matches the deployed target.
+### Dedicated browser preparation
+
+The exported `launchNativeBrowser({ corePath, browserPath, manualFirst: true })`
+opens a new owned profile with local instructions for Vercel access to the generated
+host and application sign-in on the canonical host. This phase has no remote-debugging
+port or automation connection. The owner signs in normally, then closes every window
+of that dedicated browser. Do not read credential files or export cookies.
+
+The returned handle exposes `status()`, `attachAfterManualSignIn()` and `close()`.
+Call `attachAfterManualSignIn()` only after `status().manualExitClean` is true.
+The one-shot transition rejects a running browser or an unclean exit and restarts
+the same profile with automation. It creates one blank keeper and exposes `browser`,
+`context`, `keepAlive`, `status` and `close`. Verify actual application authentication
+and the owner-approved identity in memory; cookie presence alone is insufficient.
+
+`close()` is final cleanup: it closes only the owned process and deletes only its
+verified profile after exit. Calling it between manual sign-in and attachment would
+erase the saved sign-in state. Preserve primary startup failures and report any
+cleanup failure separately. Manual sign-in traffic is real hosted preparation,
+not a loopback test or a completed load profile.
+
+### Pinned target and build probes
+
+The recorded target is commit `9cb88f0ab1bee2c8921ceb0092de3c9fcd169c7e`, build
+`aueJAQi4zQIKVDr0go3VB`, on these origins:
+
+- Canonical: `https://job-application-tracker-kappa-seven.vercel.app`
+- Generated: `https://job-application-tracker-nc08q52tw-track-the-app.vercel.app`
+
+The [Vercel deployment reference](https://vercel.com/track-the-app/job-application-tracker/5H29GHpsA9x4HQU5P4nDTNbEZm7h)
+and GitHub deployment `7237630456` identify the recorded target. Its actual Vercel
+`dpl_` ID has not been independently retrieved, so `TARGET.deployment` is null.
+These pins are not a claim that a later staging build or publication serves the same
+target. Reconcile deployment changes before separately authorized hosted execution.
+
+Canonical probes remain anonymous. Each generated-host probe privately reads the
+prepared context's `_vercel_jwt` and sends only that cookie to the exact generated
+origin. It requires one exact-host, root-path, Secure, HttpOnly, unpartitioned cookie
+with a safe value and sufficient remaining lifetime (or a session lifetime). Missing,
+ambiguous or invalid authentication stops before fetch. Cookie lookup, fetch and
+bounded body reads share a five-second deadline; redirects are never followed.
 
 Both `/login` probes use a unique query value and request revalidation. Before any
 profile browser work, each response must have the static route's expected
 `Cache-Control: public, max-age=0, must-revalidate` (case, spacing and directive
-order may vary), `x-vercel-cache: MISS`, `BYPASS` or `REVALIDATED`, and absent or
-zero `Age`. Missing or conflicting policy/status headers, other cache states and
-nonzero or malformed ages stop with `cached_target`, even when the build matches.
-The same contract applies to the probes after each profile.
+order may vary), the exact pinned build and one of these cache states:
+
+- `MISS`, `BYPASS` or `REVALIDATED`: `Age` must be absent or exactly zero.
+- `HIT`: `Age` must be present and contain only decimal digits representing a
+  nonnegative safe integer; a positive age is allowed only in this case.
+
+Vercel [caches static files for the deployment lifetime](https://vercel.com/docs/caching/cdn-cache)
+and [ignores static-file query strings in deployment-specific cache keys](https://vercel.com/docs/caching/cdn-cache/purge).
+A static cache hit therefore qualifies build attribution, not fresh origin execution.
+Missing or conflicting policy/status headers, stale or unknown cache states and
+invalid ages still stop with `cached_target`; a different build stops with
+`build_mismatch`. The same checks run after each profile. This exception concerns
+static login probes only and does not qualify caching of authentication responses.
 
 The proposed whole-run limits are 55 minutes, 1,000 application requests, 1,280
-static requests and 364 session requests, including readiness allowances. These
-limits need their own hosted approval and do not override an earlier traffic ceiling.
+static requests and 364 session requests. The profile caps total 980 application,
+1,200 static and 360 session requests, leaving planned readiness allowances of
+20/80/4. `runProfiles` creates a new budget and immediately begins `tabs_1`; it does
+not automatically import manual sign-in or external readiness counts or elapsed time.
+Reconcile that preparation with the authorized cumulative budget before calling it.
+These limits need their own hosted approval and do not override an earlier ceiling.
 Per-profile limits and rolling 61-second caps reserve requests synchronously before
 dispatch. HTTP errors, unexpected origins/methods/redirects, identity mismatches,
 child targets, timeouts or exhausted limits stop the run.
