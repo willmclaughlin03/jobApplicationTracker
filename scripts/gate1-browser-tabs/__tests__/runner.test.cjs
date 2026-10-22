@@ -8,7 +8,8 @@ const { readFile } = require('node:fs/promises');
 const path = require('node:path');
 const { compileFunction } = require('node:vm');
 const { QualificationError, RequestBudget, IdentityObserver, BrowserObserver, classifyRequest, validateBuild, checkBuild,
-  summarizeDurations, waitUntil, waitForChecks, withTimeout, exerciseProfile, runProfiles, parseCli, main, TARGET, PROFILES, SCHEDULE, LIVE_APPROVAL } = require('../runner.cjs');
+  summarizeDurations, waitUntil, waitForChecks, withTimeout, exerciseProfile, runProfiles, parseCli, main, TARGET, PROFILES, SCHEDULE,
+  LIVE_APPROVAL, REMAINING_APPROVAL } = require('../runner.cjs');
 
 /** Supply a deterministic clock and generous phase limits without starting timers or I/O. */
 function budgetFixture(overrides = {}) {
@@ -509,14 +510,141 @@ test('latency summaries use nearest-rank p95 and preserve missing data', () => {
   assert.throws(() => summarizeDurations([NaN]), /missing_timing/);
 });
 
-/** Offline CLI and imported live entry point must reject incomplete/accidental execution approval. */
-test('no CLI invocation or partial profile approval can initiate live traffic', async () => {
+/** Offline CLI and imported live entry point must reject accidental execution without the matching explicit marker. */
+test('no CLI invocation or informal approval can initiate live traffic', async () => {
   await assert.rejects(main(['--live']), /offline_cli_only/);
   await assert.rejects(runProfiles({ approval: 'go', approvedProfiles: [1, 2, 4, 8] }), /live_not_authorized/);
   const description = await main(['--describe']); assert.equal(description.profiles.length, 4);
   assert.deepEqual(PROFILES.map(profile => profile.tabs), [1, 2, 4, 8]);
   assert.equal(PROFILES.reduce((sum, profile) => sum + profile.app, 20), 1000);
   assert.equal(PROFILES.reduce((sum, profile) => sum + profile.static, 80), 1280);
+});
+
+/** Reject malformed or mismatched selections before context inspection, timers or request dispatch. */
+test('each live marker accepts only its exact ordered profile list', async (t) => {
+  const context = {
+    /** Any inspection here would mean an invalid approval passed the first guard. */
+    pages: t.mock.fn(() => { throw new Error('context_must_not_be_inspected'); }),
+  };
+  /** A rejected selection must never reach any real or synthetic network request. */
+  const fetchMock = t.mock.method(globalThis, 'fetch', async () => { throw new Error('must_not_dispatch'); });
+  const malformed = [undefined, null, [], [1], [2], [2, 4], [4, 8], [8, 4, 2], [2, 4, 4, 8],
+    [2, 4, 8, 16], ['2', 4, 8], Object.assign(new Array(3), { 0: 2, 2: 8 }),
+    '[2,4,8]', { 0: 2, 1: 4, 2: 8, length: 3 }];
+  for (const approval of [LIVE_APPROVAL, REMAINING_APPROVAL]) {
+    const wrongScope = approval === LIVE_APPROVAL ? [2, 4, 8] : [1, 2, 4, 8];
+    for (const approvedProfiles of [...malformed, wrongScope]) {
+      await assert.rejects(runProfiles({ context, approval, approvedProfiles, approvedUserId: 'fixture' }),
+        { code: 'live_not_authorized' });
+    }
+  }
+  for (const approval of [undefined, 'go', 'GATE1_BROWSER_2_4_8_APPROVED']) {
+    await assert.rejects(runProfiles({ context, approval, approvedProfiles: [2, 4, 8], approvedUserId: 'fixture' }),
+      { code: 'live_not_authorized' });
+  }
+  assert.equal(context.pages.mock.callCount(), 0); assert.equal(fetchMock.mock.callCount(), 0);
+});
+
+/** Exercise real orchestration and owned-page cleanup with inert probes, waits and per-profile work. */
+async function profileRunFixture({ failTabs = null, failure = 'known' } = {}) {
+  const runnerPath = require.resolve('../runner.cjs'); const source = await readFile(runnerPath, 'utf8');
+  const pages = []; const executions = []; const probes = []; const waits = []; const progress = [];
+  let budget; let loaded;
+  const context = {
+    /** Supply only the caller-owned blank keeper for the initial exclusivity guard. */
+    pages() { return [{ url() { return 'about:blank'; } }]; },
+    /** There are no real workers or browser processes in this fixture. */
+    serviceWorkers() { return []; },
+    /** Give each owned page its own close state so cleanup across profiles remains observable. */
+    async newPage() { const fake = fakeBrowser(); pages.push(fake); return fake.page; },
+    /** Bind each page to its inert protocol double without opening a connection. */
+    async newCDPSession(page) { return pages.find(fake => fake.page === page).protocol; },
+  };
+  const replacements = {
+    /** Record pre/post probe ordering while preserving any previously latched stop reason. */
+    async checkBuild(current, origin) {
+      budget = current; current.check(); probes.push({ phase: current.phase, origin });
+    },
+    /** Record the required quiet-period call without waiting or advancing a real browser clock. */
+    async waitUntil(current, due) {
+      current.check(); waits.push({ phase: current.phase, remainingMs: due - current.clock() });
+    },
+    /** Create only synthetic owned pages, then optionally fail at the chosen profile boundary. */
+    async exerciseProfile(observer, profile, origin) {
+      executions.push({ profile, limits: { ...observer.budget.phaseLimits }, origin });
+      for (let tab = 0; tab <= profile.tabs; tab++) await observer.newPage(tab);
+      if (profile.tabs === failTabs) {
+        if (failure === 'earlier_stop') observer.budget.stop('identity_mismatch');
+        if (failure === 'known') throw new loaded.QualificationError('request_latency');
+        throw new Error('PRIVATE_PROFILE_FAILURE');
+      }
+      return { fixtureTabs: profile.tabs };
+    },
+  };
+  /** Freeze only the fixture's host clock so quiet-period assertions do not depend on machine scheduling. */
+  function fixtureRequire(name) {
+    return name === 'node:perf_hooks' ? { performance: { now: () => 0 } } : require(name);
+  }
+  loaded = compileFunction(`${source}\ncheckBuild = replacements.checkBuild; waitUntil = replacements.waitUntil;
+    exerciseProfile = replacements.exerciseProfile; return { runProfiles, QualificationError };`,
+  ['require', 'module', '__dirname', 'replacements'], { filename: runnerPath })(fixtureRequire, { exports: {} }, path.dirname(runnerPath), replacements);
+  return { pages, executions, probes, waits, progress,
+    /** Keep the real budget inspectable for timer-disposal and unchanged-limit assertions. */
+    budget() { return budget; },
+    /** Invoke the actual entry point with synthetic identity/context and collect progress separately. */
+    run(options) { return loaded.runProfiles({ context, approvedUserId: 'fixture',
+      onProgress: update => progress.push(update), ...options }); },
+  };
+}
+
+/** Both supported selections keep their frozen profiles, probes and cleanup; continuation never imports a prior pass. */
+test('full and remaining modes execute and report only their selected profiles', async () => {
+  for (const [approval, approvedProfiles] of [[LIVE_APPROVAL, [1, 2, 4, 8]], [REMAINING_APPROVAL, [2, 4, 8]]]) {
+    const fixture = await profileRunFixture(); const report = await fixture.run({ approval, approvedProfiles });
+    assert.equal(report.outcome, 'OBSERVED'); assert.equal(report.reason, null);
+    assert.deepEqual(report.profiles.map(profile => profile.tabs), approvedProfiles);
+    assert.ok(report.profiles.every(profile => profile.outcome === 'PASS'));
+    assert.deepEqual(fixture.executions.map(entry => entry.profile.tabs), approvedProfiles);
+    assert.deepEqual(fixture.progress.map(update => update.completedProfile), approvedProfiles);
+    assert.deepEqual(fixture.waits.map(wait => wait.phase), approvedProfiles.map(tabs => `tabs_${tabs}`));
+    assert.ok(fixture.waits.every(wait => wait.remainingMs === SCHEDULE.quietMs));
+    for (const entry of fixture.executions) {
+      assert.deepEqual(entry.profile, PROFILES.find(profile => profile.tabs === entry.profile.tabs));
+      assert.ok(Object.isFrozen(entry.profile)); assert.deepEqual(entry.limits, entry.profile);
+      assert.equal(entry.origin, TARGET.origin);
+    }
+    assert.deepEqual(fixture.probes, approvedProfiles.flatMap(tabs =>
+      [TARGET.origin, TARGET.immutableOrigin, TARGET.origin, TARGET.immutableOrigin].map(origin => ({ phase: `tabs_${tabs}`, origin }))));
+    assert.equal(fixture.pages.length, approvedProfiles.reduce((sum, tabs) => sum + tabs + 1, 0));
+    assert.ok(fixture.pages.every(page => page.closed() === 1));
+    assert.equal(fixture.budget().timer?._destroyed, true);
+    assert.deepEqual(fixture.budget().totals, { app: 1000, static: 1280, session: 364 });
+    assert.deepEqual(fixture.budget().rolling, { app: 128, session: 32 });
+    assert.equal(fixture.budget().deadline - fixture.budget().started, SCHEDULE.totalMs);
+    assert.deepEqual(report.dispatched, { app: 0, static: 0, session: 0 });
+  }
+});
+
+/** A failed continuation retains only earlier completed profiles, preserves the first reason and never retries or advances. */
+test('remaining mode stops at the first failure and closes every owned page', async () => {
+  for (const failTabs of [2, 4, 8]) {
+    for (const failure of ['known', 'unknown', 'earlier_stop']) {
+      const fixture = await profileRunFixture({ failTabs, failure });
+      const report = await fixture.run({ approval: REMAINING_APPROVAL, approvedProfiles: [2, 4, 8] });
+      const completed = [2, 4, 8].filter(tabs => tabs < failTabs);
+      const attempted = [...completed, failTabs];
+      assert.equal(report.outcome, 'STOPPED');
+      assert.equal(report.reason, failure === 'known' ? 'request_latency' : failure === 'unknown' ? 'tool_failure' : 'identity_mismatch');
+      assert.deepEqual(report.profiles.map(profile => profile.tabs), completed);
+      assert.deepEqual(fixture.progress.map(update => update.completedProfile), completed);
+      assert.deepEqual(fixture.executions.map(entry => entry.profile.tabs), attempted);
+      assert.deepEqual(fixture.waits.map(wait => wait.phase), attempted.map(tabs => `tabs_${tabs}`));
+      assert.equal(fixture.probes.length, completed.length * 4 + 2);
+      assert.ok(fixture.pages.every(page => page.closed() === 1));
+      assert.equal(fixture.budget().timer?._destroyed, true);
+      assert.doesNotMatch(JSON.stringify(report), /PRIVATE|stack/);
+    }
+  }
 });
 
 /** Reject missing, relative, malformed and extra tool arguments before browser or network side effects. */

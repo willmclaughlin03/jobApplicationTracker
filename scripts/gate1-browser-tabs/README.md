@@ -39,11 +39,23 @@ are not qualified. The shortened two-tab fixture is not hosted load evidence.
 ## Hosted execution contract
 
 There is no live CLI mode. The exported `runProfiles` API additionally requires
-separate explicit authorization, the complete `[1, 2, 4, 8]` profile list, an
-owner-approved test identity and an exclusively prepared browser context with exactly
-one blank page and no service workers. The approval marker is a caller assertion,
-not a substitute for that authorization. Account preparation and authentication are
-outside `runProfiles`. Never supply a personal browser context.
+separate explicit authorization, an owner-approved test identity and an exclusively
+prepared browser context with exactly one blank page and no service workers. It
+accepts only these exact ordered `approvedProfiles` lists and matching `approval`
+values, exported by the module:
+
+| Mode | approvedProfiles | approval |
+| --- | --- | --- |
+| Full exercise | `[1, 2, 4, 8]` | `LIVE_APPROVAL` |
+| Remaining profiles | `[2, 4, 8]` | `REMAINING_APPROVAL` |
+
+Missing, reordered, duplicate, incomplete or mismatched selections are rejected
+before context inspection or requests. An approval marker is a caller assertion,
+not a substitute for owner authorization. The remaining mode reuses the same frozen
+profiles and guards; it does not rerun 1-tab or import its historical pass. Reports
+list only profiles completed in that invocation, with partial request observations
+and the first stop reason retained separately. Account preparation and authentication
+are outside `runProfiles`. Never supply a personal browser context.
 
 ### Dedicated browser preparation
 
@@ -105,15 +117,29 @@ invalid ages still stop with `cached_target`; a different build stops with
 static login probes only and does not qualify caching of authentication responses.
 
 The proposed whole-run limits are 55 minutes, 1,000 application requests, 1,280
-static requests and 364 session requests. The profile caps total 980 application,
+static requests and 364 session requests. The full profile caps total 980 application,
 1,200 static and 360 session requests, leaving planned readiness allowances of
-20/80/4. `runProfiles` creates a new budget and immediately begins `tabs_1`; it does
-not automatically import manual sign-in or external readiness counts or elapsed time.
-Reconcile that preparation with the authorized cumulative budget before calling it.
+20/80/4. `runProfiles` creates a new budget and begins the first selected profile;
+it does not automatically import earlier attempts, manual sign-in or external
+readiness counts or elapsed time. Reconcile these with the authorized cumulative
+budget before calling it; choosing a continuation never resets prior consumption.
 These limits need their own hosted approval and do not override an earlier ceiling.
 Per-profile limits and rolling 61-second caps reserve requests synchronously before
 dispatch. HTTP errors, unexpected origins/methods/redirects, identity mismatches,
 child targets, timeouts or exhausted limits stop the run.
+
+The remaining `[2, 4, 8]` profiles have combined caps of 900 application / 1,120
+static / 336 session requests. Session requests are included in application counts.
+The October 22 ledger before any continuation records 74 application / 74 static /
+26 session actual requests, or 75 / 74 / 26 conservatively including one historical
+reserved-but-unsent application request. Manual owner sign-in traffic is separate.
+One new preparation session plus the remaining profile caps would permit cumulative
+maxima of 975 / 1,194 / 363 actual, or 976 / 1,194 / 363 including that reservation.
+This fits the existing limits with only one additional session request of headroom.
+A full rerun plus that preparation would permit 1,055 / 1,274 / 387 actual requests
+and exceeds the application and session limits. Reconcile any subsequent traffic
+and target changes before separately approving a continuation; this calculation
+does not authorize preparation or execution.
 
 Session latency includes full-response completion. CSRF latency ends at response
 headers because the application leaves that body unread; the runner never reads the
@@ -150,5 +176,8 @@ and stopped during 2-tab startup with `visibility_visible_wait_failed`; 4/8 tabs
 were not executed. Local simulation reproduced a missed observation when animation
 frames were withheld, but does not establish that as the hosted failure's cause.
 The timer-polling fix passed unit tests and the native loopback fixture; no hosted
-retry has validated it. The entry point still requires the complete `[1, 2, 4, 8]`
-list, so a remaining-profile continuation requires a separately reviewed change.
+retry has validated it. The remaining-profile mode passed local selection, rejection,
+first-failure and owned-cleanup tests as part of the 60-test offline suite. No hosted
+continuation has run. Browser preparation and a new bounded exercise still require
+their applicable approvals; the prior 1-tab pass remains separately attributed to
+its original target and run. GATE-1 remains open.
