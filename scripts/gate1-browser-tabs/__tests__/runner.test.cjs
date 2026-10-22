@@ -1,5 +1,5 @@
 'use strict';
-/* global Headers, Response, URL, clearTimeout, setTimeout */
+/* global AbortController, AbortSignal, Headers, ReadableStream, Response, URL, clearTimeout, setTimeout */
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -222,6 +222,16 @@ function freshBuildHeaders(overrides = {}) {
   return headers;
 }
 
+/** Supply synthetic protection metadata without reading any real browser or credential. */
+function protectionFixture(overrides = {}) {
+  const cookie = { name: '_vercel_jwt', value: 'SYNTHETIC_PROTECTION_SENTINEL',
+    domain: new URL(TARGET.immutableOrigin).hostname, path: '/', secure: true, httpOnly: true,
+    expires: Date.now() / 1000 + 3600, ...overrides };
+  return { cookie,
+    /** Return the synthetic record only for the pinned build-probe URL. */
+    async cookies(urls) { assert.deepEqual(urls, [`${TARGET.immutableOrigin}/login`]); return [cookie]; } };
+}
+
 /** Exercise the static route's exact policy while accepting harmless formatting and fresh CDN states. */
 test('build freshness accepts revalidation policy and explicit fresh cache states', () => {
   const html = `<script id="__NEXT_DATA__">${JSON.stringify({ buildId: TARGET.build })}</script>`;
@@ -234,7 +244,29 @@ test('build freshness accepts revalidation policy and explicit fresh cache state
   }
 });
 
-/** Missing, ambiguous or cacheable headers must not authorize even a correctly attributed build. */
+/** Deployment-cached login bytes may have a positive age, but must still identify the exact pinned build. */
+test('static build attribution accepts cache hits only with the pinned build', () => {
+  const html = `<script id="__NEXT_DATA__">${JSON.stringify({ buildId: TARGET.build })}</script>`;
+  for (const status of ['HIT', ' hit ']) {
+    for (const age of ['0', '11138', String(Number.MAX_SAFE_INTEGER)]) {
+      const headers = freshBuildHeaders({ 'x-vercel-cache': status, age });
+      assert.equal(validateBuild(html, 200, headers), true);
+      assert.throws(() => validateBuild(html, 200, headers, 'different-build'), { code: 'build_mismatch' });
+    }
+  }
+});
+
+/** A HIT needs a present, numeric, unambiguous Age; coercion must not accept malformed cache evidence. */
+test('static cache hits reject absent, malformed and unsafe ages', () => {
+  const html = `<script id="__NEXT_DATA__">${JSON.stringify({ buildId: TARGET.build })}</script>`;
+  for (const age of [null, '', '-1', '+1', '1.5', '1e3', '0x10', 'NaN', 'Infinity',
+    '0, 1', '1 2', String(Number.MAX_SAFE_INTEGER + 1)]) {
+    assert.throws(() => validateBuild(html, 200, freshBuildHeaders({ 'x-vercel-cache': 'HIT', age })),
+      { code: 'cached_target' });
+  }
+});
+
+/** Missing, ambiguous, unexpected or stale cache evidence must not authorize even a correctly attributed build. */
 test('build freshness rejects incomplete, conflicting and stale cache evidence', () => {
   const html = `<script id="__NEXT_DATA__">${JSON.stringify({ buildId: TARGET.build })}</script>`;
   const invalid = {
@@ -243,7 +275,7 @@ test('build freshness rejects incomplete, conflicting and stale cache evidence',
       'public, max-age=0, must-revalidate, max-age=60', 'public, max-age=0, must-revalidate, s-maxage=60',
       'public, max-age=0, must-revalidate, stale-while-revalidate=60',
       'public, max-age=0, must-revalidate, stale-if-error=60'],
-    'x-vercel-cache': [null, '', 'HIT', 'stale', 'PRERENDER', 'UNKNOWN', 'MISS, HIT'],
+    'x-vercel-cache': [null, '', 'stale', 'PRERENDER', 'UNKNOWN', 'MISS, HIT'],
     age: ['', '1', '-1', 'invalid', '0, 1'],
   };
   for (const [name, values] of Object.entries(invalid)) {
@@ -255,18 +287,18 @@ test('build freshness rejects incomplete, conflicting and stale cache evidence',
 });
 
 /** Stub every fetch so both target probes enforce the contract without sending hosted traffic. */
-test('both login probes request fresh responses and preserve cached_target on failure', async (t) => {
+test('both login probes accept static cache hits and preserve cached_target on policy failure', async (t) => {
   const html = `<script id="__NEXT_DATA__">${JSON.stringify({ buildId: TARGET.build })}</script>`;
   let responseHeaders = freshBuildHeaders();
   /** Return only synthetic HTML; mock call records verify credentials, redirects and probe uniqueness. */
   const fetchMock = t.mock.method(globalThis, 'fetch', async () => new Response(html, { headers: responseHeaders }));
   for (const origin of [TARGET.origin, TARGET.immutableOrigin]) {
     const { budget } = budgetFixture();
-    responseHeaders = freshBuildHeaders();
-    await checkBuild(budget, origin);
+    responseHeaders = freshBuildHeaders({ 'x-vercel-cache': 'HIT', age: '11138' });
+    await checkBuild(budget, origin, TARGET.build, protectionFixture());
     assert.equal(budget.reason, null); assert.equal(budget.records[0].finished, true);
     responseHeaders = freshBuildHeaders({ 'cache-control': null });
-    await assert.rejects(checkBuild(budget, origin), { code: 'cached_target' });
+    await assert.rejects(checkBuild(budget, origin, TARGET.build, protectionFixture()), { code: 'cached_target' });
     assert.equal(budget.reason, 'cached_target'); assert.equal(budget.counts.app, 2);
     assert.equal(budget.records[1].finished, true); assert.equal(budget.records[1].status, 200);
   }
@@ -282,11 +314,12 @@ test('both login probes request fresh responses and preserve cached_target on fa
     assert.equal(options.cache, 'no-store');
     assert.equal(options.headers['Cache-Control'], 'no-cache, no-store, max-age=0');
     assert.equal(options.headers.Pragma, 'no-cache');
+    assert.equal(options.headers.Cookie, index < 2 ? undefined : '_vercel_jwt=SYNTHETIC_PROTECTION_SENTINEL');
   }
 });
 
 /** Failure on either preflight host must stop runProfiles before any browser page is created. */
-test('both target freshness checks precede browser execution', async (t) => {
+test('both target cache-policy checks precede browser execution', async (t) => {
   for (const failingOrigin of [TARGET.origin, TARGET.immutableOrigin]) {
     /** Each subtest owns its mocks so production clocks and global fetch are restored afterward. */
     await t.test(failingOrigin === TARGET.origin ? 'canonical' : 'immutable', async (subtest) => {
@@ -301,14 +334,16 @@ test('both target freshness checks precede browser execution', async (t) => {
         return originalCheck.call(this);
       });
       const calls = [];
-      /** Both responses have the correct build; only the selected host violates freshness. */
+      /** Both cached responses have the correct build; only the selected host violates cache policy. */
       subtest.mock.method(globalThis, 'fetch', async (rawUrl) => {
         const origin = new URL(rawUrl).origin; calls.push(origin);
         return new Response(`<script id="__NEXT_DATA__">${JSON.stringify({ buildId: TARGET.build })}</script>`, {
-          headers: freshBuildHeaders(origin === failingOrigin ? { 'cache-control': null } : {}),
+          headers: freshBuildHeaders({ 'x-vercel-cache': 'HIT', age: '11138',
+            ...(origin === failingOrigin ? { 'cache-control': null } : {}) }),
         });
       });
       const context = {
+        ...protectionFixture(),
         /** Provide only the prepared blank context required by the live entry point. */
         pages() { return [{
           /** Identify the sole prepared page without reading any actual browser state. */
@@ -327,6 +362,143 @@ test('both target freshness checks precede browser execution', async (t) => {
       assert.ok(result.records.every(record => record.observationComplete));
     });
   }
+});
+
+/** Reject absent, ambiguous, expired, unsafe and broad cookies before any network dispatch. */
+test('protected probes fail closed on unusable authentication and export no credential data', async (t) => {
+  const fetchMock = t.mock.method(globalThis, 'fetch', async () => { throw new Error('must_not_dispatch'); });
+  const cases = [
+    [null, 'protection_auth_missing'],
+    [{ cookies: async () => [] }, 'protection_auth_missing'],
+    [{ cookies: async () => [protectionFixture().cookie, protectionFixture().cookie] }, 'protection_auth_ambiguous'],
+    [protectionFixture({ name: 'unknown_cookie' }), 'protection_auth_missing'],
+    [protectionFixture({ domain: 'vercel.app' }), 'protection_auth_scope'],
+    [protectionFixture({ domain: `.${new URL(TARGET.immutableOrigin).hostname}` }), 'protection_auth_scope'],
+    [protectionFixture({ domain: new URL(TARGET.origin).hostname }), 'protection_auth_scope'],
+    [protectionFixture({ path: '/login' }), 'protection_auth_scope'],
+    [protectionFixture({ secure: false }), 'protection_auth_scope'],
+    [protectionFixture({ httpOnly: false }), 'protection_auth_scope'],
+    [protectionFixture({ partitionKey: 'https://example.invalid' }), 'protection_auth_scope'],
+    [protectionFixture({ expires: Date.now() / 1000 - 1 }), 'protection_auth_expired'],
+    [protectionFixture({ expires: Date.now() / 1000 + 2 }), 'protection_auth_expired'],
+    [protectionFixture({ expires: NaN }), 'protection_auth_expired'],
+    [protectionFixture({ value: 'SYNTHETIC; other=secret' }), 'protection_auth_value'],
+    [protectionFixture({ value: 'SYNTHETIC\r\nX-Test: secret' }), 'protection_auth_value'],
+    [protectionFixture({ value: '' }), 'protection_auth_value'],
+    [protectionFixture({ value: 'x'.repeat(16_385) }), 'protection_auth_value'],
+    [{ cookies: async () => { throw new Error('PRIVATE_COOKIE_ERROR'); } }, 'tool_failure'],
+  ];
+  for (const [context, code] of cases) {
+    const { budget } = budgetFixture();
+    await assert.rejects(checkBuild(budget, TARGET.immutableOrigin, TARGET.build, context), { code });
+    assert.equal(budget.reason, code); assert.equal(budget.counts.app, 1);
+    assert.equal(budget.records[0].finished, true);
+    assert.doesNotMatch(JSON.stringify(budget.report()), /SYNTHETIC|PRIVATE|vercel_jwt|cookie.value/);
+  }
+  assert.equal(fetchMock.mock.callCount(), 0);
+});
+
+/** Canonical probes must not even consult browser cookies; malformed/foreign destinations never dispatch. */
+test('canonical remains anonymous and target variants cannot receive authentication', async (t) => {
+  const context = { cookies: t.mock.fn(async () => { throw new Error('PRIVATE_MUST_NOT_READ'); }) };
+  const fetchMock = t.mock.method(globalThis, 'fetch', async () => new Response(
+    `<script id="__NEXT_DATA__">{"buildId":"${TARGET.build}"}</script>`, { headers: freshBuildHeaders() }));
+  await checkBuild(budgetFixture().budget, TARGET.origin, TARGET.build, context);
+  assert.equal(context.cookies.mock.callCount(), 0);
+  assert.equal(Object.hasOwn(fetchMock.mock.calls[0].arguments[1].headers, 'Cookie'), false);
+  for (const origin of ['https://example.invalid', `${TARGET.immutableOrigin}/`,
+    `${TARGET.immutableOrigin}/login`, TARGET.immutableOrigin.replace('https:', 'http:'),
+    TARGET.immutableOrigin.replace('https://', 'https://user:secret@')]) {
+    await assert.rejects(checkBuild(budgetFixture().budget, origin, TARGET.build, context), { code: 'unexpected_origin' });
+  }
+  assert.equal(fetchMock.mock.callCount(), 1); assert.equal(context.cookies.mock.callCount(), 0);
+});
+
+/** Reserve before asynchronous cookie access; exhaustion must not start lookup or a fetch. */
+test('authenticated probes preserve synchronous cap reservation', async (t) => {
+  const { budget } = budgetFixture(); budget.phaseLimits.app = 1;
+  let release;
+  const lookup = new Promise(resolve => { release = resolve; });
+  const context = { cookies: t.mock.fn(() => lookup) };
+  const fetchMock = t.mock.method(globalThis, 'fetch', async () => { throw new Error('must_not_dispatch'); });
+  const first = checkBuild(budget, TARGET.immutableOrigin, TARGET.build, context);
+  const stopped = assert.rejects(first, { code: 'profile_budget' });
+  assert.equal(budget.counts.app, 1);
+  await assert.rejects(checkBuild(budget, TARGET.immutableOrigin, TARGET.build, context), { code: 'profile_budget' });
+  release([protectionFixture().cookie]); await stopped;
+  assert.equal(context.cookies.mock.callCount(), 1); assert.equal(fetchMock.mock.callCount(), 0);
+});
+
+/** Redirects and provider failures must neither consume response bodies nor expose Location/diagnostics. */
+test('authenticated redirects are rejected without following or retaining their bodies', async (t) => {
+  let reads = 0; let cancelled = 0;
+  const fetchMock = t.mock.method(globalThis, 'fetch', async (_url, options) => {
+    assert.equal(options.redirect, 'manual');
+    return { status: 302, headers: new Headers({ location: 'https://example.invalid/PRIVATE_REDIRECT' }),
+      body: { getReader() { reads++; throw new Error('PRIVATE_BODY'); }, async cancel() { cancelled++; } } };
+  });
+  const { budget } = budgetFixture();
+  await assert.rejects(checkBuild(budget, TARGET.immutableOrigin, TARGET.build, protectionFixture()), { code: 'target_status' });
+  assert.equal(fetchMock.mock.callCount(), 1); assert.equal(reads, 0); assert.equal(cancelled, 1);
+  assert.doesNotMatch(JSON.stringify(budget.report()), /PRIVATE|SYNTHETIC|vercel_jwt|location/i);
+});
+
+/** Enforce one shared five-second signal across delayed cookie lookup, headers and response-body reads. */
+test('probe deadline bounds authentication, fetch and body stalls without late dispatch', async (t) => {
+  for (const stage of ['cookies', 'fetch', 'body']) {
+    await t.test(stage, async (subtest) => {
+      const controller = new AbortController();
+      subtest.mock.method(AbortSignal, 'timeout', ms => { assert.equal(ms, 5000); return controller.signal; });
+      let release; let cancelled = false;
+      const pending = new Promise(resolve => { release = resolve; });
+      const context = stage === 'cookies' ? { cookies: () => pending } : protectionFixture();
+      const fetchMock = subtest.mock.method(globalThis, 'fetch', async () => {
+        if (stage === 'fetch') return pending;
+        return { status: 200, headers: freshBuildHeaders(), body: { getReader() { return {
+          read: () => pending, cancel: async () => { cancelled = true; }, releaseLock() {},
+        }; } } };
+      });
+      const { budget } = budgetFixture();
+      const running = checkBuild(budget, TARGET.immutableOrigin, TARGET.build, context);
+      const stopped = assert.rejects(running, { code: 'probe_timeout' });
+      await new Promise(resolve => setTimeout(resolve, 10)); controller.abort(); await stopped;
+      if (stage === 'cookies') release([protectionFixture().cookie]);
+      else if (stage === 'fetch') release(new Response('late'));
+      else release({ done: true });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      assert.equal(fetchMock.mock.callCount(), stage === 'cookies' ? 0 : 1);
+      assert.equal(cancelled, stage === 'body'); assert.equal(budget.records[0].finished, true);
+    });
+  }
+});
+
+/** Oversized authenticated HTML must stop during streaming and cancel the reader. */
+test('authenticated build body limit cancels streaming and keeps reports private', async (t) => {
+  let cancelled = false;
+  const stream = new ReadableStream({
+    start(controller) { controller.enqueue(new Uint8Array(1_048_577)); },
+    cancel() { cancelled = true; },
+  });
+  t.mock.method(globalThis, 'fetch', async () => new Response(stream, { headers: freshBuildHeaders() }));
+  const { budget } = budgetFixture();
+  await assert.rejects(checkBuild(budget, TARGET.immutableOrigin, TARGET.build, protectionFixture()), { code: 'body_limit' });
+  assert.equal(cancelled, true); assert.equal(budget.reason, 'body_limit');
+  assert.doesNotMatch(JSON.stringify(budget.report()), /SYNTHETIC|vercel_jwt|Cookie/);
+});
+
+/** Read current browser metadata on every probe so sign-out/expiry cannot reuse an earlier copied credential. */
+test('each protected probe rechecks authentication and sends only the selected cookie', async (t) => {
+  let calls = 0;
+  const context = { async cookies() { calls++; return calls === 1
+    ? [protectionFixture({ expires: -1 }).cookie, { name: 'app_session', value: 'PRIVATE_APP_COOKIE' }] : []; } };
+  const fetchMock = t.mock.method(globalThis, 'fetch', async () => new Response(
+    `<script id="__NEXT_DATA__">{"buildId":"${TARGET.build}"}</script>`, { headers: freshBuildHeaders() }));
+  const { budget } = budgetFixture();
+  await checkBuild(budget, TARGET.immutableOrigin, TARGET.build, context);
+  await assert.rejects(checkBuild(budget, TARGET.immutableOrigin, TARGET.build, context), { code: 'protection_auth_missing' });
+  assert.equal(calls, 2); assert.equal(fetchMock.mock.callCount(), 1);
+  assert.equal(fetchMock.mock.calls[0].arguments[1].headers.Cookie, '_vercel_jwt=SYNTHETIC_PROTECTION_SENTINEL');
+  assert.doesNotMatch(JSON.stringify(budget.report()), /PRIVATE|SYNTHETIC|vercel_jwt/);
 });
 
 /** Freeze percentile semantics and return explicit missing values for empty observations. */
@@ -448,6 +620,137 @@ test('native browser port polling propagates non-ENOENT read failures', async (t
   assert.equal(fixture.fakeFs.rm.mock.callCount(), 1);
 });
 
+/** Model an owned manual/debug lifecycle without opening windows, reading auth files or mutating the filesystem. */
+async function manualLifecycleFixture(t, { holdConnect = false, refuseExit = false, unsafePath = false, failDebug = false } = {}) {
+  const runnerPath = require.resolve('../runner.cjs'); const source = await readFile(runnerPath, 'utf8');
+  const corePath = path.resolve('fixture-playwright-core'); const root = path.resolve('fixture-owned-root');
+  const profilePath = path.join(root, 'edge-fixture-owned');
+  const children = []; let now = 0; let connected = false; let releaseConnect;
+  const connectionGate = new Promise(resolve => { releaseConnect = resolve; });
+  const page = { async close() {}, url() { return 'about:blank'; } };
+  const context = { async newPage() { return page; }, pages() { return [page]; } };
+  const browser = {
+    isConnected() { return connected; }, contexts() { return [context]; },
+    async close() { connected = false; },
+    /** A graceful CDP close ends only the latest owned process. */
+    async newBrowserCDPSession() { return { async send(command) {
+      assert.equal(command, 'Browser.close');
+      if (!refuseExit) children.at(-1).exitCode = 0;
+      connected = false;
+    } }; },
+  };
+  const connectOverCDP = t.mock.fn(async (_url, options) => {
+    assert.deepEqual(options, { noDefaults: true, timeout: 5000 });
+    if (holdConnect) await connectionGate;
+    connected = true; return browser;
+  });
+  const spawnMock = t.mock.fn((_executable, args) => {
+    const child = new EventEmitter(); child.exitCode = null; child.signalCode = null;
+    child.kill = t.mock.fn(() => { if (!refuseExit) child.signalCode = 'SIGTERM'; });
+    children.push(child);
+    if (failDebug && args.includes('--remote-debugging-port=0')) child.exitCode = 1;
+    return child;
+  });
+  const fakeFs = {
+    async mkdir() {}, mkdtemp: t.mock.fn(async () => profilePath),
+    /** Refuse cleanup if the owned directory resolves somewhere else. */
+    async realpath(value) { return value === profilePath
+      ? (unsafePath ? path.resolve('unrelated-profile') : profilePath) : root; },
+    /** The launcher may inspect only its own CDP bootstrap file, never stored browser credentials. */
+    readFile: t.mock.fn(async file => {
+      assert.equal(file, path.join(profilePath, 'DevToolsActivePort')); return '43210\n/devtools/browser/fixture';
+    }),
+    rm: t.mock.fn(async () => {}),
+  };
+  const dependencies = new Map([
+    ['node:fs/promises', fakeFs], ['node:child_process', { spawn: spawnMock }],
+    ['node:perf_hooks', { performance: { now: () => now } }],
+    ['node:timers/promises', { setTimeout: async ms => { now += ms; } }],
+    [path.join(corePath, 'package.json'), { name: 'playwright-core', version: '1.62.0-alpha-1783623505000' }],
+    [corePath, { chromium: { connectOverCDP } }],
+  ]);
+  /** Reuse the real launcher with only OS/process dependencies replaced. */
+  const fixtureRequire = name => dependencies.has(name) ? dependencies.get(name) : require(name);
+  const launch = compileFunction(`${source}\nreturn launchNativeBrowser;`, ['require', 'module', '__dirname'],
+    { filename: runnerPath })(fixtureRequire, { exports: {} }, path.dirname(runnerPath));
+  return { children, spawnMock, fakeFs, connectOverCDP, releaseConnect,
+    run: () => launch({ corePath, browserPath: path.resolve('fixture-edge'), manualFirst: true }) };
+}
+
+/** Ordinary sign-in must have neither a debugging switch, CDP connection nor credential-file read. */
+test('manual sign-in opens only a fresh owned profile without automation attached', async (t) => {
+  const fixture = await manualLifecycleFixture(t); const manual = await fixture.run();
+  const args = fixture.spawnMock.mock.calls[0].arguments[1];
+  assert.equal(args.some(arg => /remote-debugging|enable-automation/.test(arg)), false);
+  assert.ok(args.includes('--new-window')); assert.ok(args.at(-1).startsWith('data:text/html'));
+  assert.equal(fixture.connectOverCDP.mock.callCount(), 0); assert.equal(fixture.fakeFs.readFile.mock.callCount(), 0);
+  assert.deepEqual(manual.status(), { phase: 'manual', processExited: false, manualExitClean: false, automationAttached: false });
+  await assert.rejects(manual.attachAfterManualSignIn(), { code: 'manual_browser_still_open' });
+  assert.equal(fixture.spawnMock.mock.callCount(), 1); assert.equal(fixture.children[0].kill.mock.callCount(), 0);
+  await manual.close(); assert.equal(fixture.fakeFs.rm.mock.callCount(), 1);
+});
+
+/** A clean owner exit allows exactly one restart on the identical profile, retaining its browser-managed state. */
+test('clean manual exit reuses the owned profile once and cleanup is idempotent', async (t) => {
+  const fixture = await manualLifecycleFixture(t); const manual = await fixture.run();
+  fixture.children[0].exitCode = 0; assert.equal(manual.status().manualExitClean, true);
+  const native = await manual.attachAfterManualSignIn();
+  const [first, second] = fixture.spawnMock.mock.calls.map(call => call.arguments[1]);
+  assert.equal(first[0], second[0]); assert.equal(fixture.fakeFs.mkdtemp.mock.callCount(), 1);
+  assert.ok(second.includes('--no-startup-window')); assert.ok(second.includes('--remote-debugging-port=0'));
+  assert.equal(fixture.fakeFs.rm.mock.callCount(), 0); assert.equal(fixture.children[0].kill.mock.callCount(), 0);
+  assert.equal(native.status().automationAttached, true);
+  await assert.rejects(manual.attachAfterManualSignIn(), { code: 'manual_phase_required' });
+  await Promise.all([manual.close(), native.close()]);
+  assert.equal(fixture.fakeFs.rm.mock.callCount(), 1); assert.equal(manual.status().phase, 'closed');
+  assert.doesNotMatch(JSON.stringify(manual.status()), /fixture-owned-root|user-data-dir|cookie|43210/);
+});
+
+/** Nonzero and forced exits cannot be treated as successful cookie-flushing manual shutdowns. */
+test('manual crash or forced termination blocks restart and preserves profile until cleanup', async (t) => {
+  for (const failure of ['nonzero', 'signal']) {
+    const fixture = await manualLifecycleFixture(t); const manual = await fixture.run();
+    if (failure === 'nonzero') fixture.children[0].exitCode = 1;
+    else fixture.children[0].signalCode = 'SIGTERM';
+    await assert.rejects(manual.attachAfterManualSignIn(), { code: 'manual_exit_unclean' });
+    assert.equal(fixture.spawnMock.mock.callCount(), 1); assert.equal(fixture.fakeFs.rm.mock.callCount(), 0);
+    await manual.close();
+  }
+});
+
+/** Concurrent attach requests cannot duplicate the owned process or perform overlapping profile access. */
+test('manual restart latches before asynchronous attachment and supports cancellation cleanup', async (t) => {
+  const fixture = await manualLifecycleFixture(t, { holdConnect: true }); const manual = await fixture.run();
+  fixture.children[0].exitCode = 0;
+  const attaching = manual.attachAfterManualSignIn();
+  const stopped = assert.rejects(attaching, { code: 'browser_closed' });
+  await assert.rejects(manual.attachAfterManualSignIn(), { code: 'manual_phase_required' });
+  const closing = manual.close(); fixture.releaseConnect();
+  await stopped; await closing;
+  assert.equal(fixture.spawnMock.mock.callCount(), 2); assert.equal(fixture.fakeFs.rm.mock.callCount(), 1);
+});
+
+/** A live process or changed resolved path must prevent recursive deletion. */
+test('manual lifecycle cleanup refuses live processes and unrelated profile paths', async (t) => {
+  for (const options of [{ refuseExit: true }, { unsafePath: true }]) {
+    const fixture = await manualLifecycleFixture(t, options); const manual = await fixture.run();
+    await assert.rejects(manual.close(), { code: options.refuseExit ? 'browser_close_timeout' : 'cleanup_path' });
+    assert.equal(fixture.fakeFs.rm.mock.callCount(), 0);
+    await assert.rejects(manual.attachAfterManualSignIn(), { code: 'manual_phase_required' });
+  }
+});
+
+/** A cleanup problem cannot replace the primary startup failure with private filesystem diagnostics. */
+test('failed manual restart retains its original stop reason and a separate cleanup failure', async (t) => {
+  const fixture = await manualLifecycleFixture(t, { unsafePath: true, failDebug: true }); const manual = await fixture.run();
+  fixture.children[0].exitCode = 0;
+  await assert.rejects(manual.attachAfterManualSignIn(), error => {
+    assert.equal(error.code, 'browser_startup'); assert.equal(error.cleanupFailure, 'cleanup_path');
+    assert.doesNotMatch(JSON.stringify(error), /fixture-owned-root|unrelated-profile/); return true;
+  });
+  assert.equal(fixture.fakeFs.rm.mock.callCount(), 0);
+});
+
 /** Exercise the current selfCheck with synthetic browser work while retaining real budget reports and error sanitization. */
 async function selfCheckFixture(t, { stopped = false, cleanupFailure, closeFixture } = {}) {
   const runnerPath = require.resolve('../runner.cjs');
@@ -480,6 +783,8 @@ async function selfCheckFixture(t, { stopped = false, cleanupFailure, closeFixtu
     }
   }
   const replacements = {
+    /** Cookie transport is exercised by the actual native fixture; keep report tests synthetic and effect-free. */
+    verifyProtectionFixture: async () => {},
     /** Replace only external fixture setup; no socket or browser is launched. */
     startFixture: async () => fixture,
     /** Supply owned cleanup with selectable failure behavior. */
@@ -491,6 +796,7 @@ async function selfCheckFixture(t, { stopped = false, cleanupFailure, closeFixtu
   // Rebind collaborators in an isolated module instance without modifying the function under test.
   loaded = compileFunction(`${source}\n
     startFixture = replacements.startFixture;
+    verifyProtectionFixture = replacements.verifyProtectionFixture;
     launchNativeBrowser = replacements.launchNativeBrowser;
     exerciseProfile = replacements.exerciseProfile;
     BrowserObserver = replacements.BrowserObserver;
@@ -512,7 +818,7 @@ test('self-check preserves stop reasons and reports sanitized native cleanup fai
       assert.equal(result.cleanupFailure, expectedCleanup);
       assert.equal(Object.hasOwn(result, 'cleanupFailure'), Boolean(cleanupFailure));
       assert.equal(result.scope, 'loopback_fixture_only'); assert.equal(result.hostedRequests, 0);
-      assert.equal(result.checks.length, stopped ? 2 : 3);
+      assert.equal(result.checks.length, stopped ? 3 : 4);
       assert.deepEqual(result.checks[0].metrics, { fixtureMetric: 42 });
       assert.equal((stopped ? result.measurements[0] : result.measurements).dispatched.session, 6);
       assert.doesNotMatch(JSON.stringify(result), /PRIVATE_PROFILE_PATH|Error:|stack/);

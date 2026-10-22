@@ -5,7 +5,8 @@
  * Local GATE-1 browser qualifier. CLI modes are offline only; importing this file
  * has no effects. runProfiles additionally requires explicit live approval, an
  * already prepared exclusive browser context, and an owner-approved identity.
- * No credential files, environment values, browser storage, or raw logs are read.
+ * No credential files, environment values, or raw logs are read. Only the prepared
+ * browser's generated-host protection cookie is read in memory for scoped probes.
  */
 const { performance } = require('node:perf_hooks');
 const { randomUUID } = require('node:crypto');
@@ -18,15 +19,18 @@ const { spawn } = require('node:child_process');
 const CORE_VERSION = '1.62.0-alpha-1783623505000';
 const TARGET = Object.freeze({
   origin: 'https://job-application-tracker-kappa-seven.vercel.app',
-  immutableOrigin: 'https://job-application-tracker-rbsz55ffy-track-the-app.vercel.app',
-  deployment: 'dpl_B7x6hUkkdoXpMCWVaMfxbGZgLiJo',
-  commit: '3e33fea683271a5232bc93e1eedac29826ed31e9',
-  build: 'h3VsmNyDZ322h7VCK7Gqs',
+  immutableOrigin: 'https://job-application-tracker-nc08q52tw-track-the-app.vercel.app',
+  deployment: null, // Current Vercel dpl_ ID has not been independently retrieved.
+  deploymentReference: 'https://vercel.com/track-the-app/job-application-tracker/5H29GHpsA9x4HQU5P4nDTNbEZm7h',
+  githubDeployment: '7237630456',
+  commit: '9cb88f0ab1bee2c8921ceb0092de3c9fcd169c7e',
+  build: 'aueJAQi4zQIKVDr0go3VB',
 });
-// Static /login uses Vercel's default revalidation policy, not protected-page no-store.
-const BUILD_FRESHNESS = Object.freeze({
+// Static /login is deployment-cached; this policy attributes its build, not origin execution.
+// https://vercel.com/docs/caching/cdn-cache/purge documents deployment-specific cache keys.
+const BUILD_POLICY = Object.freeze({
   cacheControl: 'max-age=0,must-revalidate,public',
-  cacheStatuses: Object.freeze(['MISS', 'BYPASS', 'REVALIDATED']),
+  cacheStatuses: Object.freeze(['MISS', 'BYPASS', 'REVALIDATED', 'HIT']),
 });
 const PROFILES = Object.freeze([
   Object.freeze({ tabs: 1, session: 24, app: 80, static: 80 }),
@@ -213,17 +217,24 @@ async function waitUntil(budget, targetMs) {
   budget.check();
 }
 
-/** Check a fresh HTML build document in memory without preserving its props or body. */
+/** Attribute static login HTML to the pinned build; retain neither its props nor body. */
 function validateBuild(html, status, headers, expected = TARGET.build) {
   requireCondition(status === 200, 'target_status');
-  // Require affirmative freshness evidence; a matching build ID alone is insufficient.
+  // The static route's exact policy and explicit cache state remain required alongside build identity.
   const cacheControl = (headers.get('cache-control') || '').split(',')
     /** Normalize directive formatting while preserving duplicate or unexpected policy tokens. */
     .map(directive => directive.trim().toLowerCase().replace(/\s*=\s*/g, '=')).sort().join(',');
-  requireCondition(cacheControl === BUILD_FRESHNESS.cacheControl, 'cached_target');
-  requireCondition(BUILD_FRESHNESS.cacheStatuses.includes((headers.get('x-vercel-cache') || '').trim().toUpperCase()), 'cached_target');
+  requireCondition(cacheControl === BUILD_POLICY.cacheControl, 'cached_target');
+  const cacheStatus = (headers.get('x-vercel-cache') || '').trim().toUpperCase();
+  requireCondition(BUILD_POLICY.cacheStatuses.includes(cacheStatus), 'cached_target');
   const age = headers.get('age');
-  requireCondition(age === null || age === '0', 'cached_target');
+  // Vercel keeps static files for the deployment's lifetime and ignores query cache busters.
+  // Only HIT permits a nonzero Age: require an unambiguous nonnegative safe integer.
+  // This exception is limited to the pinned /login probes; it says nothing about auth response caching.
+  const validAge = cacheStatus === 'HIT'
+    ? typeof age === 'string' && /^[0-9]+$/.test(age) && Number.isSafeInteger(Number(age))
+    : age === null || age === '0';
+  requireCondition(validAge, 'cached_target');
   const script = /<script\b[^>]*\bid=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i.exec(html);
   requireCondition(Boolean(script), 'build_missing');
   let data;
@@ -232,33 +243,84 @@ function validateBuild(html, status, headers, expected = TARGET.build) {
   return true;
 }
 
-/** Read at most one MiB from a build probe; cancel oversized streams and retain no content. */
-async function boundedText(response) {
+/** Bound cookie lookup, fetch and stream reads with the same probe signal; discard arbitrary errors. */
+async function abortable(promise, signal) {
+  let onAbort;
+  const aborted = new Promise((resolve, reject) => {
+    /** Use fixed diagnostics rather than an abort reason that could contain provider data. */
+    onAbort = () => reject(new QualificationError('probe_timeout'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) onAbort();
+  });
+  try { return await Promise.race([promise, aborted]); }
+  finally { signal.removeEventListener('abort', onAbort); }
+}
+
+/**
+ * Select only the existing Vercel protection cookie from the dedicated browser.
+ * Vercel documents URL-specific authentication; its agent-browser source names
+ * _vercel_jwt: https://github.com/vercel-labs/agent-browser/blob/main/skill-data/protected-vercel-deployments/SKILL.md
+ * Actual browser metadata must satisfy every guard; no fallback name or domain is guessed.
+ * The returned header lives only in this probe's stack, never in reports or global headers.
+ */
+async function protectionCookie(context, origin, signal) {
+  requireCondition(origin === TARGET.immutableOrigin, 'protection_origin');
+  requireCondition(context && typeof context.cookies === 'function', 'protection_auth_missing');
+  const cookies = await abortable(context.cookies([`${origin}/login`]), signal);
+  requireCondition(Array.isArray(cookies), 'protection_auth_missing');
+  const candidates = cookies.filter(cookie => cookie.name === '_vercel_jwt');
+  requireCondition(candidates.length === 1, candidates.length ? 'protection_auth_ambiguous' : 'protection_auth_missing');
+  const cookie = candidates[0];
+  requireCondition(cookie.domain === new URL(origin).hostname && cookie.path === '/'
+    && cookie.secure === true && cookie.httpOnly === true && !cookie.partitionKey, 'protection_auth_scope');
+  requireCondition(Number.isFinite(cookie.expires) && (cookie.expires === -1
+    || cookie.expires * 1000 > Date.now() + SCHEDULE.requestMs), 'protection_auth_expired');
+  // RFC 6265 cookie-octet excludes delimiters, whitespace and control characters.
+  requireCondition(typeof cookie.value === 'string' && cookie.value.length > 0 && cookie.value.length <= 16_384
+    && /^[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]+$/.test(cookie.value), 'protection_auth_value');
+  return `_vercel_jwt=${cookie.value}`;
+}
+
+/** Read at most one MiB under the probe deadline; cancel the stream without retaining content. */
+async function boundedText(response, signal) {
   requireCondition(response.body, 'body_missing');
   const reader = response.body.getReader(); const pieces = []; let size = 0;
   try {
     for (;;) {
-      const part = await reader.read();
+      const part = await abortable(reader.read(), signal);
       if (part.done) break;
       size += part.value.byteLength;
       requireCondition(size <= BODY_LIMIT, 'body_limit'); pieces.push(Buffer.from(part.value));
     }
     return Buffer.concat(pieces).toString('utf8');
-  } finally { await reader.cancel(); reader.releaseLock(); }
+  } finally {
+    // Cancellation must not keep a timed-out probe alive; suppress only its private cleanup error.
+    void reader.cancel().catch(() => {}); reader.releaseLock();
+  }
 }
 
-/** Fresh credential-free HTML probe; redirects are not followed and all probes consume caps. */
-async function checkBuild(budget, origin, expected = TARGET.build) {
+/** Static pinned-build probe: canonical stays anonymous; generated-host auth is scoped to one request. */
+async function checkBuild(budget, origin, expected = TARGET.build, context = null) {
   const record = budget.reserve('document'); const start = budget.clock();
   const signal = AbortSignal.any([budget.controller.signal, AbortSignal.timeout(SCHEDULE.requestMs)]);
   try {
-    // Sequence numbers repeat across runs; use a unique probe and still validate response headers.
-    const response = await fetch(`${origin}/login?gate1_build=${randomUUID()}`, {
+    requireCondition(origin === TARGET.origin || origin === TARGET.immutableOrigin, 'unexpected_origin');
+    const headers = { 'Cache-Control': 'no-cache, no-store, max-age=0', Pragma: 'no-cache' };
+    if (origin === TARGET.immutableOrigin) headers.Cookie = await protectionCookie(context, origin, signal);
+    budget.check(); requireCondition(!signal.aborted, 'probe_timeout');
+    // Unique queries distinguish probes, but cannot bypass Vercel's deployment-cached static files.
+    const response = await abortable(fetch(`${origin}/login?gate1_build=${randomUUID()}`, {
       redirect: 'manual', credentials: 'omit', cache: 'no-store', signal,
-      headers: { 'Cache-Control': 'no-cache, no-store, max-age=0', Pragma: 'no-cache' },
-    });
+      headers,
+    }), signal);
     record.status = response.status;
-    validateBuild(await boundedText(response), response.status, response.headers, expected);
+    if (response.status !== 200) {
+      // Reject before reading a redirect/error body; never forward credentials to Location.
+      void response.body?.cancel().catch(() => {});
+      throw new QualificationError('target_status');
+    }
+    validateBuild(await boundedText(response, signal), response.status, response.headers, expected);
+    budget.check(); requireCondition(!signal.aborted, 'probe_timeout');
   } catch (error) { budget.stop(safeCode(error)); throw new QualificationError(budget.reason); }
   finally { record.durationMs = budget.clock() - start; record.finished = true;
     record.timingBoundary = 'response_body'; record.timingSource = 'host_monotonic_probe'; }
@@ -539,7 +601,8 @@ async function exerciseProfile(observer, profile, origin, schedule = SCHEDULE) {
 /**
  * Hosted entry point, deliberately unavailable through the offline CLI. The caller
  * must supply all four explicit approvals and a prepared exclusive context. This
- * function does not launch a browser, sign in, read credentials or provision users.
+ * function does not launch a browser, sign in or provision users. Generated-host
+ * probes use only the prepared context's existing protection cookie in memory.
  */
 async function runProfiles({ context, approvedProfiles, approval, approvedUserId, onProgress = null }) {
   requireCondition(approval === LIVE_APPROVAL && JSON.stringify(approvedProfiles) === '[1,2,4,8]', 'live_not_authorized');
@@ -551,11 +614,11 @@ async function runProfiles({ context, approvedProfiles, approval, approvedUserId
     for (const profile of PROFILES) {
       budget.begin(`tabs_${profile.tabs}`, profile, SCHEDULE.profileMs);
       await waitUntil(budget, budget.clock() + SCHEDULE.quietMs);
-      await checkBuild(budget, TARGET.origin); await checkBuild(budget, TARGET.immutableOrigin);
+      await checkBuild(budget, TARGET.origin); await checkBuild(budget, TARGET.immutableOrigin, TARGET.build, context);
       observer = new BrowserObserver(context, budget, identity, [TARGET.origin]);
       const metrics = await exerciseProfile(observer, profile, TARGET.origin);
       await observer.close();
-      await checkBuild(budget, TARGET.origin); await checkBuild(budget, TARGET.immutableOrigin);
+      await checkBuild(budget, TARGET.origin); await checkBuild(budget, TARGET.immutableOrigin, TARGET.build, context);
       results.push({ tabs: profile.tabs, outcome: 'PASS', metrics, visibility: observer.visibility });
       if (onProgress) onProgress({ completedProfile: profile.tabs, dispatched: { ...budget.counts } });
     }
@@ -572,50 +635,93 @@ function loadPlaywright(corePath) {
 }
 
 /**
- * Launch an owned, empty Edge profile and attach with documented noDefaults=true.
+ * Launch an owned Edge profile, optionally with a manual sign-in phase first.
+ * manualFirst opens no debugging port and makes no automation connection; the
+ * owner must close that browser normally before attachAfterManualSignIn proceeds.
+ * Its same profile is reused, never exported/copied, then deleted by final close.
+ * Automated attachment always uses documented noDefaults=true.
  * This prevents Playwright's original CDP session from forcing every tab visible;
  * changing a second CDP session alone cannot remove that original override.
  * The only file read is this new browser's DevToolsActivePort, never auth storage.
  */
-async function launchNativeBrowser({ corePath, browserPath }) {
+async function launchNativeBrowser({ corePath, browserPath, manualFirst = false }) {
+  requireCondition([corePath, browserPath].every(value => typeof value === 'string'
+    && path.isAbsolute(value) && !value.includes('\0')), 'tool_path');
+  requireCondition(typeof manualFirst === 'boolean', 'manual_mode');
   const runtime = loadPlaywright(corePath);
   const scratch = path.resolve(__dirname, '../../.tmp/gate1-browser-tabs');
   await fs.mkdir(scratch, { recursive: true });
   const root = await fs.realpath(scratch);
   const profilePath = await fs.mkdtemp(path.join(root, 'edge-fixture-'));
-  const child = spawn(browserPath, [
-    `--user-data-dir=${profilePath}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
-    '--no-first-run', '--no-default-browser-check', '--disable-background-networking', 'about:blank',
-  ], { stdio: 'ignore', windowsHide: true });
-  let processFailed = false; let browser; let closed = false;
-  // Preserve no OS error text or command line in diagnostics.
-  child.once('error', () => { processFailed = true; });
+  let child; let processFailed = false; let browser; let closing = false;
+  let phase = manualFirst ? 'manual' : 'attaching'; let closePromise; let attachTask;
+
+  /** Spawn only the owned profile, with debugging entirely absent from manual sign-in. */
+  function start(debug) {
+    const args = [`--user-data-dir=${profilePath}`, '--no-first-run', '--no-default-browser-check'];
+    if (debug) args.push('--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
+      '--disable-background-networking', '--no-startup-window');
+    else args.push('--new-window', `data:text/html;charset=utf-8,${encodeURIComponent(manualSignInHtml())}`);
+    processFailed = false;
+    const launched = spawn(browserPath, args, { stdio: 'ignore', windowsHide: true }); child = launched;
+    // Preserve no OS error text or command line in diagnostics.
+    launched.once('error', () => { if (child === launched) processFailed = true; });
+  }
+
+  /** Observe only the exact spawned process; a signal exit is insufficient for preserving authentication. */
+  function exited() { return child && (child.exitCode !== null || child.signalCode !== null); }
+
+  /** Bound process-exit acknowledgement without enumerating or stopping unrelated Edge processes. */
+  async function waitForExit(timeoutMs) {
+    const deadline = performance.now() + timeoutMs;
+    while (!processFailed && !exited() && performance.now() < deadline) await delay(50);
+  }
 
   /** Stop only this spawned browser and delete only its verified new workspace profile. */
-  async function close() {
-    if (closed) return; closed = true;
-    if (browser?.isConnected()) {
-      try {
-        const session = await withTimeout(browser.newBrowserCDPSession(), 1000, 'browser_close_timeout');
-        await withTimeout(session.send('Browser.close'), 1000, 'browser_close_timeout');
+  function close() {
+    if (closePromise) return closePromise;
+    closing = true; phase = 'closing';
+    /** Let in-progress attachment settle before closing/deleting its owned resources. */
+    closePromise = (async () => {
+      if (attachTask) {
+        try { await withTimeout(attachTask, 16_000, 'browser_close_timeout'); }
+        catch { /* The attachment caller retains the original stop reason. */ }
       }
-      catch { /* Browser.close may sever the protocol connection before its reply arrives. */ }
-    }
-    const limit = performance.now() + 3000;
-    while (child.exitCode === null && child.signalCode === null && performance.now() < limit) await delay(50);
-    if (child.exitCode === null && child.signalCode === null) child.kill();
-    if (browser?.isConnected()) {
-      try { await withTimeout(browser.close(), 1000, 'browser_close_timeout'); }
-      catch { /* The owned process has already exited or been stopped; do not wait on a lost acknowledgement. */ }
-    }
-    const resolved = await fs.realpath(profilePath);
-    requireCondition(resolved.startsWith(`${root}${path.sep}`) && path.basename(resolved).startsWith('edge-fixture-'), 'cleanup_path');
-    await fs.rm(resolved, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      if (browser?.isConnected()) {
+        try {
+          const session = await withTimeout(browser.newBrowserCDPSession(), 1000, 'browser_close_timeout');
+          await withTimeout(session.send('Browser.close'), 1000, 'browser_close_timeout');
+        } catch { /* Browser.close may sever the connection before its reply arrives. */ }
+      }
+      await waitForExit(3000);
+      if (!processFailed && !exited()) { child.kill(); await waitForExit(1000); }
+      requireCondition(processFailed || exited(), 'browser_close_timeout');
+      if (browser?.isConnected()) {
+        try { await withTimeout(browser.close(), 1000, 'browser_close_timeout'); }
+        catch { /* The owned process has exited; never wait indefinitely for its acknowledgement. */ }
+      }
+      const resolved = await fs.realpath(profilePath);
+      requireCondition(resolved === profilePath && path.dirname(resolved) === root
+        && path.basename(resolved).startsWith('edge-fixture-'), 'cleanup_path');
+      await fs.rm(resolved, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      phase = 'closed';
+    })();
+    return closePromise;
   }
-  try {
+
+  /** Expose lifecycle booleans only; paths, cookies and browser objects are excluded. */
+  function status() {
+    return { phase, processExited: Boolean(exited()),
+      manualExitClean: phase === 'manual' && !processFailed && child.exitCode === 0 && child.signalCode === null,
+      automationAttached: Boolean(browser?.isConnected()) };
+  }
+
+  /** Attach only after a fresh debug-enabled launch; startup creates no restored hosted tabs. */
+  async function connectOwned() {
+    start(true);
     const deadline = performance.now() + 10_000; let port;
     while (!port) {
-      requireCondition(!processFailed && child.exitCode === null && performance.now() < deadline, 'browser_startup');
+      requireCondition(!closing && !processFailed && !exited() && performance.now() < deadline, 'browser_startup');
       try {
         const text = await fs.readFile(path.join(profilePath, 'DevToolsActivePort'), 'utf8');
         const candidate = Number(text.split(/\r?\n/)[0]);
@@ -624,15 +730,60 @@ async function launchNativeBrowser({ corePath, browserPath }) {
       } catch (error) { if (error.code !== 'ENOENT') throw error; await delay(50); }
     }
     browser = await runtime.chromium.connectOverCDP(`http://127.0.0.1:${port}`, { noDefaults: true, timeout: 5000 });
+    requireCondition(!closing, 'browser_closed');
     const context = browser.contexts()[0]; requireCondition(context, 'browser_context');
     // Create the keeper explicitly: initial targets can still be attaching when CDP connects.
     const keepAlive = await withTimeout(context.newPage(), 5000, 'browser_startup');
+    requireCondition(!closing, 'browser_closed');
     // Replace only this new profile's startup tabs, after the keeper prevents last-tab exit.
     for (const page of context.pages()) if (page !== keepAlive) {
       await withTimeout(page.close(), 2000, 'browser_startup');
     }
-    return { browser, context, keepAlive, close };
-  } catch (error) { await close(); throw error; }
+    phase = 'attached';
+    return { browser, context, keepAlive, close, status };
+  }
+
+  /** Preserve the primary failure if owned cleanup also fails, exposing only fixed cleanup metadata. */
+  async function cleanAfterFailure(error) {
+    try { await close(); }
+    catch (cleanupError) {
+      const failure = new QualificationError(safeCode(error));
+      failure.cleanupFailure = safeCode(cleanupError); throw failure;
+    }
+    throw error;
+  }
+
+  /** One-shot transition after the owner's clean exit; never kill the manual browser to force a restart. */
+  async function attachAfterManualSignIn() {
+    requireCondition(phase === 'manual' && !closing, 'manual_phase_required');
+    requireCondition(exited(), 'manual_browser_still_open');
+    requireCondition(!processFailed && child.exitCode === 0 && child.signalCode === null, 'manual_exit_unclean');
+    phase = 'attaching'; // Latch before awaiting so double-clicks cannot spawn duplicate browsers.
+    attachTask = connectOwned();
+    try { return await attachTask; } catch (error) { return cleanAfterFailure(error); }
+  }
+
+  try {
+    if (manualFirst) {
+      start(false); await delay(250);
+      requireCondition(!processFailed && !exited(), 'browser_startup');
+      return { status, attachAfterManualSignIn, close };
+    }
+    attachTask = connectOwned(); return await attachTask;
+  } catch (error) { return cleanAfterFailure(error); }
+}
+
+/** Local-only instructions for the owner's manual sign-ins; no scripts, remote resources or credential fields. */
+function manualSignInHtml() {
+  return `<!doctype html><meta charset="utf-8"><title>GATE-1 manual sign-in</title>
+<style>body{font:18px system-ui;max-width:780px;margin:60px auto;padding:0 24px;line-height:1.6}li{margin:24px 0}</style>
+<h1>GATE-1 manual sign-in</h1><p>This dedicated browser has no automation connection. The load test has not started.</p>
+<ol><li><a target="_blank" rel="noopener" href="${TARGET.immutableOrigin}/login">Open the protected deployment</a>
+<br>Complete Vercel sign-in if needed. Stop at the application's login page on this host.</li>
+<li><a target="_blank" rel="noopener" href="${TARGET.origin}/login">Open the canonical application</a>
+<br>Sign in with the approved Google test account.</li></ol>
+<p>When both steps succeed, close every window belonging to this dedicated browser normally, then reply <strong>done</strong>.
+The runner will reopen the same profile and verify the saved authentication. Keep credentials in the browser.</p>`;
 }
 
 /** Serve synthetic HTML that mimics only mount/visibility checks; it never imports the application. */
@@ -681,6 +832,17 @@ async function startFixture() {
     async close() { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } };
 }
 
+/** Exercise real browser cookie lookup with synthetic state in the disposable fixture profile, without network I/O. */
+async function verifyProtectionFixture(context) {
+  const domain = new URL(TARGET.immutableOrigin).hostname;
+  await context.addCookies([{ name: '_vercel_jwt', value: 'SYNTHETIC_FIXTURE_PROTECTION',
+    domain, path: '/', httpOnly: true, secure: true, expires: Date.now() / 1000 + 60 }]);
+  try {
+    const header = await protectionCookie(context, TARGET.immutableOrigin, AbortSignal.timeout(SCHEDULE.requestMs));
+    requireCondition(header === '_vercel_jwt=SYNTHETIC_FIXTURE_PROTECTION', 'fixture_protection_cookie');
+  } finally { await context.clearCookies({ name: '_vercel_jwt', domain, path: '/' }); }
+}
+
 /** Offline browser qualification: real tabs, synthetic identities, redirect cap, and owned cleanup. */
 async function selfCheck(options) {
   const fixture = await startFixture(); let native; let result; let cleanupError;
@@ -700,6 +862,9 @@ async function selfCheck(options) {
     await observer.close(); budget.dispose();
     requireCondition(observer.cleanupSummary.closeErrors === 0 && observer.cleanupSummary.pagesStillOpen === 0, 'cleanup_failed');
     checks.push({ case: 'owned_tab_cleanup', outcome: 'PASS', ...observer.cleanupSummary });
+
+    await verifyProtectionFixture(context);
+    checks.push({ case: 'synthetic_browser_protection_cookie', outcome: 'PASS', hostedRequests: 0 });
 
     const redirectContext = context;
     const redirectBudget = new RequestBudget(); budgets.push(redirectBudget);
@@ -750,7 +915,8 @@ async function main(args) {
 
 module.exports = { TARGET, PROFILES, SCHEDULE, LIVE_APPROVAL, QualificationError, requireCondition,
   classifyRequest, summarizeDurations, IdentityObserver, RequestBudget, BrowserObserver,
-  validateBuild, checkBuild, waitUntil, waitForChecks, withTimeout, exerciseProfile, runProfiles, parseCli, main };
+  validateBuild, checkBuild, waitUntil, waitForChecks, withTimeout, exerciseProfile, runProfiles,
+  launchNativeBrowser, parseCli, main };
 
 if (require.main === module) {
   // Emit only constructed, sanitized reports; arbitrary errors and stack traces are not logged.
