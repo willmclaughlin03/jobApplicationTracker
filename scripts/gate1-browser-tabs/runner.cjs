@@ -45,6 +45,7 @@ const SCHEDULE = Object.freeze({
   readinessMs: 300_000, totalMs: 3_300_000, requestMs: 5_000, p95Ms: 2_000,
 });
 const LIVE_APPROVAL = 'GATE1_BROWSER_1_2_4_8_APPROVED';
+const REMAINING_APPROVAL = 'GATE1_BROWSER_2_4_8_REMAINING_APPROVED';
 const RESOURCE_TYPES = new Set(['Stylesheet', 'Script', 'Image', 'Font', 'Media']);
 const BODY_LIMIT = 1_048_576;
 
@@ -617,18 +618,23 @@ async function exerciseProfile(observer, profile, origin, schedule = SCHEDULE) {
 
 /**
  * Hosted entry point, deliberately unavailable through the offline CLI. The caller
- * must supply all four explicit approvals and a prepared exclusive context. This
- * function does not launch a browser, sign in or provision users. Generated-host
+ * must supply the exact full or remaining profile list with its separately authorized
+ * approval marker and a prepared exclusive context. Historical passes and request
+ * counts stay separately attributed; the caller must reconcile the cumulative budget.
+ * This function does not launch a browser, sign in or provision users. Generated-host
  * probes use only the prepared context's existing protection cookie in memory.
  */
 async function runProfiles({ context, approvedProfiles, approval, approvedUserId, onProgress = null }) {
-  requireCondition(approval === LIVE_APPROVAL && JSON.stringify(approvedProfiles) === '[1,2,4,8]', 'live_not_authorized');
+  const profiles = approval === LIVE_APPROVAL ? PROFILES
+    : approval === REMAINING_APPROVAL ? PROFILES.slice(1) : null;
+  requireCondition(profiles && Array.isArray(approvedProfiles) && approvedProfiles.length === profiles.length
+    && profiles.every((profile, index) => approvedProfiles[index] === profile.tabs), 'live_not_authorized');
   requireCondition(context && context.pages().length === 1 && context.pages()[0].url() === 'about:blank'
     && context.serviceWorkers().length === 0, 'exclusive_context_required');
   const identity = new IdentityObserver(approvedUserId); const budget = new RequestBudget(); budget.arm();
   const results = []; let observer;
   try {
-    for (const profile of PROFILES) {
+    for (const profile of profiles) {
       budget.begin(`tabs_${profile.tabs}`, profile, SCHEDULE.profileMs);
       await waitUntil(budget, budget.clock() + SCHEDULE.quietMs);
       await checkBuild(budget, TARGET.origin); await checkBuild(budget, TARGET.immutableOrigin, TARGET.build, context);
@@ -930,7 +936,7 @@ async function main(args) {
   return selfCheck(options);
 }
 
-module.exports = { TARGET, PROFILES, SCHEDULE, LIVE_APPROVAL, QualificationError, requireCondition,
+module.exports = { TARGET, PROFILES, SCHEDULE, LIVE_APPROVAL, REMAINING_APPROVAL, QualificationError, requireCondition,
   classifyRequest, summarizeDurations, IdentityObserver, RequestBudget, BrowserObserver,
   validateBuild, checkBuild, waitUntil, waitForChecks, withTimeout, exerciseProfile, runProfiles,
   launchNativeBrowser, parseCli, main };
