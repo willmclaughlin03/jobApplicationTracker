@@ -7,7 +7,7 @@ const { EventEmitter } = require('node:events');
 const { readFile } = require('node:fs/promises');
 const path = require('node:path');
 const { compileFunction } = require('node:vm');
-const { RequestBudget, IdentityObserver, BrowserObserver, classifyRequest, validateBuild, checkBuild,
+const { QualificationError, RequestBudget, IdentityObserver, BrowserObserver, classifyRequest, validateBuild, checkBuild,
   summarizeDurations, waitUntil, waitForChecks, withTimeout, exerciseProfile, runProfiles, parseCli, main, TARGET, PROFILES, SCHEDULE, LIVE_APPROVAL } = require('../runner.cjs');
 
 /** Supply a deterministic clock and generous phase limits without starting timers or I/O. */
@@ -861,6 +861,145 @@ function fakeBrowser() {
     /** Expose a scalar close count for the idempotent-cleanup assertion. */
     closed() { return closed; } };
 }
+
+/** Setup failures must name the rejected operation while retaining cleanup ownership of any created page. */
+test('browser setup failures expose fixed operation codes and preserve owned cleanup', async () => {
+  const cases = [
+    ['newPage', 'page_create_failed'],
+    ['addInitScript', 'visibility_observer_install_failed'],
+    ['newCDPSession', 'page_cdp_attach_failed'],
+    ['Network.enable', 'browser_network_enable_failed'],
+    ['Network.setCacheDisabled', 'browser_cache_disable_failed'],
+    ['Emulation.setFocusEmulationEnabled', 'browser_focus_reset_failed'],
+    ['Target.setAutoAttach', 'browser_child_guard_failed'],
+    ['Fetch.enable', 'browser_request_guard_failed'],
+  ];
+  for (const [operation, code] of cases) {
+    const fake = fakeBrowser(); const { budget } = budgetFixture();
+    const privateError = new Error('PRIVATE_BROWSER_URL_AND_COOKIE'); privateError.code = 'PRIVATE_PROVIDER_CODE';
+    /** Reject the selected synthetic operation without ever contacting a browser or reading state. */
+    async function rejectOperation() { throw privateError; }
+    if (operation === 'newPage' || operation === 'newCDPSession') fake.context[operation] = rejectOperation;
+    else if (operation === 'addInitScript') fake.page.addInitScript = rejectOperation;
+    else {
+      const send = fake.protocol.send;
+      /** Keep earlier setup commands successful so each protocol failure boundary is exercised independently. */
+      fake.protocol.send = async function sendWithFailure(command, params) {
+        if (command === operation) throw privateError;
+        return send(command, params);
+      };
+    }
+    const observer = new BrowserObserver(fake.context, budget, new IdentityObserver('fixture'), ['https://example.test']);
+    await assert.rejects(observer.newPage(1), { code, message: code });
+    budget.stop(code); await observer.close();
+    assert.equal(fake.closed(), operation === 'newPage' ? 0 : 1);
+    assert.equal(observer.cleanupSummary.closeErrors, 0); assert.equal(observer.cleanupSummary.pagesStillOpen, 0);
+    assert.equal(budget.counts.app, 0); assert.equal(budget.reason, code);
+    assert.doesNotMatch(JSON.stringify(budget.report()), /PRIVATE|stack|example\.test/);
+  }
+});
+
+/** Supply visibility-only scalars and injectable rejections; no DOM, credentials or native input is used. */
+function visibilityFailureFixture(failure, error = new Error('PRIVATE_VISIBILITY_DETAILS')) {
+  const fake = fakeBrowser(); const calls = []; let waits = 0; let reads = 0;
+  /** Return the selected scalar or fail at its named boundary, recording only fixed test operation names. */
+  async function operation(name, value) {
+    calls.push(name);
+    if (failure === name) throw error;
+    return value;
+  }
+  const neutral = {
+    /** Model native activation of the neutral tab without changing an actual window. */
+    bringToFront() { return operation('neutral'); },
+  };
+  /** Model native activation of the observed tab. */
+  fake.page.bringToFront = function bringToFront() { return operation('activate'); };
+  /** Keep the existing hidden/visible deadlines and polling settings observable in the mock. */
+  fake.page.waitForFunction = function waitForFunction(_predicate, _argument, options) {
+    const hidden = waits++ === 0;
+    assert.deepEqual(options, hidden ? { polling: 20, timeout: 1000 } : { timeout: 1000 });
+    return operation(hidden ? 'hidden' : 'visible');
+  };
+  /** Supply only the pre/post scalar visibility state expected by the existing observer. */
+  fake.page.evaluate = function evaluate() {
+    return reads++ === 0 ? operation('before', { state: 'hidden', length: 1 })
+      : operation('after', { length: 2, last: { state: 'visible', trusted: true } });
+  };
+  return { ...fake, neutral, calls };
+}
+
+/** A browser rejection at any visibility boundary must remain identifiable without retaining private diagnostics. */
+test('visibility failures report the exact operation and never fabricate a transition', async () => {
+  const cases = [
+    ['neutral', 'visibility_neutral_activation_failed'], ['hidden', 'visibility_hidden_wait_failed'],
+    ['before', 'visibility_before_read_failed'], ['activate', 'visibility_tab_activation_failed'],
+    ['visible', 'visibility_visible_wait_failed'], ['after', 'visibility_after_read_failed'],
+  ];
+  for (const [operation, code] of cases) {
+    const fake = visibilityFailureFixture(operation); const { budget } = budgetFixture();
+    const observer = new BrowserObserver(fake.context, budget, new IdentityObserver('fixture'), ['https://example.test']);
+    await observer.newPage(1);
+    await assert.rejects(observer.activate(fake.page, fake.neutral, 1), { code, message: code });
+    budget.stop(code); await observer.close();
+    assert.equal(fake.calls.at(-1), operation); assert.equal(observer.visibility.length, 0);
+    assert.equal(fake.closed(), 1); assert.equal(budget.counts.app, 0);
+    assert.doesNotMatch(JSON.stringify(budget.report()), /PRIVATE|stack/);
+  }
+});
+
+/** Diagnostic wrapping cannot replace a recognized guard error or add extra operations to a successful transition. */
+test('visibility diagnostics preserve known guards and successful native-operation order', async () => {
+  const known = new QualificationError('deadline');
+  for (const failure of [undefined, 'hidden']) {
+    const fake = visibilityFailureFixture(failure, known); const { budget } = budgetFixture();
+    const observer = new BrowserObserver(fake.context, budget, new IdentityObserver('fixture'), ['https://example.test']);
+    await observer.newPage(1);
+    if (failure) await assert.rejects(observer.activate(fake.page, fake.neutral, 1), error => error === known);
+    else {
+      await observer.activate(fake.page, fake.neutral, 1);
+      assert.deepEqual(fake.calls, ['neutral', 'hidden', 'before', 'activate', 'visible', 'after']);
+      assert.equal(observer.visibility.length, 1); assert.equal(observer.visibility[0].visibleEventTrusted, true);
+    }
+    await observer.close(); assert.equal(fake.closed(), 1);
+  }
+});
+
+/** Run the real profile orchestration with in-memory build/wait substitutes; failed navigation must prevent later profiles. */
+test('profile reports preserve operation codes, earlier stop reasons and cleanup without retrying', async () => {
+  const runnerPath = require.resolve('../runner.cjs'); const source = await readFile(runnerPath, 'utf8');
+  for (const failure of ['unknown', 'known', 'earlier_stop']) {
+    const fake = fakeBrowser(); let budget; let probes = 0; let navigations = 0; let loaded;
+    /** Supply the required blank keeper without inspecting or opening any real page. */
+    fake.context.pages = () => [{ url: () => 'about:blank' }];
+    /** No workers exist in this synthetic context. */
+    fake.context.serviceWorkers = () => [];
+    /** Fail before any actual request, optionally after a separate guard has already stopped the budget. */
+    fake.page.goto = async function goto() {
+      navigations++;
+      if (failure === 'earlier_stop') budget.stop('identity_mismatch');
+      if (failure === 'known') throw new loaded.QualificationError('request_latency');
+      throw new Error('PRIVATE_NAVIGATION_URL');
+    };
+    const replacements = {
+      /** Count preflight calls without fetching hosted URLs or supplying any request bodies. */
+      async checkBuild(current) { budget = current; probes++; },
+      /** Skip only the synthetic quiet period; keep the real budget stop check. */
+      async waitUntil(current) { current.check(); },
+    };
+    loaded = compileFunction(`${source}\ncheckBuild = replacements.checkBuild; waitUntil = replacements.waitUntil;
+      return { runProfiles, QualificationError };`, ['require', 'module', '__dirname', 'replacements'],
+    { filename: runnerPath })(require, { exports: {} }, path.dirname(runnerPath), replacements);
+    const report = await loaded.runProfiles({ context: fake.context, approvedProfiles: [1, 2, 4, 8],
+      approval: LIVE_APPROVAL, approvedUserId: 'fixture' });
+    assert.equal(report.outcome, 'STOPPED');
+    assert.equal(report.reason, failure === 'known' ? 'request_latency'
+      : failure === 'earlier_stop' ? 'identity_mismatch' : 'startup_navigation_failed');
+    assert.equal(report.profiles.length, 0); assert.equal(probes, 2); assert.equal(navigations, 1);
+    assert.equal(fake.closed(), 1); assert.equal(budget.timer?._destroyed, true);
+    assert.deepEqual(report.dispatched, { app: 0, static: 0, session: 0 });
+    assert.doesNotMatch(JSON.stringify(report), /PRIVATE|stack/);
+  }
+});
 
 /** Simulate paused concurrent requests to prove forwarding happens only after reservation. */
 test('protocol guard forwards only admitted requests and closes owned pages once', async () => {

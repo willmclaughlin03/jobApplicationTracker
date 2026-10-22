@@ -19,12 +19,12 @@ const { spawn } = require('node:child_process');
 const CORE_VERSION = '1.62.0-alpha-1783623505000';
 const TARGET = Object.freeze({
   origin: 'https://job-application-tracker-kappa-seven.vercel.app',
-  immutableOrigin: 'https://job-application-tracker-nc08q52tw-track-the-app.vercel.app',
+  immutableOrigin: 'https://job-application-tracker-9s58bylbk-track-the-app.vercel.app',
   deployment: null, // Current Vercel dpl_ ID has not been independently retrieved.
-  deploymentReference: 'https://vercel.com/track-the-app/job-application-tracker/5H29GHpsA9x4HQU5P4nDTNbEZm7h',
-  githubDeployment: '7237630456',
-  commit: '9cb88f0ab1bee2c8921ceb0092de3c9fcd169c7e',
-  build: 'aueJAQi4zQIKVDr0go3VB',
+  deploymentReference: 'https://vercel.com/track-the-app/job-application-tracker/BVppWAyuJcZHh2yJzxLRc5vhqtoF',
+  githubDeployment: '7241299230',
+  commit: 'e562ea71b9646e0fcd6fdeebef2c97add3ba50a7',
+  build: '8Gc4lw4xMJD6UspKywhwt',
 });
 // Static /login is deployment-cached; this policy attributes its build, not origin execution.
 // https://vercel.com/docs/caching/cdn-cache/purge documents deployment-specific cache keys.
@@ -62,6 +62,15 @@ function requireCondition(condition, code) {
 /** Reduce unknown failures to one fixed code; never forward stack traces or messages. */
 function safeCode(error) {
   return error instanceof QualificationError ? error.code : 'tool_failure';
+}
+
+/** Label a rejected browser operation with its fixed call-site code; preserve known guards and discard raw errors. */
+async function browserOperation(promise, code) {
+  try { return await promise; }
+  catch (error) {
+    if (error instanceof QualificationError) throw error;
+    throw new QualificationError(code);
+  }
 }
 
 /** Bound browser acknowledgements that may never arrive after the target has already exited. */
@@ -360,9 +369,10 @@ class BrowserObserver {
   }
   /** Create a blank owned page, gate it, then permit the caller to navigate. */
   async newPage(tab) {
-    this.budget.check(); const page = await this.context.newPage(); this.pages.add(page);
-    await page.addInitScript(installVisibilityObserver);
-    const cdp = await this.context.newCDPSession(page);
+    this.budget.check();
+    const page = await browserOperation(this.context.newPage(), 'page_create_failed'); this.pages.add(page);
+    await browserOperation(page.addInitScript(installVisibilityObserver), 'visibility_observer_install_failed');
+    const cdp = await browserOperation(this.context.newCDPSession(page), 'page_cdp_attach_failed');
     const active = new Map(); const starts = new Map(); const timeouts = new Set();
     this.sessions.push({ cdp, timeouts });
     const owner = this;
@@ -464,12 +474,15 @@ class BrowserObserver {
     cdp.on('Network.loadingFinished', completed); cdp.on('Network.loadingFailed', failed);
     cdp.on('Fetch.requestPaused', intercepted); cdp.on('Target.attachedToTarget', workerAttached);
     page.on('close', pageClosed);
-    await cdp.send('Network.enable', { maxTotalBufferSize: BODY_LIMIT * 4, maxResourceBufferSize: BODY_LIMIT });
-    await cdp.send('Network.setCacheDisabled', { cacheDisabled: true });
+    await browserOperation(cdp.send('Network.enable', { maxTotalBufferSize: BODY_LIMIT * 4, maxResourceBufferSize: BODY_LIMIT }),
+      'browser_network_enable_failed');
+    await browserOperation(cdp.send('Network.setCacheDisabled', { cacheDisabled: true }), 'browser_cache_disable_failed');
     // Playwright enables focus emulation by default. Restore native visibility before navigation.
-    await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false });
-    await cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
-    await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] });
+    await browserOperation(cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false }), 'browser_focus_reset_failed');
+    await browserOperation(cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }),
+      'browser_child_guard_failed');
+    await browserOperation(cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }] }),
+      'browser_request_guard_failed');
     return page;
   }
   /** Await all current observation work and require every dispatched request to be accounted for. */
@@ -485,18 +498,21 @@ class BrowserObserver {
   }
   /** Observe a genuinely hidden document, activate its tab, and require a new trusted visible event. */
   async activate(page, neutral, tab) {
-    await neutral.bringToFront();
+    await browserOperation(neutral.bringToFront(), 'visibility_neutral_activation_failed');
     // Polling a hidden page must not depend on requestAnimationFrame scheduling.
-    await page.waitForFunction(() => document.visibilityState === 'hidden', null, { polling: 20, timeout: 1000 });
+    await browserOperation(page.waitForFunction(() => document.visibilityState === 'hidden', null,
+      { polling: 20, timeout: 1000 }), 'visibility_hidden_wait_failed');
     // Read only the observer's scalar state, never a DOM snapshot or account label.
-    const before = await page.evaluate(() => ({ state: document.visibilityState, length: window.__gate1Visibility?.length }));
+    const before = await browserOperation(page.evaluate(() => ({ state: document.visibilityState, length: window.__gate1Visibility?.length })),
+      'visibility_before_read_failed');
     requireCondition(before.state === 'hidden' && Number.isInteger(before.length), 'visibility_unavailable');
-    await page.bringToFront();
+    await browserOperation(page.bringToFront(), 'visibility_tab_activation_failed');
     // A short frame-independent wait lets Chromium deliver its native visibility event.
-    await page.waitForFunction(() => document.visibilityState === 'visible'
-      && window.__gate1Visibility?.at(-1)?.state === 'visible', null, { timeout: 1000 });
+    await browserOperation(page.waitForFunction(() => document.visibilityState === 'visible'
+      && window.__gate1Visibility?.at(-1)?.state === 'visible', null, { timeout: 1000 }), 'visibility_visible_wait_failed');
     // Return only visibility observations; no application state or storage is traversed.
-    const events = await page.evaluate(() => ({ length: window.__gate1Visibility.length, last: window.__gate1Visibility.at(-1) }));
+    const events = await browserOperation(page.evaluate(() => ({ length: window.__gate1Visibility.length, last: window.__gate1Visibility.at(-1) })),
+      'visibility_after_read_failed');
     requireCondition(events.length > before.length && events.last.state === 'visible'
       && events.last.trusted, 'visibility_unavailable');
     this.visibility.push({ profile: this.budget.phase, tab, hiddenStateObserved: true, visibleEventTrusted: true,
@@ -558,7 +574,8 @@ async function exerciseProfile(observer, profile, origin, schedule = SCHEDULE) {
   for (let tab = 1; tab <= profile.tabs; tab++) pages.push(await observer.newPage(tab));
   const startup = budget.clock();
   /** Start all page navigations together; no account mutation or UI submission occurs. */
-  await Promise.all(pages.map(page => page.goto(origin, { waitUntil: 'load', timeout: schedule.startupMs })));
+  await browserOperation(Promise.all(pages.map(page => page.goto(origin, { waitUntil: 'load', timeout: schedule.startupMs }))),
+    'startup_navigation_failed');
   /** Use each tab's first gated document dispatch in this phase, excluding preflight probes. */
   const starts = pages.map((_, index) => budget.records.find(record => record.profile === budget.phase
     && record.tab === index + 1 && record.kind === 'document')?.startedMs);
