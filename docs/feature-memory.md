@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-18
 
+- `2026-10-22` - `Bounded visibility failure evidence`: Retain one sanitized visible-wait failure record with fixed error categories, timing, availability and visibility scalars, including when no profile completes. Bound the best-effort read to 250 ms alongside immediate stop/cleanup; preserve deadlines, first-failure precedence and privacy. Refresh recorded target pins and the operator README's stopped-run attribution and cumulative ledger. All 67 offline tests, syntax, focused lint and the native loopback fixture passed; no hosted retry ran and GATE-1 remains open.
+
 - `2026-10-22` - `Remaining browser-profile continuation`: Add an explicit `[2,4,8]` mode with its own approval marker while preserving full `[1,2,4,8]` execution, frozen profiles and all guards. Reject unsupported selections before context inspection; report only completed profiles and retain first-failure cleanup. Document cumulative request accounting and the separately attributed 1-tab pass. All 60 offline tests, syntax and focused lint passed; no hosted continuation ran and GATE-1 remains open.
 
 - `2026-10-22` - `Browser visibility timer polling`: Observe both hidden and visible states with 20 ms timer polling while preserving the one-second deadline, new trusted-event requirement and frozen load guards. Add delayed-event/paused-frame and invalid-evidence regressions; refresh the recorded ce7ac09 target and operator README. All 57 offline tests and the native two-tab loopback fixture passed. The hosted 1-tab pass is retained; 2/4/8 qualification and GATE-1 remain open, with no hosted retry of this fix.
