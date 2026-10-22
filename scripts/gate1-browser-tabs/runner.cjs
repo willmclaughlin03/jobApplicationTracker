@@ -19,12 +19,12 @@ const { spawn } = require('node:child_process');
 const CORE_VERSION = '1.62.0-alpha-1783623505000';
 const TARGET = Object.freeze({
   origin: 'https://job-application-tracker-kappa-seven.vercel.app',
-  immutableOrigin: 'https://job-application-tracker-9s58bylbk-track-the-app.vercel.app',
+  immutableOrigin: 'https://job-application-tracker-e9yeig5hf-track-the-app.vercel.app',
   deployment: null, // Current Vercel dpl_ ID has not been independently retrieved.
-  deploymentReference: 'https://vercel.com/track-the-app/job-application-tracker/BVppWAyuJcZHh2yJzxLRc5vhqtoF',
-  githubDeployment: '7241299230',
-  commit: 'e562ea71b9646e0fcd6fdeebef2c97add3ba50a7',
-  build: '8Gc4lw4xMJD6UspKywhwt',
+  deploymentReference: 'https://vercel.com/track-the-app/job-application-tracker/FXkGQcSq6SWw1xcaw3DhhvvSywbf',
+  githubDeployment: '7257610199',
+  commit: 'ce7ac0977fc538940e2acb339195cf2874c96aee',
+  build: 'NEMMu5_HCxJLWxeA7FEQD',
 });
 // Static /login is deployment-cached; this policy attributes its build, not origin execution.
 // https://vercel.com/docs/caching/cdn-cache/purge documents deployment-specific cache keys.
@@ -507,9 +507,9 @@ class BrowserObserver {
       'visibility_before_read_failed');
     requireCondition(before.state === 'hidden' && Number.isInteger(before.length), 'visibility_unavailable');
     await browserOperation(page.bringToFront(), 'visibility_tab_activation_failed');
-    // A short frame-independent wait lets Chromium deliver its native visibility event.
+    // Timer polling observes native visibility even when animation frames pause during activation.
     await browserOperation(page.waitForFunction(() => document.visibilityState === 'visible'
-      && window.__gate1Visibility?.at(-1)?.state === 'visible', null, { timeout: 1000 }), 'visibility_visible_wait_failed');
+      && window.__gate1Visibility?.at(-1)?.state === 'visible', null, { polling: 20, timeout: 1000 }), 'visibility_visible_wait_failed');
     // Return only visibility observations; no application state or storage is traversed.
     const events = await browserOperation(page.evaluate(() => ({ length: window.__gate1Visibility.length, last: window.__gate1Visibility.at(-1) })),
       'visibility_after_read_failed');

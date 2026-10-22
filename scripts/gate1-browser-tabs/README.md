@@ -68,14 +68,14 @@ not a loopback test or a completed load profile.
 
 ### Pinned target and build probes
 
-The recorded target is commit `e562ea71b9646e0fcd6fdeebef2c97add3ba50a7`, build
-`8Gc4lw4xMJD6UspKywhwt`, on these origins:
+The recorded target is commit `ce7ac0977fc538940e2acb339195cf2874c96aee`, build
+`NEMMu5_HCxJLWxeA7FEQD`, on these origins:
 
 - Canonical: `https://job-application-tracker-kappa-seven.vercel.app`
-- Generated: `https://job-application-tracker-9s58bylbk-track-the-app.vercel.app`
+- Generated: `https://job-application-tracker-e9yeig5hf-track-the-app.vercel.app`
 
-The [Vercel deployment reference](https://vercel.com/track-the-app/job-application-tracker/BVppWAyuJcZHh2yJzxLRc5vhqtoF)
-and GitHub deployment `7241299230` identify the recorded target. Its actual Vercel
+The [Vercel deployment reference](https://vercel.com/track-the-app/job-application-tracker/FXkGQcSq6SWw1xcaw3DhhvvSywbf)
+and GitHub deployment `7257610199` identify the recorded target. Its actual Vercel
 `dpl_` ID has not been independently retrieved, so `TARGET.deployment` is null.
 These pins are not a claim that a later staging build or publication serves the same
 target. Reconcile deployment changes before separately authorized hosted execution.
@@ -127,6 +127,11 @@ provider capacity, deployment qualification or release approval.
 
 ### Failure diagnostics
 
+Both hidden- and visible-state waits use 20 ms timer polling, independent of
+animation-frame scheduling. Each retains its one-second deadline. Acceptance still
+requires a newly recorded, trusted visible event after an observed hidden state;
+timer polling does not manufacture events or relax the visibility contract.
+
 Unexpected browser rejections during page setup, startup navigation and native
 visibility operations receive fixed operation codes, such as `page_cdp_attach_failed`,
 `startup_navigation_failed`, `visibility_hidden_wait_failed` and
@@ -139,3 +144,11 @@ Operation codes do not establish an underlying application or browser cause, and
 cannot retrospectively attribute an earlier `tool_failure`. The frozen profile,
 timing and request limits remain unchanged. A stopped hosted exercise requires a
 new decision and authorization before another attempt.
+
+On the recorded target, the October 22 hosted exercise passed the 1-tab profile
+and stopped during 2-tab startup with `visibility_visible_wait_failed`; 4/8 tabs
+were not executed. Local simulation reproduced a missed observation when animation
+frames were withheld, but does not establish that as the hosted failure's cause.
+The timer-polling fix passed unit tests and the native loopback fixture; no hosted
+retry has validated it. The entry point still requires the complete `[1, 2, 4, 8]`
+list, so a remaining-profile continuation requires a separately reviewed change.

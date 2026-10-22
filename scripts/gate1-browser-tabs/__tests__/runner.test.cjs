@@ -917,7 +917,7 @@ function visibilityFailureFixture(failure, error = new Error('PRIVATE_VISIBILITY
   /** Keep the existing hidden/visible deadlines and polling settings observable in the mock. */
   fake.page.waitForFunction = function waitForFunction(_predicate, _argument, options) {
     const hidden = waits++ === 0;
-    assert.deepEqual(options, hidden ? { polling: 20, timeout: 1000 } : { timeout: 1000 });
+    assert.deepEqual(options, { polling: 20, timeout: 1000 });
     return operation(hidden ? 'hidden' : 'visible');
   };
   /** Supply only the pre/post scalar visibility state expected by the existing observer. */
@@ -927,6 +927,101 @@ function visibilityFailureFixture(failure, error = new Error('PRIVATE_VISIBILITY
   };
   return { ...fake, neutral, calls };
 }
+
+/** Model delayed visibility with animation frames withheld; only timer polling can observe the later scalar state. */
+function visibilityPollingFixture({ event = 'trusted', forceAnimationFrames = false } = {}) {
+  const fake = fakeBrowser(); let now = 0; let visibleAt = null; let frameRequests = 0;
+  const state = { document: { visibilityState: 'hidden' }, window: { __gate1Visibility: [
+    { state: event === 'stale' ? 'visible' : 'hidden', trusted: true },
+  ] } };
+  /** Advance the synthetic dependency clock and deliver the selected visibility state/event once. */
+  function advanceTo(time) {
+    now = time;
+    if (visibleAt === null || visibleAt > now) return;
+    visibleAt = null;
+    if (event === 'hidden') return;
+    state.document.visibilityState = 'visible';
+    if (event === 'trusted' || event === 'untrusted') {
+      state.window.__gate1Visibility.push({ state: 'visible', trusted: event === 'trusted' });
+    }
+  }
+  /** Evaluate the runner's actual scalar predicate against isolated synthetic document/window objects. */
+  function evaluate(predicate) {
+    return compileFunction(`return (${predicate.toString()})();`, ['document', 'window'])(state.document, state.window);
+  }
+  /** Acknowledge activation before the delayed visibility notification, as a browser may do. */
+  fake.page.bringToFront = async function bringToFront() { visibleAt = now + 25; };
+  /** Read only the same visibility scalars as the real page; no browser globals or network are used. */
+  fake.page.evaluate = async function readVisibility(predicate) { return evaluate(predicate); };
+  /** Model Playwright's immediate check plus timer/default-frame polling under the unchanged deadline. */
+  fake.page.waitForFunction = async function waitForFunction(predicate, _argument, options) {
+    assert.equal(options.timeout, 1000);
+    const deadline = now + options.timeout;
+    if (evaluate(predicate)) return;
+    const polling = forceAnimationFrames ? undefined : options.polling;
+    if (typeof polling !== 'number') {
+      frameRequests++;
+      advanceTo(deadline); // State can change while the pending frame callback never runs.
+    } else {
+      assert(polling > 0);
+      while (now + polling < deadline) {
+        advanceTo(now + polling);
+        if (evaluate(predicate)) return;
+      }
+      advanceTo(deadline);
+    }
+    throw new Error('SYNTHETIC_VISIBILITY_TIMEOUT');
+  };
+  const neutral = {
+    /** Establish a hidden document before the observed tab's activation. */
+    async bringToFront() { state.document.visibilityState = 'hidden'; },
+  };
+  return { ...fake, neutral,
+    /** Expose only fixture timing and visibility booleans for assertions. */
+    snapshot() { return { elapsedMs: now, frameRequests, visible: state.document.visibilityState === 'visible',
+      visibleEvent: state.window.__gate1Visibility.at(-1)?.state === 'visible' }; },
+  };
+}
+
+/** A trusted event arriving after the first predicate check must be observed without any animation frame. */
+test('visibility timer polling observes delayed events while animation frames are paused', async () => {
+  for (const forceAnimationFrames of [true, false]) {
+    const fake = visibilityPollingFixture({ forceAnimationFrames }); const { budget } = budgetFixture();
+    const observer = new BrowserObserver(fake.context, budget, new IdentityObserver('fixture'), ['https://example.test']);
+    try {
+      await observer.newPage(1);
+      if (forceAnimationFrames) {
+        await assert.rejects(observer.activate(fake.page, fake.neutral, 1), { code: 'visibility_visible_wait_failed' });
+        assert.deepEqual(fake.snapshot(), { elapsedMs: 1000, frameRequests: 1, visible: true, visibleEvent: true });
+        assert.equal(observer.visibility.length, 0);
+      } else {
+        await observer.activate(fake.page, fake.neutral, 1);
+        assert.deepEqual(fake.snapshot(), { elapsedMs: 40, frameRequests: 0, visible: true, visibleEvent: true });
+        assert.equal(observer.visibility.length, 1); assert.equal(observer.visibility[0].visibleEventTrusted, true);
+      }
+      assert.deepEqual(budget.counts, { app: 0, static: 0, session: 0 });
+    } finally { await observer.close(); budget.dispose(); }
+    assert.equal(fake.closed(), 1);
+  }
+});
+
+/** Changing the polling mechanism must still reject absent, untrusted, stale and hidden-state evidence. */
+test('visibility timer polling preserves event validity and the one-second deadline', async () => {
+  for (const [event, code] of [['missing', 'visibility_visible_wait_failed'], ['untrusted', 'visibility_unavailable'],
+    ['stale', 'visibility_unavailable'], ['hidden', 'visibility_visible_wait_failed']]) {
+    const fake = visibilityPollingFixture({ event }); const { budget } = budgetFixture();
+    const observer = new BrowserObserver(fake.context, budget, new IdentityObserver('fixture'), ['https://example.test']);
+    try {
+      await observer.newPage(1);
+      await assert.rejects(observer.activate(fake.page, fake.neutral, 1), { code });
+      budget.stop(code);
+      assert.equal(observer.visibility.length, 0); assert.equal(fake.snapshot().frameRequests, 0);
+      assert.equal(fake.snapshot().elapsedMs, code === 'visibility_visible_wait_failed' ? 1000 : 40);
+      assert.equal(budget.reason, code); assert.deepEqual(budget.counts, { app: 0, static: 0, session: 0 });
+    } finally { await observer.close(); budget.dispose(); }
+    assert.equal(fake.closed(), 1);
+  }
+});
 
 /** A browser rejection at any visibility boundary must remain identifiable without retaining private diagnostics. */
 test('visibility failures report the exact operation and never fabricate a transition', async () => {
