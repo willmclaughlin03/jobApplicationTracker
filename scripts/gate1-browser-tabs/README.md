@@ -68,14 +68,14 @@ not a loopback test or a completed load profile.
 
 ### Pinned target and build probes
 
-The recorded target is commit `9cb88f0ab1bee2c8921ceb0092de3c9fcd169c7e`, build
-`aueJAQi4zQIKVDr0go3VB`, on these origins:
+The recorded target is commit `e562ea71b9646e0fcd6fdeebef2c97add3ba50a7`, build
+`8Gc4lw4xMJD6UspKywhwt`, on these origins:
 
 - Canonical: `https://job-application-tracker-kappa-seven.vercel.app`
-- Generated: `https://job-application-tracker-nc08q52tw-track-the-app.vercel.app`
+- Generated: `https://job-application-tracker-9s58bylbk-track-the-app.vercel.app`
 
-The [Vercel deployment reference](https://vercel.com/track-the-app/job-application-tracker/5H29GHpsA9x4HQU5P4nDTNbEZm7h)
-and GitHub deployment `7237630456` identify the recorded target. Its actual Vercel
+The [Vercel deployment reference](https://vercel.com/track-the-app/job-application-tracker/BVppWAyuJcZHh2yJzxLRc5vhqtoF)
+and GitHub deployment `7241299230` identify the recorded target. Its actual Vercel
 `dpl_` ID has not been independently retrieved, so `TARGET.deployment` is null.
 These pins are not a claim that a later staging build or publication serves the same
 target. Reconcile deployment changes before separately authorized hosted execution.
@@ -124,3 +124,18 @@ they do not export session bodies, cookies, headers or account identifiers.
 
 Passing local checks does not establish hosted identity isolation, WAF attribution,
 provider capacity, deployment qualification or release approval.
+
+### Failure diagnostics
+
+Unexpected browser rejections during page setup, startup navigation and native
+visibility operations receive fixed operation codes, such as `page_cdp_attach_failed`,
+`startup_navigation_failed`, `visibility_hidden_wait_failed` and
+`visibility_visible_wait_failed`. These identify the operation that rejected without
+retaining its raw error, URL, account data or browser state. Recognized qualification
+errors and the budget's first stop reason retain precedence; cleanup still closes
+only owned test pages.
+
+Operation codes do not establish an underlying application or browser cause, and
+cannot retrospectively attribute an earlier `tool_failure`. The frozen profile,
+timing and request limits remain unchanged. A stopped hosted exercise requires a
+new decision and authorization before another attempt.
