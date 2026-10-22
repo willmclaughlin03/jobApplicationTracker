@@ -19,12 +19,12 @@ const { spawn } = require('node:child_process');
 const CORE_VERSION = '1.62.0-alpha-1783623505000';
 const TARGET = Object.freeze({
   origin: 'https://job-application-tracker-kappa-seven.vercel.app',
-  immutableOrigin: 'https://job-application-tracker-e9yeig5hf-track-the-app.vercel.app',
+  immutableOrigin: 'https://job-application-tracker-bbjxq0mgy-track-the-app.vercel.app',
   deployment: null, // Current Vercel dpl_ ID has not been independently retrieved.
-  deploymentReference: 'https://vercel.com/track-the-app/job-application-tracker/FXkGQcSq6SWw1xcaw3DhhvvSywbf',
-  githubDeployment: '7257610199',
-  commit: 'ce7ac0977fc538940e2acb339195cf2874c96aee',
-  build: 'NEMMu5_HCxJLWxeA7FEQD',
+  deploymentReference: 'https://vercel.com/track-the-app/job-application-tracker/HQysMrfSb2Kjvk2dX7E9oG8bJMtE',
+  githubDeployment: '7262951491',
+  commit: 'bc598fabcf4467334ea531a5737e141cd049f1c5',
+  build: '3LRfqNqxpvyMmJr3CCNiQ',
 });
 // Static /login is deployment-cached; this policy attributes its build, not origin execution.
 // https://vercel.com/docs/caching/cdn-cache/purge documents deployment-specific cache keys.
@@ -72,6 +72,47 @@ async function browserOperation(promise, code) {
     if (error instanceof QualificationError) throw error;
     throw new QualificationError(code);
   }
+}
+
+/** Classify only the visible-wait rejection; never retain arbitrary names, messages or stacks. */
+function visibilityErrorCategory(error) {
+  if (error instanceof QualificationError) return 'guard';
+  try { return error?.name === 'TimeoutError' ? 'timeout' : 'other'; }
+  catch { return 'other'; }
+}
+
+/** Read synchronous browser availability without allowing a diagnostic error to replace the stop reason. */
+function diagnosticBoolean(read) {
+  try { const value = read(); return typeof value === 'boolean' ? value : null; }
+  catch { return null; }
+}
+
+/** Normalize host-clock elapsed values before retaining them in the bounded failure record. */
+function diagnosticElapsed(value) {
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** Run inside the test page: return only bounded visibility scalars, never DOM, storage or event objects. */
+function readVisibilityScalars() {
+  const state = document.visibilityState;
+  const events = window.__gate1Visibility;
+  const last = Array.isArray(events) ? events.at(-1) : null;
+  return {
+    state: state === 'hidden' || state === 'visible' ? state : null,
+    eventCount: Array.isArray(events) ? events.length : null,
+    lastState: last?.state === 'hidden' || last?.state === 'visible' ? last.state : null,
+    lastTrusted: typeof last?.trusted === 'boolean' ? last.trusted : null,
+  };
+}
+
+/** Validate and copy the exact scalar schema; unrecognized/missing fields are explicit nulls. */
+function sanitizeVisibilityScalars(value) {
+  return {
+    state: value?.state === 'hidden' || value?.state === 'visible' ? value.state : null,
+    eventCount: Number.isSafeInteger(value?.eventCount) && value.eventCount >= 0 ? value.eventCount : null,
+    lastState: value?.lastState === 'hidden' || value?.lastState === 'visible' ? value.lastState : null,
+    lastTrusted: typeof value?.lastTrusted === 'boolean' ? value.lastTrusted : null,
+  };
 }
 
 /** Bound browser acknowledgements that may never arrive after the target has already exited. */
@@ -356,7 +397,7 @@ class BrowserObserver {
     this.context = context; this.budget = budget; this.identity = identity; this.origins = new Set(origins);
     this.allowRedirects = allowRedirects; this.requestMs = requestMs;
     this.pages = new Set(); this.pending = new Set(); this.sessions = []; this.closing = false;
-    this.cleanupPromise = null; this.visibility = [];
+    this.cleanupPromise = null; this.visibility = []; this.visibilityFailure = null;
     // A failure closes only pages registered to this observer, never the whole supplied browser.
     budget.onStop = () => { void this.close(); };
   }
@@ -497,6 +538,43 @@ class BrowserObserver {
     }
     this.budget.check();
   }
+  /** Capture one visible-wait failure; the 250 ms scalar read runs alongside immediate stop/owned cleanup. */
+  async captureVisibilityFailure(page, tab, before, waitStarted, error) {
+    const code = error instanceof QualificationError ? error.code : 'visibility_visible_wait_failed';
+    if (this.visibilityFailure) { this.budget.stop(code); return; }
+    const failedAt = this.budget.clock();
+    const record = {
+      profile: ['tabs_1', 'tabs_2', 'tabs_4', 'tabs_8', 'offline_tabs_2'].includes(this.budget.phase) ? this.budget.phase : null,
+      tab: Number.isInteger(tab) && tab >= 1 && tab <= 8 ? tab : null,
+      operation: 'visibility_visible_wait', errorCategory: visibilityErrorCategory(error),
+      atMs: diagnosticElapsed(failedAt - this.budget.started), waitElapsedMs: diagnosticElapsed(failedAt - waitStarted),
+      pageClosed: diagnosticBoolean(() => page.isClosed()),
+      browserConnected: diagnosticBoolean(() => this.context.browser()?.isConnected()),
+      before: Object.freeze(sanitizeVisibilityScalars({ state: before.state, eventCount: before.length })),
+      snapshot: { status: 'unavailable', afterFailureMs: null, ...sanitizeVisibilityScalars(null) },
+    };
+    this.visibilityFailure = record;
+    let snapshot;
+    try {
+      if (record.pageClosed !== true && record.browserConnected !== false) {
+        // Queue the read before closing, but never await it before latching the stop and starting cleanup.
+        snapshot = withTimeout(page.evaluate(readVisibilityScalars), 250, 'visibility_snapshot_timeout');
+      }
+    } catch { /* A synchronous read failure leaves the snapshot explicitly unavailable. */ }
+    this.budget.stop(code);
+    try {
+      if (snapshot) {
+        const scalars = sanitizeVisibilityScalars(await snapshot);
+        record.snapshot = { status: scalars.state !== null && scalars.eventCount !== null ? 'available' : 'invalid',
+          afterFailureMs: diagnosticElapsed(this.budget.clock() - failedAt), ...scalars };
+      }
+    } catch (snapshotError) {
+      record.snapshot.status = snapshotError instanceof QualificationError && snapshotError.code === 'visibility_snapshot_timeout'
+        ? 'timeout' : 'unavailable';
+      record.snapshot.afterFailureMs = diagnosticElapsed(this.budget.clock() - failedAt);
+    }
+    Object.freeze(record.snapshot); Object.freeze(record);
+  }
   /** Observe a genuinely hidden document, activate its tab, and require a new trusted visible event. */
   async activate(page, neutral, tab) {
     await browserOperation(neutral.bringToFront(), 'visibility_neutral_activation_failed');
@@ -509,8 +587,15 @@ class BrowserObserver {
     requireCondition(before.state === 'hidden' && Number.isInteger(before.length), 'visibility_unavailable');
     await browserOperation(page.bringToFront(), 'visibility_tab_activation_failed');
     // Timer polling observes native visibility even when animation frames pause during activation.
-    await browserOperation(page.waitForFunction(() => document.visibilityState === 'visible'
-      && window.__gate1Visibility?.at(-1)?.state === 'visible', null, { polling: 20, timeout: 1000 }), 'visibility_visible_wait_failed');
+    const waitStarted = this.budget.clock();
+    try {
+      await page.waitForFunction(() => document.visibilityState === 'visible'
+        && window.__gate1Visibility?.at(-1)?.state === 'visible', null, { polling: 20, timeout: 1000 });
+    } catch (error) {
+      await this.captureVisibilityFailure(page, tab, before, waitStarted, error);
+      if (error instanceof QualificationError) throw error;
+      throw new QualificationError('visibility_visible_wait_failed');
+    }
     // Return only visibility observations; no application state or storage is traversed.
     const events = await browserOperation(page.evaluate(() => ({ length: window.__gate1Visibility.length, last: window.__gate1Visibility.at(-1) })),
       'visibility_after_read_failed');
@@ -647,7 +732,8 @@ async function runProfiles({ context, approvedProfiles, approval, approvedUserId
     }
   } catch (error) { budget.stop(safeCode(error)); }
   finally { if (observer) await observer.close(); budget.dispose(); }
-  return { target: TARGET, scope: 'browser_only_cold_http_cache', profiles: results, ...budget.report() };
+  return { target: TARGET, scope: 'browser_only_cold_http_cache', profiles: results,
+    visibilityFailure: observer?.visibilityFailure ?? null, ...budget.report() };
 }
 
 /** Load the explicitly supplied local runtime, without installing packages or inspecting environment values. */
@@ -906,6 +992,7 @@ async function selfCheck(options) {
     for (const budget of budgets) budget.stop(safeCode(error));
     // Failed fixture runs retain the same sanitized observations as successful runs.
     result = { outcome: 'STOPPED', scope: 'loopback_fixture_only', hostedRequests: 0, reason: safeCode(error), checks,
+      visibilityFailure: observers.find(observer => observer.visibilityFailure)?.visibilityFailure ?? null,
       measurements: budgets.map(budget => budget.report()) };
   } finally {
     for (const observer of observers) await observer.close();

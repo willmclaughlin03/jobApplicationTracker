@@ -80,14 +80,14 @@ not a loopback test or a completed load profile.
 
 ### Pinned target and build probes
 
-The recorded target is commit `ce7ac0977fc538940e2acb339195cf2874c96aee`, build
-`NEMMu5_HCxJLWxeA7FEQD`, on these origins:
+The recorded target is commit `bc598fabcf4467334ea531a5737e141cd049f1c5`, build
+`3LRfqNqxpvyMmJr3CCNiQ`, on these origins:
 
 - Canonical: `https://job-application-tracker-kappa-seven.vercel.app`
-- Generated: `https://job-application-tracker-e9yeig5hf-track-the-app.vercel.app`
+- Generated: `https://job-application-tracker-bbjxq0mgy-track-the-app.vercel.app`
 
-The [Vercel deployment reference](https://vercel.com/track-the-app/job-application-tracker/FXkGQcSq6SWw1xcaw3DhhvvSywbf)
-and GitHub deployment `7257610199` identify the recorded target. Its actual Vercel
+The [Vercel deployment reference](https://vercel.com/track-the-app/job-application-tracker/HQysMrfSb2Kjvk2dX7E9oG8bJMtE)
+and GitHub deployment `7262951491` identify the recorded target. Its actual Vercel
 `dpl_` ID has not been independently retrieved, so `TARGET.deployment` is null.
 These pins are not a claim that a later staging build or publication serves the same
 target. Reconcile deployment changes before separately authorized hosted execution.
@@ -130,16 +130,16 @@ child targets, timeouts or exhausted limits stop the run.
 
 The remaining `[2, 4, 8]` profiles have combined caps of 900 application / 1,120
 static / 336 session requests. Session requests are included in application counts.
-The October 22 ledger before any continuation records 74 application / 74 static /
-26 session actual requests, or 75 / 74 / 26 conservatively including one historical
-reserved-but-unsent application request. Manual owner sign-in traffic is separate.
-One new preparation session plus the remaining profile caps would permit cumulative
-maxima of 975 / 1,194 / 363 actual, or 976 / 1,194 / 363 including that reservation.
-This fits the existing limits with only one additional session request of headroom.
-A full rerun plus that preparation would permit 1,055 / 1,274 / 387 actual requests
-and exceeds the application and session limits. Reconcile any subsequent traffic
-and target changes before separately approving a continuation; this calculation
-does not authorize preparation or execution.
+After the October 22 target check and stopped continuation, the ledger records
+100 application / 112 static / 35 session actual requests, or 101 / 112 / 35
+conservatively including one historical reserved-but-unsent application request.
+Manual owner sign-in traffic is separate. Another preparation session plus the
+remaining profile caps would permit cumulative maxima of 1,001 / 1,232 / 372 actual,
+or 1,002 / 1,232 / 372 including that reservation. Both exceed the existing
+application and session limits. A new complete remaining-profile attempt needs
+explicit revised cumulative-budget approval as well as target/browser readiness,
+frozen cases and separate execution authorization. Include any further diagnostic
+traffic in that accounting; never reset the ledger or skip an unqualified profile.
 
 Session latency includes full-response completion. CSRF latency ends at response
 headers because the application leaves that body unread; the runner never reads the
@@ -162,22 +162,50 @@ Unexpected browser rejections during page setup, startup navigation and native
 visibility operations receive fixed operation codes, such as `page_cdp_attach_failed`,
 `startup_navigation_failed`, `visibility_hidden_wait_failed` and
 `visibility_visible_wait_failed`. These identify the operation that rejected without
-retaining its raw error, URL, account data or browser state. Recognized qualification
+retaining its raw error, URL or account data. Recognized qualification
 errors and the budget's first stop reason retain precedence; cleanup still closes
 only owned test pages.
+
+For a rejected visible-state wait, `visibilityFailure` retains one sanitized record
+even when `profiles` is empty. It contains the allowlisted profile/tab, operation,
+elapsed timing, synchronous page/browser availability and pre-activation visibility
+scalars. `errorCategory` is `timeout` for the exact error name `TimeoutError`, `guard`
+for a recognized qualification error, or `other`; arbitrary error names/messages,
+stacks, URLs, cookies, headers and account data are discarded.
+
+One best-effort scalar read is queued before cleanup and capped at 250 ms. The stop
+reason is latched and owned-page cleanup starts without awaiting that read. Its
+snapshot reports `available`, `invalid`, `unavailable` or `timeout`, with nulls for
+missing/unrecognized scalar values. `afterFailureMs` identifies the delay after
+rejection: this is a later observation, not a reconstruction of the state at the
+wait deadline. Cleanup can win the race and make it unavailable. A visible snapshot
+cannot qualify the failed activation. The frozen record cannot be changed by a late
+read, and no extra activation or retry is attempted. Failed loopback reports retain
+the same diagnostic record when present.
 
 Operation codes do not establish an underlying application or browser cause, and
 cannot retrospectively attribute an earlier `tool_failure`. The frozen profile,
 timing and request limits remain unchanged. A stopped hosted exercise requires a
 new decision and authorization before another attempt.
 
-On the recorded target, the October 22 hosted exercise passed the 1-tab profile
-and stopped during 2-tab startup with `visibility_visible_wait_failed`; 4/8 tabs
-were not executed. Local simulation reproduced a missed observation when animation
-frames were withheld, but does not establish that as the hosted failure's cause.
-The timer-polling fix passed unit tests and the native loopback fixture; no hosted
-retry has validated it. The remaining-profile mode passed local selection, rejection,
-first-failure and owned-cleanup tests as part of the 60-test offline suite. No hosted
-continuation has run. Browser preparation and a new bounded exercise still require
-their applicable approvals; the prior 1-tab pass remains separately attributed to
-its original target and run. GATE-1 remains open.
+The earlier October 22 1-tab pass belongs to commit
+`ce7ac0977fc538940e2acb339195cf2874c96aee`, build `NEMMu5_HCxJLWxeA7FEQD`.
+That run stopped during 2-tab startup; 4/8 tabs were not executed. Local simulation
+showed a conditional missed observation when animation frames were withheld, but
+never established that as the hosted failure's cause.
+
+The separately authorized continuation on the current recorded target used timer
+polling and stopped again at `visibility_visible_wait_failed`, after approximately
+199.260 seconds on October 22, 2026 (20:53:07.370–20:56:26.630 UTC). Its preparation
+session succeeded, but no profile completed and 4/8 never started. Including
+preparation, it issued 25 application / 38 static / 9 session requests; all 63 HTTP
+responses were 200 and all observed session identities matched. Partial session
+and CSRF samples met the latency criteria but do not qualify the unfinished profile.
+Failure-time visibility scalars and the original browser error were not retained;
+the underlying cause remains unknown. Preserve the historical report unchanged.
+
+The new diagnostic capture passed all 67 offline tests, syntax, focused lint and
+the native two-tab loopback fixture (six trusted transitions, six session requests,
+owned cleanup and redirect-cap checks). It has not run against the hosted target.
+No new hosted request was made for this diagnostic update. The earlier 1-tab pass
+remains separately attributed; 2/4/8 qualification and GATE-1 remain open.

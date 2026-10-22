@@ -1050,6 +1050,8 @@ function visibilityFailureFixture(failure, error = new Error('PRIVATE_VISIBILITY
   };
   /** Supply only the pre/post scalar visibility state expected by the existing observer. */
   fake.page.evaluate = function evaluate() {
+    if (failure === 'visible' && reads > 0) return operation('snapshot',
+      { state: 'hidden', eventCount: 1, lastState: 'hidden', lastTrusted: true });
     return reads++ === 0 ? operation('before', { state: 'hidden', length: 1 })
       : operation('after', { length: 2, last: { state: 'visible', trusted: true } });
   };
@@ -1164,7 +1166,8 @@ test('visibility failures report the exact operation and never fabricate a trans
     await observer.newPage(1);
     await assert.rejects(observer.activate(fake.page, fake.neutral, 1), { code, message: code });
     budget.stop(code); await observer.close();
-    assert.equal(fake.calls.at(-1), operation); assert.equal(observer.visibility.length, 0);
+    assert.equal(fake.calls.at(-1), operation === 'visible' ? 'snapshot' : operation);
+    assert.equal(observer.visibility.length, 0);
     assert.equal(fake.closed(), 1); assert.equal(budget.counts.app, 0);
     assert.doesNotMatch(JSON.stringify(budget.report()), /PRIVATE|stack/);
   }
@@ -1185,6 +1188,203 @@ test('visibility diagnostics preserve known guards and successful native-operati
     }
     await observer.close(); assert.equal(fake.closed(), 1);
   }
+});
+
+/** Fail the real visible wait with controlled scalar/error inputs; all pages, clocks and transport are synthetic. */
+function visibilityDiagnosticFixture({ error = Object.assign(new Error('PRIVATE_WAIT_DETAILS'), { name: 'TimeoutError' }),
+  sample = { state: 'hidden', eventCount: 1, lastState: 'hidden', lastTrusted: true },
+  connected = true, closed = false, earlierStop = null } = {}) {
+  const fake = visibilityFailureFixture('visible', error); const { budget, advance } = budgetFixture();
+  budget.phase = 'tabs_2';
+  let reads = 0; let waits = 0;
+  const evaluate = fake.page.evaluate; const wait = fake.page.waitForFunction; const isClosed = fake.page.isClosed;
+  /** Supply only native availability booleans, without connection or page metadata. */
+  fake.context.browser = () => ({ isConnected: () => connected });
+  /** Model a page that may have closed before the wait rejection arrives. */
+  fake.page.isClosed = () => closed || isClosed();
+  /** Advance only the host test clock at the rejected operation; keep the real wait's options unchanged. */
+  fake.page.waitForFunction = function waitForFunction(predicate, argument, options) {
+    if (++waits === 2) { advance(1000); if (earlierStop) budget.stop(earlierStop); }
+    return wait(predicate, argument, options);
+  };
+  /** Inject the single diagnostic read while preserving the original pre-activation observation. */
+  fake.page.evaluate = function read(predicate) {
+    if (predicate.name !== 'readVisibilityScalars') return evaluate(predicate);
+    reads++;
+    return typeof sample === 'function' ? sample(predicate) : Promise.resolve(sample);
+  };
+  const observer = new BrowserObserver(fake.context, budget, new IdentityObserver('fixture'), ['https://example.test']);
+  return { ...fake, budget, observer, advance,
+    /** Expose the bounded read count for no-retry assertions. */
+    reads() { return reads; },
+    /** Invoke the actual activation on one synthetic owned page. */
+    async run() { await observer.newPage(1); return observer.activate(fake.page, fake.neutral, 1); },
+  };
+}
+
+/** Fixed error categories and scalar snapshots explain the failed operation without retaining browser errors. */
+test('visible-wait diagnostics classify errors, retain one scalar record and stop immediately', async () => {
+  const guard = new QualificationError('request_latency');
+  const throwingName = Object.defineProperty({}, 'name', {
+    /** A hostile diagnostic accessor must not replace the qualification failure. */
+    get() { throw new Error('PRIVATE_NAME_ACCESSOR'); },
+  });
+  for (const [error, category] of [
+    [Object.assign(new Error('PRIVATE_TIMEOUT_URL'), { name: 'TimeoutError' }), 'timeout'],
+    [Object.assign(new Error('PRIVATE_ERROR'), { name: 'PRIVATE_ERROR_NAME' }), 'other'],
+    [guard, 'guard'], [throwingName, 'other'], [null, 'other'],
+  ]) {
+    const fake = visibilityDiagnosticFixture({ error });
+    const expected = error === guard ? 'request_latency' : 'visibility_visible_wait_failed';
+    await assert.rejects(fake.run(), caught => error === guard ? caught === guard : caught.code === expected);
+    await fake.observer.close();
+    const record = fake.observer.visibilityFailure;
+    assert.deepEqual(record, {
+      profile: 'tabs_2', tab: 1, operation: 'visibility_visible_wait', errorCategory: category,
+      atMs: 1000, waitElapsedMs: 1000, pageClosed: false, browserConnected: true,
+      before: { state: 'hidden', eventCount: 1, lastState: null, lastTrusted: null },
+      snapshot: { status: 'available', afterFailureMs: 0, state: 'hidden', eventCount: 1, lastState: 'hidden', lastTrusted: true },
+    });
+    assert.equal(fake.budget.reason, expected); assert.equal(fake.closed(), 1); assert.equal(fake.reads(), 1);
+    assert.equal(fake.observer.visibility.length, 0); assert.ok(Object.isFrozen(record));
+    assert.ok(Object.isFrozen(record.before)); assert.ok(Object.isFrozen(record.snapshot));
+    await fake.observer.captureVisibilityFailure(fake.page, 8, { state: 'hidden', length: 999 }, 0, new Error('PRIVATE_SECOND'));
+    assert.equal(fake.observer.visibilityFailure, record); assert.equal(fake.reads(), 1);
+    assert.deepEqual(fake.budget.counts, { app: 0, static: 0, session: 0 });
+    assert.doesNotMatch(JSON.stringify(record), /PRIVATE|stack|example\.test/);
+  }
+});
+
+/** Late page state is labeled as a post-rejection sample and cannot turn a failed wait into a successful transition. */
+test('a visible diagnostic snapshot cannot qualify the failed activation', async () => {
+  let fake;
+  fake = visibilityDiagnosticFixture({
+    /** Deliver visibility after the rejected wait; only the diagnostic delay advances. */
+    sample() { fake.advance(7); return Promise.resolve({ state: 'visible', eventCount: 2, lastState: 'visible', lastTrusted: true }); },
+  });
+  await assert.rejects(fake.run(), { code: 'visibility_visible_wait_failed' });
+  assert.equal(fake.observer.visibilityFailure.snapshot.afterFailureMs, 7);
+  assert.equal(fake.observer.visibilityFailure.snapshot.state, 'visible');
+  assert.equal(fake.observer.visibility.length, 0); assert.equal(fake.budget.reason, 'visibility_visible_wait_failed');
+  assert.equal(fake.closed(), 1);
+});
+
+/** Both sides of the page boundary filter visibility values and discard unexpected payload fields. */
+test('visibility snapshots allowlist browser scalars and reject malformed or private values', async () => {
+  for (const sample of [null, { state: 'PRIVATE_STATE', eventCount: -1, lastState: 'PRIVATE_EVENT', lastTrusted: 'PRIVATE_TRUST',
+    cookie: 'PRIVATE_COOKIE', stack: 'PRIVATE_STACK' }, { state: 'hidden', eventCount: Infinity }]) {
+    const fake = visibilityDiagnosticFixture({ sample });
+    await assert.rejects(fake.run(), { code: 'visibility_visible_wait_failed' });
+    assert.equal(fake.observer.visibilityFailure.snapshot.status, 'invalid');
+    assert.equal(fake.observer.visibilityFailure.snapshot.eventCount, null);
+    assert.equal(fake.observer.visibilityFailure.snapshot.lastState, null);
+    assert.equal(fake.observer.visibilityFailure.snapshot.lastTrusted, null);
+    assert.doesNotMatch(JSON.stringify(fake.observer.visibilityFailure), /PRIVATE|cookie|stack/);
+  }
+  for (const state of ['hidden', 'visible', 'PRIVATE_STATE']) {
+    const fake = visibilityDiagnosticFixture({
+      /** Execute the actual browser callback against synthetic globals, including unrecognized event fields. */
+      sample(predicate) {
+        const value = compileFunction(`return (${predicate.toString()})();`, ['document', 'window'])(
+          { visibilityState: state }, { __gate1Visibility: [{ state: 'PRIVATE_EVENT', trusted: 'PRIVATE_TRUST', cookie: 'PRIVATE' }] });
+        assert.doesNotMatch(JSON.stringify(value), /PRIVATE|cookie/);
+        return Promise.resolve(value);
+      },
+    });
+    await assert.rejects(fake.run(), { code: 'visibility_visible_wait_failed' });
+    assert.equal(fake.observer.visibilityFailure.snapshot.state, state === 'PRIVATE_STATE' ? null : state);
+    assert.equal(fake.observer.visibilityFailure.snapshot.eventCount, 1);
+  }
+});
+
+/** Closed/disconnected pages and failed reads remain unavailable; availability probes themselves are best-effort. */
+test('visibility diagnostics handle missing browser state without delaying or replacing cleanup', async () => {
+  for (const options of [{ closed: true }, { connected: false },
+    { sample: () => Promise.reject(new Error('PRIVATE_CLOSED_PAGE')) },
+    { sample: () => { throw new Error('PRIVATE_SYNCHRONOUS_READ'); } }]) {
+    const fake = visibilityDiagnosticFixture(options);
+    await assert.rejects(fake.run(), { code: 'visibility_visible_wait_failed' });
+    assert.equal(fake.observer.visibilityFailure.snapshot.status, 'unavailable');
+    assert.equal(fake.reads(), options.closed || options.connected === false ? 0 : 1);
+    assert.equal(fake.closed(), 1); assert.equal(fake.budget.reason, 'visibility_visible_wait_failed');
+    assert.doesNotMatch(JSON.stringify(fake.observer.visibilityFailure), /PRIVATE/);
+  }
+  const fake = visibilityDiagnosticFixture();
+  /** A lost context has no safe availability metadata; no transport message should escape. */
+  fake.context.browser = () => { throw new Error('PRIVATE_CONTEXT'); };
+  await assert.rejects(fake.run(), { code: 'visibility_visible_wait_failed' });
+  assert.equal(fake.observer.visibilityFailure.browserConnected, null); assert.equal(fake.closed(), 1);
+});
+
+/** The diagnostic timer bounds only evidence collection; stopping and closing happen before it resolves. */
+test('a stalled visibility read has a 250 ms cap, immediate cleanup and no late report mutation', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let release; let started;
+  const reading = new Promise(resolve => { started = resolve; });
+  const delayed = new Promise(resolve => { release = resolve; });
+  const fake = visibilityDiagnosticFixture({
+    /** Leave the scalar transport pending until after its deadline has been asserted. */
+    sample() { started(); return delayed; },
+  });
+  let settled = false;
+  const failure = assert.rejects(fake.run(), { code: 'visibility_visible_wait_failed' }).finally(() => { settled = true; });
+  await reading;
+  assert.equal(fake.budget.reason, 'visibility_visible_wait_failed'); assert.equal(fake.closed(), 1);
+  assert.throws(() => fake.budget.reserve('session'), { code: 'visibility_visible_wait_failed' });
+  t.mock.timers.tick(249); await Promise.resolve(); assert.equal(settled, false);
+  t.mock.timers.tick(1); await failure;
+  const record = fake.observer.visibilityFailure; const saved = JSON.stringify(record);
+  assert.equal(record.snapshot.status, 'timeout'); assert.equal(record.snapshot.state, null);
+  release({ state: 'visible', eventCount: 99, lastState: 'visible', lastTrusted: true });
+  await delayed; await Promise.resolve();
+  assert.equal(JSON.stringify(record), saved); assert.equal(fake.reads(), 1); assert.equal(fake.closed(), 1);
+});
+
+/** A racing guard and a failed close each preserve the original stop; diagnostics cannot change the failure decision. */
+test('visibility diagnostics preserve earlier failures and cleanup errors', async () => {
+  const earlier = visibilityDiagnosticFixture({ earlierStop: 'identity_mismatch' });
+  await assert.rejects(earlier.run(), { code: 'visibility_visible_wait_failed' });
+  assert.equal(earlier.budget.reason, 'identity_mismatch'); assert.equal(earlier.reads(), 0);
+  assert.equal(earlier.observer.visibilityFailure.pageClosed, true); assert.equal(earlier.closed(), 1);
+  const cleanup = visibilityDiagnosticFixture();
+  /** Model an unacknowledged close failure without exposing its private transport text. */
+  cleanup.page.close = async () => { throw new Error('PRIVATE_CLOSE_FAILURE'); };
+  await assert.rejects(cleanup.run(), { code: 'visibility_visible_wait_failed' }); await cleanup.observer.close();
+  assert.equal(cleanup.budget.reason, 'visibility_visible_wait_failed');
+  assert.equal(cleanup.observer.cleanupSummary.closeErrors, 1); assert.equal(cleanup.observer.cleanupSummary.pagesStillOpen, 1);
+});
+
+/** Exercise the real remaining-profile report path so a failed first profile retains diagnostics but never appears passed. */
+test('remaining-profile reports retain visibility failure evidence with no completed profiles or retry', async () => {
+  const runnerPath = require.resolve('../runner.cjs'); const source = await readFile(runnerPath, 'utf8');
+  const fake = visibilityFailureFixture('visible', Object.assign(new Error('PRIVATE_WAIT'), { name: 'TimeoutError' }));
+  let probes = 0; let budget; const executions = [];
+  /** Supply the one caller-owned blank keeper required by real authorization checks. */
+  fake.context.pages = () => [{ url: () => 'about:blank' }];
+  /** The synthetic context has no unobserved workers. */
+  fake.context.serviceWorkers = () => [];
+  const replacements = {
+    /** Attribute only in-memory preflight calls; there is no request client or network operation. */
+    async checkBuild(current) { budget = current; probes++; },
+    /** Skip wall-clock quiet time in the unit test while retaining the shared stop check. */
+    async waitUntil(current) { current.check(); },
+    /** Run the actual activation failure and owned cleanup under the real orchestration. */
+    async exerciseProfile(observer, profile) {
+      executions.push(profile.tabs); await observer.newPage(1); await observer.activate(fake.page, fake.neutral, 1);
+    },
+  };
+  const loaded = compileFunction(`${source}\ncheckBuild = replacements.checkBuild; waitUntil = replacements.waitUntil;
+    exerciseProfile = replacements.exerciseProfile; return { runProfiles };`, ['require', 'module', '__dirname', 'replacements'],
+  { filename: runnerPath })(require, { exports: {} }, path.dirname(runnerPath), replacements);
+  const report = await loaded.runProfiles({ context: fake.context, approvedProfiles: [2, 4, 8],
+    approval: REMAINING_APPROVAL, approvedUserId: 'fixture' });
+  assert.equal(report.outcome, 'STOPPED'); assert.equal(report.reason, 'visibility_visible_wait_failed');
+  assert.deepEqual(report.profiles, []); assert.deepEqual(executions, [2]); assert.equal(probes, 2);
+  assert.equal(report.visibilityFailure.profile, 'tabs_2'); assert.equal(report.visibilityFailure.tab, 1);
+  assert.equal(report.visibilityFailure.errorCategory, 'timeout'); assert.equal(report.visibilityFailure.snapshot.status, 'available');
+  assert.equal(fake.closed(), 1); assert.equal(budget.timer?._destroyed, true);
+  assert.deepEqual(report.dispatched, { app: 0, static: 0, session: 0 });
+  assert.doesNotMatch(JSON.stringify(report), /PRIVATE|stack/);
 });
 
 /** Run the real profile orchestration with in-memory build/wait substitutes; failed navigation must prevent later profiles. */
