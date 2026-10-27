@@ -14,6 +14,10 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-10-25
+
+- `2026-10-27` - `Local request-client isolation scaffold`: Publish the synthetic Edge proxy-isolation helper and 13 built-in Node tests, with documented local tool/evidence prerequisites and preserved-profile cleanup. Syntax and unit checks passed; the single native fixture stopped at `worker_baseline` before restart/isolation qualification. Publish the stopped outcome without changing the live browser guard or claiming a hosted pass; GATE-1 remains open.
+
 ### Week of 2026-10-18
 
 - `2026-10-22` - `Bounded visibility failure evidence`: Retain one sanitized visible-wait failure record with fixed error categories, timing, availability and visibility scalars, including when no profile completes. Bound the best-effort read to 250 ms alongside immediate stop/cleanup; preserve deadlines, first-failure precedence and privacy. Refresh recorded target pins and the operator README's stopped-run attribution and cumulative ledger. All 67 offline tests, syntax, focused lint and the native loopback fixture passed; no hosted retry ran and GATE-1 remains open.
