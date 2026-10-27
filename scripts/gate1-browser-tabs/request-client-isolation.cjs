@@ -270,7 +270,7 @@ async function fixtureWorker(context, origin, budget) {
 /** Exercise a real worker fetch; exceptions are reduced to a success boolean inside the worker. */
 async function workerProbe(worker, origin) {
   return bounded(() => worker.evaluate(async url => {
-    try { const response = await fetch(url, { cache: 'no-store' }); return { status: response.status(), reached: response.ok }; }
+    try { const response = await fetch(url, { cache: 'no-store' }); return { status: response.status, reached: response.ok }; }
     catch { return { status: null, reached: false }; }
   }, `${origin}/probe?kind=worker`), 5000, 'worker_probe_timeout');
 }
