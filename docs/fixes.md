@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-10-27` - `Late isolation-server startup escaped cleanup`: A bounded fixture timeout could run cleanup before startup returned its server, leaving a later listener alive. Approach: retain ownership before awaiting listen and recheck the failure latch before returning. Fix: register both server resources immediately, clean the registry in reverse order, and close/reject late startup; prevent new startup after stopping. Six new regressions cover both server types, and all 19 focused tests, syntax, lint and whitespace checks passed.
+
 - `2026-10-27` - `Worker probe misclassified successful fetches`: Calling the numeric Fetch response status as a method threw and returned the unreachable fallback even for successful responses. Approach: use the native Response API. Fix: replace response.status() with response.status while preserving response.ok and catch behavior. Syntax, all 13 existing unit tests, checks for 200/204/404/502 responses and fetch rejection, and whitespace validation passed; the native fixture was not rerun.
 
 - `2026-10-27` - `Local isolation-fixture socket cleanup`: The new rejecting-proxy unit test exposed cleanup returning before socket close events completed. Approach: await owned socket closures together with listener shutdown. Fix: bound that combined cleanup and cover it with HTTP/CONNECT rejection tests. Publish the helper, its 13 passing unit tests and explicit stopped native-fixture status; the historical CSRF failure and service-worker isolation remain unresolved.

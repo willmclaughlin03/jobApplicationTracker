@@ -126,8 +126,10 @@ function classifyProxyLine(line, origin) {
 /**
  * Reject every proxy connection locally. No socket to an upstream server exists.
  * Only fixed synthetic probe counters survive; raw request bytes are discarded.
+ * Register in servers before listening; a latched budget failure closes late startup.
  */
-async function startRejectingProxy(budget, origin) {
+async function startRejectingProxy(budget, origin, servers = []) {
+  budget.check();
   const sockets = new Set(); const counts = { page: 0, worker: 0, fixtureConnect: 0, other: 0 };
   const server = net.createServer(socket => {
     sockets.add(socket); socket.once('close', () => sockets.delete(socket)); socket.on('error', () => {});
@@ -144,12 +146,20 @@ async function startRejectingProxy(budget, origin) {
       socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
     });
   });
-  const port = await listenLoopback(server);
-  return { server, sockets, port, counts };
+  const resource = { server, sockets, counts }; servers.push(resource);
+  try {
+    resource.port = await listenLoopback(server);
+    budget.check();
+    return resource;
+  } catch (error) { await closeServer(resource); throw error; }
 }
 
-/** Serve synthetic cookie/SW probes only; no upstream calls or real authentication are possible. */
-async function startFixtureServer(budget) {
+/**
+ * Serve synthetic cookie/SW probes only; no upstream calls or real authentication are possible.
+ * Register in servers before listening; a latched budget failure closes late startup.
+ */
+async function startFixtureServer(budget, servers = []) {
+  budget.check();
   const sockets = new Set(); const counts = { page: 0, worker: 0, check: 0, seed: 0 };
   const server = http.createServer((req, res) => {
     try { budget.count('fixtureRequests'); } catch { res.writeHead(503); res.end(); return; }
@@ -170,9 +180,14 @@ async function startFixtureServer(budget) {
       res.end('synthetic');
     } else { res.writeHead(404); res.end(); }
   });
+  const resource = { server, sockets, counts }; servers.push(resource);
   server.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); socket.on('error', () => {}); });
-  const port = await listenLoopback(server);
-  return { server, sockets, origin: `http://127.0.0.1:${port}`, counts };
+  try {
+    const port = await listenLoopback(server);
+    budget.check();
+    resource.origin = `http://127.0.0.1:${port}`;
+    return resource;
+  } catch (error) { await closeServer(resource); throw error; }
 }
 
 /** Close only owned loopback listeners/sockets; no browser or profile is removed here. */
@@ -300,7 +315,7 @@ async function runFixture() {
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   const metadata = require(path.join(CORE, 'package.json'));
   requireCheck(metadata.name === 'playwright-core' && metadata.version === CORE_VERSION, 'toolchain_mismatch');
-  const runtime = require(CORE); const budget = new FixtureBudget(); const owners = [];
+  const runtime = require(CORE); const budget = new FixtureBudget(); const owners = []; const servers = [];
   const record = { schemaVersion: 1, scope: 'synthetic_loopback_only', phase: 'running',
     operator: 'Codex agent', operationalOwner: 'Project owner', approval: 'Owner approved local helper and fixture',
     approvalConsumed: true, startedAt: new Date(budget.startedAt).toISOString(), limits: LIMITS,
@@ -311,7 +326,7 @@ async function runFixture() {
     // Reserve 20 seconds for normal browser/server cleanup within the whole-fixture limit.
     await bounded(async () => {
     profile = await fs.mkdtemp(path.join(__dirname, 'isolation-fixture-')); record.syntheticProfile = profile;
-    fixture = await startFixtureServer(budget); proxy = await startRejectingProxy(budget, fixture.origin);
+    fixture = await startFixtureServer(budget, servers); proxy = await startRejectingProxy(budget, fixture.origin, servers);
     const first = await launchFixtureBrowser({ runtime, profile, proxyPort: proxy.port, seedOrigin: fixture.origin, budget, owners });
     await first.keeper.goto(`${fixture.origin}/fixture`, { timeout: 5000, waitUntil: 'domcontentloaded' });
     const seed = await requestFixture(first.context, fixture.origin, '/api/seed');
@@ -363,7 +378,7 @@ async function runFixture() {
     for (const owner of owners) closure.push(await closeOwned(owner, runtime));
     record.ownedBrowsersClosedNormally = closure.every(Boolean);
     if (!record.ownedBrowsersClosedNormally) { record.phase = 'stopped'; record.cleanupFailure = 'owned_browser_still_running'; }
-    for (const resource of [proxy, fixture]) {
+    for (const resource of servers.reverse()) {
       try { await closeServer(resource); } catch { record.phase = 'stopped'; record.cleanupFailure = 'local_server_close'; }
     }
     record.counts = { ...budget.counts }; record.proxyProbeCounts = proxy?.counts || null;
@@ -393,7 +408,7 @@ async function main(args) {
 }
 
 module.exports = { IsolationError, FixtureBudget, bounded, isolationArguments, loopbackOrigin, classifyWorker,
-  summarizeWorkers, classifyProxyLine, startRejectingProxy, closeServer, requestFixture, closeOwned, main };
+  summarizeWorkers, classifyProxyLine, startFixtureServer, startRejectingProxy, closeServer, requestFixture, closeOwned, main };
 if (require.main === module) main(process.argv.slice(2)).catch(error => {
   process.stderr.write(`${JSON.stringify({ stopCode: error instanceof IsolationError ? error.code : 'local_fixture_setup_failed' })}\n`);
   process.exitCode = 1;
