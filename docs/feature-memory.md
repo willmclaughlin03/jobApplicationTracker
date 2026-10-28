@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-25
 
+- `2026-10-27` - `Isolation-fixture startup ownership`: Register loopback fixture/proxy servers before listening and close late startup after a latched timeout, preserving normal successful-startup cleanup. Add six regressions for ownership, delayed startup after timeout/cleanup and startup after stopping; all 19 focused tests, syntax, lint and whitespace checks passed.
+
 - `2026-10-27` - `Worker fetch response status`: Read the native Fetch response's numeric status property in the local isolation probe, preserving its reached check and exception fallback. Syntax, all 13 existing unit tests, five focused response/rejection checks and whitespace validation passed. No native fixture rerun is included; GATE-1 remains open.
 
 - `2026-10-27` - `Local request-client isolation scaffold`: Publish the synthetic Edge proxy-isolation helper and 13 built-in Node tests, with documented local tool/evidence prerequisites and preserved-profile cleanup. Syntax and unit checks passed; the single native fixture stopped at `worker_baseline` before restart/isolation qualification. Publish the stopped outcome without changing the live browser guard or claiming a hosted pass; GATE-1 remains open.

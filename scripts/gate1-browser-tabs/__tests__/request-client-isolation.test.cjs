@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('node:net');
 const { IsolationError, FixtureBudget, bounded, isolationArguments, loopbackOrigin, classifyWorker,
-  summarizeWorkers, classifyProxyLine, startRejectingProxy, closeServer, requestFixture, closeOwned, main } = require('../request-client-isolation.cjs');
+  summarizeWorkers, classifyProxyLine, startFixtureServer, startRejectingProxy, closeServer, requestFixture, closeOwned, main } = require('../request-client-isolation.cjs');
 
 /** Create generous local-only test limits without a browser or filesystem mutation. */
 function testBudget(overrides = {}, clock = Date.now) {
@@ -20,6 +20,24 @@ async function proxyExchange(port, line) {
     socket.once('end', () => { socket.destroy(); resolve(response); });
     socket.once('error', reject);
   }), 2000);
+}
+
+/**
+ * Hold native listen until the test releases it, reproducing startup after cleanup.
+ * Keep the real server for loopback assertions and always close it, even on failure.
+ */
+function delayedStartup(t, start, budget, servers) {
+  const listen = net.Server.prototype.listen; let server; let resume; let released = false;
+  t.mock.method(net.Server.prototype, 'listen', function (...args) {
+    server = this; resume = () => listen.apply(this, args); return this;
+  });
+  const startup = start(budget, servers);
+  t.after(async () => {
+    if (!released) resume();
+    await startup.catch(() => {});
+    await closeServer({ server, sockets: new Set() });
+  });
+  return { startup, server, release: () => { released = true; resume(); } };
 }
 
 test('proxy arguments contain exactly one proxy and subtract implicit bypasses', () => {
@@ -76,6 +94,44 @@ test('bounded operations propagate results and reject stalled work', async () =>
   await assert.rejects(bounded(() => new Promise(() => {}), 5, 'synthetic_timeout'), /synthetic_timeout/);
   await assert.rejects(bounded(async () => { throw new IsolationError('synthetic_failure'); }, 100), /synthetic_failure/);
 });
+
+for (const [name, start] of [
+  ['fixture', startFixtureServer],
+  ['proxy', (budget, servers) => startRejectingProxy(budget, 'http://127.0.0.1:1234', servers)],
+]) {
+  test(`${name} registers before listening and preserves ownership on success`, async t => {
+    const servers = []; const pending = delayedStartup(t, start, testBudget(), servers);
+    assert.equal(servers.length, 1);
+    assert.equal(servers[0].server, pending.server);
+    assert.equal(pending.server.listening, false);
+    pending.release();
+    const resource = await pending.startup;
+    assert.equal(resource, servers[0]);
+    assert.equal(resource.server.listening, true);
+    await closeServer(resource);
+    assert.equal(resource.server.listening, false);
+    assert.equal(resource.sockets.size, 0);
+  });
+
+  test(`${name} closes startup that finishes after bounded timeout and cleanup`, async t => {
+    const servers = []; const budget = testBudget(); const pending = delayedStartup(t, start, budget, servers);
+    await assert.rejects(bounded(() => pending.startup, 5, 'fixture_deadline').catch(error => {
+      // Mirror runFixture's failure latch before its finally block cleans owned servers.
+      budget.failure = error.code; throw error;
+    }), /fixture_deadline/);
+    for (const resource of servers) await closeServer(resource);
+    pending.release();
+    await assert.rejects(pending.startup, /fixture_deadline/);
+    assert.equal(pending.server.listening, false);
+    assert.equal(servers[0].sockets.size, 0);
+  });
+
+  test(`${name} does not create a server after the fixture has stopped`, async () => {
+    const servers = []; const budget = testBudget(); budget.failure = 'fixture_deadline';
+    await assert.rejects(start(budget, servers), /fixture_deadline/);
+    assert.equal(servers.length, 0);
+  });
+}
 
 test('rejecting proxy blocks HTTP and CONNECT without opening an upstream socket', async () => {
   const budget = testBudget(); const origin = 'http://127.0.0.1:1234'; const proxy = await startRejectingProxy(budget, origin);
