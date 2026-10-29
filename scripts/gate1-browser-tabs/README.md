@@ -5,7 +5,7 @@ checks. Publishing it does not run or approve hosted traffic. GATE-1 remains ope
 the scanner investigation remains closed as inconclusive and WAF source attribution
 is still unqualified. No application routes, WAF rules or deployment settings change.
 
-## Request-client isolation scaffold (2026-10-27)
+## Request-client isolation scaffold (2026-10-28)
 
 `request-client-isolation.cjs` is a separate, local-only fixture scaffold for the
 stopped CSRF investigation. It does not change the load runner's no-service-worker
@@ -19,8 +19,11 @@ launch removes that exception and checks page HTTP, HTTPS CONNECT and restored
 service-worker blocking while the request client exchanges synthetic cookies.
 Limits are two launches, 100 fixture requests, 200 proxy connections and 15 minutes.
 Cleanup requests normal browser closure and preserves the synthetic profile.
-Worker observations contain category counts only; raw URLs and cookie values are
-not included in the result.
+Worker observations contain category counts, validated numeric HTTP status,
+success booleans and fixed failure categories. Evaluation failures and timeouts
+are recorded before stopping and cannot qualify blocking. Raw URLs, error messages
+and cookie values are not included in the result. Source hashes identify the
+executed helper and adjacent tests.
 
 Validate the published helper without launching Edge:
 
@@ -30,30 +33,43 @@ node --check scripts/gate1-browser-tabs/__tests__/request-client-isolation.test.
 node --test scripts/gate1-browser-tabs/__tests__/request-client-isolation.test.cjs
 ```
 
-The 13 local unit tests and syntax checks passed. The separately approved native
-fixture **stopped at `worker_baseline`** during its first launch: the server counted
-one worker probe, but the worker-side success check failed. Only the initial
-synthetic-cookie check passed. The second launch, cookie persistence/write-back,
-and browser/service-worker isolation checks were not reached. The result does not
-identify the worker-side failure and is not a browser-isolation qualification.
-The owned browser closed normally; previous evidence and both signed-in profiles
-were preserved. No hosted test ran, and GATE-1 remains open.
+All 31 unit tests, syntax, focused lint and whitespace checks passed. Tests cover
+native Fetch status properties, HTTP failures, fetch/evaluation rejection, timeout
+and late completion, sanitized results, source hashes and receipt preservation.
+
+The first native fixture stopped at `worker_baseline`; its stopped receipt remains
+unchanged. The subsequent fix replaced the invalid `response.status()` call with
+the native Fetch `response.status` property. That helper defect does not establish
+the cause of the earlier hosted CSRF failure.
+
+The separately approved replacement ran on October 28, 2026, at 10:30 PM EDT
+(`2026-10-29T02:30:01.838Z`), for 3.49 seconds. It passed the initial worker fetch
+(HTTP 200), normal restart, synthetic cookie persistence, request-client access and
+cookie write-back, browser HTTP blocking and HTTPS CONNECT blocking. It then
+**stopped at `fixture_operation_failed`** after the HTTPS check, before recording
+a restored-worker probe. The exact failing operation is unknown; restored-worker
+isolation remains unqualified. Counts were two launches, six fixture HTTP requests
+and 30 proxy connections. Normal closure, zero matching task processes and
+preservation of the profiles and historical receipts were verified. No hosted test
+ran, and GATE-1 remains open.
 
 This publication retains the reviewed local helper's fixed Windows tool paths,
-Playwright version, seven historical evidence prerequisites and one fixed result
+Playwright version, eight historical evidence prerequisites and one fixed result
 destination. It is not a portable browser launcher. The native entry point was
 used from `.tmp/gate1-browser-tabs/request-client-isolation.cjs` in the approved
 workspace; do not run the published copy directly or copy historical receipts into
 a clean checkout to manufacture execution context. Unit tests require none of
 those local receipts or browser tools.
 
-The stopped result remains local at
-`.tmp/gate1-checkout-enable-dd2c2c6/browser-isolation-fixture.json`; profiles and
-operational receipts are not published. Its approval is consumed, and the helper
-refuses to overwrite that file. Before any further fixture run, prepare improved
-worker-probe diagnostics, preserve the original result, and obtain a new bounded
-execution decision and result destination. A successful future local fixture
-would still not authorize a hosted CSRF retry or a change to the live guard.
+Both stopped results remain local under `.tmp/gate1-checkout-enable-dd2c2c6/`:
+`browser-isolation-fixture.json` and `browser-isolation-fixture-attempt2.json`.
+Profiles and operational receipts are not published. The current helper hashes the
+first receipt along with the seven earlier records and refuses to overwrite the
+replacement receipt. Both run approvals are consumed. Before any further run,
+prepare an approved diagnostic scope for the restored-worker preparation steps,
+preserve both receipts, and obtain a new bounded execution decision and result
+destination. A successful future local fixture would still not authorize a hosted
+CSRF retry or a change to the live guard.
 
 ## Offline commands
 

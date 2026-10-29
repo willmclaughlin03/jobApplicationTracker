@@ -14,7 +14,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const ROOT = path.resolve(__dirname, '../..');
-const RESULT = path.join(ROOT, '.tmp/gate1-checkout-enable-dd2c2c6/browser-isolation-fixture.json');
+const RESULT = path.join(ROOT, '.tmp/gate1-checkout-enable-dd2c2c6/browser-isolation-fixture-attempt2.json');
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
 const CORE = 'C:/Users/willm/AppData/Local/npm-cache/_npx/a5b920f00216d246/node_modules/playwright-core';
 const CORE_VERSION = '1.62.0-alpha-1783623505000';
@@ -23,7 +23,8 @@ const COOKIE = 'isolation_fixture';
 const SYNTHETIC_VALUE = 'SYNTHETIC_ONLY';
 const UPDATED_VALUE = 'SYNTHETIC_UPDATED';
 const PRIOR_NAMES = ['staged-result.json', 'staged-result-attempt2.json', 'alias-restoration.json',
-  'promotion-result.json', 'free-checkout-result.json', 'free-checkout-result-attempt2.json', 'csrf-diagnostic.json'];
+  'promotion-result.json', 'free-checkout-result.json', 'free-checkout-result-attempt2.json', 'csrf-diagnostic.json',
+  'browser-isolation-fixture.json'];
 
 /** Fixed-code errors prevent browser URLs, response contents and OS messages reaching evidence. */
 class IsolationError extends Error {
@@ -282,12 +283,41 @@ async function fixtureWorker(context, origin, budget) {
   return waitFor(() => context.serviceWorkers().find(worker => worker.url() === `${origin}/sw.js`), budget, 5000, 'fixture_worker_unavailable');
 }
 
-/** Exercise a real worker fetch; exceptions are reduced to a success boolean inside the worker. */
+/**
+ * Exercise one worker fetch within five seconds; retain only validated scalars and fixed categories.
+ * Evaluation failures and timeouts remain distinct from a completed, unsuccessful HTTP fetch.
+ */
 async function workerProbe(worker, origin) {
-  return bounded(() => worker.evaluate(async url => {
-    try { const response = await fetch(url, { cache: 'no-store' }); return { status: response.status, reached: response.ok }; }
-    catch { return { status: null, reached: false }; }
-  }, `${origin}/probe?kind=worker`), 5000, 'worker_probe_timeout');
+  try {
+    const result = await bounded(() => worker.evaluate(async url => {
+      try {
+        const response = await fetch(url, { cache: 'no-store' });
+        return { status: response.status, reached: response.ok, errorCategory: response.ok ? null : 'http_error' };
+      } catch { return { status: null, reached: false, errorCategory: 'fetch_rejected' }; }
+    }, `${origin}/probe?kind=worker`), 5000, 'worker_probe_timeout');
+    const httpResult = Number.isInteger(result?.status) && result.status >= 100 && result.status <= 599
+      && result.reached === (result.status >= 200 && result.status <= 299)
+      && result.errorCategory === (result.reached ? null : 'http_error');
+    const fetchRejected = result?.status === null && result.reached === false && result.errorCategory === 'fetch_rejected';
+    if (!httpResult && !fetchRejected) return Object.freeze({ status: null, reached: false, errorCategory: 'invalid_result' });
+    return Object.freeze({ status: result.status, reached: result.reached, errorCategory: result.errorCategory });
+  } catch (error) {
+    return Object.freeze({ status: null, reached: false,
+      errorCategory: error instanceof IsolationError && error.code === 'worker_probe_timeout' ? 'timeout' : 'evaluation_failed' });
+  }
+}
+
+/**
+ * Save a probe before enforcing evaluation success, so stopped receipts retain its fixed cause.
+ * A fetch rejection still needs the caller's proxy/origin counters to establish blocking.
+ */
+async function captureWorkerProbe(worker, origin, probes, phase) {
+  requireCheck(['baseline', 'restored'].includes(phase), 'worker_probe_phase');
+  const result = await workerProbe(worker, origin); probes[phase] = result;
+  if (result.errorCategory === 'timeout') throw new IsolationError('worker_probe_timeout');
+  if (result.errorCategory === 'evaluation_failed') throw new IsolationError('worker_evaluation_failed');
+  if (result.errorCategory === 'invalid_result') throw new IsolationError('worker_probe_result');
+  return result;
 }
 
 /** Navigate only to a synthetic probe and distinguish proxy failure from an unqualified timeout. */
@@ -306,6 +336,14 @@ async function evidenceHashes() {
   return result;
 }
 
+/** Hash this executable and its adjacent tests for provenance without reading profile storage. */
+async function sourceHashes() {
+  const result = {};
+  for (const [key, file] of [['helper', 'request-client-isolation.cjs'], ['tests', '__tests__/request-client-isolation.test.cjs']])
+    result[key] = crypto.createHash('sha256').update(await fs.readFile(path.join(__dirname, file))).digest('hex');
+  return result;
+}
+
 /**
  * Run exactly one two-launch fixture and write one immutable sanitized result.
  * Failure stops the remaining cases; no hosted request, retry or signed-in profile is possible.
@@ -317,9 +355,9 @@ async function runFixture() {
   requireCheck(metadata.name === 'playwright-core' && metadata.version === CORE_VERSION, 'toolchain_mismatch');
   const runtime = require(CORE); const budget = new FixtureBudget(); const owners = []; const servers = [];
   const record = { schemaVersion: 1, scope: 'synthetic_loopback_only', phase: 'running',
-    operator: 'Codex agent', operationalOwner: 'Project owner', approval: 'Owner approved local helper and fixture',
+    operator: 'Codex agent', operationalOwner: 'Project owner', approval: 'Owner approved replacement local isolation fixture',
     approvalConsumed: true, startedAt: new Date(budget.startedAt).toISOString(), limits: LIMITS,
-    toolchain: { node: process.version, playwright: metadata.version }, checks: {},
+    toolchain: { node: process.version, playwright: metadata.version }, sourceHashes: await sourceHashes(), checks: {}, workerProbes: {},
     hostedExerciseAuthorized: false, liveGuardChanged: false, gate1Status: 'open' };
   const before = await evidenceHashes(); let fixture; let proxy; let profile;
   try {
@@ -335,7 +373,7 @@ async function runFixture() {
       await navigator.serviceWorker.register('/sw.js'); await navigator.serviceWorker.ready; return true;
     }), 5000, 'worker_install_timeout');
     const initialWorker = await fixtureWorker(first.context, fixture.origin, budget);
-    requireCheck((await workerProbe(initialWorker, fixture.origin)).reached, 'worker_baseline');
+    requireCheck((await captureWorkerProbe(initialWorker, fixture.origin, record.workerProbes, 'baseline')).reached, 'worker_baseline');
     record.checks.workerBaselineReachedFixture = true;
     record.seedWorkerCategories = summarizeWorkers(first.context.serviceWorkers(), fixture.origin);
     requireCheck(await closeOwned(first, runtime), 'first_browser_close'); record.checks.firstBrowserClosedNormally = true;
@@ -363,7 +401,7 @@ async function runFixture() {
     await bounded(() => cdp.send('ServiceWorker.startWorker', { scopeURL: `${fixture.origin}/` }), 5000, 'worker_restart_timeout');
     const restoredWorker = await fixtureWorker(second.context, fixture.origin, budget);
     const workerBefore = fixture.counts.worker; const proxyWorkerBefore = proxy.counts.worker;
-    requireCheck(!(await workerProbe(restoredWorker, fixture.origin)).reached, 'worker_not_proxy_blocked');
+    requireCheck(!(await captureWorkerProbe(restoredWorker, fixture.origin, record.workerProbes, 'restored')).reached, 'worker_not_proxy_blocked');
     requireCheck(fixture.counts.worker === workerBefore && proxy.counts.worker > proxyWorkerBefore, 'worker_network_isolation');
     record.checks.restoredWorkerBlockedAtProxy = true;
     record.restoredWorkerCategories = summarizeWorkers(second.context.serviceWorkers(), fixture.origin);
@@ -408,7 +446,8 @@ async function main(args) {
 }
 
 module.exports = { IsolationError, FixtureBudget, bounded, isolationArguments, loopbackOrigin, classifyWorker,
-  summarizeWorkers, classifyProxyLine, startFixtureServer, startRejectingProxy, closeServer, requestFixture, closeOwned, main };
+  summarizeWorkers, classifyProxyLine, startFixtureServer, startRejectingProxy, closeServer, requestFixture, closeOwned,
+  workerProbe, captureWorkerProbe, evidenceHashes, sourceHashes, main };
 if (require.main === module) main(process.argv.slice(2)).catch(error => {
   process.stderr.write(`${JSON.stringify({ stopCode: error instanceof IsolationError ? error.code : 'local_fixture_setup_failed' })}\n`);
   process.exitCode = 1;
