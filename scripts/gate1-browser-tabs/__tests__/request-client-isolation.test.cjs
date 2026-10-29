@@ -111,6 +111,75 @@ test('worker evaluation rejection is recorded before stopping instead of qualify
   assert.equal(JSON.stringify(probes).includes('private'), false);
 });
 
+/** Keep real fixture orchestration and probe handling while replacing browser and evidence I/O. */
+test('fixture receipt retains a baseline worker evaluation failure after stopping and cleanup', async () => {
+  const helperPath = require.resolve('../request-client-isolation.cjs');
+  const source = await fs.readFile(helperPath, 'utf8'); const writes = [];
+  let loaded;
+  const fixtureFs = {
+    /** Allow a new synthetic receipt without inspecting existing evidence. */
+    async access() { throw Object.assign(new Error('synthetic missing receipt'), { code: 'ENOENT' }); },
+    /** Supply stable synthetic bytes for both provenance and historical evidence hashes. */
+    async readFile() { return Buffer.from('synthetic evidence'); },
+    /** Model a fresh profile without creating browser storage. */
+    async mkdtemp(prefix) { return `${prefix}synthetic`; },
+    /** Preserve the profile invariant without inspecting a real profile. */
+    async stat() { return {
+      /** Report the synthetic directory created by mkdtemp above. */
+      isDirectory() { return true; },
+    }; },
+    /** Capture the serialized receipt, including its exclusive-write contract, for inspection below. */
+    async writeFile(file, contents, options) {
+      assert.equal(file, loaded.RESULT); assert.deepEqual(options, { flag: 'wx' }); writes.push(contents);
+    },
+  };
+  const replacements = {
+    /** Supply one synthetic worker that rejects evaluation; keep real budget and owned-browser cleanup. */
+    async launchFixtureBrowser({ seedOrigin, budget, owners }) {
+      budget.count('launches');
+      const owner = { child: { exitCode: 0 }, context: {
+        /** Let the real fixtureWorker select the expected worker by its synthetic origin. */
+        serviceWorkers() { return [{
+          /** Identify only the worker belonging to this loopback fixture. */
+          url() { return `${seedOrigin}/sw.js`; },
+          /** Reproduce an evaluation rejection with a raw message that must not enter evidence. */
+          async evaluate() { throw new Error('PRIVATE_WORKER_EVALUATION'); },
+        }]; },
+      }, keeper: {
+        /** Model successful fixture navigation without a browser. */
+        async goto() {},
+        /** Model worker installation so the real baseline probe is reached. */
+        async evaluate() { return true; },
+      } };
+      owners.push(owner); return owner;
+    },
+    /** Satisfy only the initial seed check; later request-client work must never run. */
+    async requestFixture(context, origin, endpoint) {
+      assert.equal(endpoint, '/api/seed'); return { cookiePresent: false };
+    },
+  };
+  /** Replace filesystem/toolchain loading while retaining the helper's real Node dependencies. */
+  function fixtureRequire(name) {
+    if (name === 'node:fs/promises') return fixtureFs;
+    if (name.startsWith('node:')) return require(name);
+    if (name === loaded.CORE) return {};
+    assert.equal(name, path.join(loaded.CORE, 'package.json'));
+    return { name: 'playwright-core', version: loaded.CORE_VERSION };
+  }
+  loaded = vm.compileFunction(`${source}\nlaunchFixtureBrowser = replacements.launchFixtureBrowser;
+    requestFixture = replacements.requestFixture; return { runFixture, CORE, CORE_VERSION, RESULT };`,
+  ['require', 'module', '__dirname', 'replacements'], { filename: helperPath })(fixtureRequire, { exports: {} }, path.dirname(helperPath), replacements);
+  await loaded.runFixture();
+  assert.equal(writes.length, 1);
+  const receipt = JSON.parse(writes[0]);
+  assert.equal(receipt.phase, 'stopped'); assert.equal(receipt.stopCode, 'worker_evaluation_failed');
+  assert.deepEqual(receipt.workerProbes, { baseline: { status: null, reached: false, errorCategory: 'evaluation_failed' } });
+  assert.equal(receipt.counts.launches, 1); assert.equal(receipt.ownedBrowsersClosedNormally, true);
+  assert.equal(receipt.checks.workerBaselineReachedFixture, undefined);
+  assert.equal(receipt.checks.restoredWorkerBlockedAtProxy, undefined);
+  assert.doesNotMatch(writes[0], /PRIVATE_WORKER_EVALUATION/);
+});
+
 test('worker timeout stops after the fixed deadline and a late completion cannot change the receipt', async () => {
   let finish;
   const worker = { evaluate: () => new Promise(resolve => { finish = resolve; }) };

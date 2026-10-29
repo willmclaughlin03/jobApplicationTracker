@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-10-28` - `Stopped receipt lacked fixture-run regression coverage`: Existing worker evaluation tests checked only the in-memory probe result. Approach: exercise runFixture through failure, cleanup and receipt serialization with synthetic browser and evidence I/O. Fix: add a baseline evaluation rejection test asserting the stopped code, evaluation_failed category, error redaction and no later phase execution. All 32 focused tests, lint and whitespace checks passed.
+
 - `2026-10-28` - `Worker-probe failures lacked retained detail`: Probe outcomes were discarded by aggregate guards, and the native Fetch status fix lacked durable regression coverage. Approach: validate and retain bounded probe outcomes before enforcing guards. Fix: distinguish HTTP/fetch failure, evaluation failure, timeout and malformed results; freeze sanitized records, add source hashes and preserve the old receipt. All 31 tests, syntax, lint and whitespace checks passed. The replacement fixture still stopped at `fixture_operation_failed` before restored-worker evidence; its underlying operation remains unknown and is not claimed fixed.
 
 - `2026-10-27` - `Late isolation-server startup escaped cleanup`: A bounded fixture timeout could run cleanup before startup returned its server, leaving a later listener alive. Approach: retain ownership before awaiting listen and recheck the failure latch before returning. Fix: register both server resources immediately, clean the registry in reverse order, and close/reject late startup; prevent new startup after stopping. Six new regressions cover both server types, and all 19 focused tests, syntax, lint and whitespace checks passed.
