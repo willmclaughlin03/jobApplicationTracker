@@ -1,10 +1,16 @@
 'use strict';
+/* global Buffer, Response, __dirname, __filename */
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('node:net');
+const vm = require('node:vm');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const crypto = require('node:crypto');
 const { IsolationError, FixtureBudget, bounded, isolationArguments, loopbackOrigin, classifyWorker,
-  summarizeWorkers, classifyProxyLine, startFixtureServer, startRejectingProxy, closeServer, requestFixture, closeOwned, main } = require('../request-client-isolation.cjs');
+  summarizeWorkers, classifyProxyLine, startFixtureServer, startRejectingProxy, closeServer, requestFixture, closeOwned,
+  workerProbe, captureWorkerProbe, evidenceHashes, sourceHashes, main } = require('../request-client-isolation.cjs');
 
 /** Create generous local-only test limits without a browser or filesystem mutation. */
 function testBudget(overrides = {}, clock = Date.now) {
@@ -40,6 +46,14 @@ function delayedStartup(t, start, budget, servers) {
   return { startup, server, release: () => { released = true; resume(); } };
 }
 
+/** Run the real serialized worker callback with synthetic fetch only; no browser or network is used. */
+function syntheticWorker(fetchImplementation) {
+  return { evaluate: async (callback, url) => {
+    assert.equal(url, 'http://127.0.0.1:1234/probe?kind=worker');
+    return vm.runInNewContext(`(${callback.toString()})(url)`, { fetch: fetchImplementation, url });
+  } };
+}
+
 test('proxy arguments contain exactly one proxy and subtract implicit bypasses', () => {
   assert.deepEqual(isolationArguments(8001), ['--proxy-server=http://127.0.0.1:8001', '--proxy-bypass-list=<-loopback>']);
   assert.deepEqual(isolationArguments(8001, 'http://127.0.0.1:8002'), ['--proxy-server=http://127.0.0.1:8001', '--proxy-bypass-list=<-loopback>;127.0.0.1:8002']);
@@ -65,6 +79,92 @@ test('worker classification does not expose identifiers or confuse suffix origin
   const result = summarizeWorkers([{ url: () => 'chrome-extension://private-id/file' }, { url: () => origin + '/sw.js' }], origin);
   assert.equal(result.fixture, 1); assert.equal(result.extension, 1);
   assert.ok(!JSON.stringify(result).includes('private'));
+});
+
+for (const status of [200, 204, 404, 502]) {
+  test(`worker probe reads native Fetch status ${status} as a property and retains its outcome`, async () => {
+    let calls = 0;
+    const worker = syntheticWorker(async (url, options) => {
+      calls++; assert.equal(url, 'http://127.0.0.1:1234/probe?kind=worker');
+      assert.equal(options.cache, 'no-store');
+      return new Response(null, { status });
+    });
+    const probes = {}; const result = await captureWorkerProbe(worker, 'http://127.0.0.1:1234', probes, 'baseline');
+    const reached = status < 300;
+    assert.deepEqual(result, { status, reached, errorCategory: reached ? null : 'http_error' });
+    assert.equal(probes.baseline, result); assert.equal(calls, 1); assert.equal(Object.isFrozen(result), true);
+  });
+}
+
+test('worker fetch rejection retains a fixed category without its raw message', async () => {
+  const worker = syntheticWorker(async () => { throw new Error('private.invalid/cookie-value'); });
+  const probes = {}; const result = await captureWorkerProbe(worker, 'http://127.0.0.1:1234', probes, 'restored');
+  assert.deepEqual(result, { status: null, reached: false, errorCategory: 'fetch_rejected' });
+  assert.equal(probes.restored, result); assert.equal(JSON.stringify(probes).includes('private'), false);
+});
+
+test('worker evaluation rejection is recorded before stopping instead of qualifying isolation', async () => {
+  const worker = { evaluate: async () => { throw new Error('private evaluation URL'); } };
+  const probes = {};
+  await assert.rejects(captureWorkerProbe(worker, 'http://127.0.0.1:1234', probes, 'restored'), /worker_evaluation_failed/);
+  assert.deepEqual(probes.restored, { status: null, reached: false, errorCategory: 'evaluation_failed' });
+  assert.equal(JSON.stringify(probes).includes('private'), false);
+});
+
+test('worker timeout stops after the fixed deadline and a late completion cannot change the receipt', async () => {
+  let finish;
+  const worker = { evaluate: () => new Promise(resolve => { finish = resolve; }) };
+  const probes = {};
+  await assert.rejects(captureWorkerProbe(worker, 'http://127.0.0.1:1234', probes, 'restored'), /worker_probe_timeout/);
+  const stopped = probes.restored;
+  assert.deepEqual(stopped, { status: null, reached: false, errorCategory: 'timeout' });
+  finish({ status: 200, reached: true, errorCategory: null });
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(probes.restored, stopped); assert.equal(Object.isFrozen(stopped), true);
+  assert.equal(stopped.reached, false);
+});
+
+test('malformed or inconsistent worker results stop without retaining arbitrary data', async () => {
+  for (const result of [null, { status: 'private status', reached: false, errorCategory: 'private category' },
+    { status: 200, reached: false, errorCategory: 'http_error' }, { status: 502, reached: true, errorCategory: null }]) {
+    const probes = {};
+    await assert.rejects(captureWorkerProbe({ evaluate: async () => result }, 'http://127.0.0.1:1234', probes, 'baseline'), /worker_probe_result/);
+    assert.deepEqual(probes.baseline, { status: null, reached: false, errorCategory: 'invalid_result' });
+  }
+});
+
+test('worker result projection excludes extra browser data', async () => {
+  const result = await workerProbe({ evaluate: async () => ({ status: 200, reached: true, errorCategory: null,
+    url: 'private.invalid', cookie: 'private value' }) }, 'http://127.0.0.1:1234');
+  assert.deepEqual(result, { status: 200, reached: true, errorCategory: null });
+});
+
+test('evidence preservation includes the stopped fixture and never hashes the replacement as history', async t => {
+  const names = [];
+  t.mock.method(fs, 'readFile', async file => { names.push(path.basename(file)); return Buffer.from('synthetic receipt'); });
+  const hashes = await evidenceHashes();
+  assert.deepEqual(names, ['staged-result.json', 'staged-result-attempt2.json', 'alias-restoration.json',
+    'promotion-result.json', 'free-checkout-result.json', 'free-checkout-result-attempt2.json', 'csrf-diagnostic.json',
+    'browser-isolation-fixture.json']);
+  assert.deepEqual(Object.keys(hashes), names);
+  for (const hash of Object.values(hashes)) assert.match(hash, /^[a-f0-9]{64}$/);
+});
+
+test('source provenance hashes this helper and its adjacent test bytes', async () => {
+  const hashes = await sourceHashes();
+  const helper = await fs.readFile(path.join(__dirname, '../request-client-isolation.cjs'));
+  const tests = await fs.readFile(__filename);
+  assert.deepEqual(hashes, { helper: crypto.createHash('sha256').update(helper).digest('hex'),
+    tests: crypto.createHash('sha256').update(tests).digest('hex') });
+});
+
+test('an existing replacement receipt stops before toolchain loading or browser creation', async t => {
+  let checks = 0;
+  t.mock.method(fs, 'access', async file => {
+    checks++; assert.equal(path.basename(file), 'browser-isolation-fixture-attempt2.json');
+  });
+  await assert.rejects(main(['--fixture']), /evidence_already_exists/);
+  assert.equal(checks, 1);
 });
 
 test('proxy classifications use exact fixture targets and retain no raw line', () => {

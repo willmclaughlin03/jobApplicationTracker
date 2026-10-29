@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-25
 
+- `2026-10-28` - `Isolation worker-probe evidence`: Retain validated status, success and fixed failure categories before worker evaluation/timeout stops; record helper/test hashes and preserve the first receipt when using the replacement destination. Add 12 regressions; all 31 focused tests, syntax, lint and whitespace checks passed. The replacement native fixture passed cookie/restart and page HTTP/HTTPS checks, then stopped before a restored-worker result. No hosted retry ran; GATE-1 remains open.
+
 - `2026-10-27` - `Isolation-fixture startup ownership`: Register loopback fixture/proxy servers before listening and close late startup after a latched timeout, preserving normal successful-startup cleanup. Add six regressions for ownership, delayed startup after timeout/cleanup and startup after stopping; all 19 focused tests, syntax, lint and whitespace checks passed.
 
 - `2026-10-27` - `Worker fetch response status`: Read the native Fetch response's numeric status property in the local isolation probe, preserving its reached check and exception fallback. Syntax, all 13 existing unit tests, five focused response/rejection checks and whitespace validation passed. No native fixture rerun is included; GATE-1 remains open.
