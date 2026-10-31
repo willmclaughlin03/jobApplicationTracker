@@ -14,7 +14,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const ROOT = path.resolve(__dirname, '../..');
-const RESULT = path.join(ROOT, '.tmp/gate1-checkout-enable-dd2c2c6/browser-isolation-fixture-attempt2.json');
+const RESULT = path.join(ROOT, '.tmp/gate1-checkout-enable-dd2c2c6/browser-isolation-fixture-attempt3.json');
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
 const CORE = 'C:/Users/willm/AppData/Local/npm-cache/_npx/a5b920f00216d246/node_modules/playwright-core';
 const CORE_VERSION = '1.62.0-alpha-1783623505000';
@@ -24,7 +24,11 @@ const SYNTHETIC_VALUE = 'SYNTHETIC_ONLY';
 const UPDATED_VALUE = 'SYNTHETIC_UPDATED';
 const PRIOR_NAMES = ['staged-result.json', 'staged-result-attempt2.json', 'alias-restoration.json',
   'promotion-result.json', 'free-checkout-result.json', 'free-checkout-result-attempt2.json', 'csrf-diagnostic.json',
-  'browser-isolation-fixture.json'];
+  'browser-isolation-fixture.json', 'browser-isolation-fixture-attempt2.json'];
+const WORKER_OPERATIONS = Object.freeze(['blank_navigation', 'cdp_session', 'worker_enable',
+  'worker_start', 'worker_discovery', 'worker_probe']);
+const WORKER_TIMEOUT_CODES = Object.freeze(['worker_session_timeout', 'operation_timeout',
+  'worker_restart_timeout', 'fixture_worker_unavailable', 'worker_probe_timeout', 'fixture_deadline']);
 
 /** Fixed-code errors prevent browser URLs, response contents and OS messages reaching evidence. */
 class IsolationError extends Error {
@@ -66,6 +70,37 @@ class FixtureBudget {
     this.counts[kind]++;
     if (this.counts[kind] > this.limits[kind]) this.failure = `${kind}_budget`;
     this.check();
+  }
+}
+
+/** Attribute only restored-worker operations; preserve the first sanitized failure through cleanup. */
+class WorkerDiagnostics {
+  /** Share the fixture record/budget; keep active operation timing private until a failure. */
+  constructor(record, budget, clock = Date.now) {
+    this.record = record; this.budget = budget; this.clock = clock; this.active = null;
+  }
+  /** Snapshot an active failure once, including an outer deadline; never retain raw error fields. */
+  stop(error) {
+    if (!this.active || this.record.restoredWorkerFailure) return;
+    const guard = error instanceof IsolationError;
+    const timeout = guard ? WORKER_TIMEOUT_CODES.includes(error.code) : error?.name === 'TimeoutError';
+    this.record.restoredWorkerFailure = Object.freeze({ operation: this.active.operation,
+      errorCategory: timeout ? 'timeout' : guard ? 'guard' : 'other',
+      elapsedMs: Math.max(0, this.clock() - this.active.startedAt) });
+  }
+  /** Run one fixed step with its existing deadline; reject later work after the first stop. */
+  async run(operation, action) {
+    this.budget.check();
+    requireCheck(WORKER_OPERATIONS.includes(operation), 'worker_operation');
+    requireCheck(!this.record.restoredWorkerFailure, 'worker_operation_stopped');
+    this.active = { operation, startedAt: this.clock() };
+    try {
+      const result = await action();
+      this.budget.check();
+      requireCheck(!this.record.restoredWorkerFailure, 'worker_operation_stopped');
+      return result;
+    } catch (error) { this.stop(error); throw error; }
+    finally { this.active = null; }
   }
 }
 
@@ -355,10 +390,11 @@ async function runFixture() {
   requireCheck(metadata.name === 'playwright-core' && metadata.version === CORE_VERSION, 'toolchain_mismatch');
   const runtime = require(CORE); const budget = new FixtureBudget(); const owners = []; const servers = [];
   const record = { schemaVersion: 1, scope: 'synthetic_loopback_only', phase: 'running',
-    operator: 'Codex agent', operationalOwner: 'Project owner', approval: 'Owner approved replacement local isolation fixture',
+    operator: 'Codex agent', operationalOwner: 'Project owner', approval: 'Owner approved operation-diagnostic local isolation fixture',
     approvalConsumed: true, startedAt: new Date(budget.startedAt).toISOString(), limits: LIMITS,
     toolchain: { node: process.version, playwright: metadata.version }, sourceHashes: await sourceHashes(), checks: {}, workerProbes: {},
-    hostedExerciseAuthorized: false, liveGuardChanged: false, gate1Status: 'open' };
+    restoredWorkerFailure: null, hostedExerciseAuthorized: false, liveGuardChanged: false, gate1Status: 'open' };
+  const workerDiagnostics = new WorkerDiagnostics(record, budget);
   const before = await evidenceHashes(); let fixture; let proxy; let profile;
   try {
     // Reserve 20 seconds for normal browser/server cleanup within the whole-fixture limit.
@@ -394,21 +430,26 @@ async function runFixture() {
     requireCheck(await pageProbe(second.keeper, `${fixture.origin.replace('http:', 'https:')}/probe?kind=page`), 'https_not_proxy_blocked');
     requireCheck(proxy.counts.fixtureConnect > connectBefore && fixture.counts.page === pageBefore, 'https_network_isolation');
     record.checks.httpsConnectBlockedAtProxy = true;
-    await second.keeper.goto('about:blank', { timeout: 5000 });
+    await workerDiagnostics.run('blank_navigation', () => second.keeper.goto('about:blank', { timeout: 5000 }));
 
-    const cdp = await bounded(() => second.context.newCDPSession(second.keeper), 5000, 'worker_session_timeout');
-    await bounded(() => cdp.send('ServiceWorker.enable'), 5000);
-    await bounded(() => cdp.send('ServiceWorker.startWorker', { scopeURL: `${fixture.origin}/` }), 5000, 'worker_restart_timeout');
-    const restoredWorker = await fixtureWorker(second.context, fixture.origin, budget);
+    const cdp = await workerDiagnostics.run('cdp_session',
+      () => bounded(() => second.context.newCDPSession(second.keeper), 5000, 'worker_session_timeout'));
+    await workerDiagnostics.run('worker_enable', () => bounded(() => cdp.send('ServiceWorker.enable'), 5000));
+    await workerDiagnostics.run('worker_start',
+      () => bounded(() => cdp.send('ServiceWorker.startWorker', { scopeURL: `${fixture.origin}/` }), 5000, 'worker_restart_timeout'));
+    const restoredWorker = await workerDiagnostics.run('worker_discovery', () => fixtureWorker(second.context, fixture.origin, budget));
     const workerBefore = fixture.counts.worker; const proxyWorkerBefore = proxy.counts.worker;
-    requireCheck(!(await captureWorkerProbe(restoredWorker, fixture.origin, record.workerProbes, 'restored')).reached, 'worker_not_proxy_blocked');
-    requireCheck(fixture.counts.worker === workerBefore && proxy.counts.worker > proxyWorkerBefore, 'worker_network_isolation');
+    await workerDiagnostics.run('worker_probe', async () => {
+      requireCheck(!(await captureWorkerProbe(restoredWorker, fixture.origin, record.workerProbes, 'restored')).reached, 'worker_not_proxy_blocked');
+      requireCheck(fixture.counts.worker === workerBefore && proxy.counts.worker > proxyWorkerBefore, 'worker_network_isolation');
+    });
     record.checks.restoredWorkerBlockedAtProxy = true;
     record.restoredWorkerCategories = summarizeWorkers(second.context.serviceWorkers(), fixture.origin);
     await bounded(() => cdp.detach(), 2000); budget.check();
     record.phase = 'passed';
     }, Math.max(1, LIMITS.wholeMs - 20000 - (Date.now() - budget.startedAt)), 'fixture_deadline');
   } catch (error) {
+    workerDiagnostics.stop(error);
     record.phase = 'stopped'; record.stopCode = error instanceof IsolationError ? error.code : 'fixture_operation_failed';
     budget.failure ||= record.stopCode;
   } finally {
@@ -445,7 +486,7 @@ async function main(args) {
   if (result.phase !== 'passed') process.exitCode = 1;
 }
 
-module.exports = { IsolationError, FixtureBudget, bounded, isolationArguments, loopbackOrigin, classifyWorker,
+module.exports = { IsolationError, FixtureBudget, WorkerDiagnostics, bounded, isolationArguments, loopbackOrigin, classifyWorker,
   summarizeWorkers, classifyProxyLine, startFixtureServer, startRejectingProxy, closeServer, requestFixture, closeOwned,
   workerProbe, captureWorkerProbe, evidenceHashes, sourceHashes, main };
 if (require.main === module) main(process.argv.slice(2)).catch(error => {

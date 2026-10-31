@@ -5,7 +5,7 @@ checks. Publishing it does not run or approve hosted traffic. GATE-1 remains ope
 the scanner investigation remains closed as inconclusive and WAF source attribution
 is still unqualified. No application routes, WAF rules or deployment settings change.
 
-## Request-client isolation scaffold (2026-10-28)
+## Request-client isolation scaffold (2026-10-31)
 
 `request-client-isolation.cjs` is a separate, local-only fixture scaffold for the
 stopped CSRF investigation. It does not change the load runner's no-service-worker
@@ -25,6 +25,14 @@ are recorded before stopping and cannot qualify blocking. Raw URLs, error messag
 and cookie values are not included in the result. Source hashes identify the
 executed helper and adjacent tests.
 
+Restored-worker preparation now records the first failing operation in
+`restoredWorkerFailure`: blank navigation, CDP session creation, worker enable,
+worker start, worker discovery or the fetch probe and its isolation assertions.
+The record retains only a fixed operation label, `timeout`/`guard`/`other` category
+and elapsed milliseconds. It survives cleanup and late completion without changing
+the existing operation deadlines or probe checks. These labels identify the failed
+step, not its underlying cause, and cannot retrospectively explain earlier receipts.
+
 Validate the published helper without launching Edge:
 
 ```powershell
@@ -33,9 +41,12 @@ node --check scripts/gate1-browser-tabs/__tests__/request-client-isolation.test.
 node --test scripts/gate1-browser-tabs/__tests__/request-client-isolation.test.cjs
 ```
 
-All 31 unit tests, syntax, focused lint and whitespace checks passed. Tests cover
+All 50 unit tests, syntax, focused lint and whitespace checks passed. Tests cover
 native Fetch status properties, HTTP failures, fetch/evaluation rejection, timeout
 and late completion, sanitized results, source hashes and receipt preservation.
+Mocked orchestration also checks each restored-operation failure through receipt
+serialization, cleanup precedence, unchanged proxy-evidence guards and successful
+sequencing. These mocked outcomes are not native browser qualification.
 
 The first native fixture stopped at `worker_baseline`; its stopped receipt remains
 unchanged. The subsequent fix replaced the invalid `response.status()` call with
@@ -54,7 +65,7 @@ preservation of the profiles and historical receipts were verified. No hosted te
 ran, and GATE-1 remains open.
 
 This publication retains the reviewed local helper's fixed Windows tool paths,
-Playwright version, eight historical evidence prerequisites and one fixed result
+Playwright version, nine historical evidence prerequisites and one fixed result
 destination. It is not a portable browser launcher. The native entry point was
 used from `.tmp/gate1-browser-tabs/request-client-isolation.cjs` in the approved
 workspace; do not run the published copy directly or copy historical receipts into
@@ -63,13 +74,15 @@ those local receipts or browser tools.
 
 Both stopped results remain local under `.tmp/gate1-checkout-enable-dd2c2c6/`:
 `browser-isolation-fixture.json` and `browser-isolation-fixture-attempt2.json`.
-Profiles and operational receipts are not published. The current helper hashes the
-first receipt along with the seven earlier records and refuses to overwrite the
-replacement receipt. Both run approvals are consumed. Before any further run,
-prepare an approved diagnostic scope for the restored-worker preparation steps,
-preserve both receipts, and obtain a new bounded execution decision and result
-destination. A successful future local fixture would still not authorize a hosted
-CSRF retry or a change to the live guard.
+Profiles and operational receipts are not published. The current helper hashes both
+stopped receipts along with the seven earlier records. Its new fixed destination is
+`browser-isolation-fixture-attempt3.json`, which must be absent before an approved
+run and is written exclusively. Both previous run approvals are consumed. The new
+diagnostics have passed local validation only; no third native fixture has run.
+Before execution, obtain a new bounded decision covering the exact source hashes,
+new synthetic profile, evidence destination, cases, limits and stopping point.
+Publication does not authorize that run. A successful future local fixture would
+still not authorize a hosted CSRF retry or a change to the live guard.
 
 ## Offline commands
 
