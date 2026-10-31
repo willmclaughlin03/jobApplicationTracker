@@ -25,9 +25,16 @@ are recorded before stopping and cannot qualify blocking. Raw URLs, error messag
 and cookie values are not included in the result. Source hashes identify the
 executed helper and adjacent tests.
 
-Restored-worker preparation now records the first failing operation in
-`restoredWorkerFailure`: blank navigation, CDP session creation, worker enable,
-worker start, worker discovery or the fetch probe and its isolation assertions.
+The second launch now uses a disposable page for HTTP/HTTPS rejection probes and
+leaves the blank keeper untouched. It requires normal probe-page closure and the
+keeper to be the sole surviving blank page before starting restored-worker setup.
+There is no recovery navigation or substitution of whole-browser cleanup for the
+individual page-close requirement.
+
+Restored-worker preparation records the first failing operation in
+`restoredWorkerFailure`: probe-page creation, probe-page closure, control-page
+readiness, CDP session creation, worker enable, worker start, worker discovery or
+the fetch probe and its isolation assertions.
 The record retains only a fixed operation label, `timeout`/`guard`/`other` category
 and elapsed milliseconds. It survives cleanup and late completion without changing
 the existing operation deadlines or probe checks. These labels identify the failed
@@ -41,12 +48,14 @@ node --check scripts/gate1-browser-tabs/__tests__/request-client-isolation.test.
 node --test scripts/gate1-browser-tabs/__tests__/request-client-isolation.test.cjs
 ```
 
-All 50 unit tests, syntax, focused lint and whitespace checks passed. Tests cover
+All 77 isolation-helper unit tests, syntax, focused lint and whitespace checks passed. Tests cover
 native Fetch status properties, HTTP failures, fetch/evaluation rejection, timeout
 and late completion, sanitized results, source hashes and receipt preservation.
 Mocked orchestration also checks each restored-operation failure through receipt
 serialization, cleanup precedence, unchanged proxy-evidence guards and successful
-sequencing. These mocked outcomes are not native browser qualification.
+sequencing. Page-separation regressions cover expected navigation errors, invalid
+probe/control states, closure failures and unchanged proxy/origin evidence guards.
+These mocked outcomes are not native browser qualification.
 
 The first native fixture stopped at `worker_baseline`; its stopped receipt remains
 unchanged. The subsequent fix replaced the invalid `response.status()` call with
@@ -64,25 +73,112 @@ and 30 proxy connections. Normal closure, zero matching task processes and
 preservation of the profiles and historical receipts were verified. No hosted test
 ran, and GATE-1 remains open.
 
+Attempt3 ran on October 31 at `2026-10-31T15:43:56.106Z`, for 4,065 ms. It retained
+`blank_navigation` / `other` / 47 ms after HTTP/HTTPS blocking, before worker setup.
+The raw error is unavailable. Counts were two launches, six fixture requests and
+31 proxy connections. Do not retrospectively assign this operation to attempt2.
+
+After page separation, attempt4 ran at `2026-10-31T15:56:43.947Z`, for 11,466 ms.
+It passed disposable-page creation and HTTP/HTTPS blocking, then stopped at
+`probe_page_close_timeout` with `probe_page_close` / `timeout` / 5,008 ms. Counts
+were two launches, six fixture requests and 49 proxy connections. Control readiness
+and restored-worker setup were not reached. Both attempts recorded successful
+normal browser cleanup and profile/evidence preservation. Browser cleanup does not
+establish that the individual page closed within its five-second deadline.
+
 This publication retains the reviewed local helper's fixed Windows tool paths,
-Playwright version, nine historical evidence prerequisites and one fixed result
+Playwright version, ten historical evidence prerequisites and one fixed result
 destination. It is not a portable browser launcher. The native entry point was
 used from `.tmp/gate1-browser-tabs/request-client-isolation.cjs` in the approved
 workspace; do not run the published copy directly or copy historical receipts into
 a clean checkout to manufacture execution context. Unit tests require none of
 those local receipts or browser tools.
 
-Both stopped results remain local under `.tmp/gate1-checkout-enable-dd2c2c6/`:
-`browser-isolation-fixture.json` and `browser-isolation-fixture-attempt2.json`.
-Profiles and operational receipts are not published. The current helper hashes both
-stopped receipts along with the seven earlier records. Its new fixed destination is
-`browser-isolation-fixture-attempt3.json`, which must be absent before an approved
-run and is written exclusively. Both previous run approvals are consumed. The new
-diagnostics have passed local validation only; no third native fixture has run.
-Before execution, obtain a new bounded decision covering the exact source hashes,
-new synthetic profile, evidence destination, cases, limits and stopping point.
-Publication does not authorize that run. A successful future local fixture would
-still not authorize a hosted CSRF retry or a change to the live guard.
+All four stopped results remain local under `.tmp/gate1-checkout-enable-dd2c2c6/`:
+`browser-isolation-fixture.json` and its `-attempt2`, `-attempt3` and `-attempt4`
+counterparts. Profiles and operational receipts are not published. The current
+helper hashes the first three stopped receipts along with seven earlier records.
+Its fixed destination remains the already-existing `browser-isolation-fixture-attempt4.json`;
+the exclusive-result guard refuses another run. All four native approvals are
+consumed. Do not change that destination merely to permit attempt5.
+
+## Page-lifecycle diagnostic preparation (2026-10-31)
+
+`page-lifecycle-diagnostic.cjs` prepares a separate diagnostic for the unresolved
+page-close timeout. It has not been run natively. Publication, passing offline
+tests and a supplied source digest do not authorize execution. A new bounded owner
+decision must cover the exact source hashes, toolchain, new synthetic profile,
+evidence destination, cases, limits and stopping point. The operator is the Codex
+agent and the operational owner is the project owner.
+
+The prepared cases use one browser launch, one untouched blank keeper and at most
+two open pages. Case1 closes a blank disposable page once. If it completes, case2
+runs the existing HTTP and HTTPS CONNECT rejection probes on another page and
+immediately calls the same `close({runBeforeUnload:false})`, without an intervening
+navigation, sleep or protocol round trip. The rejecting loopback proxy is active
+from launch with no loopback bypass or direct fallback. There are no scripted
+cookie, request-client, worker, restart or hosted/provider exercises.
+
+The observer wraps the pinned Playwright connection's protocol logger and restores
+it during cleanup. It observes the actual root `Target.closeTarget` command and
+response, matching root detachment, server/client close events, public promise
+settlement and main-frame lifecycle categories. A bounded target inventory uses
+that same connection. Raw protocol payloads, URLs, IDs, cookies and errors are not
+retained. Unknown failures become fixed categories. A timeout freezes the case
+before a single post-failure inventory; that separately timed observation cannot
+turn the timeout into a completed case. Cleanup-time events remain separate.
+
+Limits are 90 seconds overall with a 20-second cleanup reserve, five-second page
+operations, one-second inventories, two scripted navigations, 10 fixture HTTP
+requests, 100 proxy connections, one cached browser-version read, two target
+inventories, 256 retained events and 128 KiB of evidence. Incoming cleanup traffic
+is counted. Playwright attachment still performs its own initialization commands;
+these counters describe diagnostic-issued version/inventory reads. Resource or
+recorder overflow stops the exercise as inconclusive.
+
+The immutable receipt is reserved before launch at
+`.tmp/gate1-checkout-enable-dd2c2c6/browser-page-lifecycle-diagnostic-01.json`.
+Existing evidence prevents execution. All eleven predecessor receipts are checked
+against frozen hashes before and after the exercise. Cleanup requests normal CDP
+`Browser.close`, verifies owned-process exit, closes owned loopback resources and
+preserves the new `isolation-fixture-lifecycle-*` profile. No force-kill or profile
+deletion is used. Failed cleanup returns to an owner decision.
+
+The local execution copy must remain under `.tmp/gate1-browser-tabs/`. Preflight
+requires Node `v22.18.0`, Playwright `1.62.0-alpha-1783623505000`, the pinned
+`coreBundle.js` and Edge executable SHA-256 values in `PIN`, and Edge
+`156.0.4314.50`. The installed version is not proof of the browser version used by
+every historical attempt. Disable `DEBUG`, `DEBUG_FILE` and `PWDEBUG` only in the
+diagnostic process before loading Playwright; inherited debug logging is rejected.
+Use repo-local `.tmp` for `TEMP` and `TMP`.
+
+Before any execution decision, review the exact four helper/test files and freeze
+the ordered manifest digest from `sourceHashes()`. The only native CLI form is
+`--diagnostic --source-set-sha256=<reviewed-64-character-digest>`; arbitrary targets,
+profiles and default execution are refused. The Windows paths and retained local
+evidence make this a specific workspace diagnostic, not a portable launcher.
+Recheck file bytes after checkout or copying rather than bypassing a digest mismatch.
+
+Offline validation, which requires no native browser or local receipt files:
+
+```powershell
+node --check scripts/gate1-browser-tabs/page-lifecycle-diagnostic.cjs
+node --check scripts/gate1-browser-tabs/__tests__/page-lifecycle-diagnostic.test.cjs
+node --test scripts/gate1-browser-tabs/__tests__/request-client-isolation.test.cjs scripts/gate1-browser-tabs/__tests__/page-lifecycle-diagnostic.test.cjs
+```
+
+All 113 tests passed: 77 isolation-helper tests and 36 diagnostic tests. Coverage
+includes command correlation, event ordering, missing replies/detachment/client
+propagation, deadlines and late completion, cleanup failures, resource/recorder
+limits, exclusive evidence reservation, source/history guards and hostile-data
+redaction. Syntax, focused zero-warning lint and whitespace checks also passed.
+
+If both reduced cases complete, the result is `not_reproduced`; failures are
+`inconclusive`. Neither result qualifies restored-worker isolation or GATE-1.
+This reduced setup omits restart and worker seeding and does not reproduce attempt3's
+blank-navigation failure. No automatic retry, toolchain change, attempt5 or hosted
+CSRF exercise follows. Browser-stack rejection is not proof of OS-wide egress
+isolation. GATE-1 remains open.
 
 ## Offline commands
 

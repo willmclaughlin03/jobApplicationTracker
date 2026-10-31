@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-10-31` - `Isolation probe transitions obscured page-close failures`: Expected proxy-navigation errors affected the worker control page, and the separated probe subsequently timed out during normal page closure. Approach: preserve a blank keeper and prepare command/event attribution before choosing a browser correction. Fix: require disposable-probe closure and sole-keeper readiness, add a separately gated lifecycle diagnostic with immutable cutoff observations and bounded cleanup, and cover failure, redaction and preservation paths with 113 offline tests. Attempts 3 and 4 remain stopped; the underlying native failure is not claimed fixed and the new diagnostic has not run.
+
 - `2026-10-31` - `Restored-worker startup lacked failure attribution`: A generic stop obscured which preparation operation failed. Approach: wrap each existing step with fixed diagnostic labels. Fix: retain its first category and timing without raw browser data, preserving deadlines, probe guards and cleanup; cover serialization, timeouts and late completion with mocks.
 
 - `2026-10-28` - `Stopped receipt lacked fixture-run regression coverage`: Existing worker evaluation tests checked only the in-memory probe result. Approach: exercise runFixture through failure, cleanup and receipt serialization with synthetic browser and evidence I/O. Fix: add a baseline evaluation rejection test asserting the stopped code, evaluation_failed category, error redaction and no later phase execution. All 32 focused tests, lint and whitespace checks passed.
