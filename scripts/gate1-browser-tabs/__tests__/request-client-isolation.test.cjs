@@ -116,9 +116,12 @@ test('worker evaluation rejection is recorded before stopping instead of qualify
  * Inject a failure at one operation; retain calls and serialized receipts without launching or writing.
  */
 async function simulatedFixture({ failOperation = null, failureCode = null, browserTimeout = false,
-  baselineFailure = false, cleanupFailure = false, missingProxyEvidence = false, detachFailure = false } = {}) {
+  baselineFailure = false, cleanupFailure = false, missingProxyEvidence = false, detachFailure = false,
+  probeOutcomes = {}, probePageState = null, probeCloseIncomplete = false, controlPageState = null,
+  missingPageProxyEvidence = null, probeOriginReached = null } = {}) {
   const helperPath = require.resolve('../request-client-isolation.cjs');
   const source = await fs.readFile(helperPath, 'utf8'); const writes = []; const calls = []; const closed = [];
+  const probeNavigations = []; let controlNavigations = 0; let probePageClosed = false;
   const origin = 'http://127.0.0.1:1234'; let loaded; let fixture; let proxy;
   /** Mark only the selected restored operation and inject private errors for redaction assertions. */
   function step(operation) {
@@ -166,6 +169,7 @@ async function simulatedFixture({ failOperation = null, failureCode = null, brow
     /** Supply two fake launches while retaining real budget, worker selection and Browser.close handling. */
     async launchFixtureBrowser({ seedOrigin, budget, owners }) {
       budget.count('launches'); const restored = seedOrigin === null; let discovered = false;
+      let pages = []; let keeperUrl = 'about:blank'; let keeperClosed = false;
       const worker = {
         /** Identify the exact synthetic worker without consulting browser storage. */
         url() { return `${origin}/sw.js`; },
@@ -200,21 +204,71 @@ async function simulatedFixture({ failOperation = null, failureCode = null, brow
         },
         /** Supply the synthetic write-back invariant, never saved authentication cookies. */
         async cookies() { return [{ name: 'isolation_fixture', value: 'SYNTHETIC_UPDATED' }]; },
+        /** Expose owned page metadata and inject readiness failures before worker setup. */
+        pages() {
+          step('control_page_readiness');
+          return pages;
+        },
+        /** Create a separate probe page whose failed navigations cannot replace the keeper document. */
+        async newPage() {
+          assert.equal(restored, true); step('probe_page_create');
+          if (probePageState === 'keeper') return owner.keeper;
+          let currentUrl = probePageState === 'nonblank' ? 'https://private.invalid/initial' : 'about:blank';
+          let pageClosed = probePageState === 'closed';
+          const page = {
+            /** Report only synthetic page state used by the real creation and closure guards. */
+            isClosed() { return pageClosed; },
+            /** Let expected probe failures leave this temporary page at a synthetic error document. */
+            url() { return currentUrl; },
+            /** Exercise real pageProbe handling for responses, expected errors and failures. */
+            async goto(url, options) {
+              assert.deepEqual(options, { timeout: 5000, waitUntil: 'domcontentloaded' });
+              const kind = url.startsWith('https:') ? 'https' : 'http';
+              assert.equal(url, `${kind === 'https' ? origin.replace('http:', 'https:') : origin}/probe?kind=page`);
+              probeNavigations.push(kind); currentUrl = 'chrome-error://chromewebdata/';
+              if (missingPageProxyEvidence !== kind) {
+                if (kind === 'https') proxy.counts.fixtureConnect++; else proxy.counts.page++;
+              }
+              if (probeOriginReached === kind) fixture.counts.page++;
+              const outcome = probeOutcomes[kind] || 'response';
+              if (outcome !== 'response' && outcome !== 'unexpected_status') {
+                const error = new Error(outcome === 'timeout' ? 'PRIVATE_TIMEOUT'
+                  : `${outcome} at https://private.invalid/probe`);
+                if (outcome === 'timeout') error.name = 'TimeoutError';
+                throw error;
+              }
+              return {
+                /** Supply only the fixed status needed by the real probe assertion. */
+                status() { return outcome === 'response' ? 502 : 200; },
+              };
+            },
+            /** Close normally without navigation; inject stopped cleanup and control-state cases. */
+            async close(options) {
+              assert.deepEqual(options, { runBeforeUnload: false }); step('probe_page_close');
+              if (probeCloseIncomplete) return;
+              pageClosed = true; probePageClosed = true; pages = pages.filter(candidate => candidate !== page);
+              if (controlPageState === 'nonblank') keeperUrl = 'https://private.invalid/changed';
+              if (controlPageState === 'closed') keeperClosed = true;
+              if (controlPageState === 'extra_page') pages.push({});
+              if (controlPageState === 'missing') pages = [];
+              if (controlPageState === 'disconnected') { owner.child.exitCode = 0; closed.push('second_browser'); }
+            },
+          };
+          pages.push(page); return page;
+        },
         /** Model page-session attachment at its actual position in the fixture. */
         async newCDPSession(page) { assert.equal(page, owner.keeper); step('cdp_session'); return cdp; },
       }, keeper: {
-        /** Model baseline navigation and successful proxy probes before the blank-page diagnostic. */
+        /** The restored keeper must stay blank; any probe or recovery navigation is a regression. */
         async goto(url, options) {
           assert.equal(options.timeout, 5000);
-          if (url === 'about:blank') { step('blank_navigation'); return null; }
-          if (restored) {
-            if (url.startsWith('https:')) proxy.counts.fixtureConnect++; else proxy.counts.page++;
-          }
-          return {
-            /** Return only the synthetic response status required by the real page probe. */
-            status() { return 502; },
-          };
+          if (restored) { controlNavigations++; throw new Error('PRIVATE_CONTROL_NAVIGATION'); }
+          assert.equal(url, `${origin}/fixture`); return null;
         },
+        /** Supply the blank control-page invariant without inspecting a real browser. */
+        url() { return keeperUrl; },
+        /** Model an independently closed keeper for readiness rejection. */
+        isClosed() { return keeperClosed; },
         /** Model worker installation so the real baseline probe is reached. */
         async evaluate() { return true; },
       }, browser: {
@@ -228,6 +282,7 @@ async function simulatedFixture({ failOperation = null, failureCode = null, brow
           },
         }; },
       } };
+      pages = [owner.keeper];
       owners.push(owner); return owner;
     },
     /** Supply synthetic cookie state for both request-client phases without sending a request. */
@@ -251,7 +306,7 @@ async function simulatedFixture({ failOperation = null, failureCode = null, brow
   await loaded.runFixture();
   assert.equal(writes.length, 1);
   assert.doesNotMatch(writes[0], /PRIVATE_|private\.invalid/);
-  return { receipt: JSON.parse(writes[0]), calls, closed };
+  return { receipt: JSON.parse(writes[0]), calls, closed, probeNavigations, controlNavigations, probePageClosed };
 }
 
 test('fixture receipt retains a baseline worker evaluation failure after stopping and cleanup', async () => {
@@ -265,7 +320,8 @@ test('fixture receipt retains a baseline worker evaluation failure after stoppin
   assert.deepEqual(closed, ['first_browser', 'proxy', 'fixture']);
 });
 
-const restoredOperations = ['blank_navigation', 'cdp_session', 'worker_enable', 'worker_start', 'worker_discovery', 'worker_probe'];
+const restoredOperations = ['probe_page_create', 'probe_page_close', 'control_page_readiness',
+  'cdp_session', 'worker_enable', 'worker_start', 'worker_discovery', 'worker_probe'];
 for (const [index, operation] of restoredOperations.entries()) {
   test(`stopped receipt identifies ${operation}, preserves probes and closes owned resources`, async () => {
     const { receipt, calls, closed } = await simulatedFixture({ failOperation: operation });
@@ -278,14 +334,16 @@ for (const [index, operation] of restoredOperations.entries()) {
     assert.deepEqual(calls, restoredOperations.slice(0, index + 1));
     assert.deepEqual(closed, ['first_browser', 'second_browser', 'proxy', 'fixture']);
     assert.equal(receipt.ownedBrowsersClosedNormally, true); assert.equal(receipt.priorEvidenceUnchanged, true);
-    assert.equal(receipt.checks.httpsConnectBlockedAtProxy, true); assert.equal(receipt.checks.restoredWorkerBlockedAtProxy, undefined);
+    assert.equal(receipt.checks.httpsConnectBlockedAtProxy, operation === 'probe_page_create' ? undefined : true);
+    assert.equal(receipt.checks.restoredWorkerBlockedAtProxy, undefined);
     assert.deepEqual(receipt.workerProbes.baseline, { status: 200, reached: true, errorCategory: null });
     assert.deepEqual(receipt.workerProbes.restored, operation === 'worker_probe'
       ? { status: null, reached: false, errorCategory: 'evaluation_failed' } : undefined);
   });
 }
 
-for (const [operation, failureCode] of [['cdp_session', 'worker_session_timeout'], ['worker_enable', 'operation_timeout'],
+for (const [operation, failureCode] of [['probe_page_create', 'probe_page_create_timeout'], ['probe_page_close', 'probe_page_close_timeout'],
+  ['cdp_session', 'worker_session_timeout'], ['worker_enable', 'operation_timeout'],
   ['worker_start', 'worker_restart_timeout'], ['worker_discovery', 'fixture_worker_unavailable']]) {
   test(`stopped receipt retains ${operation}'s existing timeout code and sanitized category`, async () => {
     const { receipt } = await simulatedFixture({ failOperation: operation, failureCode });
@@ -294,10 +352,10 @@ for (const [operation, failureCode] of [['cdp_session', 'worker_session_timeout'
   });
 }
 
-test('browser navigation timeout is attributed without retaining the private browser error', async () => {
-  const { receipt } = await simulatedFixture({ failOperation: 'blank_navigation', browserTimeout: true });
+test('browser page creation timeout is attributed without retaining the private browser error', async () => {
+  const { receipt } = await simulatedFixture({ failOperation: 'probe_page_create', browserTimeout: true });
   assert.equal(receipt.stopCode, 'fixture_operation_failed');
-  assert.equal(receipt.restoredWorkerFailure.operation, 'blank_navigation');
+  assert.equal(receipt.restoredWorkerFailure.operation, 'probe_page_create');
   assert.equal(receipt.restoredWorkerFailure.errorCategory, 'timeout');
 });
 
@@ -319,10 +377,99 @@ test('cleanup failure cannot replace the first operation failure in the serializ
 });
 
 test('successful synthetic orchestration has no failure diagnostic and retains every isolation guard', async () => {
-  const { receipt, calls } = await simulatedFixture();
+  const { receipt, calls, probeNavigations, controlNavigations, probePageClosed } = await simulatedFixture();
   assert.equal(receipt.phase, 'passed'); assert.equal(receipt.restoredWorkerFailure, null);
   assert.equal(receipt.checks.restoredWorkerBlockedAtProxy, true); assert.deepEqual(calls, restoredOperations);
+  assert.deepEqual(probeNavigations, ['http', 'https']); assert.equal(controlNavigations, 0);
+  assert.equal(probePageClosed, true); assert.equal(receipt.checks.probePageClosedNormally, true);
+  assert.equal(receipt.checks.controlPageReady, true);
 });
+
+for (const error of ['net::ERR_PROXY_CONNECTION_FAILED', 'net::ERR_TUNNEL_CONNECTION_FAILED', 'net::ERR_HTTP_RESPONSE_CODE_FAILURE']) {
+  test(`expected ${error} leaves only the probe page at an error document`, async () => {
+    const { receipt, calls, controlNavigations, probePageClosed, closed } = await simulatedFixture({
+      probeOutcomes: { http: error, https: error },
+    });
+    assert.equal(receipt.phase, 'passed'); assert.equal(receipt.restoredWorkerFailure, null);
+    assert.equal(controlNavigations, 0); assert.equal(probePageClosed, true);
+    assert.deepEqual(calls, restoredOperations);
+    assert.deepEqual(closed, ['first_browser', 'second_browser', 'proxy', 'fixture']);
+    assert.equal(receipt.checks.pageBlockedAtProxy, true); assert.equal(receipt.checks.httpsConnectBlockedAtProxy, true);
+    assert.equal(receipt.checks.controlPageReady, true); assert.equal(receipt.checks.restoredWorkerBlockedAtProxy, true);
+  });
+}
+
+test('HTTP 502 followed by HTTPS tunnel rejection does not navigate the control page', async () => {
+  const { receipt, controlNavigations, probeNavigations } = await simulatedFixture({
+    probeOutcomes: { https: 'net::ERR_TUNNEL_CONNECTION_FAILED' },
+  });
+  assert.equal(receipt.phase, 'passed'); assert.equal(controlNavigations, 0);
+  assert.deepEqual(probeNavigations, ['http', 'https']); assert.equal(receipt.checks.controlPageReady, true);
+});
+
+for (const probePageState of ['keeper', 'nonblank', 'closed']) {
+  test(`invalid ${probePageState} probe page stops before navigation and closes the browser`, async () => {
+    const { receipt, calls, probeNavigations, closed } = await simulatedFixture({ probePageState });
+    assert.equal(receipt.phase, 'stopped'); assert.equal(receipt.stopCode, 'probe_page_state');
+    assert.equal(receipt.restoredWorkerFailure.operation, 'probe_page_create');
+    assert.equal(receipt.restoredWorkerFailure.errorCategory, 'guard');
+    assert.deepEqual(calls, ['probe_page_create']); assert.deepEqual(probeNavigations, []);
+    assert.deepEqual(closed, ['first_browser', 'second_browser', 'proxy', 'fixture']);
+    assert.equal(receipt.checks.controlPageReady, undefined);
+  });
+}
+
+test('probe close resolving without closure cannot qualify readiness or start the worker', async () => {
+  const { receipt, calls, closed } = await simulatedFixture({ probeCloseIncomplete: true });
+  assert.equal(receipt.phase, 'stopped'); assert.equal(receipt.stopCode, 'probe_page_not_closed');
+  assert.equal(receipt.restoredWorkerFailure.operation, 'probe_page_close');
+  assert.deepEqual(calls, ['probe_page_create', 'probe_page_close']);
+  assert.equal(receipt.checks.probePageClosedNormally, undefined); assert.equal(receipt.checks.controlPageReady, undefined);
+  assert.deepEqual(closed, ['first_browser', 'second_browser', 'proxy', 'fixture']);
+});
+
+for (const controlPageState of ['nonblank', 'closed', 'extra_page', 'missing', 'disconnected']) {
+  test(`control readiness rejects ${controlPageState} before CDP setup and retains cleanup`, async () => {
+    const { receipt, calls, closed, controlNavigations } = await simulatedFixture({ controlPageState });
+    assert.equal(receipt.phase, 'stopped'); assert.equal(receipt.stopCode, 'control_page_not_ready');
+    assert.equal(receipt.restoredWorkerFailure.operation, 'control_page_readiness');
+    assert.equal(receipt.restoredWorkerFailure.errorCategory, 'guard');
+    assert.deepEqual(calls, ['probe_page_create', 'probe_page_close', 'control_page_readiness']);
+    assert.equal(receipt.checks.probePageClosedNormally, true); assert.equal(receipt.checks.controlPageReady, undefined);
+    assert.equal(receipt.workerProbes.restored, undefined); assert.equal(controlNavigations, 0);
+    assert.deepEqual(closed, ['first_browser', 'second_browser', 'proxy', 'fixture']);
+  });
+}
+
+for (const kind of ['http', 'https']) {
+  for (const outcome of ['unexpected_status', 'PRIVATE_UNEXPECTED_ERROR', 'timeout']) {
+    test(`${kind} probe ${outcome} stops later probes and worker setup without navigation recovery`, async () => {
+      const { receipt, calls, probeNavigations, closed, controlNavigations } = await simulatedFixture({
+        probeOutcomes: { [kind]: outcome },
+      });
+      assert.equal(receipt.phase, 'stopped');
+      assert.equal(receipt.stopCode, outcome === 'timeout' ? 'page_probe_timeout'
+        : kind === 'http' ? 'page_not_proxy_blocked' : 'https_not_proxy_blocked');
+      assert.equal(receipt.restoredWorkerFailure, null);
+      assert.deepEqual(calls, ['probe_page_create']);
+      assert.deepEqual(probeNavigations, kind === 'http' ? ['http'] : ['http', 'https']);
+      assert.equal(controlNavigations, 0); assert.equal(receipt.checks.controlPageReady, undefined);
+      assert.deepEqual(closed, ['first_browser', 'second_browser', 'proxy', 'fixture']);
+    });
+  }
+  for (const missing of ['proxy_counter', 'origin_isolation']) {
+    test(`${kind} blocking still requires ${missing} evidence before worker setup`, async () => {
+      const { receipt, calls, closed } = await simulatedFixture({
+        missingPageProxyEvidence: missing === 'proxy_counter' ? kind : null,
+        probeOriginReached: missing === 'origin_isolation' ? kind : null,
+      });
+      assert.equal(receipt.phase, 'stopped');
+      assert.equal(receipt.stopCode, kind === 'http' ? 'page_network_isolation' : 'https_network_isolation');
+      assert.deepEqual(calls, ['probe_page_create']); assert.equal(receipt.checks.controlPageReady, undefined);
+      assert.deepEqual(closed, ['first_browser', 'second_browser', 'proxy', 'fixture']);
+    });
+  }
+}
 
 test('a later detach failure is not misattributed to the completed worker probe', async () => {
   const { receipt } = await simulatedFixture({ detachFailure: true });
@@ -393,13 +540,13 @@ test('worker result projection excludes extra browser data', async () => {
   assert.deepEqual(result, { status: 200, reached: true, errorCategory: null });
 });
 
-test('evidence preservation includes both stopped fixtures and never hashes the future result as history', async t => {
+test('evidence preservation includes all three stopped fixtures and never hashes the future result as history', async t => {
   const names = [];
   t.mock.method(fs, 'readFile', async file => { names.push(path.basename(file)); return Buffer.from('synthetic receipt'); });
   const hashes = await evidenceHashes();
   assert.deepEqual(names, ['staged-result.json', 'staged-result-attempt2.json', 'alias-restoration.json',
     'promotion-result.json', 'free-checkout-result.json', 'free-checkout-result-attempt2.json', 'csrf-diagnostic.json',
-    'browser-isolation-fixture.json', 'browser-isolation-fixture-attempt2.json']);
+    'browser-isolation-fixture.json', 'browser-isolation-fixture-attempt2.json', 'browser-isolation-fixture-attempt3.json']);
   assert.deepEqual(Object.keys(hashes), names);
   for (const hash of Object.values(hashes)) assert.match(hash, /^[a-f0-9]{64}$/);
 });
@@ -415,7 +562,7 @@ test('source provenance hashes this helper and its adjacent test bytes', async (
 test('an existing replacement receipt stops before toolchain loading or browser creation', async t => {
   let checks = 0;
   t.mock.method(fs, 'access', async file => {
-    checks++; assert.equal(path.basename(file), 'browser-isolation-fixture-attempt3.json');
+    checks++; assert.equal(path.basename(file), 'browser-isolation-fixture-attempt4.json');
   });
   await assert.rejects(main(['--fixture']), /evidence_already_exists/);
   assert.equal(checks, 1);
