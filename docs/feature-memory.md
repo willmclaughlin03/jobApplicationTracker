@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-25
 
+- `2026-10-31` - `Restored-worker operation diagnostics`: Retain the first sanitized startup/probe failure through cleanup and late completion, with mocked receipt coverage and preservation of both stopped fixtures. Local validation passed; another native fixture requires a separate decision and GATE-1 remains open.
+
 - `2026-10-28` - `Stopped worker-probe receipt coverage`: Exercise real fixture orchestration with a synthetic baseline worker evaluation failure and inspect the serialized stopped receipt for its fixed error category, cleanup, redaction and no later phase execution. All 32 focused tests, lint and whitespace checks passed.
 
 - `2026-10-28` - `Isolation worker-probe evidence`: Retain validated status, success and fixed failure categories before worker evaluation/timeout stops; record helper/test hashes and preserve the first receipt when using the replacement destination. Add 12 regressions; all 31 focused tests, syntax, lint and whitespace checks passed. The replacement native fixture passed cookie/restart and page HTTP/HTTPS checks, then stopped before a restored-worker result. No hosted retry ran; GATE-1 remains open.
