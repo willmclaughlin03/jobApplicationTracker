@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-10-25
 
+- `2026-10-31` - `Bounded page-lifecycle diagnostic preparation`: Separate destructive isolation probes from the blank control page and publish a two-case diagnostic that correlates the pinned Playwright connection's close command, response, target inventory and server/client events. Freeze failure observations before cleanup, enforce tool/source hashes and finite budgets, and preserve all eleven historical receipts. All 113 offline tests, syntax, focused lint and whitespace checks passed. The new native diagnostic remains unrun; GATE-1 remains open.
+
 - `2026-10-31` - `Restored-worker operation diagnostics`: Retain the first sanitized startup/probe failure through cleanup and late completion, with mocked receipt coverage and preservation of both stopped fixtures. Local validation passed; another native fixture requires a separate decision and GATE-1 remains open.
 
 - `2026-10-28` - `Stopped worker-probe receipt coverage`: Exercise real fixture orchestration with a synthetic baseline worker evaluation failure and inspect the serialized stopped receipt for its fixed error category, cleanup, redaction and no later phase execution. All 32 focused tests, lint and whitespace checks passed.
