@@ -16,6 +16,7 @@ const { spawn } = require('node:child_process');
 const ROOT = path.resolve(__dirname, '../..');
 const RESULT = path.join(ROOT, '.tmp/gate1-checkout-enable-dd2c2c6/browser-isolation-fixture-attempt4.json');
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
+const CFT158 = 'C:/Users/willm/job-application-tracker/.tmp/browser-tools/chrome-for-testing/158.0.8127.2/chrome-win64/chrome.exe';
 const CORE = 'C:/Users/willm/AppData/Local/npm-cache/_npx/a5b920f00216d246/node_modules/playwright-core';
 const CORE_VERSION = '1.62.0-alpha-1783623505000';
 const LIMITS = Object.freeze({ wholeMs: 900000, launches: 2, fixtureRequests: 100, proxyConnections: 200 });
@@ -262,7 +263,8 @@ async function readFreshPort(profile, launchTime, budget) {
  * Start the new synthetic profile, guarded by a rejecting proxy from process launch.
  * The owner array receives the process immediately so attachment failures still clean up.
  */
-async function launchFixtureBrowser({ runtime, profile, proxyPort, seedOrigin, budget, owners }) {
+async function launchFixtureBrowser({ runtime, profile, proxyPort, seedOrigin, budget, owners, browser = 'edge' }) {
+  const executable = fixtureExecutable(browser);
   const resolved = await fs.realpath(profile);
   requireCheck(path.dirname(resolved) === await fs.realpath(__dirname)
     && path.basename(resolved).startsWith('isolation-fixture-'), 'synthetic_profile_required');
@@ -272,7 +274,7 @@ async function launchFixtureBrowser({ runtime, profile, proxyPort, seedOrigin, b
     '--disable-quic', '--no-startup-window', ...isolationArguments(proxyPort, seedOrigin)];
   const owner = { child: null, browser: null, context: null, keeper: null, port: null, failed: false, closed: false };
   owners.push(owner); const launchTime = Date.now();
-  owner.child = spawn(EDGE, args, { stdio: 'ignore', windowsHide: true });
+  owner.child = spawn(executable, args, { stdio: 'ignore', windowsHide: true });
   owner.child.once('error', () => { owner.failed = true; });
   owner.port = await readFreshPort(resolved, launchTime, budget);
   requireCheck(!owner.failed && owner.child.exitCode === null, 'browser_process');
@@ -282,6 +284,12 @@ async function launchFixtureBrowser({ runtime, profile, proxyPort, seedOrigin, b
   requireCheck(owner.context.pages().every(page => page.url() === 'about:blank') && owner.context.pages().length <= 1, 'unexpected_initial_page');
   owner.keeper = owner.context.pages()[0] || await bounded(() => owner.context.newPage(), 5000, 'keeper_timeout');
   return owner;
+}
+
+/** Select only the existing Edge or fixed comparison package; callers cannot supply executable paths. */
+function fixtureExecutable(browser = 'edge') {
+  requireCheck(browser === 'edge' || browser === 'cft158', 'browser_selection');
+  return browser === 'edge' ? EDGE : CFT158;
 }
 
 /** Normal shutdown only; preserves the synthetic profile and reports failure rather than killing. */
@@ -507,7 +515,7 @@ async function main(args) {
 
 module.exports = { IsolationError, FixtureBudget, WorkerDiagnostics, bounded, isolationArguments, loopbackOrigin, classifyWorker,
   summarizeWorkers, classifyProxyLine, startFixtureServer, startRejectingProxy, closeServer, requestFixture, closeOwned,
-  workerProbe, captureWorkerProbe, evidenceHashes, sourceHashes, launchFixtureBrowser, pageProbe, main };
+  workerProbe, captureWorkerProbe, evidenceHashes, sourceHashes, launchFixtureBrowser, fixtureExecutable, pageProbe, main };
 if (require.main === module) main(process.argv.slice(2)).catch(error => {
   process.stderr.write(`${JSON.stringify({ stopCode: error instanceof IsolationError ? error.code : 'local_fixture_setup_failed' })}\n`);
   process.exitCode = 1;

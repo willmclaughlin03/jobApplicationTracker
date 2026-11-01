@@ -8,9 +8,64 @@ const vm = require('node:vm');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { EventEmitter } = require('node:events');
 const { IsolationError, FixtureBudget, WorkerDiagnostics, bounded, isolationArguments, loopbackOrigin, classifyWorker,
   summarizeWorkers, classifyProxyLine, startFixtureServer, startRejectingProxy, closeServer, requestFixture, closeOwned,
-  workerProbe, captureWorkerProbe, evidenceHashes, sourceHashes, main } = require('../request-client-isolation.cjs');
+  workerProbe, captureWorkerProbe, evidenceHashes, sourceHashes, fixtureExecutable, main } = require('../request-client-isolation.cjs');
+
+/** Load the real launcher with synthetic process/port boundaries; selection tests never start a browser. */
+async function launcherHarness() {
+  const sourceDir = path.resolve(__dirname, '..'); const spawns = []; const requested = [];
+  const keeper = { url: () => 'about:blank' }; const context = { pages: () => [keeper] };
+  const runtime = { chromium: { connectOverCDP: async (endpoint, options) => {
+    assert.equal(endpoint, 'http://127.0.0.1:9333');
+    assert.deepEqual(options, { noDefaults: true, timeout: 5000 }); return { contexts: () => [context] };
+  } } };
+  const fakeFs = { realpath: async file => file, stat: async () => ({ mtimeMs: Date.now() + 1000 }),
+    readFile: async () => '9333\n' };
+  /** Refuse runtime loads and capture process arguments while satisfying only the launcher's file reads. */
+  function fakeRequire(name) {
+    requested.push(name);
+    if (name === 'node:fs/promises') return fakeFs;
+    if (name === 'node:child_process') return { spawn: (executable, args, options) => {
+      spawns.push({ executable, args, options }); const child = new EventEmitter(); child.exitCode = null; return child;
+    } };
+    assert.ok(name.startsWith('node:')); return require(name);
+  }
+  const source = await fs.readFile(path.join(sourceDir, 'request-client-isolation.cjs'), 'utf8');
+  const testModule = { exports: {} };
+  vm.compileFunction(source, ['require', 'module', 'exports', '__dirname'])(fakeRequire, testModule, testModule.exports, sourceDir);
+  return { launch: testModule.exports.launchFixtureBrowser, spawns, requested, runtime,
+    profile: path.join(sourceDir, 'isolation-fixture-launcher-test') };
+}
+
+/** Arbitrary executable paths and object/prototype coercions must fail before any filesystem or native work. */
+test('browser selection accepts only the fixed Edge default and cft158 package', () => {
+  assert.equal(fixtureExecutable(), 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe');
+  assert.equal(fixtureExecutable('cft158'),
+    'C:/Users/willm/job-application-tracker/.tmp/browser-tools/chrome-for-testing/158.0.8127.2/chrome-win64/chrome.exe');
+  for (const input of [null, '', 'chrome', '__proto__', '/tmp/chrome.exe', {}, ['edge']]) {
+    assert.throws(() => fixtureExecutable(input), /browser_selection/);
+  }
+});
+
+/** The actual spawn path changes by mode while proxy, background, attachment and hidden-window settings stay identical. */
+test('comparison launch changes only the allowed executable and keeps Edge as default', async () => {
+  const fake = await launcherHarness();
+  for (const browser of [undefined, 'cft158']) {
+    const owners = []; const budget = testBudget();
+    const owner = await fake.launch({ runtime: fake.runtime, profile: fake.profile, proxyPort: 8001,
+      seedOrigin: null, budget, owners, browser });
+    assert.equal(owners[0], owner); assert.equal(budget.counts.launches, 1);
+  }
+  assert.equal(fake.spawns[0].executable, fixtureExecutable());
+  assert.equal(fake.spawns[1].executable, fixtureExecutable('cft158'));
+  assert.deepEqual(fake.spawns[0].args, fake.spawns[1].args);
+  assert.ok(fake.spawns[1].args.includes('--proxy-bypass-list=<-loopback>'));
+  assert.deepEqual(fake.spawns[1].options, { stdio: 'ignore', windowsHide: true });
+  await assert.rejects(fake.launch({ browser: 'C:/unreviewed.exe' }), /browser_selection/);
+  assert.equal(fake.spawns.length, 2); assert.ok(!fake.requested.some(name => name.includes('playwright')));
+});
 
 /** Create generous local-only test limits without a browser or filesystem mutation. */
 function testBudget(overrides = {}, clock = Date.now) {
