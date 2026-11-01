@@ -7,14 +7,164 @@ const { EventEmitter } = require('node:events');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const vm = require('node:vm');
+const crypto = require('node:crypto');
 const { setImmediate: nextTurn } = require('node:timers/promises');
 const fixture = require('../request-client-isolation.cjs');
 const diagnostic = require('../page-lifecycle-diagnostic.cjs');
 const { PIN, LIMITS, HISTORY, DiagnosticBudget, Recorder, LifecycleObserver, browserBridge, checkToolchain,
   errorCode, historyHashes, historyMatches, sourceHashes, interpretation, closeCase, reserveEvidence,
   encodeEvidence, finalEvidence, runDiagnostic, main } = diagnostic;
+const { COMPARISON_PIN, COMPARISON_HISTORY, modeConfig, packageHashes, checkPackage, nativeDependencies, preflight } = diagnostic;
 const SOURCE_SET = 'a'.repeat(64);
 const HOSTILE = 'https://private.invalid/?cookie=SESSION_SECRET&token=RAW_SECRET';
+
+/** Model an extracted package in memory so manifest validation cannot read a real browser or profile. */
+function packageHarness() {
+  const root = path.dirname(modeConfig('cft158').executable); const archive = path.join(root, '../chrome-win64.zip');
+  const nodes = new Map([[root, { directory: true }], [path.join(root, 'chrome.exe'), { size: 1 }],
+    [path.join(root, 'chrome.dll'), { size: 2 }], [path.join(root, 'locales'), { directory: true }],
+    [path.join(root, 'locales/en-US.pak'), { size: 3 }], [archive, { size: COMPARISON_PIN.archiveBytes }]]);
+  const hashes = [];
+  const io = {
+    realpath: async file => file,
+    readdir: async folder => [...nodes.keys()].filter(file => file !== folder && path.dirname(file) === folder)
+      .map(file => path.basename(file)).reverse(),
+    /** Mimic metadata without opening content; tests mutate individual nodes to exercise real traversal guards. */
+    lstat: async file => {
+      const node = nodes.get(file); assert.ok(node, `Unexpected synthetic path: ${file}`);
+      return { size: node.size, isDirectory: () => !!node.directory, isFile: () => !node.directory && !node.other,
+        isSymbolicLink: () => !!node.link };
+    },
+  };
+  /** Deterministic fake content hashes make ordering and file additions visible without disk I/O. */
+  async function readHash(file) {
+    hashes.push(file); return crypto.createHash('sha256').update(path.relative(root, file)).digest('hex');
+  }
+  return { root, archive, nodes, io, hashes, readHash };
+}
+
+/** Fixed mode identity keeps output/history/toolchain selection together and cannot accept arbitrary paths or objects. */
+test('comparison mode is immutable and has a distinct execution directory and receipt', async () => {
+  const edge = modeConfig(); const comparison = modeConfig('cft158');
+  assert.equal(edge.pin, PIN); assert.equal(comparison.pin, COMPARISON_PIN);
+  assert.ok(Object.isFrozen(comparison)); assert.ok(Object.isFrozen(comparison.history));
+  assert.notEqual(comparison.directory, edge.directory); assert.notEqual(comparison.result, edge.result);
+  assert.equal(path.basename(comparison.result), 'browser-page-lifecycle-comparison-cft158-01.json');
+  for (const mode of [null, '__proto__', 'constructor', {}, ['cft158'], HOSTILE]) {
+    assert.throws(() => modeConfig(mode), /browser_selection/);
+    await assert.rejects(runDiagnostic(SOURCE_SET, {}, mode), /browser_selection/);
+  }
+  for (const mode of ['edge', 'cft158']) await assert.rejects(preflight(SOURCE_SET, mode), /execution_directory/);
+  for (const args of [['--compare-cft158'], ['--compare-cft158', '--source-set-sha256=secret'],
+    ['--compare-cft158', `--source-set-sha256=${SOURCE_SET}`, '--executable=C:/other.exe']]) {
+    await assert.rejects(main(args), /argument_required/);
+  }
+});
+
+/** The comparison must retain the executed baseline as well as all eleven older receipts, with exact hashes. */
+test('comparison history freezes twelve predecessors and excludes its own future receipt', async () => {
+  const names = [];
+  const hashes = await historyHashes(async file => {
+    const name = path.basename(file); names.push(name); return COMPARISON_HISTORY[name];
+  }, 'cft158');
+  assert.equal(names.length, 12); assert.ok(historyMatches(hashes, 'cft158')); assert.ok(!historyMatches(hashes));
+  assert.ok(!names.includes(path.basename(modeConfig('cft158').result)));
+  assert.ok(!historyMatches({ ...hashes, 'browser-page-lifecycle-diagnostic-01.json': SOURCE_SET }, 'cft158'));
+  assert.ok(!historyMatches(HISTORY, 'cft158'));
+});
+
+/** Binding native dependencies selects only the comparison executable/profile directory and an exclusive destination. */
+test('comparison native boundaries are bound without loading Playwright or starting a process', async t => {
+  const config = modeConfig('cft158'); const deps = nativeDependencies('cft158'); let launches = 0;
+  t.mock.method(fixture, 'launchFixtureBrowser', async args => { launches++; assert.equal(args.browser, 'cft158'); return 'synthetic'; });
+  t.mock.method(fs, 'mkdtemp', async prefix => {
+    assert.equal(prefix, path.join(config.directory, config.profilePrefix)); return 'synthetic';
+  });
+  t.mock.method(fs, 'open', async (file, flag) => {
+    assert.equal(file, config.result); assert.equal(flag, 'wx'); throw Object.assign(new Error(HOSTILE), { code: 'EEXIST' });
+  });
+  assert.equal(await deps.launch({ browser: 'edge' }), 'synthetic'); assert.equal(launches, 1);
+  assert.equal(await deps.profile(), 'synthetic'); await assert.rejects(deps.reserve(), /evidence_already_exists/);
+  const fake = harness({ mode: 'cft158' }); fake.deps.reserve = deps.reserve;
+  await assert.rejects(runDiagnostic(SOURCE_SET, fake.deps, 'cft158'), /evidence_already_exists/);
+  assert.ok(!fake.calls.includes('runtime')); assert.ok(!fake.calls.includes('launch'));
+});
+
+/** The complete file manifest is sorted independent of enumeration and detects added or changed resources. */
+test('package hashing covers every file, archive and browser library with stable ordering', async () => {
+  const fake = packageHarness(); const first = await packageHashes(fake.readHash, fake.io);
+  assert.equal(first.packageFiles, 3); assert.equal(first.packageBytes, 6); assert.equal(fake.hashes.length, 4);
+  const readdir = fake.io.readdir; fake.io.readdir = async folder => (await readdir(folder)).reverse();
+  assert.deepEqual(await packageHashes(fake.readHash, fake.io), first);
+  fake.nodes.set(path.join(fake.root, 'extra.pak'), { size: 1 });
+  assert.notEqual((await packageHashes(fake.readHash, fake.io)).packageSet, first.packageSet);
+  const changed = await packageHashes(async file => file.endsWith('chrome.dll') ? SOURCE_SET : fake.readHash(file), fake.io);
+  assert.equal(changed.library, SOURCE_SET); assert.notEqual(changed.packageSet, first.packageSet);
+});
+
+/** Reject traversal, links, special files, oversized packages and changed archives before browser launch. */
+for (const kind of ['root_link', 'root_redirect', 'file_link', 'special_file', 'too_large', 'archive_size', 'archive_link', 'path_escape', 'too_many']) {
+  test(`package traversal refuses ${kind}`, async () => {
+    const fake = packageHarness();
+    if (kind === 'root_link') fake.nodes.get(fake.root).link = true;
+    if (kind === 'root_redirect') fake.io.realpath = async () => path.dirname(fake.root);
+    if (kind === 'file_link') fake.nodes.get(path.join(fake.root, 'chrome.dll')).link = true;
+    if (kind === 'special_file') fake.nodes.get(path.join(fake.root, 'chrome.dll')).other = true;
+    if (kind === 'too_large') fake.nodes.get(path.join(fake.root, 'chrome.dll')).size = 1073741825;
+    if (kind === 'archive_size') fake.nodes.get(fake.archive).size--;
+    if (kind === 'archive_link') fake.nodes.get(fake.archive).link = true;
+    if (kind === 'path_escape') fake.io.readdir = async () => ['../retained-profile'];
+    if (kind === 'too_many') fake.io.readdir = async () => Array(4097).fill('chrome.exe');
+    await assert.rejects(packageHashes(fake.readHash, fake.io), /package_mismatch/);
+  });
+}
+
+/** Each comparison package field and runtime pin fails closed, while unsigned provenance is reported truthfully. */
+test('comparison rejects drift in package contents and toolchain independently', () => {
+  checkToolchain(COMPARISON_PIN, 'cft158'); checkPackage(COMPARISON_PIN);
+  assert.equal(COMPARISON_PIN.authenticode, 'not_signed');
+  assert.throws(() => checkToolchain(PIN, 'cft158'), /toolchain_mismatch/);
+  for (const key of ['node', 'playwright', 'bundle', 'executable']) {
+    assert.throws(() => checkToolchain({ ...COMPARISON_PIN, [key]: HOSTILE }, 'cft158'), /toolchain_mismatch/);
+  }
+  for (const key of ['packageSet', 'packageFiles', 'packageBytes', 'archive', 'archiveBytes', 'library']) {
+    assert.throws(() => checkPackage({ ...COMPARISON_PIN, [key]: HOSTILE }), /package_mismatch/);
+  }
+});
+
+/** Share the exact two-case sequence, deadline and cleanup semantics; the comparison never claims isolation or causal proof. */
+test('comparison orchestration changes provenance while retaining the baseline operation sequence', async () => {
+  const baseline = harness(); await runDiagnostic(SOURCE_SET, baseline.deps);
+  const fake = harness({ mode: 'cft158' }); const result = await runDiagnostic(SOURCE_SET, fake.deps, 'cft158');
+  assert.deepEqual(fake.calls, baseline.calls); assert.equal(result.mode, 'cft158'); assert.deepEqual(result.toolchain, COMPARISON_PIN);
+  assert.deepEqual(result.priorEvidenceHashes, COMPARISON_HISTORY); assert.deepEqual(result.limits, LIMITS);
+  assert.equal(result.phase, 'not_reproduced'); assert.equal(result.isolationQualified, false); assert.equal(result.gate1Status, 'open');
+  assert.equal(result.packageProvenance.packageSet, COMPARISON_PIN.packageSet);
+  assert.ok(result.limitations.some(text => text.includes('product and version')));
+  assert.ok(result.limitations.some(text => text.includes('no Authenticode')));
+});
+
+/** Reproducing the observed baseline must freeze the failed close before later whole-browser cleanup completes it. */
+test('comparison preserves acknowledged-open timeout and twelve-receipt cleanup checks', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 10000 });
+  const fake = harness({ mode: 'cft158', blocked: 'ack_open' });
+  const running = runDiagnostic(SOURCE_SET, fake.deps, 'cft158'); await flush(); t.mock.timers.tick(5000);
+  const result = await running;
+  assert.equal(result.firstFailure.code, 'close_timeout'); assert.equal(result.firstFailure.stage, 'blocked');
+  assert.equal(result.cases.blocked.interpretation, 'acknowledged_target_present');
+  assert.equal(result.cases.blocked.cutoff.promise, 'pending'); assert.equal(result.afterCleanup.blocked.promise, 'resolved');
+  assert.equal(result.phase, 'inconclusive'); assert.equal(result.priorEvidenceUnchanged, true);
+});
+
+/** Wrong live browser versions stop before either case; late baseline changes cannot leave a completed comparison. */
+test('comparison version and preservation failures remain inconclusive', async () => {
+  const wrong = harness({ mode: 'cft158', version: PIN.edge });
+  const stopped = await runDiagnostic(SOURCE_SET, wrong.deps, 'cft158');
+  assert.equal(stopped.firstFailure.code, 'toolchain_mismatch'); assert.ok(!wrong.calls.includes('create_blank'));
+  const changed = harness({ mode: 'cft158', changedHistory: true });
+  const result = await runDiagnostic(SOURCE_SET, changed.deps, 'cft158');
+  assert.equal(result.phase, 'inconclusive'); assert.equal(result.firstFailure.code, 'history_mismatch');
+});
 
 /** Make an inspectable fake native boundary; no process, browser, listener or file is created. */
 function harness(options = {}) {
@@ -79,20 +229,23 @@ function harness(options = {}) {
       calls.push(`create_${label}`); return new FakePage(label);
     },
   };
-  const browser = { isConnected: () => true, version: () => options.version || PIN.edge,
+  const mode = options.mode || 'edge'; const config = modeConfig(mode);
+  const browser = { isConnected: () => true, version: () => options.version || config.version,
     _connection: { toImpl: object => object === browser ? serverBrowser : implementations.get(object) } };
   const owner = { browser, context, keeper }; const local = { origin: 'http://127.0.0.1:12345', counts: { page: 0, worker: 0, check: 0, seed: 0 } };
   const proxy = { port: 12346, counts: { page: 0, worker: 0, fixtureConnect: 0, other: 0 } };
   let budget;
   const deps = {
-    preflight: async expected => { assert.equal(expected, SOURCE_SET); calls.push('preflight'); return { sources: { set: SOURCE_SET }, history: { ...HISTORY } }; },
+    preflight: async expected => { assert.equal(expected, SOURCE_SET); calls.push('preflight');
+      return { sources: { set: SOURCE_SET }, history: { ...config.history },
+        ...(mode === 'cft158' ? { packageProvenance: { ...COMPARISON_PIN } } : {}) }; },
     /** Mock the exclusive evidence handle and retain serialized output for redaction assertions. */
     reserve: async () => { calls.push('reserve'); return {
       writeFile: async text => { calls.push('write'); written = text; }, close: async () => calls.push('file_close'),
     }; },
     runtime: () => { calls.push('runtime'); return {}; },
     profile: async () => 'C:/synthetic/isolation-fixture-lifecycle-test', profileExists: async () => !options.profileMissing,
-    history: async () => options.changedHistory ? {} : { ...HISTORY },
+    history: async () => options.changedHistory ? {} : { ...config.history },
     startFixture: async (shared, servers) => { budget = shared; servers.push(local); return local; },
     startProxy: async (_shared, _origin, servers) => { servers.push(proxy); return proxy; },
     launch: async args => { calls.push('launch'); assert.equal(args.seedOrigin, null); args.budget.count('launches'); args.owners.push(owner); return owner; },
@@ -380,6 +533,47 @@ test('outer deadline during close cannot mutate its frozen case or start a late 
   assert.equal(result.counts.inventoryReads, 1); await flush();
   assert.equal(JSON.stringify(result.cases.blocked), frozen); assert.equal(fake.calls.filter(call => call === 'inventory').length, 1);
 });
+
+for (const recover of [true, false]) {
+  /** Real owned-browser cleanup must finish before receipt writing and retain the original startup failure. */
+  test(`startup-timeout receipt waits for ${recover ? 'late-port shutdown' : 'no-port cleanup expiry'}`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 10000 });
+    const fake = harness(); const profile = 'C:/synthetic/isolation-fixture-lifecycle-test';
+    const owner = { child: { exitCode: null }, port: null, browser: null, profile, launchTime: 10000, closed: false };
+    const portFile = path.join(profile, 'DevToolsActivePort'); const commands = [];
+    /** Reveal the owned endpoint during cleanup only for the recoverable case. */
+    t.mock.method(fs, 'stat', async file => {
+      assert.equal(file, portFile);
+      if (!recover || Date.now() < 12000) throw Object.assign(new Error('synthetic missing port'), { code: 'ENOENT' });
+      return { mtimeMs: 12000 };
+    });
+    /** Keep endpoint contents synthetic and restrict reads to the owned port file. */
+    t.mock.method(fs, 'readFile', async file => { assert.equal(file, portFile); return '9333\n'; });
+    /** Model normal browser exit and reject any receipt write that precedes the shutdown command. */
+    fake.deps.runtime = () => ({ chromium: { connectOverCDP: async endpoint => {
+      assert.equal(endpoint, 'http://127.0.0.1:9333');
+      return { isConnected: () => true, newBrowserCDPSession: async () => ({ send: async method => {
+        commands.push(method); assert.ok(!fake.calls.includes('write')); owner.child.exitCode = 0;
+      } }) };
+    } } });
+    /** Reproduce the startup failure with ownership registered, so the real cleanup handles the late port. */
+    fake.deps.launch = async args => {
+      args.budget.count('launches'); args.owners.push(owner); throw new fixture.IsolationError('browser_startup');
+    };
+    fake.deps.closeBrowser = fixture.closeOwned;
+    const running = runDiagnostic(SOURCE_SET, fake.deps); await flush();
+    assert.ok(!fake.calls.includes('write')); t.mock.timers.tick(2000); await flush();
+    if (!recover) { assert.ok(!fake.calls.includes('write')); t.mock.timers.tick(3000); }
+    const result = await running; const written = JSON.parse(fake.written());
+    assert.equal(result.firstFailure.code, 'browser_startup'); assert.equal(result.firstFailure.stage, 'setup');
+    assert.equal(result.phase, 'inconclusive'); assert.deepEqual(result.cases, {}); assert.equal(result.counts.launches, 1);
+    assert.equal(result.ownedBrowsersClosedNormally, recover); assert.equal(written.ownedBrowsersClosedNormally, recover);
+    assert.deepEqual(written.firstFailure, result.firstFailure);
+    assert.deepEqual(result.cleanupFailures, recover ? [] : ['browser_cleanup']);
+    assert.deepEqual(commands, recover ? ['Browser.close'] : []);
+    assert.equal(result.elapsedMs, recover ? 2000 : 5000); assert.equal(fake.calls.at(-1), 'file_close');
+  });
+}
 
 /** A hung cleanup operation consumes its finite reserve and still allows receipt persistence. */
 test('hung browser cleanup is bounded and both local resources still receive cleanup', async t => {

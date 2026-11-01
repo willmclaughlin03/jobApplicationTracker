@@ -105,7 +105,8 @@ consumed. Do not change that destination merely to permit attempt5.
 ## Page-lifecycle diagnostic preparation (2026-10-31)
 
 `page-lifecycle-diagnostic.cjs` prepares a separate diagnostic for the unresolved
-page-close timeout. It has not been run natively. Publication, passing offline
+page-close timeout. The original preparation was executed once on November 1;
+its result and the separately prepared comparison are recorded below. Publication, passing offline
 tests and a supplied source digest do not authorize execution. A new bounded owner
 decision must cover the exact source hashes, toolchain, new synthetic profile,
 evidence destination, cases, limits and stopping point. The operator is the Codex
@@ -153,7 +154,7 @@ diagnostic process before loading Playwright; inherited debug logging is rejecte
 Use repo-local `.tmp` for `TEMP` and `TMP`.
 
 Before any execution decision, review the exact four helper/test files and freeze
-the ordered manifest digest from `sourceHashes()`. The only native CLI form is
+the ordered manifest digest from `sourceHashes()`. The original Edge CLI form is
 `--diagnostic --source-set-sha256=<reviewed-64-character-digest>`; arbitrary targets,
 profiles and default execution are refused. The Windows paths and retained local
 evidence make this a specific workspace diagnostic, not a portable launcher.
@@ -167,7 +168,7 @@ node --check scripts/gate1-browser-tabs/__tests__/page-lifecycle-diagnostic.test
 node --test scripts/gate1-browser-tabs/__tests__/request-client-isolation.test.cjs scripts/gate1-browser-tabs/__tests__/page-lifecycle-diagnostic.test.cjs
 ```
 
-All 113 tests passed: 77 isolation-helper tests and 36 diagnostic tests. Coverage
+Initial preparation passed 113 tests: 77 isolation-helper tests and 36 diagnostic tests. Coverage
 includes command correlation, event ordering, missing replies/detachment/client
 propagation, deadlines and late completion, cleanup failures, resource/recorder
 limits, exclusive evidence reservation, source/history guards and hostile-data
@@ -179,6 +180,161 @@ This reduced setup omits restart and worker seeding and does not reproduce attem
 blank-navigation failure. No automatic retry, toolchain change, attempt5 or hosted
 CSRF exercise follows. Browser-stack rejection is not proof of OS-wide egress
 isolation. GATE-1 remains open.
+
+## Executed Edge diagnostic and comparison preparation (2026-11-01)
+
+The one authorized Edge diagnostic ran from 17:47:13.115Z to 17:47:21.617Z
+using the original execution copies. Its receipt is
+`.tmp/gate1-checkout-enable-dd2c2c6/browser-page-lifecycle-diagnostic-01.json`,
+SHA-256 `85918721972e74be6553afcf825f1c8501993645b575b0b4e7b3eae6430f4ea4`.
+The blank page completed closure and target-absence checks in 20 ms. After the
+HTTP/HTTPS rejection probes, the browser acknowledged `Target.closeTarget` with
+`success: true`, but the page close timed out after 5,008 ms. A separately timed
+inventory at 5,009 ms still found the target. Root detachment, server/client close
+events and public-promise completion occurred only during whole-browser cleanup.
+Navigation events continued after the close acknowledgment.
+
+The result is `inconclusive`, with `blocked/close_timeout` as the first failure.
+One launch, zero fixture requests and 35 proxy connections were recorded over
+8,502 ms. Normal cleanup, profile preservation and all eleven older receipt
+hashes passed. This supports a browser-side failure to complete the acknowledged
+close; it does not identify a specific Chromium defect or qualify isolation.
+
+Comparison preparation and offline validation were followed by one separately
+authorized native attempt; its stopped outcome is recorded below. Recovery or
+another exercise requires a new owner decision. The operator remains Codex and the operational owner remains the
+project owner. Original execution copies under `.tmp/gate1-browser-tabs/`, all
+receipts and retained profiles are preserved. The full fixture still defaults to
+Edge and its already-existing attempt4 destination; no attempt5 is enabled.
+
+### Verified comparison target and package provenance
+
+The comparison uses **Chrome for Testing 158.0.8127.2, win64**, with the same
+Node and Playwright pins as the Edge diagnostic. Google lists the exact version
+and Windows archive in its [availability catalog](https://googlechromelabs.github.io/chrome-for-testing/).
+The version tag resolves to Chromium commit
+`681cd621e82e606d7536eae8ea2576afb3c7d65c`, whose history includes fix
+`9f02826186a75a2f2958f3e42e8214f35ac88e97`. Its
+[ClosePage implementation](https://github.com/chromium/chromium/blob/681cd621e82e606d7536eae8ea2576afb3c7d65c/content/browser/renderer_host/render_frame_host_impl.cc#L8028)
+retains browser-initiated navigation cancellation and speculative-frame discard.
+Both navigation/close
+[regression tests](https://github.com/chromium/chromium/blob/681cd621e82e606d7536eae8ea2576afb3c7d65c/content/browser/renderer_host/render_frame_host_manager_browsertest.cc#L1885)
+are present. This establishes inclusion of the fix in the selected source;
+local effectiveness remains untested.
+
+The archive was downloaded from Google's public bucket at
+`https://storage.googleapis.com/chrome-for-testing-public/158.0.8127.2/win64/chrome-win64.zip?generation=1793109899792412`.
+Its 215,109,122 bytes matched the published object size and MD5
+`GcawADx/eiQBdtUHE1l2zA==`. It is retained under
+`.tmp/browser-tools/chrome-for-testing/158.0.8127.2/chrome-win64.zip`, with
+305 extracted files totaling 470,456,803 bytes in the adjacent `chrome-win64/`.
+Both `chrome.exe` and `chrome.dll` report version `158.0.8127.2`.
+
+Authenticode checks returned **NotSigned** for both files. No signer validation
+is claimed. Provenance relies on the official HTTPS object, its published
+integrity metadata, and the frozen local archive/package hashes. The unsigned
+status is included in comparison evidence and must be visible in its execution
+decision. Downloading/extracting the package did not install or run it.
+
+| Input | SHA-256 |
+| --- | --- |
+| Archive | `910b90200be540896e94ba1df9cf2ec4f106617f1fad8a4f56e21373437c6102` |
+| chrome.exe | `e68951221347d128536cc08c2b72dbf4f65fa96a73eeefc3fb7ef3aa5d683610` |
+| chrome.dll | `303835e293ab849a6c7443cc1ff893837e8740caee565a477db0923b3557c4be` |
+| Sorted extracted-file manifest | `01cb8caecf3549b3903b0bb357bdbe7c8dd31a6c5d3541eac8436e3a25f03813` |
+
+Preflight streams every extracted regular file into a sorted manifest of
+relative paths and SHA-256 values, then checks its digest, count and byte total.
+Links, redirected package roots, special entries, path traversal, excess depth,
+excess entries and oversized content are refused. Archive and DLL hashes are
+checked independently. No browser/profile storage is inspected.
+
+### Frozen comparison procedure
+
+The fixed `--compare-cft158` mode uses execution copies in
+`.tmp/gate1-browser-comparison/`. Only the named comparison executable is added
+to the launcher's allowlist. Launch flags, rejecting proxy, close semantics,
+private observer, two-case order, budgets and cleanup are shared with the baseline.
+There is no intervening navigation, delay or protocol request between HTTPS
+rejection and close, and no retry or automatic baseline rerun.
+
+One fresh `isolation-fixture-comparison-cft158-*` profile will be preserved there.
+The exclusive future receipt is
+`.tmp/gate1-checkout-enable-dd2c2c6/browser-page-lifecycle-comparison-cft158-01.json`.
+Comparison mode checks all twelve predecessors before and after execution,
+including the original Edge diagnostic. Existing comparison evidence refuses
+another run. CLI executable/profile/output overrides remain unsupported.
+
+The same limits apply: one launch, two simultaneous pages, two navigations,
+five-second page operations, two one-second inventories, one cached version
+read, 10 fixture requests, 100 proxy connections, 256 events and 128 KiB evidence.
+Work ends by 70 seconds within a 90-second overall bound. Normal cleanup gets
+the reserved time and never force-kills or deletes a profile. Both cases must
+meet the original closure/target-absence/keeper criteria; failure stops later work.
+
+The executed comparison's frozen four-file source-set SHA-256 is
+`e7924e51b5abf43d4608e9d1ea5465bfe4abe5f3580b6da86d70dbc6f4662c67`.
+The consumed command below used cleared `DEBUG`, `DEBUG_FILE`, `PWDEBUG` settings
+for the child process and repository-local `.tmp` for `TEMP` and `TMP`. It is
+historical execution documentation, not authorization to rerun. Its existing
+receipt now prevents another invocation:
+
+```powershell
+node .tmp/gate1-browser-comparison/page-lifecycle-diagnostic.cjs --compare-cft158 --source-set-sha256=e7924e51b5abf43d4608e9d1ea5465bfe4abe5f3580b6da86d70dbc6f4662c67
+```
+
+Preparation passed 132 focused tests (79 isolation-helper and 53 diagnostic),
+syntax checks, scoped ESLint with zero warnings, and whitespace checks. Read-only
+comparison preflight passed against the actual package, execution sources and
+twelve historical receipts without reserving output or loading Playwright.
+Coverage adds executable selection with identical launch flags, exact package
+provenance and tampering guards, separate exclusive output, baseline preservation,
+the unchanged operation sequence, and the observed acknowledged-open timeout.
+
+### Stopped comparison attempt
+
+The single approved comparison started at `2026-11-01T18:01:53.391Z` and recorded
+its result at `18:02:09.718Z`. It stopped in `setup/browser_startup` after 11,254 ms,
+before either case, any navigation, or a live browser-version read. One launch,
+zero fixture requests and zero proxy connections were recorded. The outcome is
+`inconclusive`; it supplies no comparison evidence about page closure or the fix.
+
+The preserved comparison receipt has SHA-256
+`9be84f27995548b696e81cbfed62e2cabd29649028ff61865b5e56b3f3524ae8`.
+It records `browser_cleanup`, `ownedBrowsersClosedNormally: false`, a preserved
+synthetic profile and unchanged hashes for all twelve predecessors. Read-only
+post-run inspection found the owned browser and runner still active. The fresh
+synthetic profile's `DevToolsActivePort` file timestamp was `18:02:06.338Z`, after
+the startup cutoff. The launcher had not obtained that port before cleanup.
+
+The receipt's `elapsedMs: 16327` and `withinOverallLimit: true` describe its
+recorded work through finalization, not successful termination of owned processes.
+Process lifetime was not bounded by that receipt field. The executed source set
+had a startup/cleanup limitation; that attempt was not a cleanly completed bounded
+exercise.
+
+The current helper retains the owned profile path and launch timestamp so cleanup
+can discover a freshly written `DevToolsActivePort` after startup times out. Port
+reads, attachment, normal `Browser.close`, and process-exit checks share the existing
+five-second no-port cleanup window. The ten-second startup timeout remains the
+primary failure. If the process remains running, absent/stale/invalid ports or an
+unsuccessful shutdown still report cleanup failure without extending that window.
+Mocked regression tests cover this follow-up; the historical execution copies,
+source-set hash, receipt and profile are unchanged, and no native comparison was
+rerun.
+
+A separate 20-second normal-shutdown recovery was proposed, using the owned
+process and its fresh DevTools endpoint, with no test retry, new launch or
+force-kill. It has not been authorized or performed. The proposed separate
+receipt is `browser-page-lifecycle-comparison-cft158-01-recovery.json` in the same
+local evidence directory. Preserve the original receipt and profile; publication
+does not authorize recovery or further native work. Operational receipts, browser
+packages and profiles remain local and are not included in this PR.
+
+The browser product and version both change, so a `not_reproduced` outcome cannot
+prove causality for one upstream fix or qualify installed Edge. Either outcome
+returns to a decision. No full isolation fixture, worker/restart exercise, hosted
+CSRF retry or toolchain substitution follows automatically. GATE-1 stays open.
 
 ## Offline commands
 

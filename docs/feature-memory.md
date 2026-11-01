@@ -14,6 +14,12 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-11-01
+
+- `2026-11-01` - `Late-port startup cleanup`: Retain the owned synthetic profile and launch time so cleanup can discover a fresh DevTools port and attempt normal shutdown within the existing five-second no-port window. Preserve the ten-second startup failure and finalize receipts after cleanup. Add 13 mocked regressions; all 145 focused tests, syntax, scoped lint and whitespace checks passed. Historical native evidence is unchanged; no browser comparison or recovery was run.
+
+- `2026-11-01` - `Pinned lifecycle browser comparison`: Add a fixed Chrome for Testing 158.0.8127.2 mode sharing the Edge diagnostic's cases, launch flags and limits, with complete package hashing, explicit unsigned provenance, an exclusive receipt and twelve-predecessor preservation. Publish 19 additional regressions (132 focused tests total) and both native outcomes: Edge acknowledged but did not complete the blocked-page close; the comparison stopped during startup and failed browser cleanup before either case. Recovery is pending a separate decision; GATE-1 remains open.
+
 ### Week of 2026-10-25
 
 - `2026-10-31` - `Bounded page-lifecycle diagnostic preparation`: Separate destructive isolation probes from the blank control page and publish a two-case diagnostic that correlates the pinned Playwright connection's close command, response, target inventory and server/client events. Freeze failure observations before cleanup, enforce tool/source hashes and finite budgets, and preserve all eleven historical receipts. All 113 offline tests, syntax, focused lint and whitespace checks passed. The new native diagnostic remains unrun; GATE-1 remains open.

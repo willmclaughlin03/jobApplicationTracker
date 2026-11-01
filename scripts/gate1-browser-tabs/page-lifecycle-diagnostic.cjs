@@ -2,7 +2,7 @@
 /* global __dirname, Buffer, process */
 
 /**
- * One separately authorized synthetic Edge lifecycle diagnostic, never isolation qualification.
+ * One separately authorized synthetic lifecycle diagnostic or fixed browser comparison, never isolation qualification.
  * Importing this module performs no I/O. Native execution requires the reviewed source-set hash.
  * The pinned private observer retains no protocol payloads, URLs, target IDs or raw errors.
  */
@@ -21,6 +21,17 @@ const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
 const PIN = Object.freeze({ node: 'v22.18.0', playwright: '1.62.0-alpha-1783623505000', edge: '156.0.4314.50',
   bundle: 'be2e09efef3017b4eaa76f0cb5289f66c4ea57833f94319b17c1c2f184987ad7',
   executable: 'f87d927bed3597f19c70af67bc786dd22e4eca3b5c7cc050336a016bb42f7fda' });
+const PACKAGE_DIR = path.join(ROOT, '.tmp/browser-tools/chrome-for-testing/158.0.8127.2');
+const COMPARISON_PIN = Object.freeze({ node: PIN.node, playwright: PIN.playwright, bundle: PIN.bundle,
+  browser: 'chrome_for_testing', version: '158.0.8127.2', platform: 'win64',
+  executable: 'e68951221347d128536cc08c2b72dbf4f65fa96a73eeefc3fb7ef3aa5d683610',
+  library: '303835e293ab849a6c7443cc1ff893837e8740caee565a477db0923b3557c4be',
+  archive: '910b90200be540896e94ba1df9cf2ec4f106617f1fad8a4f56e21373437c6102',
+  archiveBytes: 215109122, archiveGeneration: '1793109899792412', archiveMd5: 'GcawADx/eiQBdtUHE1l2zA==',
+  packageSet: '01cb8caecf3549b3903b0bb357bdbe7c8dd31a6c5d3541eac8436e3a25f03813',
+  packageFiles: 305, packageBytes: 470456803, authenticode: 'not_signed',
+  sourceCommit: '681cd621e82e606d7536eae8ea2576afb3c7d65c',
+  upstreamFix: '9f02826186a75a2f2958f3e42e8214f35ac88e97' });
 const LIMITS = Object.freeze({ wholeMs: 90000, cleanupReserveMs: 20000, operationMs: 5000, inventoryMs: 1000,
   launches: 1, fixtureRequests: 10, proxyConnections: 100, navigations: 2, inventoryReads: 2,
   versionReads: 1, pagesCreated: 2, simultaneousPages: 2, events: 256, evidenceBytes: 131072 });
@@ -37,6 +48,17 @@ const HISTORY = Object.freeze({
   'browser-isolation-fixture-attempt3.json': '03872b1c99a4236bb0239793e978e7a443e61081a20be3def937f008cf095120',
   'browser-isolation-fixture-attempt4.json': '3d153850ac7a5c57c98b3e52be465633d6e22bfaf5cab9b48b271a9f3154935d',
 });
+const COMPARISON_HISTORY = Object.freeze({ ...HISTORY,
+  'browser-page-lifecycle-diagnostic-01.json': '85918721972e74be6553afcf825f1c8501993645b575b0b4e7b3eae6430f4ea4' });
+const MODES = Object.freeze({
+  edge: Object.freeze({ pin: PIN, history: HISTORY, executable: EDGE, version: PIN.edge,
+    directory: EXECUTION_DIR, result: RESULT, profilePrefix: 'isolation-fixture-lifecycle-' }),
+  cft158: Object.freeze({ pin: COMPARISON_PIN, history: COMPARISON_HISTORY,
+    executable: path.join(PACKAGE_DIR, 'chrome-win64/chrome.exe'), version: COMPARISON_PIN.version,
+    directory: path.join(ROOT, '.tmp/gate1-browser-comparison'),
+    result: path.join(RECEIPT_DIR, 'browser-page-lifecycle-comparison-cft158-01.json'),
+    profilePrefix: 'isolation-fixture-comparison-cft158-' }),
+});
 const SOURCE_FILES = Object.freeze(['request-client-isolation.cjs', '__tests__/request-client-isolation.test.cjs',
   'page-lifecycle-diagnostic.cjs', '__tests__/page-lifecycle-diagnostic.test.cjs']);
 const CODES = new Set(['operation_failed', 'operation_timeout', 'close_timeout', 'close_incomplete', 'inventory_timeout',
@@ -44,6 +66,7 @@ const CODES = new Set(['operation_failed', 'operation_timeout', 'close_timeout',
   'fixture_deadline', 'launches_budget', 'fixtureRequests_budget', 'proxyConnections_budget', 'navigations_budget',
   'inventoryReads_budget', 'versionReads_budget', 'pagesCreated_budget', 'page_state', 'control_state', 'toolchain_mismatch',
   'source_mismatch', 'history_mismatch', 'execution_directory', 'debug_logging_enabled', 'argument_required',
+  'browser_selection', 'package_mismatch',
   'http_isolation', 'https_isolation', 'page_probe_timeout', 'browser_startup', 'browser_process', 'context_count',
   'unexpected_initial_page', 'keeper_timeout', 'synthetic_profile_required', 'debug_port_read', 'server_close_timeout',
   'browser_cleanup', 'server_cleanup', 'observer_cleanup', 'profile_preservation', 'overall_deadline', 'exercise_stopped']);
@@ -55,6 +78,11 @@ const EVENT_NAMES = new Set(['close_called', 'close_sent', 'close_reply_ok', 'cl
 
 /** Raise only fixed diagnostic guard codes; no native exception text enters evidence. */
 function check(condition, code) { if (!condition) throw new IsolationError(code); }
+
+/** Resolve an immutable reviewed mode; executable paths, output paths and budgets are never caller-controlled. */
+function modeConfig(mode = 'edge') {
+  check(typeof mode === 'string' && Object.hasOwn(MODES, mode), 'browser_selection'); return MODES[mode];
+}
 
 /** Project unexpected exceptions to a fixed category, including forged/raw error properties. */
 function errorCode(error) {
@@ -72,15 +100,15 @@ async function hashFile(file) {
   return hash.digest('hex');
 }
 
-/** Hash all eleven fixed predecessors in stable order; missing evidence fails preparation/execution. */
-async function historyHashes(readHash = hashFile) {
+/** Hash the mode's fixed predecessors in order; comparison also freezes the executed Edge diagnostic. */
+async function historyHashes(readHash = hashFile, mode = 'edge') {
   const hashes = {};
-  for (const name of Object.keys(HISTORY)) hashes[name] = await readHash(path.join(RECEIPT_DIR, name));
+  for (const name of Object.keys(modeConfig(mode).history)) hashes[name] = await readHash(path.join(RECEIPT_DIR, name));
   return hashes;
 }
 
 /** Compare the complete frozen history, rejecting changed, missing or additional entries. */
-function historyMatches(hashes) { return JSON.stringify(hashes) === JSON.stringify(HISTORY); }
+function historyMatches(hashes, mode = 'edge') { return JSON.stringify(hashes) === JSON.stringify(modeConfig(mode).history); }
 
 /** Hash the four executable/test inputs and their ordered manifest, avoiding a self-hash constant. */
 async function sourceHashes(readHash = hashFile) {
@@ -90,21 +118,61 @@ async function sourceHashes(readHash = hashFile) {
 }
 
 /** Reject any version or executable/bundle digest drift before private interfaces can be used. */
-function checkToolchain(actual) {
-  check(['node', 'playwright', 'bundle', 'executable'].every(key => actual[key] === PIN[key]), 'toolchain_mismatch');
+function checkToolchain(actual, mode = 'edge') {
+  const pin = modeConfig(mode).pin;
+  check(['node', 'playwright', 'bundle', 'executable'].every(key => actual[key] === pin[key]), 'toolchain_mismatch');
+}
+
+/** Hash the fixed extracted package, refusing links, extra files and unbounded trees before any native activity. */
+async function packageHashes(readHash = hashFile, io = fs) {
+  const root = path.join(PACKAGE_DIR, 'chrome-win64'); const files = []; let bytes = 0; let entries = 0;
+  const rootStat = await io.lstat(root);
+  check(rootStat.isDirectory() && !rootStat.isSymbolicLink()
+    && path.resolve(await io.realpath(root)) === path.resolve(root), 'package_mismatch');
+  /** Walk only this package; per-entry metadata bounds work and excludes links and non-regular objects. */
+  async function visit(relative, depth) {
+    check(depth <= 8, 'package_mismatch');
+    for (const name of await io.readdir(path.join(root, relative))) {
+      check(++entries <= 4096 && name !== '.' && name !== '..' && !/[\\/:]/.test(name), 'package_mismatch');
+      const entry = relative ? `${relative}/${name}` : name; const file = path.join(root, entry);
+      const stat = await io.lstat(file); check(!stat.isSymbolicLink(), 'package_mismatch');
+      if (stat.isDirectory()) await visit(entry, depth + 1);
+      else {
+        check(stat.isFile(), 'package_mismatch'); bytes += stat.size;
+        check(bytes <= 1073741824 && files.length < 4096, 'package_mismatch');
+        files.push({ path: entry, sha256: await readHash(file) });
+      }
+    }
+  }
+  await visit('', 0);
+  files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  const archive = path.join(PACKAGE_DIR, 'chrome-win64.zip'); const archiveStat = await io.lstat(archive);
+  check(archiveStat.isFile() && !archiveStat.isSymbolicLink() && archiveStat.size === COMPARISON_PIN.archiveBytes, 'package_mismatch');
+  return { packageSet: digest(JSON.stringify(files)), packageFiles: files.length, packageBytes: bytes,
+    archive: await readHash(archive), archiveBytes: archiveStat.size,
+    library: files.find(file => file.path === 'chrome.dll')?.sha256 };
+}
+
+/** Match the official downloaded archive and every extracted file; the observed unsigned status is explicit provenance. */
+function checkPackage(actual) {
+  check(['packageSet', 'packageFiles', 'packageBytes', 'archive', 'archiveBytes', 'library']
+    .every(key => actual[key] === COMPARISON_PIN[key]), 'package_mismatch');
 }
 
 /** Validate immutable inputs before reserving evidence or loading Playwright; no browser is started. */
-async function preflight(expectedSourceSet) {
-  check(path.resolve(__dirname) === path.resolve(EXECUTION_DIR), 'execution_directory');
+async function preflight(expectedSourceSet, mode = 'edge') {
+  const config = modeConfig(mode);
+  check(path.resolve(__dirname) === path.resolve(config.directory), 'execution_directory');
   check(!process.env.DEBUG && !process.env.DEBUG_FILE && !process.env.PWDEBUG, 'debug_logging_enabled');
   const metadata = JSON.parse(await fs.readFile(path.join(CORE, 'package.json'), 'utf8'));
   check(metadata.name === 'playwright-core' && metadata.version === PIN.playwright, 'toolchain_mismatch');
   checkToolchain({ node: process.version, playwright: metadata.version,
-    bundle: await hashFile(path.join(CORE, 'lib/coreBundle.js')), executable: await hashFile(EDGE) });
+    bundle: await hashFile(path.join(CORE, 'lib/coreBundle.js')), executable: await hashFile(config.executable) }, mode);
+  let packageProvenance;
+  if (mode === 'cft158') { packageProvenance = await packageHashes(); checkPackage(packageProvenance); }
   const sources = await sourceHashes(); check(sources.set === expectedSourceSet, 'source_mismatch');
-  const history = await historyHashes(); check(historyMatches(history), 'history_mismatch');
-  return { sources, history };
+  const history = await historyHashes(undefined, mode); check(historyMatches(history, mode), 'history_mismatch');
+  return { sources, history, packageProvenance };
 }
 
 /** Latch one primary failure while applying the smaller working deadline and finite resource counts. */
@@ -335,8 +403,8 @@ async function createCase(label, owner, observer, budget) {
 }
 
 /** Reserve the immutable destination atomically before any native launch; concurrent runs cannot both proceed. */
-async function reserveEvidence() {
-  try { return await fs.open(RESULT, 'wx'); }
+async function reserveEvidence(mode = 'edge') {
+  try { return await fs.open(modeConfig(mode).result, 'wx'); }
   catch (error) { if (error.code === 'EEXIST') throw new IsolationError('evidence_already_exists'); throw error; }
 }
 
@@ -363,11 +431,14 @@ async function duringCleanup(budget, action, writing = false) {
 }
 
 /** Supply native operations lazily, so importing/testing never loads Playwright or creates a browser. */
-function nativeDependencies() {
-  return { preflight, reserve: reserveEvidence, runtime: () => require(CORE), history: historyHashes,
-    profile: () => fs.mkdtemp(path.join(EXECUTION_DIR, 'isolation-fixture-lifecycle-')),
+function nativeDependencies(mode = 'edge') {
+  const config = modeConfig(mode);
+  return { preflight: expected => preflight(expected, mode), reserve: () => reserveEvidence(mode), runtime: () => require(CORE),
+    history: () => historyHashes(undefined, mode),
+    profile: () => fs.mkdtemp(path.join(config.directory, config.profilePrefix)),
     profileExists: profile => fs.stat(profile).then(stat => stat.isDirectory(), () => false),
-    startFixture: fixture.startFixtureServer, startProxy: fixture.startRejectingProxy, launch: fixture.launchFixtureBrowser,
+    startFixture: fixture.startFixtureServer, startProxy: fixture.startRejectingProxy,
+    launch: args => fixture.launchFixtureBrowser({ ...args, browser: mode }),
     closeBrowser: fixture.closeOwned, closeServer: fixture.closeServer, pageProbe: fixture.pageProbe, bridge: browserBridge };
 }
 
@@ -375,14 +446,16 @@ function nativeDependencies() {
  * Run the two frozen cases with one owner and one immutable receipt. Dependencies are injectable
  * for offline orchestration tests only; CLI targets, profiles, budgets and versions are fixed.
  */
-async function runDiagnostic(expectedSourceSet, deps = nativeDependencies()) {
+async function runDiagnostic(expectedSourceSet, deps, mode = 'edge') {
+  const config = modeConfig(mode); deps ||= nativeDependencies(mode);
   check(/^[a-f0-9]{64}$/.test(expectedSourceSet), 'argument_required');
   const inputs = await deps.preflight(expectedSourceSet); const destination = await deps.reserve();
   const budget = new DiagnosticBudget(); const recorder = new Recorder(budget); const owners = []; const servers = [];
   const record = { schemaVersion: 1, scope: 'synthetic_page_lifecycle_only', phase: 'running',
     operator: 'Codex agent', operationalOwner: 'Project owner', gate1Status: 'open', isolationQualified: false,
     hostedExerciseAuthorized: false, startedAt: new Date(budget.startedAt).toISOString(), limits: LIMITS,
-    toolchain: PIN, sourceHashes: inputs.sources, priorEvidenceHashes: inputs.history, cases: {}, checks: {} };
+    mode, toolchain: config.pin, packageProvenance: inputs.packageProvenance,
+    sourceHashes: inputs.sources, priorEvidenceHashes: inputs.history, cases: {}, checks: {} };
   let runtime; let profile; let local; let proxy; let observer; let stage = 'setup';
   try {
     await bounded(async () => {
@@ -391,7 +464,7 @@ async function runDiagnostic(expectedSourceSet, deps = nativeDependencies()) {
       local = await deps.startFixture(budget, servers); budget.check();
       proxy = await deps.startProxy(budget, local.origin, servers); budget.check();
       const owner = await deps.launch({ runtime, profile, proxyPort: proxy.port, seedOrigin: null, budget, owners }); budget.check();
-      budget.count('versionReads'); check(owner.browser.version() === PIN.edge, 'toolchain_mismatch');
+      budget.count('versionReads'); check(owner.browser.version() === config.version, 'toolchain_mismatch');
       check(controlReady(owner), 'control_state'); observer = new LifecycleObserver(deps.bridge(owner.browser), recorder);
       stage = 'blank'; const blank = await createCase('blank', owner, observer, budget);
       await closeCase('blank', blank, owner, observer, recorder, budget, record.cases); budget.check();
@@ -445,7 +518,7 @@ async function runDiagnostic(expectedSourceSet, deps = nativeDependencies()) {
     }
     try {
       record.syntheticProfilePreserved = !!profile && await duringCleanup(budget, () => deps.profileExists(profile));
-      record.priorEvidenceUnchanged = historyMatches(await duringCleanup(budget, () => deps.history()));
+      record.priorEvidenceUnchanged = historyMatches(await duringCleanup(budget, () => deps.history()), mode);
       if (!record.syntheticProfilePreserved) record.cleanupFailures.push('profile_preservation');
       if (!record.priorEvidenceUnchanged) record.cleanupFailures.push('history_mismatch');
     } catch { record.priorEvidenceUnchanged = false; record.cleanupFailures.push('history_mismatch'); }
@@ -468,6 +541,9 @@ async function runDiagnostic(expectedSourceSet, deps = nativeDependencies()) {
       'Rejected-proxy browser traffic is not OS-wide egress isolation. No hosted application or provider exercise is authorized.',
       'Playwright attachment performs its own initialization commands; counters cover diagnostic-issued version/inventory reads.',
       'No automatic retry, toolchain change or full isolation fixture follows this result.'];
+    if (mode === 'cft158') record.limitations.push(
+      'Browser product and version both change; completion cannot attribute causality to one upstream fix or qualify installed Edge.',
+      'The official comparison package has no Authenticode signatures on chrome.exe or chrome.dll; provenance uses fixed archive and package hashes.');
     try { await duringCleanup(budget, () => destination.writeFile(finalEvidence(record, budget)), true); }
     finally { await duringCleanup(budget, () => destination.close(), true); }
   }
@@ -476,14 +552,17 @@ async function runDiagnostic(expectedSourceSet, deps = nativeDependencies()) {
 
 /** Accept only the reviewed diagnostic and its complete source-set digest; print fixed summary fields. */
 async function main(args) {
-  check(args.length === 2 && args[0] === '--diagnostic' && /^--source-set-sha256=[a-f0-9]{64}$/.test(args[1]), 'argument_required');
-  const record = await runDiagnostic(args[1].slice('--source-set-sha256='.length));
+  check(args.length === 2 && ['--diagnostic', '--compare-cft158'].includes(args[0])
+    && /^--source-set-sha256=[a-f0-9]{64}$/.test(args[1]), 'argument_required');
+  const record = await runDiagnostic(args[1].slice('--source-set-sha256='.length), undefined,
+    args[0] === '--diagnostic' ? 'edge' : 'cft158');
   process.stdout.write(`${JSON.stringify({ phase: record.phase, firstFailure: record.firstFailure,
     ownedBrowsersClosedNormally: record.ownedBrowsersClosedNormally, priorEvidenceUnchanged: record.priorEvidenceUnchanged })}\n`);
   if (record.phase !== 'not_reproduced') process.exitCode = 1;
 }
 
-module.exports = { PIN, LIMITS, HISTORY, SOURCE_FILES, DiagnosticBudget, Recorder, LifecycleObserver, browserBridge,
+module.exports = { PIN, COMPARISON_PIN, COMPARISON_HISTORY, LIMITS, HISTORY, SOURCE_FILES, modeConfig,
+  packageHashes, checkPackage, nativeDependencies, DiagnosticBudget, Recorder, LifecycleObserver, browserBridge,
   errorCode, historyHashes, historyMatches, sourceHashes, checkToolchain, preflight, interpretation, closeCase, createCase,
   reserveEvidence, encodeEvidence, finalEvidence, runDiagnostic, main };
 if (require.main === module) main(process.argv.slice(2)).catch(error => {
