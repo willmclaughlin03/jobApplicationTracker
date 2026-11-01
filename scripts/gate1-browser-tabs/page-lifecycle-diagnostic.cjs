@@ -50,15 +50,23 @@ const HISTORY = Object.freeze({
 });
 const COMPARISON_HISTORY = Object.freeze({ ...HISTORY,
   'browser-page-lifecycle-diagnostic-01.json': '85918721972e74be6553afcf825f1c8501993645b575b0b4e7b3eae6430f4ea4' });
+const COMPARISON_02_HISTORY = Object.freeze({ ...COMPARISON_HISTORY,
+  'browser-page-lifecycle-comparison-cft158-01.json': '9be84f27995548b696e81cbfed62e2cabd29649028ff61865b5e56b3f3524ae8' });
 const MODES = Object.freeze({
-  edge: Object.freeze({ pin: PIN, history: HISTORY, executable: EDGE, version: PIN.edge,
+  edge: Object.freeze({ browser: 'edge', pin: PIN, history: HISTORY, executable: EDGE, version: PIN.edge,
     directory: EXECUTION_DIR, result: RESULT, profilePrefix: 'isolation-fixture-lifecycle-' }),
-  cft158: Object.freeze({ pin: COMPARISON_PIN, history: COMPARISON_HISTORY,
+  cft158: Object.freeze({ browser: 'cft158', pin: COMPARISON_PIN, history: COMPARISON_HISTORY,
     executable: path.join(PACKAGE_DIR, 'chrome-win64/chrome.exe'), version: COMPARISON_PIN.version,
     directory: path.join(ROOT, '.tmp/gate1-browser-comparison'),
     result: path.join(RECEIPT_DIR, 'browser-page-lifecycle-comparison-cft158-01.json'),
     profilePrefix: 'isolation-fixture-comparison-cft158-' }),
+  'cft158-02': Object.freeze({ browser: 'cft158', pin: COMPARISON_PIN, history: COMPARISON_02_HISTORY,
+    executable: path.join(PACKAGE_DIR, 'chrome-win64/chrome.exe'), version: COMPARISON_PIN.version,
+    directory: path.join(ROOT, '.tmp/gate1-browser-comparison-cft158-02'),
+    result: path.join(RECEIPT_DIR, 'browser-page-lifecycle-comparison-cft158-02.json'),
+    profilePrefix: 'isolation-fixture-comparison-cft158-02-' }),
 });
+const CLI_MODES = Object.freeze({ '--diagnostic': 'edge', '--compare-cft158': 'cft158', '--compare-cft158-02': 'cft158-02' });
 const SOURCE_FILES = Object.freeze(['request-client-isolation.cjs', '__tests__/request-client-isolation.test.cjs',
   'page-lifecycle-diagnostic.cjs', '__tests__/page-lifecycle-diagnostic.test.cjs']);
 const CODES = new Set(['operation_failed', 'operation_timeout', 'close_timeout', 'close_incomplete', 'inventory_timeout',
@@ -100,7 +108,7 @@ async function hashFile(file) {
   return hash.digest('hex');
 }
 
-/** Hash the mode's fixed predecessors in order; comparison also freezes the executed Edge diagnostic. */
+/** Hash the mode's fixed predecessors in order, including earlier comparisons when selected. */
 async function historyHashes(readHash = hashFile, mode = 'edge') {
   const hashes = {};
   for (const name of Object.keys(modeConfig(mode).history)) hashes[name] = await readHash(path.join(RECEIPT_DIR, name));
@@ -169,7 +177,7 @@ async function preflight(expectedSourceSet, mode = 'edge') {
   checkToolchain({ node: process.version, playwright: metadata.version,
     bundle: await hashFile(path.join(CORE, 'lib/coreBundle.js')), executable: await hashFile(config.executable) }, mode);
   let packageProvenance;
-  if (mode === 'cft158') { packageProvenance = await packageHashes(); checkPackage(packageProvenance); }
+  if (config.browser === 'cft158') { packageProvenance = await packageHashes(); checkPackage(packageProvenance); }
   const sources = await sourceHashes(); check(sources.set === expectedSourceSet, 'source_mismatch');
   const history = await historyHashes(undefined, mode); check(historyMatches(history, mode), 'history_mismatch');
   return { sources, history, packageProvenance };
@@ -438,7 +446,7 @@ function nativeDependencies(mode = 'edge') {
     profile: () => fs.mkdtemp(path.join(config.directory, config.profilePrefix)),
     profileExists: profile => fs.stat(profile).then(stat => stat.isDirectory(), () => false),
     startFixture: fixture.startFixtureServer, startProxy: fixture.startRejectingProxy,
-    launch: args => fixture.launchFixtureBrowser({ ...args, browser: mode }),
+    launch: args => fixture.launchFixtureBrowser({ ...args, browser: config.browser }),
     closeBrowser: fixture.closeOwned, closeServer: fixture.closeServer, pageProbe: fixture.pageProbe, bridge: browserBridge };
 }
 
@@ -541,7 +549,7 @@ async function runDiagnostic(expectedSourceSet, deps, mode = 'edge') {
       'Rejected-proxy browser traffic is not OS-wide egress isolation. No hosted application or provider exercise is authorized.',
       'Playwright attachment performs its own initialization commands; counters cover diagnostic-issued version/inventory reads.',
       'No automatic retry, toolchain change or full isolation fixture follows this result.'];
-    if (mode === 'cft158') record.limitations.push(
+    if (config.browser === 'cft158') record.limitations.push(
       'Browser product and version both change; completion cannot attribute causality to one upstream fix or qualify installed Edge.',
       'The official comparison package has no Authenticode signatures on chrome.exe or chrome.dll; provenance uses fixed archive and package hashes.');
     try { await duringCleanup(budget, () => destination.writeFile(finalEvidence(record, budget)), true); }
@@ -550,18 +558,17 @@ async function runDiagnostic(expectedSourceSet, deps, mode = 'edge') {
   return record;
 }
 
-/** Accept only the reviewed diagnostic and its complete source-set digest; print fixed summary fields. */
+/** Map only fixed CLI flags to reviewed modes and require their complete source digest; print fixed summary fields. */
 async function main(args) {
-  check(args.length === 2 && ['--diagnostic', '--compare-cft158'].includes(args[0])
+  check(args.length === 2 && typeof args[0] === 'string' && Object.hasOwn(CLI_MODES, args[0])
     && /^--source-set-sha256=[a-f0-9]{64}$/.test(args[1]), 'argument_required');
-  const record = await runDiagnostic(args[1].slice('--source-set-sha256='.length), undefined,
-    args[0] === '--diagnostic' ? 'edge' : 'cft158');
+  const record = await runDiagnostic(args[1].slice('--source-set-sha256='.length), undefined, CLI_MODES[args[0]]);
   process.stdout.write(`${JSON.stringify({ phase: record.phase, firstFailure: record.firstFailure,
     ownedBrowsersClosedNormally: record.ownedBrowsersClosedNormally, priorEvidenceUnchanged: record.priorEvidenceUnchanged })}\n`);
   if (record.phase !== 'not_reproduced') process.exitCode = 1;
 }
 
-module.exports = { PIN, COMPARISON_PIN, COMPARISON_HISTORY, LIMITS, HISTORY, SOURCE_FILES, modeConfig,
+module.exports = { PIN, COMPARISON_PIN, COMPARISON_HISTORY, COMPARISON_02_HISTORY, LIMITS, HISTORY, SOURCE_FILES, modeConfig,
   packageHashes, checkPackage, nativeDependencies, DiagnosticBudget, Recorder, LifecycleObserver, browserBridge,
   errorCode, historyHashes, historyMatches, sourceHashes, checkToolchain, preflight, interpretation, closeCase, createCase,
   reserveEvidence, encodeEvidence, finalEvidence, runDiagnostic, main };
