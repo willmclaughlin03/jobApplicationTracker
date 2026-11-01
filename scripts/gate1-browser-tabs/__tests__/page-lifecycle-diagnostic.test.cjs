@@ -534,6 +534,47 @@ test('outer deadline during close cannot mutate its frozen case or start a late 
   assert.equal(JSON.stringify(result.cases.blocked), frozen); assert.equal(fake.calls.filter(call => call === 'inventory').length, 1);
 });
 
+for (const recover of [true, false]) {
+  /** Real owned-browser cleanup must finish before receipt writing and retain the original startup failure. */
+  test(`startup-timeout receipt waits for ${recover ? 'late-port shutdown' : 'no-port cleanup expiry'}`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 10000 });
+    const fake = harness(); const profile = 'C:/synthetic/isolation-fixture-lifecycle-test';
+    const owner = { child: { exitCode: null }, port: null, browser: null, profile, launchTime: 10000, closed: false };
+    const portFile = path.join(profile, 'DevToolsActivePort'); const commands = [];
+    /** Reveal the owned endpoint during cleanup only for the recoverable case. */
+    t.mock.method(fs, 'stat', async file => {
+      assert.equal(file, portFile);
+      if (!recover || Date.now() < 12000) throw Object.assign(new Error('synthetic missing port'), { code: 'ENOENT' });
+      return { mtimeMs: 12000 };
+    });
+    /** Keep endpoint contents synthetic and restrict reads to the owned port file. */
+    t.mock.method(fs, 'readFile', async file => { assert.equal(file, portFile); return '9333\n'; });
+    /** Model normal browser exit and reject any receipt write that precedes the shutdown command. */
+    fake.deps.runtime = () => ({ chromium: { connectOverCDP: async endpoint => {
+      assert.equal(endpoint, 'http://127.0.0.1:9333');
+      return { isConnected: () => true, newBrowserCDPSession: async () => ({ send: async method => {
+        commands.push(method); assert.ok(!fake.calls.includes('write')); owner.child.exitCode = 0;
+      } }) };
+    } } });
+    /** Reproduce the startup failure with ownership registered, so the real cleanup handles the late port. */
+    fake.deps.launch = async args => {
+      args.budget.count('launches'); args.owners.push(owner); throw new fixture.IsolationError('browser_startup');
+    };
+    fake.deps.closeBrowser = fixture.closeOwned;
+    const running = runDiagnostic(SOURCE_SET, fake.deps); await flush();
+    assert.ok(!fake.calls.includes('write')); t.mock.timers.tick(2000); await flush();
+    if (!recover) { assert.ok(!fake.calls.includes('write')); t.mock.timers.tick(3000); }
+    const result = await running; const written = JSON.parse(fake.written());
+    assert.equal(result.firstFailure.code, 'browser_startup'); assert.equal(result.firstFailure.stage, 'setup');
+    assert.equal(result.phase, 'inconclusive'); assert.deepEqual(result.cases, {}); assert.equal(result.counts.launches, 1);
+    assert.equal(result.ownedBrowsersClosedNormally, recover); assert.equal(written.ownedBrowsersClosedNormally, recover);
+    assert.deepEqual(written.firstFailure, result.firstFailure);
+    assert.deepEqual(result.cleanupFailures, recover ? [] : ['browser_cleanup']);
+    assert.deepEqual(commands, recover ? ['Browser.close'] : []);
+    assert.equal(result.elapsedMs, recover ? 2000 : 5000); assert.equal(fake.calls.at(-1), 'file_close');
+  });
+}
+
 /** A hung cleanup operation consumes its finite reserve and still allows receipt persistence. */
 test('hung browser cleanup is bounded and both local resources still receive cleanup', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 10000 });
