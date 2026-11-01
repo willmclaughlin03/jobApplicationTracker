@@ -309,9 +309,19 @@ the startup cutoff. The launcher had not obtained that port before cleanup.
 
 The receipt's `elapsedMs: 16327` and `withinOverallLimit: true` describe its
 recorded work through finalization, not successful termination of owned processes.
-Process lifetime was not bounded by that receipt field. This is a known unresolved
-startup/cleanup limitation, not a cleanly completed bounded exercise. This PR
-does not change the startup deadline or repair that cleanup path.
+Process lifetime was not bounded by that receipt field. The executed source set
+had a startup/cleanup limitation; that attempt was not a cleanly completed bounded
+exercise.
+
+The current helper retains the owned profile path and launch timestamp so cleanup
+can discover a freshly written `DevToolsActivePort` after startup times out. Port
+reads, attachment, normal `Browser.close`, and process-exit checks share the existing
+five-second no-port cleanup window. The ten-second startup timeout remains the
+primary failure. If the process remains running, absent/stale/invalid ports or an
+unsuccessful shutdown still report cleanup failure without extending that window.
+Mocked regression tests cover this follow-up; the historical execution copies,
+source-set hash, receipt and profile are unchanged, and no native comparison was
+rerun.
 
 A separate 20-second normal-shutdown recovery was proposed, using the owned
 process and its fresh DevTools endpoint, with no test retry, new launch or

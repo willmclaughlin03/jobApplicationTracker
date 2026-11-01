@@ -247,16 +247,19 @@ async function waitFor(read, budget, milliseconds, code) {
   throw new IsolationError(code);
 }
 
-/** Read only a newly launched synthetic browser's fresh DevTools port, never profile storage. */
-async function readFreshPort(profile, launchTime, budget) {
+/** Read one fresh port from the owned profile; startup and cleanup share freshness/range checks. */
+async function readPortIfFresh(profile, launchTime) {
   const file = path.join(profile, 'DevToolsActivePort');
-  return waitFor(async () => {
-    try {
-      const stat = await fs.stat(file); if (stat.mtimeMs < launchTime) return null;
-      const port = Number((await fs.readFile(file, 'utf8')).split(/\r?\n/)[0]);
-      return Number.isInteger(port) && port > 0 && port < 65536 ? port : null;
-    } catch (error) { if (error.code === 'ENOENT') return null; throw new IsolationError('debug_port_read'); }
-  }, budget, 10000, 'browser_startup');
+  try {
+    const stat = await fs.stat(file); if (stat.mtimeMs < launchTime) return null;
+    const port = Number((await fs.readFile(file, 'utf8')).split(/\r?\n/)[0]);
+    return Number.isInteger(port) && port > 0 && port < 65536 ? port : null;
+  } catch (error) { if (error.code === 'ENOENT') return null; throw new IsolationError('debug_port_read'); }
+}
+
+/** Preserve the ten-second startup deadline and budget even when cleanup can later recover a port. */
+async function readFreshPort(profile, launchTime, budget) {
+  return waitFor(() => readPortIfFresh(profile, launchTime), budget, 10000, 'browser_startup');
 }
 
 /**
@@ -272,8 +275,10 @@ async function launchFixtureBrowser({ runtime, profile, proxyPort, seedOrigin, b
   const args = [`--user-data-dir=${resolved}`, '--no-first-run', '--no-default-browser-check',
     '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', '--disable-background-networking',
     '--disable-quic', '--no-startup-window', ...isolationArguments(proxyPort, seedOrigin)];
-  const owner = { child: null, browser: null, context: null, keeper: null, port: null, failed: false, closed: false };
-  owners.push(owner); const launchTime = Date.now();
+  const launchTime = Date.now();
+  const owner = { child: null, browser: null, context: null, keeper: null, port: null, failed: false, closed: false,
+    profile: resolved, launchTime };
+  owners.push(owner);
   owner.child = spawn(executable, args, { stdio: 'ignore', windowsHide: true });
   owner.child.once('error', () => { owner.failed = true; });
   owner.port = await readFreshPort(resolved, launchTime, budget);
@@ -295,16 +300,33 @@ function fixtureExecutable(browser = 'edge') {
 /** Normal shutdown only; preserves the synthetic profile and reports failure rather than killing. */
 async function closeOwned(owner, runtime) {
   if (!owner || owner.closed) return true;
+  const recoveryEnd = !owner.port && !owner.browser?.isConnected() && owner.profile && Number.isFinite(owner.launchTime)
+    ? Date.now() + 5000 : null;
+  /** Spend only the original no-port wait on recovery; each read/CDP step shares its remaining time. */
+  function cleanupTimeout(maximum) {
+    const remaining = recoveryEnd === null ? maximum : Math.min(maximum, recoveryEnd - Date.now());
+    requireCheck(remaining > 0, 'operation_timeout'); return remaining;
+  }
   try {
-    if (!owner.browser?.isConnected() && owner.port && owner.child.exitCode === null)
-      owner.browser = await runtime.chromium.connectOverCDP(`http://127.0.0.1:${owner.port}`, { noDefaults: true, timeout: 3000 });
+    while (recoveryEnd !== null && !owner.port && owner.child && owner.child.exitCode === null
+      && !owner.failed && Date.now() < recoveryEnd) {
+      const port = await bounded(() => readPortIfFresh(owner.profile, owner.launchTime), cleanupTimeout(5000));
+      if (Date.now() >= recoveryEnd || owner.child.exitCode !== null || owner.failed) break;
+      owner.port = port;
+      if (!port) await delay(cleanupTimeout(50));
+    }
+    if (!owner.browser?.isConnected() && owner.port && owner.child.exitCode === null && !owner.failed) {
+      const timeout = cleanupTimeout(3000);
+      owner.browser = await bounded(() => runtime.chromium.connectOverCDP(`http://127.0.0.1:${owner.port}`,
+        { noDefaults: true, timeout }), timeout);
+    }
     if (owner.browser?.isConnected()) {
-      const session = await bounded(() => owner.browser.newBrowserCDPSession(), 1000);
-      await bounded(() => session.send('Browser.close'), 2000).catch(() => {});
+      const session = await bounded(() => owner.browser.newBrowserCDPSession(), cleanupTimeout(1000));
+      await bounded(() => session.send('Browser.close'), cleanupTimeout(2000)).catch(() => {});
     }
   } catch { /* The process-exit check is authoritative; no raw browser error is retained. */ }
-  const end = Date.now() + 5000;
-  while (owner.child && owner.child.exitCode === null && !owner.failed && Date.now() < end) await delay(50);
+  const end = recoveryEnd ?? Date.now() + 5000;
+  while (owner.child && owner.child.exitCode === null && !owner.failed && Date.now() < end) await delay(Math.min(50, end - Date.now()));
   owner.closed = !!owner.child && (owner.child.exitCode !== null || owner.failed);
   return owner.closed;
 }

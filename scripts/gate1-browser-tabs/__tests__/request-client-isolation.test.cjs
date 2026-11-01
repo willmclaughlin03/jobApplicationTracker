@@ -9,6 +9,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
+const { setImmediate: nextTurn } = require('node:timers/promises');
 const { IsolationError, FixtureBudget, WorkerDiagnostics, bounded, isolationArguments, loopbackOrigin, classifyWorker,
   summarizeWorkers, classifyProxyLine, startFixtureServer, startRejectingProxy, closeServer, requestFixture, closeOwned,
   workerProbe, captureWorkerProbe, evidenceHashes, sourceHashes, fixtureExecutable, main } = require('../request-client-isolation.cjs');
@@ -35,8 +36,41 @@ async function launcherHarness() {
   const source = await fs.readFile(path.join(sourceDir, 'request-client-isolation.cjs'), 'utf8');
   const testModule = { exports: {} };
   vm.compileFunction(source, ['require', 'module', 'exports', '__dirname'])(fakeRequire, testModule, testModule.exports, sourceDir);
-  return { launch: testModule.exports.launchFixtureBrowser, spawns, requested, runtime,
+  return { launch: testModule.exports.launchFixtureBrowser, close: testModule.exports.closeOwned, io: fakeFs, spawns, requested, runtime,
     profile: path.join(sourceDir, 'isolation-fixture-launcher-test') };
+}
+
+/** Time out the real launcher with mocked native boundaries, then expose the late port and shutdown stages. */
+async function startupTimeoutHarness(t) {
+  const fake = await launcherHarness(); const file = path.join(fake.profile, 'DevToolsActivePort');
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 10000 });
+  const portFile = { exists: false, mtimeMs: 10000, contents: '9333\n' }; const calls = [];
+  /** Expose only the owned endpoint file, with availability and freshness controlled by each test. */
+  fake.io.stat = async candidate => {
+    assert.equal(candidate, file); calls.push('stat');
+    if (!portFile.exists) throw Object.assign(new Error('synthetic missing port'), { code: 'ENOENT' });
+    return { mtimeMs: portFile.mtimeMs };
+  };
+  /** Supply synthetic port bytes without opening any real profile file. */
+  fake.io.readFile = async candidate => { assert.equal(candidate, file); calls.push('read'); return portFile.contents; };
+  const owners = []; const budget = testBudget({ wholeMs: 30000 });
+  const stopped = assert.rejects(fake.launch({ runtime: fake.runtime, profile: fake.profile, proxyPort: 8001,
+    seedOrigin: null, budget, owners }), /browser_startup/);
+  await nextTurn(); t.mock.timers.tick(10000); await stopped;
+  assert.equal(Date.now(), 20000); assert.equal(owners.length, 1);
+  const owner = owners[0]; assert.equal(owner.port, null);
+  assert.equal(owner.profile, fake.profile); assert.equal(owner.launchTime, 10000);
+  budget.failure = 'browser_startup';
+  /** Model process exit only after a recorded normal-shutdown command. */
+  const session = { send: async method => { calls.push(method); owner.child.exitCode = 0; } };
+  /** Expose the minimal connected browser/session boundary and record access for deadline assertions. */
+  const browser = { isConnected: () => true, newBrowserCDPSession: async () => { calls.push('session'); return session; } };
+  /** Permit only bounded attachment to the synthetic endpoint, never a real browser connection. */
+  fake.runtime.chromium.connectOverCDP = async (endpoint, options) => {
+    assert.equal(endpoint, 'http://127.0.0.1:9333'); assert.equal(options.noDefaults, true);
+    assert.ok(options.timeout > 0 && options.timeout <= 3000); calls.push('connect'); return browser;
+  };
+  return { ...fake, owner, portFile, calls, browser, session, budget };
 }
 
 /** Arbitrary executable paths and object/prototype coercions must fail before any filesystem or native work. */
@@ -728,6 +762,75 @@ test('cleanup sends normal Browser.close and never kills or removes a profile', 
   assert.equal(await closeOwned(owner, {}), true); assert.deepEqual(calls, ['Browser.close']);
   assert.equal(await closeOwned(owner, {}), true); assert.equal(calls.length, 1);
 });
+
+/** A port written after startup failed must still close the owned process within its existing five-second wait. */
+test('startup timeout cleanup discovers a late port and closes normally without resuming work', async t => {
+  const fake = await startupTimeoutHarness(t); const closing = fake.close(fake.owner, fake.runtime);
+  await nextTurn(); assert.ok(!fake.calls.includes('connect'));
+  fake.portFile.exists = true; t.mock.timers.tick(2000);
+  assert.equal(await closing, true); assert.equal(Date.now(), 22000);
+  assert.equal(fake.owner.port, 9333); assert.equal(fake.owner.closed, true);
+  assert.equal(fake.budget.failure, 'browser_startup'); assert.equal(fake.spawns.length, 1);
+  assert.equal(fake.calls.filter(call => call === 'Browser.close').length, 1);
+  assert.equal(await fake.close(fake.owner, fake.runtime), true);
+  assert.equal(fake.calls.filter(call => call === 'Browser.close').length, 1);
+});
+
+for (const kind of ['missing', 'stale', 'invalid', 'read_error']) {
+  /** Unusable port files must neither attach nor extend the original no-port cleanup deadline. */
+  test(`startup timeout cleanup preserves the five-second failure for a ${kind} port`, async t => {
+    const fake = await startupTimeoutHarness(t);
+    fake.portFile.exists = kind !== 'missing';
+    if (kind === 'stale') fake.portFile.mtimeMs = fake.owner.launchTime - 1;
+    if (kind === 'invalid') fake.portFile.contents = '65536\n';
+    if (kind === 'read_error') fake.io.readFile = async () => { throw new Error('PRIVATE_READ_ERROR'); };
+    let settled = false; const closing = fake.close(fake.owner, fake.runtime).then(result => { settled = true; return result; });
+    await nextTurn(); t.mock.timers.tick(4999); await nextTurn(); assert.equal(settled, false);
+    t.mock.timers.tick(1); assert.equal(await closing, false);
+    assert.equal(Date.now(), 25000); assert.equal(fake.owner.closed, false); assert.equal(fake.owner.port, null);
+    assert.ok(!fake.calls.includes('connect')); assert.ok(!fake.calls.includes('Browser.close'));
+  });
+}
+
+for (const state of ['exit', 'error']) {
+  /** Stop reading or attaching as soon as the owned process exits or its spawn reports failure. */
+  test(`late-port cleanup stops when the process reports ${state}`, async t => {
+    const fake = await startupTimeoutHarness(t); const closing = fake.close(fake.owner, fake.runtime);
+    await nextTurn(); const reads = fake.calls.length; fake.portFile.exists = true;
+    if (state === 'exit') fake.owner.child.exitCode = 0;
+    else fake.owner.child.emit('error', new Error('synthetic spawn failure'));
+    t.mock.timers.tick(50); assert.equal(await closing, true);
+    assert.equal(fake.calls.length, reads); assert.ok(!fake.calls.includes('connect'));
+  });
+}
+
+/** A stalled read cannot escape the cleanup deadline or attach after the caller has finalized failure. */
+test('late-port cleanup bounds filesystem reads and ignores their late completion', async t => {
+  const fake = await startupTimeoutHarness(t); fake.portFile.exists = true;
+  let finishRead; fake.io.stat = () => new Promise(resolve => { finishRead = resolve; });
+  const closing = fake.close(fake.owner, fake.runtime); await nextTurn(); t.mock.timers.tick(5000);
+  assert.equal(await closing, false); finishRead({ mtimeMs: fake.owner.launchTime }); await nextTurn();
+  assert.equal(fake.owner.port, null); assert.ok(!fake.calls.includes('connect'));
+});
+
+for (const stage of ['connect', 'session', 'Browser.close']) {
+  /** A port found near cutoff leaves only the remaining window for CDP; late completions cannot start another step. */
+  test(`late-port cleanup bounds ${stage} by the original deadline`, async t => {
+    const fake = await startupTimeoutHarness(t); let finish;
+    /** Hold one CDP step beyond cutoff so the test can release it after cleanup has returned. */
+    const stalled = () => { fake.calls.push(stage); return new Promise(resolve => { finish = resolve; }); };
+    if (stage === 'connect') fake.runtime.chromium.connectOverCDP = (endpoint, options) => {
+      assert.equal(endpoint, 'http://127.0.0.1:9333'); assert.equal(options.timeout, 1000); return stalled();
+    };
+    else if (stage === 'session') fake.browser.newBrowserCDPSession = stalled;
+    else fake.session.send = method => { assert.equal(method, 'Browser.close'); return stalled(); };
+    const closing = fake.close(fake.owner, fake.runtime); await nextTurn();
+    fake.portFile.exists = true; t.mock.timers.tick(4000); await nextTurn();
+    assert.ok(finish); t.mock.timers.tick(1000); assert.equal(await closing, false);
+    const calls = fake.calls.slice(); finish(stage === 'connect' ? fake.browser : fake.session); await nextTurn();
+    assert.deepEqual(fake.calls, calls); assert.equal(fake.owner.closed, false); assert.equal(Date.now(), 25000);
+  });
+}
 
 test('CLI refuses arbitrary profiles, targets, or an unapproved default run', async () => {
   await assert.rejects(main([]), /local_fixture_argument_required/);
