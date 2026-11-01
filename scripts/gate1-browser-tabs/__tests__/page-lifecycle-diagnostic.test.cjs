@@ -14,7 +14,8 @@ const diagnostic = require('../page-lifecycle-diagnostic.cjs');
 const { PIN, LIMITS, HISTORY, DiagnosticBudget, Recorder, LifecycleObserver, browserBridge, checkToolchain,
   errorCode, historyHashes, historyMatches, sourceHashes, interpretation, closeCase, reserveEvidence,
   encodeEvidence, finalEvidence, runDiagnostic, main } = diagnostic;
-const { COMPARISON_PIN, COMPARISON_HISTORY, modeConfig, packageHashes, checkPackage, nativeDependencies, preflight } = diagnostic;
+const { COMPARISON_PIN, COMPARISON_HISTORY, COMPARISON_02_HISTORY, modeConfig,
+  packageHashes, checkPackage, nativeDependencies, preflight } = diagnostic;
 const SOURCE_SET = 'a'.repeat(64);
 const HOSTILE = 'https://private.invalid/?cookie=SESSION_SECRET&token=RAW_SECRET';
 
@@ -54,10 +55,45 @@ test('comparison mode is immutable and has a distinct execution directory and re
     assert.throws(() => modeConfig(mode), /browser_selection/);
     await assert.rejects(runDiagnostic(SOURCE_SET, {}, mode), /browser_selection/);
   }
-  for (const mode of ['edge', 'cft158']) await assert.rejects(preflight(SOURCE_SET, mode), /execution_directory/);
+  for (const mode of ['edge', 'cft158', 'cft158-02']) await assert.rejects(preflight(SOURCE_SET, mode), /execution_directory/);
   for (const args of [['--compare-cft158'], ['--compare-cft158', '--source-set-sha256=secret'],
     ['--compare-cft158', `--source-set-sha256=${SOURCE_SET}`, '--executable=C:/other.exe']]) {
     await assert.rejects(main(args), /argument_required/);
+  }
+});
+
+/** The second comparison selects the same browser with a distinct fixed receipt, directory and synthetic profile prefix. */
+test('comparison 02 cannot reuse either consumed mode or substitute its browser package', () => {
+  const next = modeConfig('cft158-02'); const first = modeConfig('cft158');
+  assert.ok(Object.isFrozen(next)); assert.ok(Object.isFrozen(next.history));
+  assert.equal(next.browser, 'cft158'); assert.equal(next.pin, COMPARISON_PIN);
+  assert.equal(next.executable, first.executable); assert.equal(next.version, first.version);
+  assert.equal(path.basename(next.directory), 'gate1-browser-comparison-cft158-02');
+  assert.equal(path.basename(next.result), 'browser-page-lifecycle-comparison-cft158-02.json');
+  assert.equal(next.profilePrefix, 'isolation-fixture-comparison-cft158-02-');
+  for (const previous of [modeConfig(), first]) {
+    assert.notEqual(next.directory, previous.directory); assert.notEqual(next.result, previous.result);
+    assert.notEqual(next.profilePrefix, previous.profilePrefix);
+  }
+});
+
+/** All thirteen predecessors are required byte-for-byte; the future receipt is excluded and old histories stay unchanged. */
+test('comparison 02 freezes the stopped comparison alongside all earlier receipts', async () => {
+  const names = [];
+  const hashes = await historyHashes(async file => {
+    const name = path.basename(file); names.push(name); return COMPARISON_02_HISTORY[name];
+  }, 'cft158-02');
+  assert.equal(names.length, 13); assert.ok(historyMatches(hashes, 'cft158-02'));
+  assert.equal(hashes['browser-page-lifecycle-comparison-cft158-01.json'],
+    '9be84f27995548b696e81cbfed62e2cabd29649028ff61865b5e56b3f3524ae8');
+  assert.ok(!names.includes(path.basename(modeConfig('cft158-02').result)));
+  assert.equal(Object.keys(HISTORY).length, 11); assert.equal(Object.keys(COMPARISON_HISTORY).length, 12);
+  assert.ok(!historyMatches(COMPARISON_HISTORY, 'cft158-02'));
+  assert.ok(!historyMatches({ ...hashes, extra: SOURCE_SET }, 'cft158-02'));
+  for (const name of names) {
+    const missing = { ...hashes }; delete missing[name];
+    assert.ok(!historyMatches(missing, 'cft158-02'));
+    assert.ok(!historyMatches({ ...hashes, [name]: SOURCE_SET }, 'cft158-02'));
   }
 });
 
@@ -73,22 +109,101 @@ test('comparison history freezes twelve predecessors and excludes its own future
   assert.ok(!historyMatches(HISTORY, 'cft158'));
 });
 
-/** Binding native dependencies selects only the comparison executable/profile directory and an exclusive destination. */
-test('comparison native boundaries are bound without loading Playwright or starting a process', async t => {
-  const config = modeConfig('cft158'); const deps = nativeDependencies('cft158'); let launches = 0;
-  t.mock.method(fixture, 'launchFixtureBrowser', async args => { launches++; assert.equal(args.browser, 'cft158'); return 'synthetic'; });
-  t.mock.method(fs, 'mkdtemp', async prefix => {
-    assert.equal(prefix, path.join(config.directory, config.profilePrefix)); return 'synthetic';
+for (const mode of ['cft158', 'cft158-02']) {
+  /** Binding native dependencies selects only the comparison executable/profile directory and an exclusive destination. */
+  test(`${mode} native boundaries are bound without loading Playwright or starting a process`, async t => {
+    const config = modeConfig(mode); const deps = nativeDependencies(mode); let launches = 0;
+    t.mock.method(fixture, 'launchFixtureBrowser', async args => { launches++; assert.equal(args.browser, 'cft158'); return 'synthetic'; });
+    t.mock.method(fs, 'mkdtemp', async prefix => {
+      assert.equal(prefix, path.join(config.directory, config.profilePrefix)); return 'synthetic';
+    });
+    t.mock.method(fs, 'open', async (file, flag) => {
+      assert.equal(file, config.result); assert.equal(flag, 'wx'); throw Object.assign(new Error(HOSTILE), { code: 'EEXIST' });
+    });
+    assert.equal(await deps.launch({ browser: 'edge' }), 'synthetic'); assert.equal(launches, 1);
+    assert.equal(await deps.profile(), 'synthetic'); await assert.rejects(deps.reserve(), /evidence_already_exists/);
+    const fake = harness({ mode }); fake.deps.reserve = deps.reserve;
+    await assert.rejects(runDiagnostic(SOURCE_SET, fake.deps, mode), /evidence_already_exists/);
+    assert.ok(!fake.calls.includes('runtime')); assert.ok(!fake.calls.includes('launch'));
   });
-  t.mock.method(fs, 'open', async (file, flag) => {
-    assert.equal(file, config.result); assert.equal(flag, 'wx'); throw Object.assign(new Error(HOSTILE), { code: 'EEXIST' });
-  });
-  assert.equal(await deps.launch({ browser: 'edge' }), 'synthetic'); assert.equal(launches, 1);
-  assert.equal(await deps.profile(), 'synthetic'); await assert.rejects(deps.reserve(), /evidence_already_exists/);
-  const fake = harness({ mode: 'cft158' }); fake.deps.reserve = deps.reserve;
-  await assert.rejects(runDiagnostic(SOURCE_SET, fake.deps, 'cft158'), /evidence_already_exists/);
-  assert.ok(!fake.calls.includes('runtime')); assert.ok(!fake.calls.includes('launch'));
+}
+
+/**
+ * Keep the real CLI, preflight guards and exclusive reservation, replacing only hash/input I/O in a VM.
+ * Synthetic inputs never read a package or receipt; any native runtime import or unexpected file access fails.
+ */
+async function comparison02Preflight(options = {}) {
+  const code = await fs.readFile(path.join(__dirname, '../page-lifecycle-diagnostic.cjs'), 'utf8');
+  const config = modeConfig('cft158-02'); const calls = []; const testModule = { exports: {} };
+  const io = {
+    /** Provide only the pinned package metadata used before hashing; reject any other content read. */
+    readFile: async file => {
+      assert.equal(path.basename(file), 'package.json'); calls.push('metadata');
+      return JSON.stringify({ name: 'playwright-core', version: PIN.playwright });
+    },
+    /** End the valid CLI path at an occupied output, proving preflight cannot bypass exclusive reservation. */
+    open: async (file, flag) => {
+      assert.equal(file, config.result); assert.equal(flag, 'wx'); calls.push('reserve');
+      throw Object.assign(new Error(HOSTILE), { code: 'EEXIST' });
+    },
+  };
+  const sandbox = { module: testModule, exports: testModule.exports, __dirname: config.directory,
+    process: { version: PIN.node, env: {} },
+    /** Permit only inert built-ins and the already loaded fixture; Playwright must remain unreachable. */
+    require: name => {
+      if (name === 'node:fs/promises') return io;
+      if (name === 'node:fs') return {};
+      if (name === './request-client-isolation.cjs') return fixture;
+      assert.ok(['node:crypto', 'node:path'].includes(name)); return require(name);
+    },
+    /** Model the exact executable and bundle digests without opening native binaries. */
+    readHash: async file => {
+      calls.push('hash');
+      if (file === config.executable) return COMPARISON_PIN.executable;
+      assert.equal(path.basename(file), 'coreBundle.js'); return PIN.bundle;
+    },
+    /** Supply package content for real validation, independently of the executable and source pins. */
+    readPackage: async () => { calls.push('package'); return { ...COMPARISON_PIN, ...options.package }; },
+    /** Supply the reviewed manifest or a controlled mismatch without reading execution copies. */
+    readSources: async () => { calls.push('sources'); return { set: options.sourceSet ?? SOURCE_SET }; },
+    /** Supply the complete history or a controlled omission/change for the real exact-match guard. */
+    readHistory: async () => { calls.push('history'); return options.history ?? { ...COMPARISON_02_HISTORY }; },
+  };
+  vm.runInNewContext(`${code}\nhashFile = readHash; packageHashes = readPackage; sourceHashes = readSources; historyHashes = readHistory;`, sandbox);
+  return { diagnostic: testModule.exports, calls };
+}
+
+/** The new CLI must validate the package and all predecessors before it reaches an exclusively reserved destination. */
+test('comparison 02 CLI validates all inputs before reservation and refuses overrides', async () => {
+  const fake = await comparison02Preflight();
+  for (const args of [['--compare-cft158-02'], ['--compare-cft158-02', '--source-set-sha256=secret'],
+    ['--compare-cft158-03', `--source-set-sha256=${SOURCE_SET}`],
+    ['constructor', `--source-set-sha256=${SOURCE_SET}`],
+    [['--compare-cft158-02'], `--source-set-sha256=${SOURCE_SET}`],
+    ...['--executable=C:/other.exe', '--profile=saved', '--output=old.json', '--startup-timeout=20000']
+      .map(override => ['--compare-cft158-02', `--source-set-sha256=${SOURCE_SET}`, override])]) {
+    await assert.rejects(fake.diagnostic.main(args), /argument_required/);
+  }
+  assert.deepEqual(fake.calls, []);
+  await assert.rejects(fake.diagnostic.main(['--compare-cft158-02', `--source-set-sha256=${SOURCE_SET}`]), /evidence_already_exists/);
+  assert.deepEqual(fake.calls, ['metadata', 'hash', 'hash', 'package', 'sources', 'history', 'reserve']);
 });
+
+for (const [name, options, code] of [
+  ['changed package', { package: { packageSet: SOURCE_SET } }, 'package_mismatch'],
+  ['changed sources', { sourceSet: 'b'.repeat(64) }, 'source_mismatch'],
+  ['missing comparison', { history: COMPARISON_HISTORY }, 'history_mismatch'],
+  ['changed comparison', { history: { ...COMPARISON_02_HISTORY,
+    'browser-page-lifecycle-comparison-cft158-01.json': SOURCE_SET } }, 'history_mismatch'],
+  ['extra history', { history: { ...COMPARISON_02_HISTORY, extra: SOURCE_SET } }, 'history_mismatch'],
+]) {
+  /** Any integrity mismatch stops the new CLI before reservation or native initialization. */
+  test(`comparison 02 preflight rejects ${name} before reservation`, async () => {
+    const fake = await comparison02Preflight(options);
+    await assert.rejects(fake.diagnostic.main(['--compare-cft158-02', `--source-set-sha256=${SOURCE_SET}`]), new RegExp(code));
+    assert.ok(fake.calls.includes('package')); assert.ok(!fake.calls.includes('reserve'));
+  });
+}
 
 /** The complete file manifest is sorted independent of enumeration and detects added or changed resources. */
 test('package hashing covers every file, archive and browser library with stable ordering', async () => {
@@ -132,39 +247,41 @@ test('comparison rejects drift in package contents and toolchain independently',
   }
 });
 
-/** Share the exact two-case sequence, deadline and cleanup semantics; the comparison never claims isolation or causal proof. */
-test('comparison orchestration changes provenance while retaining the baseline operation sequence', async () => {
-  const baseline = harness(); await runDiagnostic(SOURCE_SET, baseline.deps);
-  const fake = harness({ mode: 'cft158' }); const result = await runDiagnostic(SOURCE_SET, fake.deps, 'cft158');
-  assert.deepEqual(fake.calls, baseline.calls); assert.equal(result.mode, 'cft158'); assert.deepEqual(result.toolchain, COMPARISON_PIN);
-  assert.deepEqual(result.priorEvidenceHashes, COMPARISON_HISTORY); assert.deepEqual(result.limits, LIMITS);
-  assert.equal(result.phase, 'not_reproduced'); assert.equal(result.isolationQualified, false); assert.equal(result.gate1Status, 'open');
-  assert.equal(result.packageProvenance.packageSet, COMPARISON_PIN.packageSet);
-  assert.ok(result.limitations.some(text => text.includes('product and version')));
-  assert.ok(result.limitations.some(text => text.includes('no Authenticode')));
-});
+for (const mode of ['cft158', 'cft158-02']) {
+  /** Share the exact two-case sequence, deadline and cleanup semantics; the comparison never claims isolation or causal proof. */
+  test(`${mode} orchestration changes provenance while retaining the baseline operation sequence`, async () => {
+    const baseline = harness(); await runDiagnostic(SOURCE_SET, baseline.deps);
+    const fake = harness({ mode }); const result = await runDiagnostic(SOURCE_SET, fake.deps, mode);
+    assert.deepEqual(fake.calls, baseline.calls); assert.equal(result.mode, mode); assert.deepEqual(result.toolchain, COMPARISON_PIN);
+    assert.deepEqual(result.priorEvidenceHashes, modeConfig(mode).history); assert.deepEqual(result.limits, LIMITS);
+    assert.equal(result.phase, 'not_reproduced'); assert.equal(result.isolationQualified, false); assert.equal(result.gate1Status, 'open');
+    assert.equal(result.packageProvenance.packageSet, COMPARISON_PIN.packageSet);
+    assert.ok(result.limitations.some(text => text.includes('product and version')));
+    assert.ok(result.limitations.some(text => text.includes('no Authenticode')));
+  });
 
-/** Reproducing the observed baseline must freeze the failed close before later whole-browser cleanup completes it. */
-test('comparison preserves acknowledged-open timeout and twelve-receipt cleanup checks', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 10000 });
-  const fake = harness({ mode: 'cft158', blocked: 'ack_open' });
-  const running = runDiagnostic(SOURCE_SET, fake.deps, 'cft158'); await flush(); t.mock.timers.tick(5000);
-  const result = await running;
-  assert.equal(result.firstFailure.code, 'close_timeout'); assert.equal(result.firstFailure.stage, 'blocked');
-  assert.equal(result.cases.blocked.interpretation, 'acknowledged_target_present');
-  assert.equal(result.cases.blocked.cutoff.promise, 'pending'); assert.equal(result.afterCleanup.blocked.promise, 'resolved');
-  assert.equal(result.phase, 'inconclusive'); assert.equal(result.priorEvidenceUnchanged, true);
-});
+  /** Reproducing the observed baseline must freeze the failed close before later whole-browser cleanup completes it. */
+  test(`${mode} preserves acknowledged-open timeout and its complete history`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 10000 });
+    const fake = harness({ mode, blocked: 'ack_open' });
+    const running = runDiagnostic(SOURCE_SET, fake.deps, mode); await flush(); t.mock.timers.tick(5000);
+    const result = await running;
+    assert.equal(result.firstFailure.code, 'close_timeout'); assert.equal(result.firstFailure.stage, 'blocked');
+    assert.equal(result.cases.blocked.interpretation, 'acknowledged_target_present');
+    assert.equal(result.cases.blocked.cutoff.promise, 'pending'); assert.equal(result.afterCleanup.blocked.promise, 'resolved');
+    assert.equal(result.phase, 'inconclusive'); assert.equal(result.priorEvidenceUnchanged, true);
+  });
 
-/** Wrong live browser versions stop before either case; late baseline changes cannot leave a completed comparison. */
-test('comparison version and preservation failures remain inconclusive', async () => {
-  const wrong = harness({ mode: 'cft158', version: PIN.edge });
-  const stopped = await runDiagnostic(SOURCE_SET, wrong.deps, 'cft158');
-  assert.equal(stopped.firstFailure.code, 'toolchain_mismatch'); assert.ok(!wrong.calls.includes('create_blank'));
-  const changed = harness({ mode: 'cft158', changedHistory: true });
-  const result = await runDiagnostic(SOURCE_SET, changed.deps, 'cft158');
-  assert.equal(result.phase, 'inconclusive'); assert.equal(result.firstFailure.code, 'history_mismatch');
-});
+  /** Wrong live browser versions stop before either case; late baseline changes cannot leave a completed comparison. */
+  test(`${mode} version and preservation failures remain inconclusive`, async () => {
+    const wrong = harness({ mode, version: PIN.edge });
+    const stopped = await runDiagnostic(SOURCE_SET, wrong.deps, mode);
+    assert.equal(stopped.firstFailure.code, 'toolchain_mismatch'); assert.ok(!wrong.calls.includes('create_blank'));
+    const changed = harness({ mode, changedHistory: true });
+    const result = await runDiagnostic(SOURCE_SET, changed.deps, mode);
+    assert.equal(result.phase, 'inconclusive'); assert.equal(result.firstFailure.code, 'history_mismatch');
+  });
+}
 
 /** Make an inspectable fake native boundary; no process, browser, listener or file is created. */
 function harness(options = {}) {
@@ -238,7 +355,7 @@ function harness(options = {}) {
   const deps = {
     preflight: async expected => { assert.equal(expected, SOURCE_SET); calls.push('preflight');
       return { sources: { set: SOURCE_SET }, history: { ...config.history },
-        ...(mode === 'cft158' ? { packageProvenance: { ...COMPARISON_PIN } } : {}) }; },
+        ...(config.browser === 'cft158' ? { packageProvenance: { ...COMPARISON_PIN } } : {}) }; },
     /** Mock the exclusive evidence handle and retain serialized output for redaction assertions. */
     reserve: async () => { calls.push('reserve'); return {
       writeFile: async text => { calls.push('write'); written = text; }, close: async () => calls.push('file_close'),
@@ -534,11 +651,11 @@ test('outer deadline during close cannot mutate its frozen case or start a late 
   assert.equal(JSON.stringify(result.cases.blocked), frozen); assert.equal(fake.calls.filter(call => call === 'inventory').length, 1);
 });
 
-for (const recover of [true, false]) {
+for (const mode of ['edge', 'cft158-02']) for (const recover of [true, false]) {
   /** Real owned-browser cleanup must finish before receipt writing and retain the original startup failure. */
-  test(`startup-timeout receipt waits for ${recover ? 'late-port shutdown' : 'no-port cleanup expiry'}`, async t => {
+  test(`${mode} startup-timeout receipt waits for ${recover ? 'late-port shutdown' : 'no-port cleanup expiry'}`, async t => {
     t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 10000 });
-    const fake = harness(); const profile = 'C:/synthetic/isolation-fixture-lifecycle-test';
+    const fake = harness({ mode }); const profile = `C:/synthetic/${modeConfig(mode).profilePrefix}test`;
     const owner = { child: { exitCode: null }, port: null, browser: null, profile, launchTime: 10000, closed: false };
     const portFile = path.join(profile, 'DevToolsActivePort'); const commands = [];
     /** Reveal the owned endpoint during cleanup only for the recoverable case. */
@@ -561,12 +678,13 @@ for (const recover of [true, false]) {
       args.budget.count('launches'); args.owners.push(owner); throw new fixture.IsolationError('browser_startup');
     };
     fake.deps.closeBrowser = fixture.closeOwned;
-    const running = runDiagnostic(SOURCE_SET, fake.deps); await flush();
+    const running = runDiagnostic(SOURCE_SET, fake.deps, mode); await flush();
     assert.ok(!fake.calls.includes('write')); t.mock.timers.tick(2000); await flush();
     if (!recover) { assert.ok(!fake.calls.includes('write')); t.mock.timers.tick(3000); }
     const result = await running; const written = JSON.parse(fake.written());
     assert.equal(result.firstFailure.code, 'browser_startup'); assert.equal(result.firstFailure.stage, 'setup');
     assert.equal(result.phase, 'inconclusive'); assert.deepEqual(result.cases, {}); assert.equal(result.counts.launches, 1);
+    assert.equal(result.mode, mode); assert.deepEqual(result.priorEvidenceHashes, modeConfig(mode).history);
     assert.equal(result.ownedBrowsersClosedNormally, recover); assert.equal(written.ownedBrowsersClosedNormally, recover);
     assert.deepEqual(written.firstFailure, result.firstFailure);
     assert.deepEqual(result.cleanupFailures, recover ? [] : ['browser_cleanup']);
