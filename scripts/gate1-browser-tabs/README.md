@@ -453,6 +453,159 @@ Chromium fix, or qualify restored-worker isolation. GATE-1 remains open. Full lo
 isolation qualification and any subsequent hosted CSRF exercise require their own
 bounded proposals and approvals; neither follows automatically from this comparison.
 
+## Full pinned Chrome isolation preparation (2026-11-02)
+
+The owner approved the five-file preparation proposal and offline validation after
+comparison 02. This preparation starts from staging
+`8ecf41ca319116016be89586fe37de44003ce9a4`. It does not authorize a native run.
+
+`full-isolation-qualification.cjs` exposes only `--fixture-cft158-01` plus its
+reviewed `--source-set-sha256` argument. It uses the shared two-launch case sequence
+in `request-client-isolation.cjs` and the existing diagnostic's exported package
+validators. The dependency direction is qualification -> diagnostic -> fixture;
+the fixture never imports either entry point. The consumed fixture and comparison
+CLI destinations remain unchanged. Historical execution copies are not modified.
+
+The fixed new destinations are:
+
+- Execution copies: `.tmp/gate1-isolation-cft158-01/`.
+- Fresh synthetic profile prefix: `isolation-fixture-cft158-01-`, beneath that directory.
+- Exclusive receipt:
+  `.tmp/gate1-checkout-enable-dd2c2c6/browser-isolation-fixture-cft158-01.json`.
+
+Preflight checks the exact execution directory, disabled debug logging, Node
+v22.18.0, Playwright core 1.62.0-alpha-1783623505000 and its bundle hash, Chrome for
+Testing 158.0.8127.2, the retained archive, all 305 extracted files, all six runtime/
+test source hashes, and fourteen frozen predecessor receipts. The additional
+predecessor is comparison 02, pinned to
+`96eb4d6d7df5cb895aa1833958fc7dd3d90f8c1095aee6030b7801d383f0983a`.
+The package pins and unsigned executable/DLL provenance documented above still
+apply; there is no signer-validation claim or package substitution.
+
+After preflight, exclusive receipt creation consumes the invocation before
+Playwright loading, profile creation, listeners or browser launch. Concurrent
+invocations cannot share the receipt. Even a failed or late reservation remains
+consumed if its file was created; do not remove it to retry. No arbitrary profile,
+target, executable, output, attempt-number, launch-flag or timeout override exists.
+
+### Frozen full-fixture sequence
+
+1. Launch the pinned Chrome package with a fresh synthetic profile and only the
+   exact loopback fixture seed exception. Navigate to the fixture, seed the
+   persistent synthetic cookie, install/discover its exact worker, and require
+   both a successful baseline fetch result and a corresponding fixture worker hit.
+   Close the first browser normally and verify its parent process exited.
+2. Restart the same profile with the seed exception removed. Require request-client
+   access, the persisted synthetic cookie and response-cookie write-back to the
+   browser context. Synthetic cookie values are compared only in memory.
+3. Use one disposable page for HTTP and HTTPS CONNECT rejection. Each needs the
+   matching proxy counter increase and no fixture page hit. Close the probe
+   normally within five seconds, without an intervening recovery navigation, and
+   require the untouched blank keeper to be the sole remaining page.
+4. Enable/start/discover the exact restored worker through that keeper. Require a
+   validated unsuccessful fetch result, a corresponding proxy worker observation
+   and no fixture worker hit. Missing workers, evaluation failures, malformed
+   results and timeouts cannot qualify blocking. Detach the worker-control session.
+5. Close owned browser and loopback resources normally; preserve the profile and
+   recheck all fourteen predecessors and the full source set. An independently
+   verified zero matching browser/runner process count is required after the run.
+
+Both launches check the cached browser version. Scripted await boundaries check
+the stop latch before proceeding or updating evidence. Late worker results cannot
+overwrite stopped evidence, and startup/cleanup deadlines prevent later CDP steps
+from starting after cutoff. The first case failure remains primary even when
+cleanup or preservation subsequently fails.
+
+### Proposed one-run limits and acceptance
+
+| Resource | Fixed limit |
+| --- | --- |
+| Complete invocation | 900,000 ms, including preflight and a final 20,000 ms cleanup/evidence reserve |
+| Read-only preflight | 60,000 ms within the overall clock |
+| Launches | 2; restart requires verified exit of the first owned parent |
+| Page inventory | At most 2 simultaneously; 3 reserved keeper/probe slots across both launches |
+| Scripted navigations / request-client calls | 3 / 2 |
+| Worker fetch probes / cached version reads | 2 / 2 |
+| Fixture requests / proxy connections | 100 / 200 |
+| Startup port wait | 10,000 ms per launch |
+| Request-client, page and worker operations | 5,000 ms each; the request-client bound includes parsing/disposal |
+| Worker-control detach / loopback server close | 2,000 ms each |
+| Normal browser cleanup | At most 11,000 ms, clipped by the shared deadline; no-port recovery remains at most 5,000 ms |
+| Sanitized receipt | 131,072 bytes |
+
+Cleanup allocates at most two seconds for an outstanding worker-control detach,
+eleven for the remaining browser, four for the two loopback resources, two for
+preservation checks and one for receipt I/O, all sharing the twenty-second reserve.
+An earlier failure starts that reserve immediately; it cannot extend the overall
+deadline. Over-limit incoming traffic is counted, rejected and latches failure;
+these ceilings do not assert that the browser physically emits no excess traffic.
+
+Only fixed labels, booleans, counts, timings, bounded status codes and provenance
+hashes enter the receipt. Raw URLs, protocol messages, error text, headers, cookie
+values and profile storage do not. The profile is represented by its name hash.
+
+`phase: passed` and `localChecksPassed: true` mean that the local cases and recorded
+normal cleanup/preservation checks completed. The runner leaves
+`independentProcessExitVerified: false` and `isolationQualified: false`; operational
+acceptance still requires successful receipt I/O, exit code zero, independent
+browser/runner inspection and postflight integrity reconciliation. Do not mutate
+the immutable receipt to insert those later observations. A cleanup failure,
+unknown surviving process or late I/O failure cannot qualify the exercise.
+
+Any failed case, missing observation, integrity drift, timeout, overflow or cleanup
+problem stops later work and returns to the owner. There is no automatic retry,
+forced termination, separate recovery exercise, Edge rerun or hosted action.
+The operator is the Codex agent; the project owner owns operational and risk
+decisions. Native execution requires its own approval of the final source digest,
+locations, unsigned package, cases and limits.
+
+This target-bound local result would not qualify installed Edge, OS-wide egress,
+WebRTC/UDP, a historical worker's causality, hosted behavior or GATE-1. After an
+accepted local result, prepare a separate hosted CSRF proposal that reconciles the
+actual deployment/canonical alias, readiness-guard decision and cumulative request
+ledger. GATE-1 remains open; the hosted guard is unchanged.
+
+### Preparation validation and frozen execution source
+
+Preparation passed 212 focused Node tests (53 added), six CJS syntax checks,
+scoped ESLint with zero warnings and whitespace checks. Tests use mocked native
+browser boundaries; existing helper tests also exercise local loopback servers.
+No native browser exercise was performed during preparation.
+
+The six execution copies match the preparation worktree byte-for-byte. Their
+ordered source-set SHA-256 is:
+`4651ec30caf033c6c0886ed85842d5300ac0f4d4f1c999dacd0d4ec99438e1ef`.
+
+| Input | SHA-256 |
+| --- | --- |
+| request-client-isolation.cjs | `4602f72449ae4b1b02822825cd54b47426e839d96c8918e50cca05a10348a022` |
+| __tests__/request-client-isolation.test.cjs | `99ed596bdff744480279c96114ec45e0ca73f4c0af9cc03a76e3692b0542e697` |
+| page-lifecycle-diagnostic.cjs | `7a58852bb78a6255edf44d8c5934998b50e0f07d512186ef40508e81c3a971bc` |
+| __tests__/page-lifecycle-diagnostic.test.cjs | `539344722b7a17139d3e382db26f40ae994b8c6a6301bd6a56173341d37add2b` |
+| full-isolation-qualification.cjs | `08e3daf7d903ee4527b7fff3a6484600e3715a0b30a896b7b133a33b836bccdd` |
+| __tests__/full-isolation-qualification.test.cjs | `57e6ee6894362792e6d65bd8b0f15031379800fef681499566a488e20759eeeb` |
+
+Actual read-only preflight on November 2 verified the exact toolchain, archive,
+305 extracted package files (470,456,803 bytes), all fourteen receipts and this
+source set. All three historical execution source sets also matched. Independent
+process inspection found zero matching fixture browsers and zero matching Node
+runners. Both Chrome executable/DLL signature statuses were `NotSigned`.
+
+The new receipt remained absent, no new synthetic profile existed, and Playwright
+was not loaded. The interrupted read-only verification was completed on resumption;
+it did not consume a native invocation. The following is the proposed command,
+not an executed run or authorization to run:
+
+```powershell
+node .tmp/gate1-isolation-cft158-01/full-isolation-qualification.cjs --fixture-cft158-01 --source-set-sha256=4651ec30caf033c6c0886ed85842d5300ac0f4d4f1c999dacd0d4ec99438e1ef
+```
+
+Before a separately approved invocation, repeat the fixed input and process checks,
+clear `DEBUG`, `DEBUG_FILE` and `PWDEBUG` only in that child process, and use the
+repo-local `.tmp` directory for its `TEMP`/`TMP`. Afterward, reconcile the retained
+receipt, frozen sources, package and predecessors and inspect matching processes
+independently. An inconclusive or failed result returns to the owner without a retry.
+
 ## Offline commands
 
 Run from the checkout root with Node 22. The unit suite uses built-in modules only

@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-11-01
 
+- `2026-11-02` - `Pinned Chrome full-isolation preparation`: Add a fixed two-launch Chrome qualification entry point for synthetic cookie persistence, request-client access/write-back, page blocking and restored-worker blocking. Verify the complete pinned package, six source/test inputs and fourteen predecessors before exclusive receipt reservation. Freeze bounded cleanup and sanitized evidence, with independent process verification required for acceptance. Add 53 regressions; all 212 focused tests, syntax, scoped lint and preflight checks passed. No native exercise ran; GATE-1 remains open.
+
 - `2026-11-01` - `Second pinned lifecycle comparison`: Add fixed `--compare-cft158-02` selection with a distinct execution directory, synthetic profile prefix and exclusive receipt, preserving all thirteen predecessors and the existing package, cases and deadlines. Add 14 regressions; all 159 focused tests, syntax, scoped lint and whitespace checks passed. The separately approved native comparison completed both reduced cases in 4,793 ms with normal cleanup and preserved evidence. Record `not_reproduced`; restored-worker isolation and GATE-1 remain open.
 
 - `2026-11-01` - `Late-port startup cleanup`: Retain the owned synthetic profile and launch time so cleanup can discover a fresh DevTools port and attempt normal shutdown within the existing five-second no-port window. Preserve the ten-second startup failure and finalize receipts after cleanup. Add 13 mocked regressions; all 145 focused tests, syntax, scoped lint and whitespace checks passed. Historical native evidence is unchanged; no browser comparison or recovery was run.
