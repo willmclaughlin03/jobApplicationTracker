@@ -2,7 +2,7 @@
 /* global __dirname, URL, clearTimeout, fetch, navigator, process, setTimeout */
 
 /**
- * Local-only qualification of native Edge network isolation for request clients.
+ * Local-only browser isolation primitives and the legacy Edge request-client fixture.
  * The CLI uses a new synthetic profile and loopback fixtures only. It never opens
  * a retained signed-in profile, exports storage, or accepts a hosted target.
  */
@@ -243,7 +243,12 @@ async function closeServer(resource) {
 /** Wait for local state with a bounded polling interval and a latched fixture deadline. */
 async function waitFor(read, budget, milliseconds, code) {
   const end = Date.now() + milliseconds;
-  while (Date.now() < end) { budget.check(); const value = await read(); if (value) return value; await delay(50); }
+  while (Date.now() < end) {
+    budget.check(); const value = await bounded(read, Math.max(1, end - Date.now()), code); budget.check();
+    if (Date.now() >= end) break;
+    if (value) return value;
+    await delay(Math.min(50, end - Date.now()));
+  }
   throw new IsolationError(code);
 }
 
@@ -282,12 +287,16 @@ async function launchFixtureBrowser({ runtime, profile, proxyPort, seedOrigin, b
   owner.child = spawn(executable, args, { stdio: 'ignore', windowsHide: true });
   owner.child.once('error', () => { owner.failed = true; });
   owner.port = await readFreshPort(resolved, launchTime, budget);
+  budget.check();
   requireCheck(!owner.failed && owner.child.exitCode === null, 'browser_process');
-  owner.browser = await runtime.chromium.connectOverCDP(`http://127.0.0.1:${owner.port}`, { noDefaults: true, timeout: 5000 });
+  owner.browser = await bounded(() => runtime.chromium.connectOverCDP(`http://127.0.0.1:${owner.port}`,
+    { noDefaults: true, timeout: 5000 }), 5000);
+  budget.check();
   const contexts = owner.browser.contexts(); requireCheck(contexts.length === 1, 'context_count');
   owner.context = contexts[0];
   requireCheck(owner.context.pages().every(page => page.url() === 'about:blank') && owner.context.pages().length <= 1, 'unexpected_initial_page');
   owner.keeper = owner.context.pages()[0] || await bounded(() => owner.context.newPage(), 5000, 'keeper_timeout');
+  budget.check();
   return owner;
 }
 
@@ -297,14 +306,14 @@ function fixtureExecutable(browser = 'edge') {
   return browser === 'edge' ? EDGE : CFT158;
 }
 
-/** Normal shutdown only; preserves the synthetic profile and reports failure rather than killing. */
-async function closeOwned(owner, runtime) {
+/** Normal shutdown only; an optional shared deadline caps every step without extending existing limits or killing. */
+async function closeOwned(owner, runtime, deadline = Infinity) {
   if (!owner || owner.closed) return true;
   const recoveryEnd = !owner.port && !owner.browser?.isConnected() && owner.profile && Number.isFinite(owner.launchTime)
-    ? Date.now() + 5000 : null;
+    ? Math.min(Date.now() + 5000, deadline) : null;
   /** Spend only the original no-port wait on recovery; each read/CDP step shares its remaining time. */
   function cleanupTimeout(maximum) {
-    const remaining = recoveryEnd === null ? maximum : Math.min(maximum, recoveryEnd - Date.now());
+    const remaining = Math.min(maximum, (recoveryEnd ?? deadline) - Date.now());
     requireCheck(remaining > 0, 'operation_timeout'); return remaining;
   }
   try {
@@ -325,7 +334,7 @@ async function closeOwned(owner, runtime) {
       await bounded(() => session.send('Browser.close'), cleanupTimeout(2000)).catch(() => {});
     }
   } catch { /* The process-exit check is authoritative; no raw browser error is retained. */ }
-  const end = recoveryEnd ?? Date.now() + 5000;
+  const end = Math.min(recoveryEnd ?? Date.now() + 5000, deadline);
   while (owner.child && owner.child.exitCode === null && !owner.failed && Date.now() < end) await delay(Math.min(50, end - Date.now()));
   owner.closed = !!owner.child && (owner.child.exitCode !== null || owner.failed);
   return owner.closed;
@@ -376,10 +385,11 @@ async function workerProbe(worker, origin) {
 /**
  * Save a probe before enforcing evaluation success, so stopped receipts retain its fixed cause.
  * A fetch rejection still needs the caller's proxy/origin counters to establish blocking.
+ * An optional caller budget prevents a late evaluation from mutating a stopped receipt.
  */
-async function captureWorkerProbe(worker, origin, probes, phase) {
+async function captureWorkerProbe(worker, origin, probes, phase, budget = null) {
   requireCheck(['baseline', 'restored'].includes(phase), 'worker_probe_phase');
-  const result = await workerProbe(worker, origin); probes[phase] = result;
+  const result = await workerProbe(worker, origin); if (budget) budget.check(); probes[phase] = result;
   if (result.errorCategory === 'timeout') throw new IsolationError('worker_probe_timeout');
   if (result.errorCategory === 'evaluation_failed') throw new IsolationError('worker_evaluation_failed');
   if (result.errorCategory === 'invalid_result') throw new IsolationError('worker_probe_result');
@@ -411,6 +421,95 @@ async function sourceHashes() {
 }
 
 /**
+ * Share the fixed seed/restart/isolation sequence between the legacy fixture and pinned qualification.
+ * Dependencies replace native boundaries in tests; the caller owns resources, deadlines and evidence.
+ */
+async function runFixtureCases(state, deps = {}) {
+  const { runtime, profile, fixture, proxy, budget, owners, record, workerDiagnostics } = state;
+  const launch = deps.launch || launchFixtureBrowser; const request = deps.request || requestFixture;
+  const close = deps.closeBrowser || closeOwned; const probe = deps.pageProbe || pageProbe;
+  /** Check both sides of every await, so a late result cannot update evidence or start the next case. */
+  async function step(action, milliseconds = 5000, code = 'operation_timeout') {
+    budget.check();
+    const result = milliseconds === null ? await action() : await bounded(() => { budget.check(); return action(); }, milliseconds, code);
+    budget.check(); return result;
+  }
+  /** Charge additional scripted counters only when the new qualification budget declares them. */
+  function count(kind) { if (Object.hasOwn(budget.counts, kind)) budget.count(kind); }
+  const first = await step(() => launch({ runtime, profile, proxyPort: proxy.port, seedOrigin: fixture.origin, budget, owners }), null);
+  count('navigations');
+  await step(() => first.keeper.goto(fixture.origin + '/fixture', { timeout: 5000, waitUntil: 'domcontentloaded' }));
+  count('requestClientCalls');
+  const seed = await step(() => request(first.context, fixture.origin, '/api/seed'));
+  requireCheck(seed.cookiePresent === false, 'synthetic_cookie_not_fresh'); record.checks.freshSyntheticCookie = true;
+  await step(() => first.keeper.evaluate(async () => {
+    await navigator.serviceWorker.register('/sw.js'); await navigator.serviceWorker.ready; return true;
+  }), 5000, 'worker_install_timeout');
+  const initialWorker = await step(() => fixtureWorker(first.context, fixture.origin, budget), 5000, 'fixture_worker_unavailable');
+  const baselineBefore = fixture.counts.worker; count('workerProbes');
+  requireCheck((await step(() => captureWorkerProbe(initialWorker, fixture.origin, record.workerProbes, 'baseline', budget), null)).reached
+    && fixture.counts.worker > baselineBefore, 'worker_baseline');
+  record.checks.workerBaselineReachedFixture = true;
+  record.seedWorkerCategories = summarizeWorkers(first.context.serviceWorkers(), fixture.origin);
+  requireCheck(await step(() => close(first, runtime), null), 'first_browser_close');
+  record.checks.firstBrowserClosedNormally = true;
+
+  const second = await step(() => launch({ runtime, profile, proxyPort: proxy.port, seedOrigin: null, budget, owners }), null);
+  count('requestClientCalls');
+  const client = await step(() => request(second.context, fixture.origin, '/api/check'));
+  requireCheck(client.cookiePresent === true, 'cookie_not_persistent');
+  record.checks.requestClientBypassesBrowserProxy = true; record.checks.syntheticCookiePersisted = true;
+  const applicable = await step(() => second.context.cookies(fixture.origin), 5000, 'cookie_metadata_timeout');
+  requireCheck(applicable.some(cookie => cookie.name === COOKIE && cookie.value === UPDATED_VALUE), 'request_cookie_writeback');
+  record.checks.requestCookieWriteback = true;
+
+  const probePage = await workerDiagnostics.run('probe_page_create', async () => {
+    count('pagesCreated');
+    const page = await step(() => second.context.newPage(), 5000, 'probe_page_create_timeout');
+    requireCheck(page !== second.keeper && !page.isClosed() && page.url() === 'about:blank', 'probe_page_state');
+    if (deps.checkPages) deps.checkPages(second);
+    return page;
+  });
+  const pageBefore = fixture.counts.page; const proxyPageBefore = proxy.counts.page; count('navigations');
+  requireCheck(await step(() => probe(probePage, fixture.origin + '/probe?kind=page')), 'page_not_proxy_blocked');
+  requireCheck(fixture.counts.page === pageBefore && proxy.counts.page > proxyPageBefore, 'page_network_isolation');
+  record.checks.pageBlockedAtProxy = true;
+  const connectBefore = proxy.counts.fixtureConnect; count('navigations');
+  requireCheck(await step(() => probe(probePage, fixture.origin.replace('http:', 'https:') + '/probe?kind=page')), 'https_not_proxy_blocked');
+  requireCheck(proxy.counts.fixtureConnect > connectBefore && fixture.counts.page === pageBefore, 'https_network_isolation');
+  record.checks.httpsConnectBlockedAtProxy = true;
+  await workerDiagnostics.run('probe_page_close', async () => {
+    await step(() => probePage.close({ runBeforeUnload: false }), 5000, 'probe_page_close_timeout');
+    requireCheck(probePage.isClosed(), 'probe_page_not_closed');
+  });
+  record.checks.probePageClosedNormally = true;
+  await workerDiagnostics.run('control_page_readiness', async () => {
+    const pages = second.context.pages();
+    requireCheck(second.browser.isConnected() && !second.keeper.isClosed() && second.keeper.url() === 'about:blank'
+      && pages.length === 1 && pages[0] === second.keeper, 'control_page_not_ready');
+  });
+  record.checks.controlPageReady = true;
+  const cdp = await workerDiagnostics.run('cdp_session',
+    () => step(() => second.context.newCDPSession(second.keeper), 5000, 'worker_session_timeout'));
+  if (state.sessions) state.sessions.push(cdp);
+  await workerDiagnostics.run('worker_enable', () => step(() => cdp.send('ServiceWorker.enable')));
+  await workerDiagnostics.run('worker_start',
+    () => step(() => cdp.send('ServiceWorker.startWorker', { scopeURL: fixture.origin + '/' }), 5000, 'worker_restart_timeout'));
+  const restoredWorker = await workerDiagnostics.run('worker_discovery',
+    () => step(() => fixtureWorker(second.context, fixture.origin, budget), 5000, 'fixture_worker_unavailable'));
+  const workerBefore = fixture.counts.worker; const proxyWorkerBefore = proxy.counts.worker; count('workerProbes');
+  await workerDiagnostics.run('worker_probe', async () => {
+    requireCheck(!(await step(() => captureWorkerProbe(restoredWorker, fixture.origin, record.workerProbes, 'restored', budget), null)).reached,
+      'worker_not_proxy_blocked');
+    requireCheck(fixture.counts.worker === workerBefore && proxy.counts.worker > proxyWorkerBefore, 'worker_network_isolation');
+  });
+  record.checks.restoredWorkerBlockedAtProxy = true;
+  record.restoredWorkerCategories = summarizeWorkers(second.context.serviceWorkers(), fixture.origin);
+  await step(() => cdp.detach(), 2000);
+  if (state.sessions) state.sessions.splice(state.sessions.indexOf(cdp), 1);
+}
+
+/**
  * Run exactly one two-launch fixture and write one immutable sanitized result.
  * Failure stops the remaining cases; no hosted request, retry or signed-in profile is possible.
  */
@@ -432,69 +531,7 @@ async function runFixture() {
     await bounded(async () => {
     profile = await fs.mkdtemp(path.join(__dirname, 'isolation-fixture-')); record.syntheticProfile = profile;
     fixture = await startFixtureServer(budget, servers); proxy = await startRejectingProxy(budget, fixture.origin, servers);
-    const first = await launchFixtureBrowser({ runtime, profile, proxyPort: proxy.port, seedOrigin: fixture.origin, budget, owners });
-    await first.keeper.goto(`${fixture.origin}/fixture`, { timeout: 5000, waitUntil: 'domcontentloaded' });
-    const seed = await requestFixture(first.context, fixture.origin, '/api/seed');
-    requireCheck(seed.cookiePresent === false, 'synthetic_cookie_not_fresh'); record.checks.freshSyntheticCookie = true;
-    await bounded(() => first.keeper.evaluate(async () => {
-      await navigator.serviceWorker.register('/sw.js'); await navigator.serviceWorker.ready; return true;
-    }), 5000, 'worker_install_timeout');
-    const initialWorker = await fixtureWorker(first.context, fixture.origin, budget);
-    requireCheck((await captureWorkerProbe(initialWorker, fixture.origin, record.workerProbes, 'baseline')).reached, 'worker_baseline');
-    record.checks.workerBaselineReachedFixture = true;
-    record.seedWorkerCategories = summarizeWorkers(first.context.serviceWorkers(), fixture.origin);
-    requireCheck(await closeOwned(first, runtime), 'first_browser_close'); record.checks.firstBrowserClosedNormally = true;
-
-    const second = await launchFixtureBrowser({ runtime, profile, proxyPort: proxy.port, seedOrigin: null, budget, owners });
-    const client = await requestFixture(second.context, fixture.origin, '/api/check');
-    requireCheck(client.cookiePresent, 'cookie_not_persistent'); record.checks.requestClientBypassesBrowserProxy = true;
-    record.checks.syntheticCookiePersisted = true;
-    const applicable = await bounded(() => second.context.cookies(fixture.origin), 5000, 'cookie_metadata_timeout');
-    requireCheck(applicable.some(cookie => cookie.name === COOKIE && cookie.value === UPDATED_VALUE), 'request_cookie_writeback');
-    record.checks.requestCookieWriteback = true;
-
-    // Expected network failures may leave an error-page transition pending; keep the control page untouched.
-    const probePage = await workerDiagnostics.run('probe_page_create', async () => {
-      const page = await bounded(() => second.context.newPage(), 5000, 'probe_page_create_timeout');
-      requireCheck(page !== second.keeper && !page.isClosed() && page.url() === 'about:blank', 'probe_page_state');
-      return page;
-    });
-    const pageBefore = fixture.counts.page; const proxyPageBefore = proxy.counts.page;
-    requireCheck(await pageProbe(probePage, `${fixture.origin}/probe?kind=page`), 'page_not_proxy_blocked');
-    requireCheck(fixture.counts.page === pageBefore && proxy.counts.page > proxyPageBefore, 'page_network_isolation');
-    record.checks.pageBlockedAtProxy = true;
-    const connectBefore = proxy.counts.fixtureConnect;
-    requireCheck(await pageProbe(probePage, `${fixture.origin.replace('http:', 'https:')}/probe?kind=page`), 'https_not_proxy_blocked');
-    requireCheck(proxy.counts.fixtureConnect > connectBefore && fixture.counts.page === pageBefore, 'https_network_isolation');
-    record.checks.httpsConnectBlockedAtProxy = true;
-    // Close the probe normally without a recovery navigation; browser cleanup still owns it on failure.
-    await workerDiagnostics.run('probe_page_close', async () => {
-      await bounded(() => probePage.close({ runBeforeUnload: false }), 5000, 'probe_page_close_timeout');
-      requireCheck(probePage.isClosed(), 'probe_page_not_closed');
-    });
-    record.checks.probePageClosedNormally = true;
-    // Use synchronous page metadata only; worker setup requires the sole surviving blank control page.
-    await workerDiagnostics.run('control_page_readiness', async () => {
-      const pages = second.context.pages();
-      requireCheck(second.browser.isConnected() && !second.keeper.isClosed() && second.keeper.url() === 'about:blank'
-        && pages.length === 1 && pages[0] === second.keeper, 'control_page_not_ready');
-    });
-    record.checks.controlPageReady = true;
-
-    const cdp = await workerDiagnostics.run('cdp_session',
-      () => bounded(() => second.context.newCDPSession(second.keeper), 5000, 'worker_session_timeout'));
-    await workerDiagnostics.run('worker_enable', () => bounded(() => cdp.send('ServiceWorker.enable'), 5000));
-    await workerDiagnostics.run('worker_start',
-      () => bounded(() => cdp.send('ServiceWorker.startWorker', { scopeURL: `${fixture.origin}/` }), 5000, 'worker_restart_timeout'));
-    const restoredWorker = await workerDiagnostics.run('worker_discovery', () => fixtureWorker(second.context, fixture.origin, budget));
-    const workerBefore = fixture.counts.worker; const proxyWorkerBefore = proxy.counts.worker;
-    await workerDiagnostics.run('worker_probe', async () => {
-      requireCheck(!(await captureWorkerProbe(restoredWorker, fixture.origin, record.workerProbes, 'restored')).reached, 'worker_not_proxy_blocked');
-      requireCheck(fixture.counts.worker === workerBefore && proxy.counts.worker > proxyWorkerBefore, 'worker_network_isolation');
-    });
-    record.checks.restoredWorkerBlockedAtProxy = true;
-    record.restoredWorkerCategories = summarizeWorkers(second.context.serviceWorkers(), fixture.origin);
-    await bounded(() => cdp.detach(), 2000); budget.check();
+    await runFixtureCases({ runtime, profile, fixture, proxy, budget, owners, record, workerDiagnostics });
     record.phase = 'passed';
     }, Math.max(1, LIMITS.wholeMs - 20000 - (Date.now() - budget.startedAt)), 'fixture_deadline');
   } catch (error) {
@@ -537,7 +574,7 @@ async function main(args) {
 
 module.exports = { IsolationError, FixtureBudget, WorkerDiagnostics, bounded, isolationArguments, loopbackOrigin, classifyWorker,
   summarizeWorkers, classifyProxyLine, startFixtureServer, startRejectingProxy, closeServer, requestFixture, closeOwned,
-  workerProbe, captureWorkerProbe, evidenceHashes, sourceHashes, launchFixtureBrowser, fixtureExecutable, pageProbe, main };
+  workerProbe, captureWorkerProbe, evidenceHashes, sourceHashes, launchFixtureBrowser, fixtureExecutable, pageProbe, runFixtureCases, main };
 if (require.main === module) main(process.argv.slice(2)).catch(error => {
   process.stderr.write(`${JSON.stringify({ stopCode: error instanceof IsolationError ? error.code : 'local_fixture_setup_failed' })}\n`);
   process.exitCode = 1;

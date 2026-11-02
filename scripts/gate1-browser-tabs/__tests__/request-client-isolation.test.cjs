@@ -837,3 +837,62 @@ test('CLI refuses arbitrary profiles, targets, or an unapproved default run', as
   await assert.rejects(main(['--fixture', '--profile=saved']), /local_fixture_argument_required/);
   await assert.rejects(main(['--hosted']), /local_fixture_argument_required/);
 });
+
+/** A stalled port read is bounded by startup itself, without borrowing cleanup time or attaching late. */
+test('startup filesystem stall stops at ten seconds and never attaches after its late completion', async t => {
+  const fake = await launcherHarness(); t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 10000 });
+  let finish; let attached = false;
+  fake.io.stat = () => new Promise(resolve => { finish = resolve; });
+  fake.runtime.chromium.connectOverCDP = async () => { attached = true; };
+  const owners = []; const budget = testBudget({ wholeMs: 30000 });
+  const stopped = assert.rejects(fake.launch({ runtime: fake.runtime, profile: fake.profile, proxyPort: 8001,
+    seedOrigin: null, budget, owners, browser: 'cft158' }), /browser_startup/);
+  await nextTurn(); t.mock.timers.tick(10000); await stopped;
+  finish({ mtimeMs: 10000 }); await nextTurn(); assert.equal(attached, false); assert.equal(owners[0].port, null);
+});
+
+/** A CDP connection completing after the caller stopped cannot create a keeper or resume launch setup. */
+test('late startup attachment cannot create pages after the qualification stops', async t => {
+  const fake = await launcherHarness(); t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 10000 });
+  let finish; let inspected = false; const owners = []; const budget = testBudget({ wholeMs: 30000 });
+  fake.runtime.chromium.connectOverCDP = () => new Promise(resolve => { finish = resolve; });
+  const stopped = assert.rejects(fake.launch({ runtime: fake.runtime, profile: fake.profile, proxyPort: 8001,
+    seedOrigin: null, budget, owners, browser: 'cft158' }), /fixture_deadline/);
+  await nextTurn(); budget.failure = 'fixture_deadline';
+  finish({ contexts: () => { inspected = true; return []; } }); await stopped; assert.equal(inspected, false);
+});
+
+/** Known-port cleanup shares the caller's remaining allocation and cannot send a close after cutoff. */
+test('connected-browser cleanup obeys the shared deadline and ignores a late session', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 }); let finish; let sent = false;
+  const owner = { child: { exitCode: null }, failed: false, browser: { isConnected: () => true,
+    newBrowserCDPSession: () => new Promise(resolve => { finish = resolve; }) } };
+  const closing = closeOwned(owner, {}, 1500); await nextTurn(); t.mock.timers.tick(500);
+  assert.equal(await closing, false); assert.equal(Date.now(), 1500);
+  finish({ send: async () => { sent = true; } }); await nextTurn(); assert.equal(sent, false);
+});
+
+/** An expired cleanup allocation reports failure immediately instead of making a new native request. */
+test('expired cleanup deadline cannot create a CDP session', async () => {
+  let called = false;
+  const owner = { child: { exitCode: null }, failed: false, browser: { isConnected: () => true,
+    newBrowserCDPSession: async () => { called = true; } } };
+  assert.equal(await closeOwned(owner, {}, Date.now() - 1), false); assert.equal(called, false);
+});
+
+/** A late probe must leave both the frozen evidence and the first stop unchanged. */
+test('stopped caller budget prevents a late worker result from entering evidence', async () => {
+  let finish; const worker = { evaluate: () => new Promise(resolve => { finish = resolve; }) };
+  const budget = testBudget(); const probes = {};
+  const stopped = assert.rejects(captureWorkerProbe(worker, 'http://127.0.0.1:1234', probes, 'restored', budget), /fixture_deadline/);
+  await nextTurn(); budget.failure = 'fixture_deadline'; finish({ status: null, reached: false, errorCategory: 'fetch_rejected' });
+  await stopped; assert.deepEqual(probes, {}); assert.equal(budget.failure, 'fixture_deadline');
+});
+
+/** The reduced diagnostic counts only its disposable pages; new full-fixture keeper accounting is caller-owned. */
+test('shared launcher does not charge keeper pages to the reduced diagnostic counter', async () => {
+  const fake = await launcherHarness(); const budget = testBudget(); budget.counts.pagesCreated = 0;
+  const owners = [];
+  await fake.launch({ runtime: fake.runtime, profile: fake.profile, proxyPort: 8001, seedOrigin: null, budget, owners, browser: 'cft158' });
+  assert.equal(budget.counts.pagesCreated, 0); assert.equal(budget.counts.launches, 1);
+});
