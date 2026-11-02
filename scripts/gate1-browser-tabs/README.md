@@ -336,6 +336,123 @@ prove causality for one upstream fix or qualify installed Edge. Either outcome
 returns to a decision. No full isolation fixture, worker/restart exercise, hosted
 CSRF retry or toolchain substitution follows automatically. GATE-1 stays open.
 
+### Executed comparison 02 (2026-11-01)
+
+The owner approved local preparation and offline validation for a second comparison.
+A separate approval then authorized one native execution with the exact source digest
+and scope below. Preparation started from staging `a61650fa6871a6d2f53b324cb9f4a91e4f300559`,
+which includes the late-port cleanup correction from PR #322. The isolation helper
+and its tests are unchanged. The cleanup correction does not extend the ten-second
+startup deadline or establish that another launch will reach either case.
+
+The new fixed `--compare-cft158-02` mode binds the existing `cft158` executable
+allowlist entry to these distinct destinations:
+
+- Execution copies: `.tmp/gate1-browser-comparison-cft158-02/`.
+- Fresh synthetic profile prefix: `isolation-fixture-comparison-cft158-02-`.
+- Exclusive receipt:
+  `.tmp/gate1-checkout-enable-dd2c2c6/browser-page-lifecycle-comparison-cft158-02.json`.
+
+It checks thirteen predecessors before and after execution: the original eleven,
+the Edge diagnostic, and the stopped Chrome comparison. The latter remains pinned
+to `9be84f27995548b696e81cbfed62e2cabd29649028ff61865b5e56b3f3524ae8`.
+The earlier modes retain their original receipt paths and histories; their occupied
+destinations cannot be reused. No CLI target, executable, profile, output, deadline
+or attempt-number override is accepted. The new mode records `mode: cft158-02`.
+
+The operator was the Codex agent and the operational/risk owner is the
+project owner. The target remains the exact Chrome for Testing 158.0.8127.2 package
+and Node/Playwright pins documented above. Complete package verification and both
+unsigned-binary limitations apply to this mode too. No new download, installed
+browser change, Edge baseline rerun or launch-flag change is included.
+
+The approved cases were blank-page close, followed only on success by HTTP and
+HTTPS CONNECT rejection and immediate page close. Each must meet the existing
+command acknowledgment, root detachment, server/client closure, promise settlement,
+target absence and keeper-readiness criteria. The existing limits remain:
+
+- One launch, at most two simultaneous pages and two disposable pages created.
+- Two scripted navigations, two one-second inventories and one cached version read.
+- Ten-second startup port wait and five-second page operations.
+- 10 fixture requests, 100 proxy connections, 256 events and 128 KiB evidence.
+- A 70-second work deadline inside the 90-second exercise budget, with 20 seconds
+  reserved for cleanup and evidence. Late-port discovery, attachment, normal close
+  and exit verification share the existing five-second no-port cleanup window.
+
+Both cases, cleanup, profile preservation and all thirteen history checks must
+complete within their budgets for `not_reproduced`. Startup failure, missing
+observations, timeout, overflow, integrity drift or cleanup failure is inconclusive
+and stops further work. Normal cleanup preserves the synthetic profile. If an owned
+process remains, report the cleanup failure and return to the owner; elapsed receipt
+time alone is not proof of process termination. No force-kill, automatic retry or
+recovery operation is authorized by this preparation.
+
+The frozen four-file source-set SHA-256 is
+`97b3b8854b14e177c9417888836ed5e4dca2f57143bde87758d0b06665357edb`.
+Execution copies match the preparation worktree byte-for-byte:
+
+| Input | SHA-256 |
+| --- | --- |
+| request-client-isolation.cjs | `58eee4749d1f14ca196437b4748f03be0e9af9602c2b229d79016874a31ba462` |
+| __tests__/request-client-isolation.test.cjs | `d4578324a5e5926b733672a0dd9889ca6bb94445667adc537c2b8191ef1cc2bf` |
+| page-lifecycle-diagnostic.cjs | `7a58852bb78a6255edf44d8c5934998b50e0f07d512186ef40508e81c3a971bc` |
+| __tests__/page-lifecycle-diagnostic.test.cjs | `539344722b7a17139d3e382db26f40ae994b8c6a6301bd6a56173341d37add2b` |
+
+Preparation passed 159 focused tests, four CJS syntax checks, scoped ESLint with
+zero warnings, and whitespace checks. Read-only execution-copy preflight verified
+the pinned runtime/bundle/executable, archive, all 305 package files and thirteen
+predecessors. It did not load Playwright, reserve the receipt or create a profile.
+The receipt was absent before the approved run. Coverage includes immutable mode selection, package/source/
+history failures before reservation, occupied-output refusal before native setup,
+the unchanged two-case sequence, and late-port cleanup preserving startup failure.
+
+The following command was executed once under the separate approval. `DEBUG`,
+`DEBUG_FILE` and `PWDEBUG` were cleared only in that child process; `TEMP` and `TMP`
+used repo-local `.tmp`. Input bytes, predecessor hashes, process ownership and the
+absent receipt were rechecked immediately before execution. This command is
+historical documentation, not authorization to rerun; its occupied receipt refuses
+another invocation.
+
+```powershell
+node .tmp/gate1-browser-comparison-cft158-02/page-lifecycle-diagnostic.cjs --compare-cft158-02 --source-set-sha256=97b3b8854b14e177c9417888836ed5e4dca2f57143bde87758d0b06665357edb
+```
+
+Pre-execution reconciliation on November 1 found no matching comparison Chrome process
+or Node runner, and no recovery receipt. The prior cleanup failure remains historical
+evidence; the shutdown mechanism is unknown. All thirteen receipts and both historical
+execution source sets matched their frozen hashes during preparation.
+
+The approved run started at `2026-11-01T23:45:28.871Z` and completed at
+`23:45:33.664Z`, recording 4,793 ms and `phase: not_reproduced`, with no first
+failure or cleanup failure. Both HTTP and HTTPS CONNECT rejection checks passed.
+Both close commands were acknowledged, with root detachment, server/client closure,
+promise resolution, target absence and sole-keeper readiness observed before their
+five-second deadlines:
+
+| Case | Close completion/cutoff | Target absence confirmed |
+| --- | --- | --- |
+| Blank page | 12 ms | 13 ms |
+| After rejected HTTP/HTTPS navigation | 515 ms | 517 ms |
+
+Counts were one launch, zero fixture requests, 18 proxy connections, two scripted
+navigations, two target inventories, one cached version read and two disposable
+pages created. Normal browser cleanup succeeded and the synthetic profile was
+preserved. Independent post-run inspection found zero matching comparison Chrome
+processes or Node runners. All thirteen predecessor receipts, the frozen source set
+and the pinned package remained unchanged. Startup completed normally, so this run
+did not exercise the late-port recovery path covered by the mocked regressions.
+
+The retained comparison-02 receipt has SHA-256
+`96eb4d6d7df5cb895aa1833958fc7dd3d90f8c1095aee6030b7801d383f0983a`.
+The receipt, package and synthetic profiles remain local and are not committed.
+The earlier Edge close failure and first comparison's startup/cleanup failure
+retain their original meaning; this result does not relabel them as passes.
+
+This comparison cannot qualify installed Edge, attribute causality to a single
+Chromium fix, or qualify restored-worker isolation. GATE-1 remains open. Full local
+isolation qualification and any subsequent hosted CSRF exercise require their own
+bounded proposals and approvals; neither follows automatically from this comparison.
+
 ## Offline commands
 
 Run from the checkout root with Node 22. The unit suite uses built-in modules only
