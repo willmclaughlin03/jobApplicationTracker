@@ -810,3 +810,199 @@ the native two-tab loopback fixture (six trusted transitions, six session reques
 owned cleanup and redirect-cap checks). It has not run against the hosted target.
 No new hosted request was made for this diagnostic update. The earlier 1-tab pass
 remains separately attributed; 2/4/8 qualification and GATE-1 remain open.
+
+### Hosted CSRF diagnostic: offline preparation
+
+`hosted-csrf-diagnostic.cjs` prepares one request-client-only diagnostic. The owner
+approved this three-file offline preparation and its scoped readiness policy on
+November 2, 2026. That approval does **not** authorize hosted execution, build
+attribution, authentication preparation, deployment, checkout, load or WAF work.
+No execution manifest, authenticated profile, preparation receipt or hosted result
+is supplied by this change. Imports are inert; the repository checkout cannot run
+the live entry point. Missing prerequisites stop before metadata/application traffic.
+
+The native isolation exercise consumed
+`.tmp/gate1-checkout-enable-dd2c2c6/browser-isolation-fixture-cft158-01.json`:
+SHA-256 `f7f7a8fea52f058842d2a1e6a008823f452593c949684b41a51b5aa40fa8c647`,
+6,898 bytes. All eleven local checks passed in 9,006 ms; separate process and
+integrity observations established independent acceptance. Its fields
+`independentProcessExitVerified: false` and `isolationQualified: false` remain
+unchanged. The consumed runner retains its original fourteen-entry history;
+this new diagnostic binds all fifteen predecessors, including that receipt.
+Neither the historical failures nor Gate 1 become passes.
+
+The qualified package is Chrome for Testing `158.0.8127.2`, Node `v22.18.0` and
+Playwright core `1.62.0-alpha-1783623505000`, using the already pinned archive,
+all 305 extracted files, executable and bundle hashes. Both `chrome.exe` and
+`chrome.dll` report Authenticode **NotSigned**. The six qualified source files
+must still hash to
+`4651ec30caf033c6c0886ed85842d5300ac0f4d4f1c999dacd0d4ec99438e1ef`.
+The new source manifest also includes the new runner, its tests and this README,
+in that order, for nine files total. Freeze that manifest only after final review.
+
+The recorded target, observed November 3 UTC / November 2 Eastern, is:
+
+| Pin | Recorded value |
+| --- | --- |
+| Project | `prj_b2nMrysMSJtpmqoeGx5g0WGgGuom` |
+| Team | `team_7o3efmwjZbMc2Bfy9qAzkc9q` |
+| Canonical host | `job-application-tracker-kappa-seven.vercel.app` |
+| Deployment | `dpl_C7qXW91kgLAUvgonScZ5hdQeGdut` |
+| Generated host | `job-application-tracker-kdk7cur91-track-the-app.vercel.app` |
+| Git SHA | `ed7c59b5ba77c8e320799ec3701dfbeb87ce2e75` |
+| Next.js build | **Not yet attributed** |
+
+These are recorded pins, not a claim that a moving alias remains current. Before
+and after the three application requests, the diagnostic checks project, alias and
+deployment identity, readiness, canonical assignment and both Git SHA fields.
+Unexpected provider response shapes fail closed. A changed target requires an
+owner decision and reviewed pins, not discovery followed by automatic repinning.
+
+#### Readiness and transport boundaries
+
+Use only a newly and separately approved dedicated authenticated Chrome profile
+at `.tmp/gate1-hosted-csrf-profile-01`. The owner performs sign-in under a separate
+bounded procedure; its destinations, cases and traffic accounting remain to be
+reviewed. Do not migrate Edge authentication storage, reuse the synthetic profile,
+or label an authenticated profile as synthetic. The original
+`launchFixtureBrowser` guard and `runner.cjs` worker-free load guard are unchanged.
+
+The narrow owned-profile launcher preserves the qualified browser flags, including
+the rejecting loopback proxy, `<-loopback>` bypass list, disabled QUIC/background
+networking, loopback CDP and no startup window. It registers process ownership
+before asynchronous startup. Readiness requires the exact Chrome version and one
+open `about:blank` keeper. Restored workers are allowed only in this scoped
+request-client mode; no worker URLs, storage or activity are inspected. A new page,
+navigation or unexpected closure stops later work. Browser HTTP/HTTPS traffic is
+rejected from launch; the context-bound request client makes the approved GETs.
+This is not OS-wide egress or WebRTC/UDP qualification.
+
+Installed Vercel CLI `62.2.0` normally retries some API failures and follows
+redirects. The new metadata adapter preloads a narrow guard into its hash-pinned
+client before CLI initialization. The guard permits one exact GET per invocation,
+forces `retries: 0`, manual redirects and a 29-second abort signal, rejects other
+API bases/methods/destinations, and refuses credential refresh or reauthentication.
+The outer CLI timeout is 30 seconds with a 2 MiB output limit. Existing valid CLI
+authentication stays in the CLI; the diagnostic never directly reads credential
+files or prints API JSON. Telemetry and update notification are disabled. Drift
+in the CLI entry/client/API-command hashes stops preflight. If CLI initialization
+needs an additional API call or credentials are expired, stop for a decision;
+do not loosen the guard or retry automatically. This private CLI integration is
+covered by offline mocks and still requires review before any live invocation.
+
+#### Fixed cases, budgets and evidence
+
+After separately approved prerequisites, the reviewed sequence is:
+
+1. Reserve the new result exclusively, then read project, alias and deployment.
+2. Start one rejecting proxy and the owned Chrome profile; check the blank keeper.
+3. Sequential context-bound GETs to `/login`, `/api/auth/session`, `/api/auth/csrf`.
+4. Repeat project, alias and deployment reads only if all checks passed.
+5. Cancel pending request-client operations, close the browser normally, then close
+   the proxy. Preserve the profile and verify sources/history before writing evidence.
+   Independent process-exit inspection and package/integrity review follow separately.
+
+| Resource | Fixed diagnostic limit |
+| --- | --- |
+| Whole run / cleanup reserve | 10 minutes / final 20 seconds |
+| Preflight / browser startup | 60 seconds / 10 seconds |
+| Application / static / session | 3 / 0 / 1; session included in application |
+| Application operation | 5 seconds, including response/cookie checks |
+| Explicit metadata reads | 6, at most one approved API GET each |
+| Browser launches / pages | 1 / 1 blank keeper |
+| Rejecting-proxy connections | 200; excess arrivals counted and rejected |
+| Redirects / retries / billing mutations | 0 / 0 / 0 |
+| Accepted login body / JSON body | 1 MiB / 64 KiB |
+| Accepted headers / final evidence / input JSON | 32 KiB / 64 KiB / 16 KiB |
+| Local/server token clock tolerance | 30 seconds |
+| Token versus response Date tolerance | 5 seconds |
+| Browser-cookie expiry tolerance | 5 seconds around 14,400 seconds |
+| Reviewed approval window | At most one hour; must remain current during work |
+
+Playwright's request client buffers response bodies internally. Body limits above
+are admission/retention checks after that buffering, **not a hard transport-memory
+cap**. The native request timeout, response disposal and context disposal also
+bound retention. Resolve this distinction in the final resource-budget review;
+do not claim an unmeasured allocation limit.
+
+The public `/login` check accepts only its explicit public revalidation policy and
+the frozen build. An attributed `HIT` requires a nonnegative numeric `Age`; other
+allowed states require absent/zero Age. This public-page exception does not apply
+to session or CSRF: they require effective private/no-store, safe CDN overrides,
+no HIT/STALE, and absent/zero Age. Session identity is compared only in memory.
+
+CSRF evidence retains individual booleans for status, content type, cache behavior,
+the exact `{ data: null, error: null, message: "CSRF token set" }` envelope,
+unique response cookie/attributes, Secure, host-only root path, SameSite Lax,
+intentional non-HttpOnly status, Max-Age 14,400, token shape, clock comparisons,
+cookie write-back, browser attributes and expiry. The diagnostic neither obtains
+the signing secret nor claims HMAC verification. Tokens, auth cookies, account
+identifiers, raw bodies/headers/errors and protocol payloads are never serialized.
+The first failure survives cleanup failures. A timeout's late result cannot start
+another case or change retained evidence. Receipt I/O failure rejects success.
+
+#### Preparation receipts and cumulative accounting
+
+Historical explicit consumption remains **149 application / 150 static / 52
+session actual**, or **150 / 150 / 52 conservative**. Historical unmeasured browser
+background traffic remains a named gap. Neither a new invocation nor target/profile
+change resets these numbers.
+
+Before execution, separately review and create two bounded JSON receipts in
+`.tmp/gate1-hosted-csrf-01`, then pin their exact byte hashes:
+
+- `build-attribution.json`: `phase: "passed"`, exact `target`, attributed `buildId`,
+  and `requests: { application: 1, static: 0, session: 0 }`. This refers to the
+  proposed separate single anonymous GET `/login`, which has not been authorized
+  or executed by this preparation.
+- `authentication-preparation.json`: `phase: "passed"`, exact `target`, `buildId`,
+  `profile`, true `identityVerified`, `browserTrafficMeasured`, `closedNormally`
+  and `independentProcessExitVerified`, plus measured incremental `requests.actual`
+  and `requests.conservative`, each with application/static/session counters.
+  This is a required interface for a future reviewed sign-in procedure, not proof
+  that such a procedure or authenticated profile already exists.
+
+The diagnostic requires `ledgerBefore` to equal the historical baseline plus both
+preparations; `ledgerCeiling` must equal that result plus exactly 3/0/1. Before
+sign-in traffic, the projected build-plus-diagnostic subtotal is **153/150/53 actual**
+and **154/150/53 conservative**. Add all preparation traffic before final approval.
+Dispatches are charged before calling the request client, including failed/uncertain
+attempts; ledger-after counts are accounting charges, not proof the server received
+every dispatched call. Retain the historical conservative extra reservation.
+
+The future `execution-plan.json` must supply the exact exported `TARGET`, nonempty
+`buildId`, `profile: PROFILE`, `profilePreparationApproved: true`, the two
+`preparationHashes`, the nine-file `sourceSet`, reconciled `ledgerBefore` and
+`ledgerCeiling`, millisecond `approvedAt`/`expiresAt`,
+`approval: "hosted-csrf-cft158-01"`, and
+`readinessPolicy: "request-client-only-rejecting-proxy-restored-workers"`.
+The approved account UUID is supplied privately through the existing process
+environment `GATE1_APPROVED_USER_ID`; never put it in evidence or chat. Do not read
+`.env` files. Debugging/instrumentation variables must be absent during execution.
+
+Only after explicit final execution approval may the nine reviewed files be frozen
+under `.tmp/gate1-hosted-csrf-01` and its fixed entry point invoked with
+`--execute-reviewed-manifest`. Output is the exclusively created
+`hosted-csrf-result.json` in that directory. Preserve occupied/partial output;
+there is no overwrite, retry or recovery mode. A successful receipt still records
+`hostedQualified: false`, `independentProcessExitVerified: false` and `gate1Status:
+"open"`; separate review establishes only the scope actually observed. A CSRF pass
+does not automatically authorize checkout or the remaining Gate 1 load/WAF work.
+
+#### Offline validation
+
+Run only the new mocked suite and the existing three focused suites, CJS syntax
+checks, scoped ESLint with zero warnings, and whitespace checks. No live manifest,
+provider integration, Chrome fixture, sign-in or hosted request is part of these
+checks. The baseline three suites previously contained 212 tests.
+
+Preparation validation passed: 85 new tests plus the unchanged 212-test baseline
+(297 total), both new CJS syntax checks, scoped ESLint with zero warnings, and
+whitespace checks. These are local preparation results, not hosted evidence.
+
+```powershell
+node --test --test-reporter=spec scripts/gate1-browser-tabs/__tests__/hosted-csrf-diagnostic.test.cjs scripts/gate1-browser-tabs/__tests__/request-client-isolation.test.cjs scripts/gate1-browser-tabs/__tests__/page-lifecycle-diagnostic.test.cjs scripts/gate1-browser-tabs/__tests__/full-isolation-qualification.test.cjs
+node --check scripts/gate1-browser-tabs/hosted-csrf-diagnostic.cjs
+node --check scripts/gate1-browser-tabs/__tests__/hosted-csrf-diagnostic.test.cjs
+git diff --check
+```
