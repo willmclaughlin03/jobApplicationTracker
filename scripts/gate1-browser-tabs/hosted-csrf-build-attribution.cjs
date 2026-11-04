@@ -11,7 +11,7 @@ const d = require('./hosted-csrf-diagnostic.cjs');
 const RESULT = path.join(d.DIRECTORY, 'build-attribution.json');
 const MANIFEST = path.join(d.DIRECTORY, 'build-attribution-plan.json');
 const APPROVAL = 'hosted-csrf-build-attribution-01';
-const VERCEL = 'C:/Users/willm/AppData/Local/npm-cache/_npx/67eb4586ca667318/node_modules/vercel/dist/vc.js';
+const VERCEL = d.VERCEL;
 const SOURCE_FILES = Object.freeze([...d.SOURCE_FILES, 'hosted-csrf-build-attribution.cjs',
   '__tests__/hosted-csrf-build-attribution.test.cjs']);
 const LIMITS = Object.freeze({ wholeMs: 240000, cleanupMs: 20000, preflightMs: 30000, operationMs: 5000,

@@ -636,7 +636,7 @@ async function main(args) {
 module.exports = { TARGET, ORIGIN, DIRECTORY, PROFILE, RESULT, SOURCE_FILES, HISTORY, BASELINE, LIMITS, APPROVAL, POLICY, VERCEL_HASHES,
   DiagnosticError, Budget, errorCode, digest, addCounts, validatePlan, validatePreparation, validateMetadata,
   headersOf, loginChecks, sessionChecks, csrfChecks, readiness, monitor, readJson, sourceHashes, historyHashes,
-  preflight, reserveEvidence, guardMetadataClient, metadataArguments, launchArguments, launch, request, nativeDependencies, encodeEvidence, runDiagnostic, main };
+  preflight, reserveEvidence, guardMetadataClient, metadataArguments, launchArguments, launch, request, nativeDependencies, encodeEvidence, runDiagnostic, main, VERCEL };
 if (require.main === module) main(process.argv.slice(2)).catch(error => {
   process.stderr.write(JSON.stringify({ stopCode: errorCode(error) }) + '\n'); process.exitCode = 1;
 });

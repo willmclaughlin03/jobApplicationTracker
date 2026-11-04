@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-11-01
 
+- `2026-11-04` - `Shared hosted CSRF CLI path`: Export the diagnostic's VERCEL constant and reuse it for build-attribution tool verification, keeping verification and metadata execution tied to the same executable. All 188 focused tests, both script syntax checks and whitespace validation passed.
+
 - `2026-11-04` - `Bounded hosted CSRF build attribution`: Add an offline-prepared single-use anonymous login attribution helper with exact target/source/tool/history checks, six guarded metadata reads, one streamed GET, cancellation, cumulative accounting and a sanitized 16 KiB receipt. Carry the project pendingAlias schema correction and update target pins from the separately approved metadata reconciliation. All 400 focused tests, syntax, scoped lint, whitespace and integrity checks passed. Build attribution, application authentication and hosted CSRF execution still require separate approval; GATE-1 remains open.
 
 - `2026-11-04` - `Hosted CSRF CLI dispatch compatibility`: Force the pinned Vercel metadata child onto the guarded JavaScript path with `VERCEL_CLI_USE_NATIVE_BINARY=0`, replacing the launcher flag rejected by its command parser. Add three mocked child-process regressions for absent/enabled native preferences and preserve request limits and parent configuration. All 307 focused tests, syntax, scoped lint, whitespace and offline installed-parser/launcher checks passed. No provider retry or hosted exercise is included; GATE-1 remains open.
