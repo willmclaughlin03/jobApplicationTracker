@@ -840,16 +840,17 @@ must still hash to
 The new source manifest also includes the new runner, its tests and this README,
 in that order, for nine files total. Freeze that manifest only after final review.
 
-The recorded target, observed November 3 UTC / November 2 Eastern, is:
+The current source pins use the separately observed November 4, 2026,
+19:41:41.812Z–19:41:50.664Z metadata reconciliation:
 
 | Pin | Recorded value |
 | --- | --- |
 | Project | `prj_b2nMrysMSJtpmqoeGx5g0WGgGuom` |
 | Team | `team_7o3efmwjZbMc2Bfy9qAzkc9q` |
 | Canonical host | `job-application-tracker-kappa-seven.vercel.app` |
-| Deployment | `dpl_C7qXW91kgLAUvgonScZ5hdQeGdut` |
-| Generated host | `job-application-tracker-kdk7cur91-track-the-app.vercel.app` |
-| Git SHA | `ed7c59b5ba77c8e320799ec3701dfbeb87ce2e75` |
+| Deployment | `dpl_jbyKAs8vNoVbGQ4vSM5hKd7LSrTJ` |
+| Generated host | `job-application-tracker-gefwgn8zj-track-the-app.vercel.app` |
+| Git SHA | `62b4133d257b43529d93e62f98afc8ccb2faf15b` |
 | Next.js build | **Not yet attributed** |
 
 These are recorded pins, not a claim that a moving alias remains current. Before
@@ -857,6 +858,17 @@ and after the three application requests, the diagnostic checks project, alias a
 deployment identity, readiness, canonical assignment and both Git SHA fields.
 Unexpected provider response shapes fail closed. A changed target requires an
 owner decision and reviewed pins, not discovery followed by automatic repinning.
+
+The project response may omit `pendingAlias`: the
+[Vercel public OpenAPI schema](https://openapi.vercel.sh/) reviewed November 4 does
+not define that field on `GET /v9/projects/{idOrName}`. Accept its omission without
+adding or interpreting a false value; if present, require exactly `false` and
+reject true or malformed values. Keep `autoAssignCustomDomains === true` mandatory.
+Assignment still requires the canonical alias to identify the pinned deployment,
+and that deployment to be `READY` in production with `aliasAssigned === true` and
+the canonical hostname in its alias list. The deployment GET documents
+`aliasAssigned` as a boolean; project-target summaries can use a different type
+and do not replace this deployment check.
 
 #### Readiness and transport boundaries
 
@@ -903,6 +915,38 @@ three-file correction adds mocked child-process coverage for absent and enabled
 native preferences. It does not establish provider authentication or refresh the
 recorded deployment identity. Another provider invocation needs separate approval;
 the hosted diagnostic and authentication preparation remain unexecuted.
+
+Subsequent separately approved November 4 checks restored CLI authentication and
+obtained project metadata. Reconciliation stopped at `project_assignment` before
+alias or deployment reads. A separately approved single project-only inspection
+at `2026-11-04T19:15:55.358Z` confirmed matching project/team identity,
+`autoAssignCustomDomains: true`, and an absent `pendingAlias`; it completed in
+2,897 ms. The inspection used one guarded GET, zero application requests and zero
+browser launches, with all nine source files, three CLI hashes and fifteen prior
+receipts unchanged. The earlier strict false requirement rejected that valid
+response shape. This offline correction admits omission while preserving the
+remaining identity and assignment checks. The project-only observation did not
+establish alias/deployment/build identity or a hosted CSRF result.
+
+The subsequently approved three-read reconciliation passed in 8,852 ms at the
+timestamps above. Project production target and canonical alias agreed on the
+deployment; its project, generated host, production/READY state, both source SHA
+fields, canonical alias membership and `aliasAssigned: true` matched.
+`autoAssignCustomDomains` was true, `pendingAlias` was absent, and the canonical
+alias had no redirect. All pre/post source/tool/history checks passed. This used
+three CLI invocations/three successful provider responses, with zero application
+requests or browser launches. Its sanitized result is retained in the session
+transcript, not a newly created on-disk metadata receipt. This observation does
+not prove the alias remains current or establish a Next.js build ID.
+
+The four listed authenticated metadata attempts on November 4 totaled six CLI
+invocations, five successful metadata responses and a conservative maximum of six
+provider GETs. That count excludes the earlier argument failure, normal CLI
+login/device/account traffic and public documentation reads. CLI login succeeded;
+it did not prepare an authenticated application profile. The source comparison
+from historical `ed7c59b5ba77c8e320799ec3701dfbeb87ce2e75` to the current source pin
+changed only the diagnostic/tests/README and two publication logs; application
+auth/cache/cookie source was unchanged. GATE-1 remains open.
 
 #### Fixed cases, budgets and evidence
 
@@ -1021,9 +1065,137 @@ installed CLI accepted all three corrected metadata commands and verified its
 environment opt-out without loading the CLI entry point, credentials or transport.
 These checks do not qualify a successful provider read or hosted execution.
 
+The project-assignment schema correction passed all 322 focused tests (110 hosted
+diagnostic plus the unchanged 212-test baseline), both CJS syntax checks, scoped
+ESLint with zero warnings, and whitespace checks. The omission regression first
+failed against the previous validator. The updated default fixture omits
+`pendingAlias`; new cases cover explicit false, malformed values, mandatory
+auto-assignment, and downstream alias/deployment rejection before any browser or
+application request. No live retry is included in this offline validation.
+
 ```powershell
 node --test --test-reporter=spec scripts/gate1-browser-tabs/__tests__/hosted-csrf-diagnostic.test.cjs scripts/gate1-browser-tabs/__tests__/request-client-isolation.test.cjs scripts/gate1-browser-tabs/__tests__/page-lifecycle-diagnostic.test.cjs scripts/gate1-browser-tabs/__tests__/full-isolation-qualification.test.cjs
 node --check scripts/gate1-browser-tabs/hosted-csrf-diagnostic.cjs
 node --check scripts/gate1-browser-tabs/__tests__/hosted-csrf-diagnostic.test.cjs
 git diff --check
 ```
+
+### Anonymous build attribution: offline preparation
+
+`hosted-csrf-build-attribution.cjs` implements the separately approved five-file
+offline preparation. It supplies no live approval manifest, execution copy,
+authenticated profile or receipt. Imports and mocked tests make no hosted
+requests. The build ID remains unknown until separately approved execution and
+review. Publishing this helper is also separate from running it.
+
+The future invocation accepts only `--execute-reviewed-manifest`, only from the
+real `.tmp/gate1-hosted-csrf-01` directory, and only the fixed
+`build-attribution-plan.json` manifest there. A valid manifest must contain:
+
+- `approval: "hosted-csrf-build-attribution-01"` and the exact diagnostic `TARGET`;
+- `approvedAt` and `expiresAt` as epoch milliseconds, current at every dispatch,
+  with an approval window no longer than one hour;
+- `limits` exactly equal to this helper's exported `LIMITS`;
+- `sourceSet` for eleven ordered files: the unchanged diagnostic nine-file
+  contract followed by this helper and its test;
+- `ledgerBefore.actual` and `.conservative`, each with integer
+  application/static/session totals at least the historical baseline, conservative
+  counts no smaller than actual, and sessions included in application; and
+- `ledgerCeiling` equal to those totals plus exactly one application, zero static
+  and zero session requests. Include any intervening consumption before approval.
+
+The marker is not authorization by itself. The owner must separately review the
+finished code, exact hashes, manifest, operator/operational owner, target, budgets,
+success criterion and stopping point. No executable manifest or current approval
+timestamp is supplied. Alias movement stops for reconciliation and reviewed pins;
+the helper never discovers a replacement target or retries.
+
+The sequence is local approval/integrity preflight, exclusive `wx` reservation of
+`build-attribution.json`, project/alias/deployment checks, one anonymous canonical
+`GET /login`, then the same three metadata checks. Trailing reads run only after
+all earlier checks pass. Metadata reuses the pinned JavaScript CLI guard and exact
+route arguments, with owned abortable children. It cannot refresh credentials,
+reauthenticate, follow redirects or retry.
+
+| Resource | Ceiling |
+| --- | --- |
+| Entire attempt | 240 seconds including a 20-second cleanup reserve |
+| Local preflight, including initial manifest read | 30 seconds |
+| Provider traffic | Six GET reservations, each at most 30 seconds |
+| CLI output | 2 MiB per stream, independently for stdout and stderr |
+| Application traffic | One GET `/login`; zero static/session requests |
+| Application operation | Five seconds including streaming |
+| Response | 1 MiB received body; 32 KiB native header parser limit and duplicate-aware validation |
+| Manifest and receipt | 16 KiB each |
+| Browser launches | Zero |
+
+Native HTTPS has no cookie jar, credentials, asset fetching, redirects or retries.
+It requests identity encoding, disables connection reuse with `agent: false`, and
+destroys its request on timeout, cancellation, excessive headers/body or truncation.
+The payload cap is enforced as chunks arrive. It is not a whole-process memory
+cap: retained chunks and the final contiguous buffer can briefly coexist. Cleanup
+separately observes request and CLI child close events; unresolved ownership
+invalidates attribution.
+
+Attribution requires HTML, exactly one narrowly parsed `__NEXT_DATA__` script,
+exactly one top-level `buildId` property (including escaped-key duplicate
+detection), and a 1–128 character alphanumeric/underscore/hyphen build ID. Inert
+comment/template/raw-text data does not qualify. Existing public-login cache
+checks remain authoritative: `public, max-age=0, must-revalidate`, allowed cache
+status and appropriate age. A static HIT establishes attributed content, not fresh
+origin execution. HTML, header values and cookies are never serialized.
+
+Source/history/CLI integrity and the original manifest byte hash are checked
+again during cleanup. The qualified six-file source binding and fifteen immutable
+historical receipt hashes remain unchanged. This helper verifies Node `v22.18.0`,
+Vercel `62.2.0` and all three pinned CLI files. It needs no browser package,
+authentication receipt or profile and does not use the diagnostic's circular
+full preflight.
+
+A finalized passed receipt includes `phase: "passed"`, exact `target`, `buildId`,
+and `requests: { application: 1, static: 0, session: 0 }`, compatible with the
+diagnostic's 16 KiB preparation reader. It also contains bounded local check
+outcomes, hashes, counts, cumulative ledgers and timing through the start of
+finalization. The CLI reports `receiptFinalized: true` only after write, sync and
+close succeed within the overall bound. A partial or apparently passed file is
+**unusable** if the invocation reports a write/sync/close/deadline failure; retain
+it without overwriting or automatically retrying and return to an owner decision.
+Later preparation approval must verify both the receipt and successful invocation
+completion. File output alone is not completion evidence.
+
+Dispatches are charged before transport entry, including failed or uncertain
+ones; reservations do not prove server receipt. Matched and successfully parsed
+metadata responses are separate counters. This offline implementation made no
+hosted application requests. A future pass adds 1/0/0 to historical actual
+149/150/52 and conservative 150/150/52, producing 150/150/52 and 151/150/52.
+Authentication-preparation traffic must also be measured before the later
+diagnostic. The historical browser-background measurement gap remains named.
+
+Coverage includes success order, approval/input/target drift, malformed/duplicate
+build data, cache failures, streaming/header limits, truncation, cancellation and
+late completion, consumed outputs, evidence I/O failure, redaction, cumulative
+accounting and diagnostic receipt compatibility. Run the new suite with the four
+existing focused suites, syntax and scoped ESLint on both source/test pairs,
+whitespace checks and final integrity hashing. These are offline validations.
+
+The five-file preparation passed **400 tests** (76 build-attribution, 112 hosted
+diagnostic and the unchanged 212-test baseline), with zero failures, cancellations
+or skips. All four CJS syntax checks and scoped ESLint with zero warnings passed.
+Tracked and new-file whitespace checks were clean. The focused test output is
+retained locally in `.tmp/gate1-hosted-csrf-build-attribution-tests.log`.
+
+```powershell
+node --test --test-reporter=spec scripts/gate1-browser-tabs/__tests__/hosted-csrf-build-attribution.test.cjs scripts/gate1-browser-tabs/__tests__/hosted-csrf-diagnostic.test.cjs scripts/gate1-browser-tabs/__tests__/request-client-isolation.test.cjs scripts/gate1-browser-tabs/__tests__/page-lifecycle-diagnostic.test.cjs scripts/gate1-browser-tabs/__tests__/full-isolation-qualification.test.cjs
+node --check scripts/gate1-browser-tabs/hosted-csrf-build-attribution.cjs
+node --check scripts/gate1-browser-tabs/__tests__/hosted-csrf-build-attribution.test.cjs
+node --check scripts/gate1-browser-tabs/hosted-csrf-diagnostic.cjs
+node --check scripts/gate1-browser-tabs/__tests__/hosted-csrf-diagnostic.test.cjs
+git diff --check
+```
+
+Still separate: live build-attribution approval/execution; measured Google via
+Supabase sign-in into the dedicated Chrome profile with destination allowlists
+and independent closure evidence; the three-request hosted CSRF diagnostic and
+its independent postflight; and the other open Gate-1 obligations. Preserve the
+accepted restored-worker readiness policy and qualified local isolation receipt.
+No checkout, load, WAF, deployment, alias or rollback exercise follows automatically.

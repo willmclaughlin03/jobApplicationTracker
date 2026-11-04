@@ -22,8 +22,8 @@ const VERCEL_HASHES = Object.freeze({ 'vc.js': 'a0459896d4698233bab881d308ade711
   'chunks/chunk-DECIQZZQ.js': '2ab9699b44b2692ae8087c3ae1787183d87bdfcb349bbace491c6095ba355b7f',
   'chunks/chunk-KREBNPHL.js': '68f2577a4f42085237bce5a1ae017dcbf6cf0387111476c16d5c06d339f70f99' });
 const TARGET = Object.freeze({ project: 'prj_b2nMrysMSJtpmqoeGx5g0WGgGuom', team: 'team_7o3efmwjZbMc2Bfy9qAzkc9q',
-  canonical: 'job-application-tracker-kappa-seven.vercel.app', deployment: 'dpl_C7qXW91kgLAUvgonScZ5hdQeGdut',
-  generated: 'job-application-tracker-kdk7cur91-track-the-app.vercel.app', source: 'ed7c59b5ba77c8e320799ec3701dfbeb87ce2e75' });
+  canonical: 'job-application-tracker-kappa-seven.vercel.app', deployment: 'dpl_jbyKAs8vNoVbGQ4vSM5hKd7LSrTJ',
+  generated: 'job-application-tracker-gefwgn8zj-track-the-app.vercel.app', source: '62b4133d257b43529d93e62f98afc8ccb2faf15b' });
 const ORIGIN = `https://${TARGET.canonical}`;
 const HISTORY = Object.freeze({ ...qualification.HISTORY,
   'browser-isolation-fixture-cft158-01.json': 'f7f7a8fea52f058842d2a1e6a008823f452593c949684b41a51b5aa40fa8c647' });
@@ -135,11 +135,15 @@ function validatePreparation(plan, build, auth) {
   }
 }
 
-/** Check raw control-plane responses in memory; only fixed pass/fail categories leave this boundary. */
+/**
+ * Check provider identity in memory; only categorical outcomes leave this boundary.
+ * Omitted project pendingAlias is valid; alias/deployment records still establish assignment.
+ */
 function validateMetadata(kind, data) {
   let ok = false;
   if (kind === 'project') ok = data?.id === TARGET.project && data.accountId === TARGET.team
-    && data.targets?.production?.id === TARGET.deployment && data.autoAssignCustomDomains === true && data.pendingAlias === false;
+    && data.targets?.production?.id === TARGET.deployment && data.autoAssignCustomDomains === true
+    && (!Object.hasOwn(data, 'pendingAlias') || data.pendingAlias === false);
   if (kind === 'alias') ok = data?.alias === TARGET.canonical && data.projectId === TARGET.project
     && data.deployment?.id === TARGET.deployment && (data.redirect === null || data.redirect === undefined);
   if (kind === 'deployment') ok = data?.id === TARGET.deployment && data.projectId === TARGET.project
@@ -632,7 +636,7 @@ async function main(args) {
 module.exports = { TARGET, ORIGIN, DIRECTORY, PROFILE, RESULT, SOURCE_FILES, HISTORY, BASELINE, LIMITS, APPROVAL, POLICY, VERCEL_HASHES,
   DiagnosticError, Budget, errorCode, digest, addCounts, validatePlan, validatePreparation, validateMetadata,
   headersOf, loginChecks, sessionChecks, csrfChecks, readiness, monitor, readJson, sourceHashes, historyHashes,
-  preflight, reserveEvidence, guardMetadataClient, metadataArguments, launchArguments, launch, request, nativeDependencies, encodeEvidence, runDiagnostic, main };
+  preflight, reserveEvidence, guardMetadataClient, metadataArguments, launchArguments, launch, request, nativeDependencies, encodeEvidence, runDiagnostic, main, VERCEL };
 if (require.main === module) main(process.argv.slice(2)).catch(error => {
   process.stderr.write(JSON.stringify({ stopCode: errorCode(error) }) + '\n'); process.exitCode = 1;
 });
