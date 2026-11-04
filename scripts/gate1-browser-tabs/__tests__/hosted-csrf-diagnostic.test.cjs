@@ -339,6 +339,51 @@ test('first case failure survives later cleanup failures', async () => {
   assert.equal(record.firstFailure.code, 'session_contract'); assert.deepEqual(record.cleanupFailures, ['browser_cleanup', 'proxy_cleanup']);
 });
 
+for (const [method, field, code] of [
+  ['profileExists', 'profilePreserved', 'profile_preservation'],
+  ['history', 'historyUnchanged', 'history_mismatch'],
+  ['sources', 'sourcesUnchanged', 'source_mismatch'],
+]) for (const failure of ['rejection', 'timeout']) test('postflight ' + method + ' ' + failure + ' preserves independent checks', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = harness(); const calls = []; const recover = h.deps[method]; let release;
+  for (const name of ['profileExists', 'history', 'sources']) {
+    const original = h.deps[name];
+    /** Record postflight order and inject one failure without touching files or provider state. */
+    h.deps[name] = async () => {
+      calls.push(name);
+      if (name !== method) return original();
+      if (failure === 'rejection') throw new Error('PRIVATE_POSTFLIGHT');
+      return new Promise(resolve => { release = resolve; });
+    };
+  }
+  const pending = d.runDiagnostic(plan(), ACCOUNT, h.deps); await turn();
+  if (failure === 'timeout') { assert.equal(calls.at(-1), method); t.mock.timers.tick(1001); }
+  const record = await pending;
+  assert.deepEqual(calls, ['profileExists', 'history', 'sources']);
+  for (const key of ['profilePreserved', 'historyUnchanged', 'sourcesUnchanged']) assert.equal(record[key], key !== field);
+  assert.deepEqual(record.cleanupFailures, [code]); assert.equal(record.firstFailure.code, code);
+  assert.equal(record.firstFailure.stage, 'cleanup'); assert.equal(record.phase, 'stopped');
+  assert.equal(record.diagnosticChecksPassed, false); assert.equal(JSON.parse(h.writes[0])[field], false);
+  assert.ok(!h.writes[0].includes('PRIVATE_')); assert.equal(h.calls.at(-1), 'handle_close');
+  if (failure === 'timeout') {
+    const snapshot = JSON.stringify(record); release(await recover()); await turn();
+    assert.equal(JSON.stringify(record), snapshot); assert.equal(h.writes.length, 1);
+  }
+});
+
+test('postflight rejections record every failure without replacing the first case failure', async () => {
+  const h = harness({ wrongAccount: true });
+  for (const method of ['profileExists', 'history', 'sources']) {
+    /** Reject each independent postflight dependency to verify complete sanitized failure evidence. */
+    h.deps[method] = async () => { throw new Error('PRIVATE_POSTFLIGHT'); };
+  }
+  const record = await d.runDiagnostic(plan(), ACCOUNT, h.deps);
+  assert.deepEqual(record.cleanupFailures, ['profile_preservation', 'history_mismatch', 'source_mismatch']);
+  for (const key of ['profilePreserved', 'historyUnchanged', 'sourcesUnchanged']) assert.equal(record[key], false);
+  assert.equal(record.firstFailure.code, 'session_contract'); assert.equal(record.phase, 'stopped');
+  assert.ok(!h.writes[0].includes('PRIVATE_')); assert.equal(h.calls.at(-1), 'handle_close');
+});
+
 for (const [options, code, calls] of [[{ preflightFailure: true }, 'package_mismatch', ['preflight']],
   [{ occupied: true }, 'evidence_already_exists', ['preflight', 'reserve']]]) test('admission failure precedes native work: ' + code, async () => {
   const h = harness(options); await assert.rejects(d.runDiagnostic(plan(), ACCOUNT, h.deps), { code }); assert.deepEqual(h.calls, calls);
@@ -443,9 +488,10 @@ test('metadata client guard refuses refresh, redirects, retries, alternate API a
   await assert.rejects(client.reauthenticate(), /metadata_auth_unavailable/);
 });
 
-test('metadata preload pins the installed client and exposes no credentials or arbitrary endpoint input', () => {
+test('metadata preload forces the guarded JavaScript CLI and exposes no credentials or arbitrary endpoint input', () => {
   for (const kind of ['project', 'alias', 'deployment']) {
-    const args = d.metadataArguments(kind); assert.equal(args[0], '--import'); assert.equal(args[3], 'api');
+    const args = d.metadataArguments(kind); assert.equal(args[0], '--import');
+    assert.deepEqual(args.slice(3, 5), ['--disable-binary', 'api']);
     const preload = decodeURIComponent(args[1].slice('data:text/javascript,'.length));
     assert.ok(preload.includes('chunk-DECIQZZQ.js')); assert.ok(preload.includes('retry: { retries: 0 }'));
     assert.ok(!preload.includes(ACCOUNT)); assert.ok(!preload.includes('readFile'));

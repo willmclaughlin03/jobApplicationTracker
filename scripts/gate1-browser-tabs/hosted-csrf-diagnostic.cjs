@@ -421,7 +421,7 @@ function metadataArguments(kind) {
   const preload = `import { Client, isValidAccessToken } from ${JSON.stringify(pathToFileURL(VERCEL_CLIENT).href)};\n`
     + `(${guardMetadataClient.toString()})(Client, isValidAccessToken, ${JSON.stringify(endpoint)});`;
   return ['--import', `data:text/javascript,${encodeURIComponent(preload)}`, VERCEL,
-    'api', endpoint, '--method', 'GET', '--raw', '--non-interactive'];
+    '--disable-binary', 'api', endpoint, '--method', 'GET', '--raw', '--non-interactive'];
 }
 
 /** Retrieve one fixed metadata endpoint with the pinned one-dispatch client guard and private CLI authentication. */
@@ -585,15 +585,17 @@ async function runDiagnostic(input, expectedUserId, deps = nativeDependencies())
     for (const item of monitors) {
       try { item.object.removeListener(item.event, item.listener); } catch { failed('monitor_cleanup'); }
     }
+    try { record.profilePreserved = await cleanupStep(() => deps.profileExists(), deadline - 1000, 1000) === true; }
+    catch { record.profilePreserved = false; }
+    if (!record.profilePreserved) failed('profile_preservation');
     try {
-      record.profilePreserved = await cleanupStep(() => deps.profileExists(), deadline - 1000, 1000);
-      if (!record.profilePreserved) failed('profile_preservation');
       const history = await cleanupStep(() => deps.history(), deadline - 1000, 1000);
       record.historyUnchanged = Object.keys(HISTORY).every(name => history[name] === HISTORY[name]);
-      if (!record.historyUnchanged) failed('history_mismatch');
-      record.sourcesUnchanged = (await cleanupStep(() => deps.sources(), deadline - 1000, 1000)).set === plan.sourceSet;
-      if (!record.sourcesUnchanged) failed('source_mismatch');
-    } catch { failed('history_mismatch'); }
+    } catch { record.historyUnchanged = false; }
+    if (!record.historyUnchanged) failed('history_mismatch');
+    try { record.sourcesUnchanged = (await cleanupStep(() => deps.sources(), deadline - 1000, 1000)).set === plan.sourceSet; }
+    catch { record.sourcesUnchanged = false; }
+    if (!record.sourcesUnchanged) failed('source_mismatch');
     record.counts = { ...budget.counts };
     record.ledgerBefore = Object.fromEntries(['actual', 'conservative'].map(kind => [kind, { ...plan.ledgerBefore[kind] }]));
     record.ledgerCeiling = Object.fromEntries(['actual', 'conservative'].map(kind => [kind, { ...plan.ledgerCeiling[kind] }]));
