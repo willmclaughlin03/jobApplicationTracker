@@ -2,8 +2,13 @@
 /* global structuredClone, Buffer */
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
+const http = require('node:http');
+const path = require('node:path');
+const vm = require('node:vm');
 const a = require('../authentication-preparation.cjs');
 const t = require('../authentication-preparation-traffic.cjs');
+const p = require('../authentication-preparation-postflight.cjs');
 const d = require('../hosted-csrf-diagnostic.cjs');
 const ID = '00000000-0000-4000-8000-000000000001';
 
@@ -13,6 +18,108 @@ function plan() {
     profile: d.PROFILE, sourceSet: 'a'.repeat(64), buildHash: a.BUILD_HASH, buildCompletionReviewed: true,
     limits: { ...t.LIMITS }, ledgerBefore: structuredClone(a.BASELINE), approvedAt: 1000, expiresAt: 2000 };
 }
+
+/** Exercise proxy callbacks with mocked HTTP transports so budget tests never bind or forward traffic. */
+async function proxyFixture(context, proxyBytes = 4) {
+  const server = new EventEmitter();
+  server.listen = (_port, _host, ready) => ready(); server.address = () => ({ port: 12345 });
+  context.mock.method(http, 'createServer', handler => { server.on('request', handler); return server; });
+  context.mock.method(http, 'request', () => Object.assign(new EventEmitter(), {
+    end: context.mock.fn(), destroy: context.mock.fn(),
+  }));
+  const budget = new t.TrafficBudget({ limits: { ...a.OFFLINE, proxyBytes } });
+  const proxy = await a.startProxy({ origin: 'http://127.0.0.1:12346', port: 12346 }, budget, []);
+  proxy.state.ready = true;
+  const socket = Object.assign(new EventEmitter(), { destroy: context.mock.fn(), end: context.mock.fn() });
+  server.emit('connection', socket);
+  /** Dispatch a synthetic request; its body chunks are emitted separately from socket framing. */
+  function request(method = 'GET') {
+    const incoming = Object.assign(new EventEmitter(), {
+      method, url: 'http://127.0.0.1:12346/login', headers: {}, destroy: context.mock.fn(),
+    });
+    const response = Object.assign(new EventEmitter(), { end: context.mock.fn() });
+    response.writeHead = () => response;
+    server.emit('request', incoming, response); return incoming;
+  }
+  return { server, budget, proxy, socket, request };
+}
+
+test('proxy headers and rejected CONNECT traffic do not consume the request body budget', async context => {
+  const fixture = await proxyFixture(context, 0);
+  fixture.request();
+  fixture.socket.emit('data', Buffer.from('GET http://127.0.0.1:12346/login HTTP/1.1\r\nHost: localhost\r\n\r\n'));
+  fixture.server.emit('connect', {}, fixture.socket);
+  fixture.socket.emit('data', Buffer.from('CONNECT example.test:443 HTTP/1.1\r\n\r\n'));
+  assert.equal(fixture.budget.snapshot().counters.proxyBytes, 0);
+  assert.equal(fixture.budget.snapshot().counters.proxyConnections, 1);
+  assert.equal(fixture.budget.halted, false);
+  assert.equal(fixture.socket.destroy.mock.callCount(), 0);
+  assert.equal(fixture.proxy.state.forwarded, 1);
+  assert.equal(fixture.proxy.state.denied, 1);
+});
+
+for (const method of ['GET', 'POST']) test(`proxy counts ${method} body chunks across requests and destroys an over-budget request`, async context => {
+  const fixture = await proxyFixture(context);
+  const first = fixture.request(method); first.emit('data', Buffer.from('ab'));
+  const second = fixture.request(method); second.emit('data', Buffer.from('c')); second.emit('data', Buffer.from('d'));
+  assert.equal(fixture.budget.snapshot().counters.proxyBytes, 4);
+  assert.equal(fixture.budget.halted, false);
+  assert.equal(first.destroy.mock.callCount(), 0); assert.equal(second.destroy.mock.callCount(), 0);
+  second.emit('data', Buffer.from('e'));
+  assert.equal(second.destroy.mock.callCount(), 1);
+  assert.equal(fixture.budget.failure, 'budget'); assert.equal(fixture.budget.halted, true);
+  assert.equal(fixture.budget.snapshot().counters.proxyBytes, 4);
+  assert.equal(fixture.socket.destroy.mock.callCount(), 0);
+  assert.equal(fixture.proxy.state[method === 'GET' ? 'forwarded' : 'denied'], 2);
+});
+
+/** Run the real worker orchestration with native boundaries mocked to isolate its final profile check. */
+async function profileCleanup(profile, priorFailure = null) {
+  let record;
+  const expected = 'a'.repeat(64);
+  const sandbox = {
+    expected, startedAt: Date.now(), path, t, check: t.check, OFFLINE: a.OFFLINE,
+    process: new EventEmitter(), CORE: 'mock-runtime', require: () => ({}),
+    fs: {
+      open: async () => ({ close: async () => {} }), mkdir: async () => {},
+      /** Simulate directory preservation or a failed stat without touching the real profile. */
+      stat: async file => {
+        assert.equal(file, p.PROFILE);
+        if (['ENOENT', 'EACCES'].includes(profile)) throw Object.assign(new Error('stat failed'), { code: profile });
+        return { isDirectory: () => profile === 'directory' };
+      },
+    },
+    p: { ...p, writeExclusive: async (file, value) => { assert.equal(file, p.ATTEMPT); record = value; return expected; } },
+    f: { bounded: action => action() }, step: a.step, verifyIdentity: a.verifyIdentity,
+    preflight: async () => { if (priorFailure) throw new t.PreparationError(priorFailure); },
+    sourceHash: async () => expected,
+    startOrigin: async () => ({ origin: 'http://127.0.0.1:12346', counts: { requests: 2 } }),
+    startProxy: async () => ({ state: {} }),
+    launch: async () => ({ closed: true, context: { request: { get: async () => ({
+      status: () => 200, body: async () => Buffer.from(JSON.stringify({
+        error: null, message: 'Success', data: { user: { id: ID } },
+      })), dispose: async () => {},
+    }) } } }),
+    SYNTHETIC_ID: ID,
+    observe: async () => ({ page: { goto: async () => {}, evaluate: async () => true },
+      observer: { ready: true, allowed: 2, blocked: 1, close: async () => {}, summary: async () => ({}) } }),
+    closeBrowser: async () => ({}), closeListeners: async () => {},
+  };
+  const completion = await vm.runInNewContext(`(${a.runLoopback.toString()})(expected, startedAt)`, sandbox);
+  return { record, completion };
+}
+
+for (const [profile, priorFailure, failure] of [
+  ['directory', null, null], ['ENOENT', null, 'profile'], ['file', null, 'profile'],
+  ['EACCES', null, 'profile'], ['ENOENT', 'closure', 'closure'],
+]) test(`profile cleanup reports ${profile} with prior failure ${priorFailure}`, async () => {
+  const { record, completion } = await profileCleanup(profile, priorFailure);
+  assert.equal(record.checks.profilePreserved, profile === 'directory');
+  assert.equal(record.checks.localListenersClosed, true);
+  assert.equal(record.firstFailure, failure); assert.equal(completion.firstFailure, failure);
+  assert.equal(record.phase, failure ? 'stopped' : 'passed'); assert.equal(completion.phase, record.phase);
+  assert.equal(completion.receiptFinalized, true);
+});
 
 test('strict proposal validation preserves consumed build traffic exactly once', () => {
   assert.equal(a.validatePlan(plan(), ID, 1500), true);

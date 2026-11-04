@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-11-01
 
+- `2026-11-04` - `Authentication preparation review fixes`: Scope the proxy byte budget to cumulative HTTP request bodies and destroy requests that exceed it; align the documented bound. Latch failed profile preservation through the existing budget mechanism while retaining the successful path and first failure. Add eight mocked regressions; all 78 focused tests, syntax, scoped lint and whitespace checks passed. Native browser qualification was not rerun; historical receipts do not validate these changed sources, and GATE-1 remains open.
+
 - `2026-11-04` - `Offline authentication-preparation controls`: Add a seven-file preparation scaffold with strict future-plan validation, destination/phase restrictions, per-hop reservations, page-event reconciliation, persistent synthetic-profile lifecycle and independent postflight. All 70 focused tests, syntax, scoped lint and whitespace checks passed. The separately approved two-launch loopback qualification passed in 23,737 ms including postflight. Complete browser-background measurement remains unqualified; live execution and authenticated-receipt creation stay disabled, and GATE-1 remains open.
 
 - `2026-11-04` - `Shared hosted CSRF CLI path`: Export the diagnostic's VERCEL constant and reuse it for build-attribution tool verification, keeping verification and metadata execution tied to the same executable. All 188 focused tests, both script syntax checks and whitespace validation passed.

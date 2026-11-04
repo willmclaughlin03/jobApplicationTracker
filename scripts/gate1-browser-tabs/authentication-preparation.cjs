@@ -140,6 +140,10 @@ async function startOrigin(resources) {
 async function startProxy(origin, budget, resources) {
   const state = { ready: false, forwarded: 0, denied: 0, connections: 0, readyBeforeForwarding: true };
   const server = http.createServer((request, response) => {
+    /** Charge parsed body chunks only, including denied requests; terminate the request on budget failure. */
+    request.on('data', chunk => {
+      try { budget.reserve('proxyBytes', chunk.length); } catch { request.destroy(); }
+    });
     let destination;
     try {
       budget.check(); destination = new URL(request.url);
@@ -164,9 +168,6 @@ async function startProxy(origin, budget, resources) {
       budget.reserve('proxyConnections');
       check(resource.sockets.size <= OFFLINE.proxyConcurrent, 'budget');
     } catch { budget.stop('budget'); socket.destroy(); return; }
-    socket.on('data', chunk => {
-      try { budget.reserve('proxyBytes', chunk.length); } catch { socket.destroy(); }
-    });
   });
   return { ...resource, state };
 }
@@ -303,6 +304,7 @@ async function runLoopback(expected, startedAt) {
     budget.halted = true;
     try { await closeListeners(resources); checks.localListenersClosed = true; } catch { budget.stop('closure'); }
     checks.profilePreserved = await fs.stat(p.PROFILE).then(stat => stat.isDirectory(), () => false);
+    if (!checks.profilePreserved) budget.stop('profile');
     try { check(await sourceHash() === expected, 'integrity'); } catch { budget.stop('integrity'); }
     process.removeListener('SIGINT', cancel); process.removeListener('SIGTERM', cancel); process.removeListener('message', cancel);
   }

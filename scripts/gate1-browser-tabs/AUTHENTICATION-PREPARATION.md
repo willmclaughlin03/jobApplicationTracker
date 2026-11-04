@@ -78,8 +78,10 @@ profile files are preserved, not inspected or exported.
 
 Offline budgets: application 12, session 4 (included), zero provider/static/
 metadata requests, 128 proxy connections, 16 concurrent, two pages per browser,
-1,024 page-observation events, 16 KiB evidence. The proxy bounds incoming bytes
-at 64 MiB; tiny fixed loopback responses are separately bounded by fixture count.
+1,024 page-observation events, 16 KiB evidence. The proxy bounds cumulative HTTP
+request body bytes at 64 MiB, including denied requests; headers, HTTP framing and
+rejected CONNECT traffic are excluded. Tiny fixed loopback responses are
+separately bounded by fixture count.
 Native launch/CIM/CDP operations are bounded. Browser-background attempts rejected
 by the proxy are summarized as connections/denials, not fabricated HTTP counts.
 This does not prove OS-wide egress isolation, UDP/WebRTC isolation, whole-process
@@ -136,7 +138,7 @@ Draft live limits remain 900 seconds including 60 cleanup/postflight, 600 manual
 sign-in seconds, two launches, one OAuth attempt, two pages, application 24,
 session 8 included, canonical static 80, provider static 120, Supabase 4, Google
 non-static 96, metadata 6 at 30 seconds each. Browser HTTP operations 30 seconds,
-restart session 5 seconds; encrypted proxy bytes 64 MiB, connections 128 total/16
+restart session 5 seconds; proxy request body bytes 64 MiB, connections 128 total/16
 concurrent; receipt 16 KiB. Every redirect and uncertain dispatch stays charged.
 These limits are validated as proposed values, not implemented live coverage.
 
