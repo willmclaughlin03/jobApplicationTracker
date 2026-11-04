@@ -14,6 +14,26 @@ const SOURCE = 'a'.repeat(64);
 const BUILD = 'offline-synthetic-build';
 const NOW = 1793669000000;
 
+/** Lock the separately observed November 4 identity instead of silently following a moving alias. */
+test('target pins match the reviewed November 4 metadata reconciliation', () => {
+  assert.equal(d.TARGET.deployment, 'dpl_jbyKAs8vNoVbGQ4vSM5hKd7LSrTJ');
+  assert.equal(d.TARGET.generated, 'job-application-tracker-gefwgn8zj-track-the-app.vercel.app');
+  assert.equal(d.TARGET.source, '62b4133d257b43529d93e62f98afc8ccb2faf15b');
+});
+
+/** Verify a bounded attribution receipt remains compatible with the diagnostic's measured preparation interface. */
+test('build-attribution serializer and diagnostic preparation reader share the 16 KiB receipt contract', () => {
+  const attribution = require('../hosted-csrf-build-attribution.cjs');
+  const build = JSON.parse(attribution.encodeEvidence({ phase: 'passed', target: d.TARGET, buildId: BUILD,
+    requests: { ...attribution.INCREMENT }, checks: { uniqueBuild: true } }));
+  assert.equal(attribution.LIMITS.evidenceBytes, d.LIMITS.planBytes);
+  const auth = { phase: 'passed', target: d.TARGET, buildId: BUILD, profile: d.PROFILE, identityVerified: true,
+    browserTrafficMeasured: true, closedNormally: true, independentProcessExitVerified: true,
+    requests: { actual: { application: 4, static: 7, session: 2 }, conservative: { application: 4, static: 7, session: 2 } } };
+  d.validatePreparation(plan(NOW), build, auth);
+  assert.throws(() => d.validatePreparation(plan(NOW), { ...build, phase: 'stopped' }, auth), { code: 'preparation_missing' });
+});
+
 /** Supply a synthetic reviewed manifest with explicit preparation consumption and no real identity. */
 function plan(now = Date.now()) {
   const ledgerBefore = { actual: { application: 154, static: 157, session: 54 },
@@ -25,10 +45,10 @@ function plan(now = Date.now()) {
       [kind, d.addCounts(ledgerBefore[kind], { application: 3, static: 0, session: 1 })])) };
 }
 
-/** Model fixed control-plane schemas with no provider call or raw credentials. */
+/** Model provider response shapes, including omitted project pendingAlias, without calls or credentials. */
 function metadata(kind) {
   if (kind === 'project') return { id: d.TARGET.project, accountId: d.TARGET.team,
-    targets: { production: { id: d.TARGET.deployment } }, autoAssignCustomDomains: true, pendingAlias: false };
+    targets: { production: { id: d.TARGET.deployment } }, autoAssignCustomDomains: true };
   if (kind === 'alias') return { alias: d.TARGET.canonical, projectId: d.TARGET.project,
     deployment: { id: d.TARGET.deployment }, redirect: null };
   return { id: d.TARGET.deployment, projectId: d.TARGET.project, url: d.TARGET.generated, target: 'production',
@@ -201,11 +221,31 @@ for (const kind of ['project', 'alias', 'deployment']) test('exact ' + kind + ' 
   assert.throws(() => d.validateMetadata(kind, data), { code: 'metadata_mismatch' });
 });
 
+/** Reproduce the observed omission and retain compatibility with an explicit false without mutating either response. */
+test('project metadata accepts omitted pendingAlias and explicit false', () => {
+  const data = metadata('project'); assert.equal(Object.hasOwn(data, 'pendingAlias'), false);
+  assert.equal(d.validateMetadata('project', data), true);
+  assert.equal(Object.hasOwn(data, 'pendingAlias'), false);
+  const explicit = { ...data, pendingAlias: false };
+  assert.equal(d.validateMetadata('project', explicit), true); assert.equal(explicit.pendingAlias, false);
+});
+
+/** A present field must be false; false-like or malformed values cannot stand in for an omitted JSON property. */
+for (const [label, value] of [['null', null], ['undefined', undefined], ['zero', 0], ['one', 1],
+  ['string false', 'false'], ['empty string', ''], ['object', {}], ['array', []]])
+  test('project metadata rejects present pendingAlias ' + label, () => {
+    const data = { ...metadata('project'), pendingAlias: value };
+    assert.throws(() => d.validateMetadata('project', data), { code: 'metadata_mismatch' });
+  });
+
 for (const [kind, mutate] of [
   ['project', x => { x.accountId = 'wrong-team'; }], ['project', x => { x.autoAssignCustomDomains = false; }],
+  ['project', x => { delete x.autoAssignCustomDomains; }],
   ['project', x => { x.pendingAlias = true; }], ['alias', x => { x.redirect = 'other'; }],
   ['alias', x => { x.projectId = 'other'; }], ['deployment', x => { x.meta.githubCommitSha = 'other'; }],
   ['deployment', x => { x.readyState = 'BUILDING'; }], ['deployment', x => { x.alias = []; }],
+  ['deployment', x => { x.aliasAssigned = false; }], ['deployment', x => { delete x.aliasAssigned; }],
+  ['deployment', x => { x.aliasAssigned = NOW; }],
 ]) test('metadata rejects ' + kind + ' drift ' + mutate.toString(), () => {
   const data = metadata(kind); mutate(data); assert.throws(() => d.validateMetadata(kind, data), { code: 'metadata_mismatch' });
 });
@@ -306,6 +346,20 @@ test('successful sequence is exactly six metadata reads and three GETs, followed
   assert.equal(h.writes.length, 1); assert.equal(h.calls.at(-1), 'handle_close');
   for (const sensitive of [ACCOUNT, 'PRIVATE_', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.']) assert.ok(!h.writes[0].includes(sensitive));
 });
+
+/** Project omission cannot bypass later canonical/deployment checks or permit a browser or application request. */
+for (const [kind, mutate, count] of [['alias', data => { data.deployment.id = 'other'; }, 2],
+  ['deployment', data => { data.aliasAssigned = false; }, 3]])
+  test('omitted project pendingAlias still stops before hosted work on ' + kind + ' assignment mismatch', async () => {
+    const h = harness(); const original = h.deps.metadata;
+    /** Change only the selected synthetic provider response, retaining ordinary orchestration and accounting. */
+    h.deps.metadata = async current => { const data = await original(current); if (current === kind) mutate(data); return data; };
+    const record = await d.runDiagnostic(plan(), ACCOUNT, h.deps);
+    assert.equal(record.phase, 'stopped'); assert.equal(record.firstFailure.code, 'metadata_mismatch');
+    assert.equal(record.counts.metadata, count); assert.equal(record.counts.application, 0); assert.equal(record.counts.launches, 0);
+    assert.equal(h.calls.includes('runtime'), false); assert.equal(h.calls.some(call => call.startsWith('/')), false);
+    assert.equal(h.calls.at(-1), 'handle_close');
+  });
 
 for (const [option, code, requests] of [
   ['metadataDrift', 'metadata_mismatch', 0], ['launchFailure', 'operation_failed', 0], ['extraPage', 'readiness', 0],
