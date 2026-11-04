@@ -887,8 +887,22 @@ authentication stays in the CLI; the diagnostic never directly reads credential
 files or prints API JSON. Telemetry and update notification are disabled. Drift
 in the CLI entry/client/API-command hashes stops preflight. If CLI initialization
 needs an additional API call or credentials are expired, stop for a decision;
-do not loosen the guard or retry automatically. This private CLI integration is
-covered by offline mocks and still requires review before any live invocation.
+do not loosen the guard or retry automatically. The metadata child explicitly sets
+`VERCEL_CLI_USE_NATIVE_BINARY=0` after inheriting its environment, overriding native
+opt-ins without changing the parent process or persistent CLI configuration. The
+pinned launcher's environment opt-out keeps the preloaded guard in the JavaScript
+process. Do not pass `--disable-binary`: although the launcher recognizes it, the
+pinned command parser does not and treats it as the command before rejecting it.
+
+On November 4, the separately approved metadata-only check passed source, CLI and
+fifteen-receipt preflight, then stopped at its first project CLI invocation with
+`cli_argument_error`. Alias/deployment reads did not run; application consumption
+was zero. An offline check using the installed parser reproduced the rejected
+argument and confirmed that the corrected API arguments parse successfully. This
+three-file correction adds mocked child-process coverage for absent and enabled
+native preferences. It does not establish provider authentication or refresh the
+recorded deployment identity. Another provider invocation needs separate approval;
+the hosted diagnostic and authentication preparation remain unexecuted.
 
 #### Fixed cases, budgets and evidence
 
@@ -999,6 +1013,13 @@ checks. The baseline three suites previously contained 212 tests.
 Preparation validation passed: 85 new tests plus the unchanged 212-test baseline
 (297 total), both new CJS syntax checks, scoped ESLint with zero warnings, and
 whitespace checks. These are local preparation results, not hosted evidence.
+
+The November 4 CLI-dispatch correction passed all 307 focused tests (95 hosted
+diagnostic plus 212 baseline), both CJS syntax checks, scoped ESLint with zero
+warnings, and whitespace checks. Offline compatibility checks against the pinned
+installed CLI accepted all three corrected metadata commands and verified its
+environment opt-out without loading the CLI entry point, credentials or transport.
+These checks do not qualify a successful provider read or hosted execution.
 
 ```powershell
 node --test --test-reporter=spec scripts/gate1-browser-tabs/__tests__/hosted-csrf-diagnostic.test.cjs scripts/gate1-browser-tabs/__tests__/request-client-isolation.test.cjs scripts/gate1-browser-tabs/__tests__/page-lifecycle-diagnostic.test.cjs scripts/gate1-browser-tabs/__tests__/full-isolation-qualification.test.cjs
