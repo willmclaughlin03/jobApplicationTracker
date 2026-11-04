@@ -488,10 +488,10 @@ test('metadata client guard refuses refresh, redirects, retries, alternate API a
   await assert.rejects(client.reauthenticate(), /metadata_auth_unavailable/);
 });
 
-test('metadata preload forces the guarded JavaScript CLI and exposes no credentials or arbitrary endpoint input', () => {
+test('metadata preload selects the API command without the parser-incompatible launcher flag', () => {
   for (const kind of ['project', 'alias', 'deployment']) {
     const args = d.metadataArguments(kind); assert.equal(args[0], '--import');
-    assert.deepEqual(args.slice(3, 5), ['--disable-binary', 'api']);
+    assert.equal(args[3], 'api'); assert.ok(!args.includes('--disable-binary'));
     const preload = decodeURIComponent(args[1].slice('data:text/javascript,'.length));
     assert.ok(preload.includes('chunk-DECIQZZQ.js')); assert.ok(preload.includes('retry: { retries: 0 }'));
     assert.ok(!preload.includes(ACCOUNT)); assert.ok(!preload.includes('readFile'));
@@ -500,6 +500,40 @@ test('metadata preload forces the guarded JavaScript CLI and exposes no credenti
   assert.throws(() => d.metadataArguments('unreviewed'), { code: 'metadata_mismatch' });
   assert.equal(Object.keys(d.VERCEL_HASHES).length, 3);
 });
+
+for (const nativePreference of [undefined, '1', 'true'])
+  test('metadata child forces JavaScript despite inherited native preference: ' + nativePreference, async () => {
+    const code = await fs.readFile(path.join(__dirname, '../hosted-csrf-diagnostic.cjs'), 'utf8'); const calls = [];
+    const inherited = Object.freeze({ SYNTHETIC_PRESERVED: 'unchanged', VERCEL_TELEMETRY_DISABLED: '0',
+      NO_UPDATE_NOTIFIER: '0', ...(nativePreference === undefined ? {} : { VERCEL_CLI_USE_NATIVE_BINARY: nativePreference }) });
+    const sandbox = { module: { exports: {} }, __dirname: d.DIRECTORY, Buffer,
+      process: { env: inherited, execPath: 'synthetic-node' },
+      /** Replace process execution while reusing inert dependencies; no CLI, credentials or transport are loaded. */
+      require(name) {
+        if (name === 'node:child_process') return {
+          /** Capture the actual child boundary and return synthetic JSON without starting a process. */
+          execFile(file, args, options, callback) { calls.push({ file, args, options }); callback(null, '{}'); },
+        };
+        if (name === './request-client-isolation.cjs') return fixture;
+        if (name === './full-isolation-qualification.cjs') return qualified;
+        if (name === './page-lifecycle-diagnostic.cjs') return require('../page-lifecycle-diagnostic.cjs');
+        return require(name);
+      },
+    };
+    vm.runInNewContext(code, sandbox);
+    for (const kind of ['project', 'alias', 'deployment']) await sandbox.module.exports.nativeDependencies().metadata(kind);
+    assert.equal(calls.length, 3);
+    for (const { file, args, options } of calls) {
+      assert.equal(file, 'synthetic-node'); assert.equal(args[0], '--import'); assert.equal(args[3], 'api');
+      assert.ok(!args.includes('--disable-binary')); assert.ok(!args.includes('--paginate'));
+      assert.equal(options.env.VERCEL_CLI_USE_NATIVE_BINARY, '0');
+      assert.equal(options.env.VERCEL_TELEMETRY_DISABLED, '1'); assert.equal(options.env.NO_UPDATE_NOTIFIER, '1');
+      assert.equal(options.env.SYNTHETIC_PRESERVED, 'unchanged'); assert.notEqual(options.env, inherited);
+      assert.equal(options.windowsHide, true); assert.equal(options.timeout, 30000); assert.equal(options.maxBuffer, 2097152);
+    }
+    assert.equal(inherited.VERCEL_CLI_USE_NATIVE_BINARY, nativePreference);
+    assert.equal(inherited.VERCEL_TELEMETRY_DISABLED, '0'); assert.equal(inherited.NO_UPDATE_NOTIFIER, '0');
+  });
 
 test('source manifest hashes all nine preparation files and preserves the six qualified source hashes', async () => {
   const sources = await d.sourceHashes(); const previous = await qualified.sourceHashes();

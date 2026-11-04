@@ -421,13 +421,14 @@ function metadataArguments(kind) {
   const preload = `import { Client, isValidAccessToken } from ${JSON.stringify(pathToFileURL(VERCEL_CLIENT).href)};\n`
     + `(${guardMetadataClient.toString()})(Client, isValidAccessToken, ${JSON.stringify(endpoint)});`;
   return ['--import', `data:text/javascript,${encodeURIComponent(preload)}`, VERCEL,
-    '--disable-binary', 'api', endpoint, '--method', 'GET', '--raw', '--non-interactive'];
+    'api', endpoint, '--method', 'GET', '--raw', '--non-interactive'];
 }
 
-/** Retrieve one fixed metadata endpoint with the pinned one-dispatch client guard and private CLI authentication. */
+/** Force the guarded JavaScript path for one metadata GET; the pinned parser rejects the launcher's opt-out flag. */
 async function metadata(kind) {
   return cli(process.execPath, metadataArguments(kind),
-    LIMITS.metadataMs, LIMITS.metadataBytes, { ...process.env, VERCEL_TELEMETRY_DISABLED: '1', NO_UPDATE_NOTIFIER: '1' });
+    LIMITS.metadataMs, LIMITS.metadataBytes, { ...process.env, VERCEL_CLI_USE_NATIVE_BINARY: '0',
+      VERCEL_TELEMETRY_DISABLED: '1', NO_UPDATE_NOTIFIER: '1' });
 }
 
 /** Preserve the qualified launch arguments while enforcing a separate, exact owned authenticated-profile path. */
