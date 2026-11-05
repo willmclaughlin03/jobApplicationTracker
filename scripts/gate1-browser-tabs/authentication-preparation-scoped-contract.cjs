@@ -18,7 +18,7 @@ const CHECKS = Object.freeze(['identityBeforeRestart', 'identityAfterRestart', '
   'independentProcessExit', 'profilePreserved', 'listenersClosed', 'targetReconciled', 'pageEventsPaired']);
 const QUALIFICATION_CHECKS = Object.freeze(['targetBeforeResume', 'redirectReservations', 'persistentCookie',
   'requestClientAccess', 'requestClientWriteBack', 'requestClientCancellation', 'restoredWorkerBlocked',
-  'transportOverflow', 'normalClosure', 'independentProcessExit']);
+  'transportOverflow', 'normalClosure', 'independentProcessExit', 'manualContextRecovery']);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const integer = z.number().int().nonnegative().safe();
 

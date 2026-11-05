@@ -295,10 +295,12 @@ async function connectController(owner, budget, cleanupOnly = false) {
 /** Launch behind a closed proxy; Playwright is attached only to the rejecting-proxy restart. */
 async function launch(owner, proxy, budget) {
   await p.profilePreserved(); budget.check(); owner.launchTime = Date.now();
+  // The approved identity is worker-only; Chrome keeps the remaining sanitized environment.
+  const env = childEnvironment(); delete env.GATE1_APPROVED_USER_ID;
   owner.child = spawn(f.fixtureExecutable('cft158'), [`--user-data-dir=${owner.profile}`, '--no-first-run',
     '--no-default-browser-check', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
     '--disable-background-networking', '--disable-quic', '--no-startup-window', ...f.isolationArguments(proxy.port)],
-  { stdio: 'ignore', windowsHide: true, env: childEnvironment() });
+  { stdio: 'ignore', windowsHide: true, env });
   owner.child.once('error', () => { owner.failed = true; budget.stop('operation'); });
   await attachment(owner, budget);
   budget.check();
@@ -328,7 +330,8 @@ async function manualSignIn(owner, budget, signal) {
   while (Date.now() < end) {
     const result = await owner.cdp.send('Runtime.evaluate', {
       expression: `location.origin === ${JSON.stringify(d.ORIGIN)} && location.pathname === '/'`, returnByValue: true,
-    }, owner.page.sessionId);
+    }, owner.page.sessionId, false, { contextLossAsFalse: true });
+    budget.check(); c.check(Date.now() < end, 'deadline');
     c.check(!result.exceptionDetails, 'observation'); if (result.result?.value === true) return;
     await delay(250, signal);
   }

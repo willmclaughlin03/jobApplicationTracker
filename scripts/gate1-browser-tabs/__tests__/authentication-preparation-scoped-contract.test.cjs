@@ -68,9 +68,12 @@ test('old receipts, extra private fields and changed qualification provenance ca
   const review = { qualificationHash: HASH, sourceSet: HASH, decisionHash: HASH, toolSet: HASH, completionHash: HASH };
   assert.equal(c.validateQualification(value, HASH, plan(), review), true);
   for (const altered of [{ ...value, schemaVersion: 1 }, { ...value, identity: ID },
-    { ...value, sourceSet: 'b'.repeat(64) }, { ...value, checks: { ...value.checks, restoredWorkerBlocked: false } }]) {
+    { ...value, sourceSet: 'b'.repeat(64) }, { ...value, checks: { ...value.checks, restoredWorkerBlocked: false } },
+    { ...value, checks: { ...value.checks, manualContextRecovery: false } }]) {
     assert.throws(() => c.validateQualification(altered, HASH, plan(), review));
   }
+  const missingCase = structuredClone(value); delete missingCase.checks.manualContextRecovery;
+  assert.throws(() => c.validateQualification(missingCase, HASH, plan(), review), { code: 'coverage_unqualified' });
   assert.throws(() => c.validateQualification(value, 'b'.repeat(64), plan(), review), { code: 'integrity' });
   assert.throws(() => c.validateQualification(value, HASH, plan(), { approved: true }), { code: 'integrity' });
 });

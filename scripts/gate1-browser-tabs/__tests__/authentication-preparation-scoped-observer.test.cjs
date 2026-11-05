@@ -77,6 +77,26 @@ test('pending CDP commands and oversized protocol frames are bounded and errors 
   other.receive(Buffer.alloc(MESSAGE_BYTES + 1)); assert.equal(second.failure, 'observation'); assert.equal(other.closed, true);
 });
 
+/** Context-loss tolerance is opt-in for the manual evaluation only; protocol details must never escape as errors. */
+test('context-loss polling policy leaves other commands and unknown errors fatal', async () => {
+  for (const [method, options, error] of [
+    ['Runtime.evaluate', undefined, { code: -32000, message: 'Execution context was destroyed.' }],
+    ['Page.navigate', { contextLossAsFalse: true }, { code: -32000, message: 'Execution context was destroyed.' }],
+    ['Runtime.evaluate', { contextLossAsFalse: true }, { code: -32602, message: 'Execution context was destroyed.' }],
+    ['Runtime.evaluate', { contextLossAsFalse: true }, { code: -32000, message: 'Target crashed' }],
+    ['Runtime.evaluate', { contextLossAsFalse: true }, { code: -32000, message: 'Execution context was destroyed. private suffix' }],
+  ]) {
+    const budget = new ScopedBudget(); const socket = new EventEmitter();
+    socket.send = () => {}; socket.terminate = () => {}; const connection = new CdpConnection(socket, budget);
+    const pending = connection.send(method, {}, 'session', false, options);
+    connection.receive(Buffer.from(JSON.stringify({ id: 1, sessionId: 'session', error })));
+    try {
+      await assert.rejects(pending, { code: 'observation', message: 'observation' });
+      assert.equal(budget.failure, 'observation'); assert.equal(connection.pending.size, 0);
+    } finally { connection.close(); }
+  }
+});
+
 test('failed continuation remains uncertain and cannot be promoted by later events', async () => {
   const f = fixture(); f.connection.send = async () => { throw new Error('private protocol payload'); };
   emit(f, 'Fetch.requestPaused', { requestId: 'f', networkId: 'n', request: { url: `${ORIGIN}/`, method: 'GET' } });
