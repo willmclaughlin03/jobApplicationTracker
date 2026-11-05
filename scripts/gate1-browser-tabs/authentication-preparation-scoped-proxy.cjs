@@ -60,7 +60,11 @@ class ScopedProxy {
     const owner = { socket, upstream: null, connected: false, handled: false };
     this.sockets.set(socket, owner);
     socket.on('error', () => { if (!this.closing && this.forwarding) this.budget.stop('operation'); socket.destroy(); });
-    socket.setTimeout(this.budget.limits.operationMs, () => { if (!this.closing) this.budget.stop('deadline'); socket.destroy(); });
+    socket.setTimeout(this.budget.limits.operationMs, () => {
+      // Stalled handshakes stop the attempt; established idle tunnels only close their sockets.
+      if (!this.closing && !owner.connected) this.budget.stop('deadline');
+      socket.destroy();
+    });
     socket.once('close', () => {
       if (this.sockets.delete(socket)) this.counts.concurrent--;
       owner.upstream?.destroy();
@@ -117,7 +121,11 @@ class ScopedProxy {
       if (!this.bytes.reserve('upstream', head.length)) { socket.destroy(); return; }
       const upstream = this.connect({ host: request.url.slice(0, -4), port: 443 }); owner.upstream = upstream;
       upstream.on('error', () => { if (!this.closing) this.budget.stop('operation'); socket.destroy(); upstream.destroy(); });
-      upstream.setTimeout(this.budget.limits.operationMs, () => { if (!this.closing) this.budget.stop('deadline'); upstream.destroy(); socket.destroy(); });
+      upstream.setTimeout(this.budget.limits.operationMs, () => {
+        // Keep the upstream connection deadline without treating an established idle tunnel as failure.
+        if (!this.closing && !owner.connected) this.budget.stop('deadline');
+        upstream.destroy(); socket.destroy();
+      });
       upstream.once('close', () => socket.destroy());
       upstream.once('connect', () => {
         if (!this.forwarding || this.closing || this.budget.failure || socket.destroyed) { upstream.destroy(); return; }

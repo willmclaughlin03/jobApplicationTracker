@@ -2,6 +2,7 @@
 /* global structuredClone */
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const { setImmediate } = require('node:timers/promises');
 const p = require('../authentication-preparation-scoped-postflight.cjs');
 const c = require('../authentication-preparation-scoped-contract.cjs');
 const a = require('../authentication-preparation.cjs');
@@ -66,18 +67,20 @@ test('independent postflight checks both owners, every listener and bindings twi
     portClosed: async () => { calls.push('port'); }, write: async (file, record) => {
       assert.equal(file, p.RESULT); assert.equal(record.browserTrafficMeasured, false); calls.push('write'); return HASH;
     },
+    unlink: async () => { assert.fail('successful finalization must retain RESULT'); },
   });
   assert.deepEqual(calls, ['binding', 'owner', 'owner', 'port', 'binding', 'write']); assert.equal(result.receiptFinalized, true);
 });
 
 test('changed source/decision, open listener or altered attempt bytes prevents final write', async () => {
   for (const failure of ['hash', 'bindings', 'listener']) {
-    const f = fixture(); let writes = 0;
+    const f = fixture(); let writes = 0; let unlinks = 0;
     await assert.rejects(p.finalize(f.completion, f.plan, async () => { if (failure === 'bindings') throw new c.PreparationError('integrity'); }, {
       clock: () => 2000, read: async () => ({ record: f.record, hash: failure === 'hash' ? 'b'.repeat(64) : HASH }),
       inspect: async () => {}, portClosed: async () => { if (failure === 'listener') throw new c.PreparationError('port_open'); },
       write: async () => { writes++; },
-    })); assert.equal(writes, 0);
+      unlink: async () => { unlinks++; },
+    })); assert.equal(writes, 0); assert.equal(unlinks, 0);
   }
 });
 
@@ -91,6 +94,86 @@ test('partial write, failed sync and failed close preserve failure instead of fi
     } };
     await assert.rejects(p.writeExclusive(p.ATTEMPT, f.record, io), { code: 'receipt' }); assert.equal(closed, true);
   }
+});
+
+/** Mock write phases to prove final validation includes fsync/close and removes only the completed RESULT. */
+test('expiry during a successful write removes RESULT before rejecting and preserves ATTEMPT', async () => {
+  for (const limit of ['expiresAt', 'wholeMs']) {
+    for (const phase of ['writeFile', 'sync', 'close']) {
+      const f = fixture(); let now = 2000; const calls = [];
+      const artifacts = new Map([[p.ATTEMPT, 'attempt']]);
+      const expiredAt = limit === 'expiresAt' ? 3000 : f.record.startedAt + c.LIMITS.wholeMs;
+      if (limit === 'expiresAt') f.plan.expiresAt = expiredAt;
+      const handle = {};
+      for (const step of ['writeFile', 'sync', 'close']) {
+        /** Model elapsed I/O time without touching authentication evidence on disk. */
+        handle[step] = async bytes => {
+          calls.push(step);
+          if (step === 'writeFile') artifacts.set(p.RESULT, bytes);
+          if (step === phase) now = expiredAt;
+        };
+      }
+      const io = { realpath: async value => value, open: async () => handle };
+      await assert.rejects(p.finalize(f.completion, f.plan, async () => {}, {
+        clock: () => now, read: async () => ({ record: f.record, hash: HASH }),
+        inspect: async () => {}, portClosed: async () => {},
+        write: (file, record) => p.writeExclusive(file, record, io),
+        /** Require awaited cleanup of the completed result while keeping the attempt artifact intact. */
+        unlink: async file => {
+          assert.equal(file, p.RESULT); assert.equal(artifacts.has(file), true);
+          await setImmediate(); artifacts.delete(file); calls.push('unlink');
+        },
+      }), { code: 'expired' });
+      assert.deepEqual(calls, ['writeFile', 'sync', 'close', 'unlink']);
+      assert.deepEqual([...artifacts], [[p.ATTEMPT, 'attempt']]);
+    }
+  }
+});
+
+/** A rejected exclusive write retains existing/partial evidence even if the deadline also elapsed. */
+test('finalization preserves RESULT on open, write, sync or close failure', async () => {
+  for (const phase of ['open', 'writeFile', 'sync', 'close']) {
+    const f = fixture(); let now = 2000; let closed = false; let unlinks = 0;
+    const artifacts = new Map([[p.ATTEMPT, 'attempt']]);
+    if (phase === 'open') artifacts.set(p.RESULT, 'existing');
+    const handle = {};
+    for (const step of ['writeFile', 'sync', 'close']) {
+      /** Retain bytes from failed writes and always observe handle closure through writeExclusive. */
+      handle[step] = async () => {
+        if (step === 'writeFile') artifacts.set(p.RESULT, 'partial');
+        if (step === 'close') closed = true;
+        if (step === phase) { now = f.plan.expiresAt; throw new Error('private disk error'); }
+      };
+    }
+    const io = { realpath: async value => value, open: async () => {
+      if (phase === 'open') { now = f.plan.expiresAt; throw new Error('existing artifact'); }
+      return handle;
+    } };
+    await assert.rejects(p.finalize(f.completion, f.plan, async () => {}, {
+      clock: () => now, read: async () => ({ record: f.record, hash: HASH }),
+      inspect: async () => {}, portClosed: async () => {},
+      write: (file, record) => p.writeExclusive(file, record, io),
+      unlink: async file => { unlinks++; artifacts.delete(file); },
+    }), { code: 'receipt' });
+    assert.equal(unlinks, 0);
+    assert.equal(artifacts.get(p.ATTEMPT), 'attempt');
+    assert.equal(artifacts.get(p.RESULT), phase === 'open' ? 'existing' : 'partial');
+    assert.equal(closed, phase !== 'open');
+  }
+});
+
+/** Removal errors must fail finalization without exposing native filesystem details. */
+test('failed cleanup of an expired completed result reports a receipt failure', async () => {
+  const f = fixture(); let now = 2000; let unlinked = false;
+  await assert.rejects(p.finalize(f.completion, f.plan, async () => {}, {
+    clock: () => now, read: async () => ({ record: f.record, hash: HASH }),
+    inspect: async () => {}, portClosed: async () => {},
+    write: async () => { now = f.plan.expiresAt; return HASH; },
+    unlink: async file => {
+      assert.equal(file, p.RESULT); unlinked = true; throw new Error('private disk error');
+    },
+  }), { code: 'receipt', message: 'receipt' });
+  assert.equal(unlinked, true);
 });
 
 test('receipt arithmetic is checked independently of worker assertions', () => {

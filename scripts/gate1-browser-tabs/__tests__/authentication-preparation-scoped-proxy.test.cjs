@@ -9,7 +9,9 @@ const { TunnelBudget, ScopedProxy, AUTHORITIES } = require('../authentication-pr
 /** Simulate socket backpressure and closure without opening network resources. */
 function socket() {
   const value = new EventEmitter(); value.writes = []; value.destroyed = false; value.paused = false;
-  value.setTimeout = () => {}; value.pause = () => { value.paused = true; }; value.resume = () => { value.paused = false; };
+  /** Retain the configured idle limit and callback so tests can trigger timeouts without real timers. */
+  value.setTimeout = (ms, callback) => { value.timeoutMs = ms; value.on('timeout', callback); return value; };
+  value.pause = () => { value.paused = true; }; value.resume = () => { value.paused = false; };
   value.write = bytes => { value.writes.push(bytes); return !value.writableNeedDrain; };
   value.destroy = () => { if (!value.destroyed) { value.destroyed = true; value.emit('close'); } }; value.end = value.destroy;
   return value;
@@ -43,6 +45,46 @@ test('CONNECT head is charged before connection and forwarded exactly once', asy
   f.upstreams[0].emit('connect'); assert.equal(f.upstreams[0].writes.length, 1);
   assert.deepEqual(f.proxy.snapshot().upstream, { read: 3, admitted: 3, rejected: 0, written: 3 });
   await f.proxy.close(); assert.equal(f.proxy.snapshot().concurrent, 0);
+});
+
+/** Either idle endpoint must close only its established tunnel, leaving the shared attempt usable. */
+test('idle established client and upstream tunnels close without stopping the attempt', async () => {
+  for (const endpoint of ['client', 'upstream']) {
+    const f = await fixture();
+    f.server.emit('connect', { method: 'CONNECT', url: AUTHORITIES[0] }, f.client, Buffer.alloc(0));
+    const upstream = f.upstreams[0]; upstream.emit('connect');
+    const other = socket(); f.server.emit('connection', other);
+    f.server.emit('connect', { method: 'CONNECT', url: AUTHORITIES[0] }, other, Buffer.alloc(0));
+    const otherUpstream = f.upstreams[1]; otherUpstream.emit('connect');
+    assert.equal(f.client.timeoutMs, 30000); assert.equal(upstream.timeoutMs, 30000);
+    (endpoint === 'client' ? f.client : upstream).emit('timeout');
+    assert.equal(f.budget.failure, null); assert.equal(f.budget.abort.signal.aborted, false);
+    assert.equal(f.client.destroyed, true); assert.equal(upstream.destroyed, true);
+    assert.equal(f.proxy.sockets.has(f.client), false); assert.equal(f.proxy.snapshot().concurrent, 1);
+    assert.equal(other.destroyed, false); assert.equal(otherUpstream.destroyed, false);
+    other.emit('data', Buffer.from('still active'));
+    assert.deepEqual(otherUpstream.writes, [Buffer.from('still active')]);
+    await f.proxy.close(); assert.equal(f.proxy.snapshot().concurrent, 0);
+  }
+});
+
+/** Preserve handshake deadlines on accepted clients and either endpoint of an incomplete upstream connection. */
+test('pre-CONNECT and pending upstream timeouts still stop the attempt after 30 seconds', async () => {
+  for (const phase of ['pre-CONNECT', 'pending-client', 'pending-upstream']) {
+    const f = await fixture();
+    if (phase !== 'pre-CONNECT') {
+      f.server.emit('connect', { method: 'CONNECT', url: AUTHORITIES[0] }, f.client, Buffer.alloc(0));
+    }
+    const source = phase === 'pending-upstream' ? f.upstreams[0] : f.client;
+    assert.equal(source.timeoutMs, 30000); source.emit('timeout');
+    assert.equal(f.budget.failure, 'deadline'); assert.equal(f.budget.abort.signal.aborted, true);
+    assert.equal(f.client.destroyed, true); assert.equal(f.proxy.snapshot().concurrent, 0);
+    if (f.upstreams[0]) {
+      assert.equal(f.upstreams[0].destroyed, true); f.upstreams[0].emit('connect');
+    }
+    assert.equal(f.proxy.snapshot().tunnels, 0); assert.equal(f.client.writes.length, 0);
+    await f.proxy.close();
+  }
 });
 
 test('head overflow cannot connect and unknown authorities cannot be expanded by URL normalization', async () => {

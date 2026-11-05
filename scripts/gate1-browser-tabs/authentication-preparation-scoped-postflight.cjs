@@ -101,7 +101,13 @@ async function finalize(completion, plan, verifyBindings, deps = {}) {
   await verifyBindings(plan, record.planHash);
   reviewAttempt(record, completion, plan, clock());
   const finalHash = await (deps.write || writeExclusive)(RESULT, record);
-  c.check(clock() < plan.expiresAt && clock() - record.startedAt < c.LIMITS.wholeMs, 'expired');
+  // Only a completed write is ours to remove; failed writes retain their partial artifacts.
+  try {
+    c.check(clock() < plan.expiresAt && clock() - record.startedAt < c.LIMITS.wholeMs, 'expired');
+  } catch (error) {
+    try { await (deps.unlink || fs.unlink)(RESULT); } catch { throw new c.PreparationError('receipt'); }
+    throw error;
+  }
   return { phase: 'passed', receiptFinalized: true, receiptHash: finalHash,
     browserTrafficMeasured: false, hostedQualified: false, gate1Status: 'open' };
 }
