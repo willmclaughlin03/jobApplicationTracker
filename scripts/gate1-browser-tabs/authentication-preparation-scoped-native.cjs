@@ -64,10 +64,10 @@ async function listenersAbsent(probe = null) {
   }
 }
 
-/** Register each browser before launch and require independently verified cleanup before another launch. */
+/** Reserve launch capacity before registering a browser for cleanup; own it before adapter launch can fail. */
 async function launchOwned(context, restart = false) {
   const { budget, adapter, owners, proxy } = context;
-  const owner = { profile: n.profile(context.item.id), restart, closed: false }; owners.push(owner); budget.launch();
+  const owner = { profile: n.profile(context.item.id), restart, closed: false }; budget.launch(); owners.push(owner);
   await s.step(budget, () => adapter.launch(owner, proxy, budget), n.LIMITS.attachmentMs); return owner;
 }
 
@@ -356,7 +356,8 @@ async function finalize(message, input, deadline, deps = {}) {
     attemptHash: hash, completionHash, checks: n.qualificationChecks(record.cases), browserTrafficMeasured: false, hostedQualified: false };
   const receiptHash = await write('native-qualification.json', result);
   try { check(); } catch (error) {
-    await (deps.unlink || fs.unlink)(path.join(n.DIRECTORY, 'native-qualification.json'));
+    try { await (deps.unlink || fs.unlink)(path.join(n.DIRECTORY, 'native-qualification.json')); }
+    catch { throw new c.PreparationError('receipt'); }
     throw error;
   }
   return { phase: 'passed', receiptFinalized: true, receiptHash, browserTrafficMeasured: false, hostedQualified: false, gate1Status: 'open' };

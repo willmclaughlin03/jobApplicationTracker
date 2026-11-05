@@ -1,19 +1,25 @@
 'use strict';
-/* global Buffer */
+/* global Buffer, setImmediate */
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { EventEmitter } = require('node:events');
+const { EventEmitter, getEventListeners } = require('node:events');
 const { ScopedBudget, LIMITS } = require('../authentication-preparation-scoped-contract.cjs');
 const { TunnelBudget, ScopedProxy, AUTHORITIES } = require('../authentication-preparation-scoped-proxy.cjs');
 
-/** Simulate socket backpressure and closure without opening network resources. */
-function socket() {
+/** Simulate socket backpressure and optional asynchronous close events without opening network resources. */
+function socket({ closeAsync = false } = {}) {
   const value = new EventEmitter(); value.writes = []; value.destroyed = false; value.paused = false;
   /** Retain the configured idle limit and callback so tests can trigger timeouts without real timers. */
   value.setTimeout = (ms, callback) => { value.timeoutMs = ms; value.on('timeout', callback); return value; };
   value.pause = () => { value.paused = true; }; value.resume = () => { value.paused = false; };
   value.write = bytes => { value.writes.push(bytes); return !value.writableNeedDrain; };
-  value.destroy = () => { if (!value.destroyed) { value.destroyed = true; value.emit('close'); } }; value.end = value.destroy;
+  /** Mark destruction immediately, optionally delaying close so tests distinguish it from released ownership. */
+  value.destroy = () => {
+    if (!value.destroyed) {
+      value.destroyed = true;
+      if (closeAsync) setImmediate(value.emit.bind(value), 'close'); else value.emit('close');
+    }
+  }; value.end = value.destroy;
   return value;
 }
 
@@ -135,6 +141,28 @@ test('synthetic proxy is a bounded separate policy with cumulative connection an
     assert.equal(root.totals.proxyConnections, 1); assert.equal(root.connections, 1);
     assert.equal(root.totals.upstreamBytes, 4); assert.equal(root.totals.tunnelBytes, 4);
     upstream.emit('connect'); await proxy.close(); assert.equal(root.connections, 0);
+  }
+});
+
+/** Server completion can precede socket close events; native case accounting must settle before close returns. */
+test('proxy close awaits every asynchronous socket closure before releasing the native case', async () => {
+  const n = require('../authentication-preparation-scoped-native-contract.cjs');
+  for (const closeError of [null, Object.assign(new Error('not listening'), { code: 'ERR_SERVER_NOT_RUNNING' })]) {
+    const root = new n.NativeLedger(0, 480000, () => 1000); const budget = new n.NativeBudget(root, n.CASES[0]);
+    const server = new EventEmitter(); let serverClosed = false;
+    /** Complete server shutdown before socket events, including cleanup of a server that never listened. */
+    server.close = done => { serverClosed = true; done(closeError); };
+    const proxy = new ScopedProxy(budget, { createServer: () => server });
+    const clients = [socket({ closeAsync: true }), socket({ closeAsync: true })];
+    for (const client of clients) server.emit('connection', client);
+    assert.equal(root.connections, 2); assert.equal(getEventListeners(budget.abort.signal, 'abort').length, 1);
+    const closing = proxy.close();
+    assert.equal(serverClosed, true); assert.equal(root.connections, 2);
+    for (const client of clients) assert.equal(client.destroyed, true);
+    await closing;
+    assert.equal(root.connections, 0); assert.equal(proxy.snapshot().concurrent, 0); assert.equal(proxy.sockets.size, 0);
+    assert.equal(getEventListeners(budget.abort.signal, 'abort').length, 0);
+    root.finishCase(budget); assert.equal(root.active, null);
   }
 });
 

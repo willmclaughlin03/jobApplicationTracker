@@ -2,6 +2,7 @@
 /* global structuredClone, queueMicrotask, AbortController */
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { setImmediate } = require('node:timers/promises');
 const r = require('../authentication-preparation-scoped-native.cjs');
@@ -208,6 +209,32 @@ test('finalization cancellation stops later stages and removes only a completed 
   }
 });
 
+/** Failed removal must report the leftover receipt categorically; successful removal retains the final check error. */
+test('qualification cleanup categorizes unlink failures after cancellation or expiration', async () => {
+  for (const reason of ['cancelled', 'expired']) for (const unlinkFails of [false, true]) {
+    const q = await finalizerFixture(); const controller = new AbortController(); q.finalDeps.signal = controller.signal;
+    const write = q.finalDeps.write; let artifactPresent = false; let unlinks = 0;
+    /** Model a completed qualification write before cancellation or expiration invalidates it. */
+    q.finalDeps.write = async name => {
+      const hash = await write(name);
+      if (name === 'native-qualification.json') {
+        artifactPresent = true;
+        if (reason === 'cancelled') controller.abort(); else q.state.now = 3000;
+      }
+      return hash;
+    };
+    /** Remove only the qualification artifact, retaining it when the injected filesystem boundary fails. */
+    q.finalDeps.unlink = async file => {
+      assert.equal(file, path.join(n.DIRECTORY, 'native-qualification.json')); unlinks++;
+      if (unlinkFails) throw Object.assign(new Error('private filesystem details'), { code: 'EACCES' });
+      artifactPresent = false;
+    };
+    const code = unlinkFails ? 'receipt' : reason;
+    await assert.rejects(q.finalize(), { code, message: code });
+    assert.equal(unlinks, 1); assert.equal(artifactPresent, unlinkFails);
+  }
+});
+
 /** Model only the restored-worker protocol stream; no browser, socket or profile is created. */
 async function workerFixture() {
   const root = new n.NativeLedger(0, 480000, () => 1000); const budget = new n.NativeBudget(root, n.CASES[1]);
@@ -279,6 +306,23 @@ test('cancellation during preflight prevents artifact reservation and late profi
     open: async () => ({ writeFile: async () => {}, sync: async () => {}, close: async () => {} }),
     mkdir: async value => calls.push(value),
   }), { code: 'deadline' }); assert.equal(calls.length, 0);
+});
+
+/** A denied launch reservation has no browser to close; proxy cleanup must not become a false browser closure failure. */
+test('exhausted launch budget skips browser cleanup and still closes the proxy', async () => {
+  const root = new n.NativeLedger(0, 480000, () => 1000); const calls = [];
+  root.totals.launches = n.LIMITS.launches;
+  const proxy = { start: async () => {}, seal: () => {}, close: async () => { calls.push('proxy-close'); } };
+  const adapter = {
+    /** Record any forbidden launch attempt after the shared reservation ceiling has been reached. */
+    launch: async () => { calls.push('launch'); },
+    /** Match normal cleanup's rejection of an owner with no successfully exited child process. */
+    close: async () => { calls.push('close'); throw new c.PreparationError('closure'); },
+  };
+  await assert.rejects(r.browserCase(n.CASES[0], root, {}, { proxy: () => proxy, adapters: () => adapter }), { code: 'budget' });
+  assert.deepEqual(calls, ['proxy-close']); assert.equal(root.cleanupFailed, false); assert.equal(root.failure, 'budget');
+  assert.equal(root.totals.launches, n.LIMITS.launches); assert.equal(root.budgets[0].launches, 0);
+  assert.equal(root.chrome, 0); assert.equal(root.active, null);
 });
 
 test('failed native launch remains owned for normal closure and cannot start a second browser', async () => {

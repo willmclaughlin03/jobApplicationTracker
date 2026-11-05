@@ -153,12 +153,15 @@ class ScopedProxy {
       });
     } catch (error) { this.budget.stop(errorCode(error)); socket.destroy(); owner.upstream?.destroy(); }
   }
-  /** Close listeners after destroying all owned sockets; the supervisor separately probes the port. */
+  /** Await owned socket close events and listener shutdown so connection accounting settles before returning. */
   async close() {
-    this.closing = true; this.seal();
+    this.closing = true;
+    const closed = [...this.sockets.keys()].map(socket => new Promise(resolve => socket.once('close', resolve)));
+    this.seal();
     await new Promise((resolve, reject) => {
       this.server.close(error => { if (error && error.code !== 'ERR_SERVER_NOT_RUNNING') reject(error); else resolve(); });
     });
+    await Promise.all(closed);
     this.budget.abort.signal.removeEventListener('abort', this.onStop);
   }
   /** Return sanitized transport counters, never destinations, headers or payloads. */
