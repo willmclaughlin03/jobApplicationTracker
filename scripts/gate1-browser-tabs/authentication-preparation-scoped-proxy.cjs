@@ -24,6 +24,7 @@ class TunnelBudget {
       this.budget.check();
       this.budget.require(item.admitted + size <= this.budget.limits[`${direction}Bytes`]
         && this.upstream.admitted + this.downstream.admitted + size <= this.budget.limits.tunnelBytes, 'budget');
+      this.budget.tunnel?.(direction, size);
       item.admitted += size; return true;
     } catch { item.rejected += size; return false; }
   }
@@ -34,7 +35,13 @@ class TunnelBudget {
 /** Own every socket before asynchronous connect; callbacks cannot reopen forwarding after a stop. */
 class ScopedProxy {
   /** Dependency injection permits fully mocked transport tests without listening or forwarding. */
-  constructor(budget, { createServer = http.createServer, connect = net.connect } = {}) {
+  constructor(budget, { createServer = http.createServer, connect = net.connect, synthetic = null } = {}) {
+    const n = require('./authentication-preparation-scoped-native-contract.cjs');
+    check(synthetic === null || (['fixtures', 'transport'].includes(synthetic) && budget instanceof n.NativeBudget), 'approval');
+    this.authorities = synthetic === 'fixtures' ? ['127.0.0.1:18443', '127.0.0.2:18444']
+      : synthetic === 'transport' ? ['127.0.0.1:18446'] : AUTHORITIES;
+    this.listenPort = synthetic ? 18445 : 0;
+    this.evidence = { headBeforeConnect: 0, backpressure: 0, lateBlocked: 0, deniedFixture: 0 };
     this.budget = budget; this.connect = connect; this.bytes = new TunnelBudget(budget);
     this.forwarding = false; this.closing = false; this.sockets = new Map(); this.port = null;
     this.counts = { connections: 0, concurrent: 0, overLimit: 0, denied: 0, tunnels: 0 };
@@ -56,6 +63,7 @@ class ScopedProxy {
       this.counts.overLimit++; socket.on('error', () => {}); socket.destroy();
       if (!this.closing && !this.budget.failure) this.budget.stop('budget'); return;
     }
+    try { this.budget.connection?.(); } catch { socket.on('error', () => {}); socket.destroy(); return; }
     this.counts.connections++; this.counts.concurrent++;
     const owner = { socket, upstream: null, connected: false, handled: false };
     this.sockets.set(socket, owner);
@@ -66,7 +74,7 @@ class ScopedProxy {
       socket.destroy();
     });
     socket.once('close', () => {
-      if (this.sockets.delete(socket)) this.counts.concurrent--;
+      if (this.sockets.delete(socket)) { this.counts.concurrent--; this.budget.connectionClosed?.(); }
       owner.upstream?.destroy();
     });
   }
@@ -75,7 +83,7 @@ class ScopedProxy {
     this.budget.check();
     await new Promise((resolve, reject) => {
       this.server.once('error', reject);
-      this.server.listen(0, '127.0.0.1', () => {
+      this.server.listen(this.listenPort, '127.0.0.1', () => {
         this.server.removeListener('error', reject);
         if (this.closing || this.budget.failure) this.server.close(() => {});
         resolve();
@@ -100,26 +108,31 @@ class ScopedProxy {
       this.budget.check();
       const writable = destination.write(data); this.bytes.written(direction, data.length);
       if (!writable) {
-        source.pause();
-        destination.once('drain', () => { if (this.forwarding && !this.closing && !this.budget.failure) source.resume(); });
+        this.evidence.backpressure++; source.pause();
+        destination.once('drain', () => {
+          if (this.forwarding && !this.closing && !this.budget.failure) source.resume(); else this.evidence.lateBlocked++;
+        });
       }
     } catch (error) { this.budget.stop(errorCode(error)); owner.socket.destroy(); owner.upstream?.destroy(); }
   }
   /** Admit exact CONNECT authority/443 only; encrypted methods, paths and HTTP authorities remain opaque. */
   tunnel(request, socket, head = Buffer.alloc(0)) {
     const owner = this.sockets.get(socket);
-    if (!owner || owner.handled || request.method !== 'CONNECT' || !AUTHORITIES.includes(request.url)) {
+    if (!owner || owner.handled || request.method !== 'CONNECT' || !this.authorities.includes(request.url)) {
       this.counts.denied++; this.bytes.reserve('upstream', head.length, false);
       this.budget.stop('destination'); socket.destroy(); return;
     }
     owner.handled = true; socket.pause();
     if (!this.forwarding || this.closing || this.budget.failure) {
+      if (request.url === '127.0.0.1:18443') this.evidence.deniedFixture++;
       this.counts.denied++; this.bytes.reserve('upstream', head.length, false); socket.destroy(); return;
     }
     try {
       this.budget.check();
       if (!this.bytes.reserve('upstream', head.length)) { socket.destroy(); return; }
-      const upstream = this.connect({ host: request.url.slice(0, -4), port: 443 }); owner.upstream = upstream;
+      if (head.length) this.evidence.headBeforeConnect++;
+      const [host, port] = request.url.split(':');
+      const upstream = this.connect({ host, port: Number(port) }); owner.upstream = upstream;
       upstream.on('error', () => { if (!this.closing) this.budget.stop('operation'); socket.destroy(); upstream.destroy(); });
       upstream.setTimeout(this.budget.limits.operationMs, () => {
         // Keep the upstream connection deadline without treating an established idle tunnel as failure.
@@ -128,7 +141,7 @@ class ScopedProxy {
       });
       upstream.once('close', () => socket.destroy());
       upstream.once('connect', () => {
-        if (!this.forwarding || this.closing || this.budget.failure || socket.destroyed) { upstream.destroy(); return; }
+        if (!this.forwarding || this.closing || this.budget.failure || socket.destroyed) { this.evidence.lateBlocked++; upstream.destroy(); return; }
         this.counts.tunnels++; owner.connected = true;
         socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         socket.on('data', data => this.forward(owner, socket, upstream, 'upstream', data));

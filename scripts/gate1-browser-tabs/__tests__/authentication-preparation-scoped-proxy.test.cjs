@@ -118,3 +118,31 @@ test('restart gate rejects CONNECT without creating upstream traffic', async () 
   assert.equal(f.upstreams.length, 0); assert.equal(f.proxy.snapshot().denied, 1);
   assert.equal(f.proxy.snapshot().upstream.rejected, 3); await f.proxy.close();
 });
+
+/** Exact synthetic authorities use fixed ports, and the live proxy cannot acquire this policy with a live budget. */
+test('synthetic proxy is a bounded separate policy with cumulative connection and payload accounting', async () => {
+  const n = require('../authentication-preparation-scoped-native-contract.cjs');
+  assert.throws(() => new ScopedProxy(new ScopedBudget(), { synthetic: 'fixtures' }), { code: 'approval' });
+  for (const mode of ['fixtures', 'transport']) {
+    const root = new n.NativeLedger(0, 480000, () => 1000); const budget = new n.NativeBudget(root, n.CASES[0]);
+    const server = new EventEmitter(); const upstream = socket(); let endpoint;
+    server.listen = (port, host, ready) => { assert.equal(port, 18445); assert.equal(host, '127.0.0.1'); ready(); };
+    server.address = () => ({ port: 18445 }); server.close = done => done();
+    const proxy = new ScopedProxy(budget, { synthetic: mode, createServer: () => server, connect: value => { endpoint = value; return upstream; } });
+    await proxy.start(); proxy.open(); const client = socket(); server.emit('connection', client);
+    server.emit('connect', { method: 'CONNECT', url: mode === 'fixtures' ? '127.0.0.2:18444' : '127.0.0.1:18446' }, client, Buffer.from('test'));
+    assert.deepEqual(endpoint, { host: mode === 'fixtures' ? '127.0.0.2' : '127.0.0.1', port: mode === 'fixtures' ? 18444 : 18446 });
+    assert.equal(root.totals.proxyConnections, 1); assert.equal(root.connections, 1);
+    assert.equal(root.totals.upstreamBytes, 4); assert.equal(root.totals.tunnelBytes, 4);
+    upstream.emit('connect'); await proxy.close(); assert.equal(root.connections, 0);
+  }
+});
+
+/** Cumulative overflow from an earlier case must reject before a later proxy connects upstream. */
+test('synthetic cumulative tunnel exhaustion cannot be bypassed by a new proxy', async () => {
+  const n = require('../authentication-preparation-scoped-native-contract.cjs');
+  const root = new n.NativeLedger(0, 480000, () => 1000); const budget = new n.NativeBudget(root, n.CASES[0]);
+  root.totals.upstreamBytes = n.LIMITS.upstreamBytes;
+  const bytes = new TunnelBudget(budget); assert.equal(bytes.reserve('upstream', 1), false);
+  assert.equal(bytes.upstream.admitted, 0); assert.equal(bytes.upstream.rejected, 1); assert.equal(root.failure, 'budget');
+});

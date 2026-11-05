@@ -10,6 +10,51 @@ const a = require('../authentication-preparation.cjs');
 const d = require('../hosted-csrf-diagnostic.cjs');
 const HASH = 'a'.repeat(64);
 
+/** Keep metadata-only native profile checks separate from live wrapper acceptance. */
+test('native closure paths never weaken exact live profile and evidence guards', async () => {
+  const n = require('../authentication-preparation-scoped-native-contract.cjs'); const profile = n.PROFILES[0];
+  const io = { lstat: async () => ({ isDirectory: () => true, isSymbolicLink: () => false }), realpath: async value => value, access: async () => {} };
+  assert.equal(await p.nativeProfile(profile, io), true);
+  await assert.rejects(p.profilePreserved(profile, io), { code: 'profile' });
+  await assert.rejects(p.nativeProfile(d.PROFILE, io), { code: 'profile' });
+  await assert.rejects(p.nativeProfile(`${profile}/other`, io), { code: 'profile' });
+  await assert.rejects(p.writeExclusive(require('node:path').join(n.DIRECTORY, 'attempt.json'), {}), { code: 'receipt' });
+  await assert.rejects(p.writeNative('execution-review.json', {}), { code: 'receipt' });
+  await assert.rejects(p.readNative('../attempt.json'), { code: 'receipt' });
+  const calls = [];
+  const owner = { profile, pid: 7, port: 24000, closedNormally: true, exitCode: 0 };
+  assert.equal(await p.inspectNativeClosure(owner, { absence: async value => calls.push(value),
+    portClosed: async value => calls.push(value), profile: async value => calls.push(value) }), true);
+  assert.deepEqual(calls, [profile, 24000, profile]);
+  await assert.rejects(p.inspectNativeClosure({ ...owner, exitCode: 1 }), { code: 'closure' });
+});
+
+/** Native writes require a strict categorical record and preserve any failed partial artifact. */
+test('native exclusive completion writes require successful fsync and close', async () => {
+  const n = require('../authentication-preparation-scoped-native-contract.cjs');
+  const record = { scope: 'scoped_authentication_native', phase: 'passed', exitCode: 0, receiptFinalized: true,
+    attemptHash: HASH, sourceSet: HASH, decisionHash: HASH, toolSet: HASH };
+  for (const failure of [null, 'writeFile', 'sync', 'close']) {
+    const calls = [];
+    const io = { realpath: async value => value, open: async (file, mode) => {
+      assert.equal(file, require('node:path').join(n.DIRECTORY, 'native-completion.json')); assert.equal(mode, 'wx');
+      return Object.fromEntries(['writeFile', 'sync', 'close'].map(name => [name, async () => { calls.push(name); if (name === failure) throw new Error('synthetic'); }]));
+    } };
+    if (failure) await assert.rejects(p.writeNative('native-completion.json', record, io), { code: 'receipt' });
+    else assert.match(await p.writeNative('native-completion.json', record, io), /^[a-f0-9]{64}$/);
+    assert.equal(calls.at(-1), 'close');
+  }
+});
+
+/** An expired native pre-write stage stays expired even when its original operation resolves late. */
+test('native deadline stages latch timeout and discard late settlements', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] }); let resolve; let called = false;
+  const stage = p.deadlineStages(1005, () => 1000);
+  const pending = stage(() => new Promise(done => { resolve = done; })); const rejected = assert.rejects(pending, { code: 'expired' });
+  await setImmediate(); context.mock.timers.tick(5); await rejected; resolve(true); await setImmediate();
+  await assert.rejects(stage(() => { called = true; }), { code: 'expired' }); assert.equal(called, false);
+});
+
 /** Construct aggregate synthetic evidence, never writing a real receipt or claiming native qualification. */
 function fixture() {
   const budget = new c.ScopedBudget({ clock: () => 1000 }); budget.launch(); budget.launch();
