@@ -1,5 +1,5 @@
 'use strict';
-/* global Buffer */
+/* global Buffer, setTimeout, clearTimeout */
 
 const fs = require('node:fs/promises');
 const { constants } = require('node:fs');
@@ -93,17 +93,37 @@ async function writeExclusive(file, record, io = fs) {
 /** Recheck source/decision/plan/tool binding, OS closure and profile after worker exit before finalization. */
 async function finalize(completion, plan, verifyBindings, deps = {}) {
   const clock = deps.clock || Date.now;
-  const { record, hash } = await (deps.read || readAttempt)();
+  const deadline = Math.min(plan.expiresAt, deps.deadline ?? plan.expiresAt);
+  let timedOut = false;
+  /** Bound a pre-write operation by the shared deadline, latch timeout and release its timer on every settlement. */
+  async function beforeWrite(operation) {
+    c.check(!timedOut && clock() < deadline, 'expired');
+    let timer;
+    try {
+      const result = await Promise.race([
+        Promise.resolve().then(() => {
+          c.check(!timedOut && clock() < deadline, 'expired'); return operation();
+        }),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => { timedOut = true; reject(new c.PreparationError('expired')); },
+            Math.max(1, deadline - clock()));
+        }),
+      ]);
+      c.check(!timedOut && clock() < deadline, 'expired'); return result;
+    } finally { clearTimeout(timer); }
+  }
+  const { record, hash } = await beforeWrite(() => (deps.read || readAttempt)());
   c.check(hash === completion?.attemptHash, 'integrity'); reviewAttempt(record, completion, plan, clock());
-  await verifyBindings(plan, record.planHash);
-  for (const owner of record.owners) await (deps.inspect || inspectClosure)(owner);
-  for (const port of record.listenerPorts) await (deps.portClosed || p.portClosed)(port);
-  await verifyBindings(plan, record.planHash);
+  await beforeWrite(() => verifyBindings(plan, record.planHash));
+  for (const owner of record.owners) await beforeWrite(() => (deps.inspect || inspectClosure)(owner));
+  for (const port of record.listenerPorts) await beforeWrite(() => (deps.portClosed || p.portClosed)(port));
+  await beforeWrite(() => verifyBindings(plan, record.planHash));
   reviewAttempt(record, completion, plan, clock());
+  c.check(!timedOut && clock() < deadline, 'expired');
   const finalHash = await (deps.write || writeExclusive)(RESULT, record);
   // Only a completed write is ours to remove; failed writes retain their partial artifacts.
   try {
-    c.check(clock() < plan.expiresAt && clock() - record.startedAt < c.LIMITS.wholeMs, 'expired');
+    c.check(clock() < deadline && clock() - record.startedAt < c.LIMITS.wholeMs, 'expired');
   } catch (error) {
     try { await (deps.unlink || fs.unlink)(RESULT); } catch { throw new c.PreparationError('receipt'); }
     throw error;

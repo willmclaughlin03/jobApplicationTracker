@@ -3,6 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { setImmediate } = require('node:timers/promises');
+const vm = require('node:vm');
 const p = require('../authentication-preparation-scoped-postflight.cjs');
 const c = require('../authentication-preparation-scoped-contract.cjs');
 const a = require('../authentication-preparation.cjs');
@@ -30,6 +31,95 @@ function fixture() {
   const completion = { exitCode: 0, phase: 'passed', receiptFinalized: true, attemptHash: HASH, sourceSet: HASH, planHash: HASH };
   return { plan, record, completion };
 }
+
+/** Run real finalization with controlled stage promises, clock and timers; all evidence I/O remains synthetic. */
+function deadlineFixture() {
+  const f = fixture(); const calls = []; const timers = new Map(); const delays = []; const operations = {};
+  const state = { now: 2000, bindings: 0 };
+  /** Record stage entry and optionally delay or fail that stage to exercise deadline races. */
+  async function stage(name) { calls.push(name); return operations[name]?.(); }
+  const finalize = vm.runInNewContext(`(${p.finalize.toString()})`, {
+    c, RESULT: p.RESULT,
+    /** Allow synchronous receipt validation to consume time while retaining the real validation checks. */
+    reviewAttempt: (...args) => { p.reviewAttempt(...args); operations.review?.(); },
+    /** Keep only one stage timer active and expose its callback without waiting on wall time. */
+    setTimeout: (callback, ms) => {
+      assert.equal(timers.size, 0); const handle = {}; timers.set(handle, callback); delays.push(ms); return handle;
+    },
+    clearTimeout: handle => { timers.delete(handle); },
+  });
+  const deps = { clock: () => state.now, deadline: 3000,
+    read: async () => { await stage('read'); return { record: f.record, hash: HASH }; },
+    inspect: owner => stage(`owner${owner.pid}`), portClosed: () => stage('port'),
+    write: async () => { await stage('write'); return HASH; }, unlink: () => stage('unlink') };
+  /** Invoke the production flow with separate labels for its two binding checks. */
+  const run = () => finalize(f.completion, f.plan, () => stage(`binding${++state.bindings}`), deps);
+  return { ...f, state, deps, calls, timers, delays, operations, run };
+}
+
+/** Each pre-write stage must time out permanently, ignoring late resolution or rejection without creating artifacts. */
+test('finalization bounds every pre-write stage and ignores late settlements', async () => {
+  const stages = ['read', 'binding1', 'owner1', 'owner2', 'port', 'binding2'];
+  for (const name of stages) {
+    for (const late of ['resolve', 'reject']) {
+      const f = deadlineFixture(); let resolve; let reject; let outcome;
+      const held = new Promise((yes, no) => { resolve = yes; reject = no; }); f.operations[name] = () => held;
+      const pending = f.run().then(() => { outcome = 'passed'; }, error => { outcome = error.code; });
+      await setImmediate(); assert.deepEqual(f.calls, stages.slice(0, stages.indexOf(name) + 1));
+      assert.equal(f.timers.size, 1); assert.equal(f.delays.at(-1), 1000);
+      f.state.now = f.deps.deadline; [...f.timers.values()][0](); await setImmediate();
+      assert.equal(outcome, 'expired'); assert.equal(f.timers.size, 0);
+      const calls = [...f.calls]; f.state.now = 2000;
+      if (late === 'resolve') resolve(); else reject(new c.PreparationError('operation'));
+      await setImmediate(); await pending; assert.deepEqual(f.calls, calls);
+    }
+  }
+});
+
+/** All stages share the earliest absolute deadline and must release their timer on success or rejection. */
+test('finalization clears settled stage timers and never renews the shared deadline', async () => {
+  const stages = ['read', 'binding1', 'owner1', 'owner2', 'port', 'binding2'];
+  for (const deadline of [undefined, 3500, 2500]) {
+    const f = deadlineFixture(); f.plan.expiresAt = 3000; f.deps.deadline = deadline;
+    for (const name of stages) f.operations[name] = () => { f.state.now += 50; };
+    assert.equal((await f.run()).receiptFinalized, true); assert.equal(f.timers.size, 0);
+    const remaining = Math.min(f.plan.expiresAt, deadline ?? f.plan.expiresAt) - 2000;
+    assert.deepEqual(f.delays, stages.map((_name, index) => remaining - index * 50));
+  }
+  for (const name of stages) {
+    const f = deadlineFixture(); f.operations[name] = () => { throw new c.PreparationError('integrity'); };
+    await assert.rejects(f.run(), { code: 'integrity' }); assert.equal(f.timers.size, 0);
+    assert.deepEqual(f.calls, stages.slice(0, stages.indexOf(name) + 1));
+  }
+});
+
+/** Delayed timer delivery cannot authorize new work once the injected clock reaches the absolute deadline. */
+test('expired entry, last binding check or synchronous receipt validation cannot start a write', async () => {
+  const expired = deadlineFixture(); expired.state.now = expired.deps.deadline;
+  await assert.rejects(expired.run(), { code: 'expired' }); assert.deepEqual(expired.calls, []);
+  assert.equal(expired.timers.size, 0);
+  const f = deadlineFixture(); f.operations.binding2 = () => { f.state.now = f.deps.deadline; };
+  await assert.rejects(f.run(), { code: 'expired' }); assert.equal(f.timers.size, 0);
+  assert.equal(f.calls.includes('write'), false); assert.equal(f.calls.includes('unlink'), false);
+  const validating = deadlineFixture(); let reviews = 0;
+  validating.operations.review = () => { if (++reviews === 2) validating.state.now = validating.deps.deadline; };
+  await assert.rejects(validating.run(), { code: 'expired' }); assert.equal(validating.timers.size, 0);
+  assert.equal(validating.calls.includes('write'), false); assert.equal(validating.calls.includes('unlink'), false);
+});
+
+/** Once writing starts, finalization waits for its result; only successful expired writes qualify for removal. */
+test('an already-started write is not raced against the deadline or cancelled', async () => {
+  for (const failure of [false, true]) {
+    const f = deadlineFixture(); let resolve; let reject; let outcome;
+    const held = new Promise((yes, no) => { resolve = yes; reject = no; }); f.operations.write = () => held;
+    const pending = f.run().then(() => { outcome = 'passed'; }, error => { outcome = error.code; });
+    await setImmediate(); assert.equal(f.calls.at(-1), 'write'); assert.equal(f.timers.size, 0);
+    f.state.now = f.deps.deadline; await setImmediate(); assert.equal(outcome, undefined);
+    if (failure) reject(new c.PreparationError('receipt')); else resolve();
+    await pending; assert.equal(outcome, failure ? 'receipt' : 'expired');
+    assert.equal(f.calls.includes('unlink'), !failure); assert.equal(f.timers.size, 0);
+  }
+});
 
 test('scoped receipt validates its own boundary and the strict hosted consumer still rejects it', () => {
   const f = fixture(); assert.equal(p.reviewAttempt(f.record, f.completion, f.plan, 2000), true);

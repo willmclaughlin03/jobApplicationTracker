@@ -1,9 +1,10 @@
 'use strict';
-/* global Buffer, structuredClone, queueMicrotask */
+/* global Buffer, structuredClone, queueMicrotask, AbortController */
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const vm = require('node:vm');
+const { TextDecoder } = require('node:util');
 const s = require('../authentication-preparation-scoped.cjs');
 const c = require('../authentication-preparation-scoped-contract.cjs');
 const a = require('../authentication-preparation.cjs');
@@ -60,6 +61,58 @@ function fixture() {
     writeAttempt: async record => { state.record = record; return HASH; } };
   return { state, deps, proxy };
 }
+
+/** Execute the actual page expression against synthetic UTF-8 bytes, tracking decoding, parsing and timer cleanup. */
+function pageIdentityFixture(bytes) {
+  const state = { decoded: 0, parsed: 0, cleared: 0 };
+  /** Count decoding so oversized responses cannot be converted to strings before their byte check. */
+  class Decoder extends TextDecoder {
+    /** Decode the supplied buffer using the browser's default UTF-8 behavior. */
+    decode(body) { state.decoded++; return super.decode(body); }
+  }
+  const sandbox = { AbortController, TextDecoder: Decoder,
+    JSON: { parse: body => { state.parsed++; return JSON.parse(body); } },
+    setTimeout: (_callback, ms) => { assert.equal(ms, 30000); return 1; },
+    clearTimeout: timer => { assert.equal(timer, 1); state.cleared++; },
+    fetch: async (url, options) => {
+      assert.equal(url, '/api/auth/session'); assert.equal(options.credentials, 'include');
+      assert.equal(options.redirect, 'error'); assert.equal(options.signal.aborted, false);
+      return { status: 200, text: async () => bytes.toString('utf8'),
+        arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
+    } };
+  const owner = { observer: {}, page: { sessionId: 'synthetic-page' }, cdp: {
+    /** Run the production expression in isolation while keeping all browser and network I/O mocked. */
+    send: async (method, options, sessionId) => {
+      assert.equal(method, 'Runtime.evaluate'); assert.equal(sessionId, owner.page.sessionId);
+      assert.equal(options.awaitPromise, true); assert.equal(options.returnByValue, true);
+      return { result: { value: await vm.runInNewContext(options.expression, sandbox) } };
+    },
+  } };
+  return { owner, state, budget: new c.ScopedBudget() };
+}
+
+/** A valid identity envelope with multibyte text must not bypass the JSON byte cap via string length. */
+test('page identity rejects oversized UTF-8 JSON before decoding or parsing', async () => {
+  const body = JSON.stringify({ error: null, message: 'Success', data: { user: { id: ID, name: '\u00e9'.repeat(32768) } } });
+  const bytes = Buffer.from(body); assert.ok(body.length < d.LIMITS.jsonBytes); assert.ok(bytes.length > d.LIMITS.jsonBytes);
+  const f = pageIdentityFixture(bytes);
+  await assert.rejects(s.pageIdentity(f.owner, f.budget, ID), { code: 'identity' });
+  assert.deepEqual(f.state, { decoded: 0, parsed: 0, cleared: 1 });
+});
+
+/** Accept ASCII and multibyte responses through the exact byte boundary, rejecting the next byte before parsing. */
+test('page identity enforces the inclusive JSON byte limit for ASCII and UTF-8 responses', async () => {
+  for (const name of ['plain', '\u00e9']) {
+    const base = Buffer.from(JSON.stringify({ error: null, message: 'Success', data: { user: { id: ID, name } } }));
+    for (const offset of [-1, 0, 1]) {
+      const bytes = Buffer.concat([base, Buffer.alloc(d.LIMITS.jsonBytes + offset - base.length, 32)]);
+      const f = pageIdentityFixture(bytes);
+      if (offset > 0) await assert.rejects(s.pageIdentity(f.owner, f.budget, ID), { code: 'identity' });
+      else assert.equal(await s.pageIdentity(f.owner, f.budget, ID), true);
+      assert.deepEqual(f.state, { decoded: offset > 0 ? 0 : 1, parsed: offset > 0 ? 0 : 1, cleared: 1 });
+    }
+  }
+});
 
 test('two-launch flow observes before opening and independently closes before the rejecting restart', async () => {
   const f = fixture(); const result = await s.runScoped(input(), ID, f.deps);
@@ -126,6 +179,32 @@ test('supervisor requires actual zero worker exit and rejects duplicate completi
     await assert.rejects(s.supervise(input().plan, HASH, async () => {}, { spawn, clock: () => 1000,
       finalize: async completion => { assert.equal(c.check(completion.exitCode === 0, 'worker_completion'), undefined); finalized++; } }));
     assert.equal(finalized, 0);
+  }
+});
+
+/** Finalization must inherit the original supervisor clock and earlier of approval expiry and the whole-attempt limit. */
+test('supervisor passes its original combined deadline and clock into finalization', async () => {
+  for (const expiresAt of [4000, 3600000]) {
+    const plan = { ...input().plan, expiresAt }; let now = 1000; const clock = () => now;
+    /** Simulate a successful worker that consumes time before its completion and actual exit. */
+    const spawn = () => {
+      const child = new EventEmitter(); child.connected = true; child.send = () => {};
+      queueMicrotask(() => {
+        now = 2000;
+        child.emit('message', { phase: 'passed', receiptFinalized: true, attemptHash: HASH, sourceSet: HASH, planHash: HASH });
+        child.emit('close', 0);
+      }); return child;
+    };
+    const verify = async () => {};
+    const result = await s.supervise(plan, HASH, verify, { spawn, clock,
+      /** Capture the real dispatch boundary so finalization cannot silently fall back to a new clock or budget. */
+      finalize: async (completion, receivedPlan, receivedVerify, deps) => {
+        assert.equal(completion.exitCode, 0); assert.equal(receivedPlan, plan); assert.equal(receivedVerify, verify);
+        assert.equal(deps?.clock, clock); assert.equal(deps.deadline, Math.min(1000 + c.LIMITS.wholeMs, expiresAt));
+        assert.equal(deps.clock(), 2000); return 'finalized';
+      },
+    });
+    assert.equal(result, 'finalized');
   }
 });
 

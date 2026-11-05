@@ -341,8 +341,9 @@ async function pageIdentity(owner, budget, identity) {
   const result = await owner.cdp.send('Runtime.evaluate', { awaitPromise: true, returnByValue: true,
     expression: `(async () => { const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 30000);
       try { const response = await fetch('/api/auth/session', { credentials: 'include', redirect: 'error', signal: controller.signal });
-        if (response.status !== 200) return null; const body = await response.text();
-        if (body.length > 65536) return null; return JSON.parse(body); } finally { clearTimeout(timer); } })()`,
+        if (response.status !== 200) return null; const body = await response.arrayBuffer();
+        if (body.byteLength > ${d.LIMITS.jsonBytes}) return null;
+        return JSON.parse(new TextDecoder().decode(body)); } finally { clearTimeout(timer); } })()`,
   }, owner.page.sessionId);
   budget.check(); c.check(!result.exceptionDetails, 'identity'); return a.verifyIdentity(result.result?.value, identity);
 }
@@ -447,7 +448,7 @@ async function supervise(plan, planHash, verify, deps = {}) {
   if (completion.phase === 'stopped') throw new c.PreparationError(completion.firstFailure);
   c.check(p.completionSchema.safeParse(completion).success, 'worker_completion');
   c.check(completion.planHash === planHash, 'integrity');
-  return (deps.finalize || p.finalize)(completion, plan, verify);
+  return (deps.finalize || p.finalize)(completion, plan, verify, { deadline: end, clock });
 }
 
 /** Live entry requires a separately reviewed digest and matching native completion; no such approval is bundled. */
