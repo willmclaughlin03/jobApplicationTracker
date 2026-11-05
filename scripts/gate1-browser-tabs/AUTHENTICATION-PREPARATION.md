@@ -269,6 +269,15 @@ write-back, actual cancellation, restored-worker blocking, transport overflow an
 normal/independently verified closure. Its harness and execution need their own
 named-file review and approval.
 
+The required `manualContextRecovery` case must use a synthetic loopback navigation
+that replaces the execution context while the native `manualSignIn` location poll
+is pending. Confirm a recognized context-loss protocol response is treated as
+"not yet", followed by a successful poll without stopping the attempt. Include
+repeated context loss through the unchanged manual/global deadline, plus an
+unrecognized protocol failure and target detachment that still stop. Retain only
+the categorical check result, never protocol payloads. Mocked transport coverage
+does not establish this native qualification; missing or false coverage is rejected.
+
 After independently reviewing that qualification, reconcile the actual deployment,
 canonical alias and build under a separately bounded approval. Historical target
 constants intentionally fail on drift; no automatic retargeting follows.

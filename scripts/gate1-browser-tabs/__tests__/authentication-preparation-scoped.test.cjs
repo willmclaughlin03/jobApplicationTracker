@@ -1,5 +1,5 @@
 'use strict';
-/* global Buffer, structuredClone, queueMicrotask, AbortController */
+/* global Buffer, structuredClone, queueMicrotask, AbortController, setTimeout, clearTimeout */
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
@@ -7,6 +7,7 @@ const vm = require('node:vm');
 const { TextDecoder } = require('node:util');
 const s = require('../authentication-preparation-scoped.cjs');
 const c = require('../authentication-preparation-scoped-contract.cjs');
+const { CdpConnection } = require('../authentication-preparation-scoped-observer.cjs');
 const a = require('../authentication-preparation.cjs');
 const d = require('../hosted-csrf-diagnostic.cjs');
 const ID = '00000000-0000-4000-8000-000000000001'; const HASH = 'a'.repeat(64);
@@ -112,6 +113,120 @@ test('page identity enforces the inclusive JSON byte limit for ASCII and UTF-8 r
       assert.deepEqual(f.state, { decoded: offset > 0 ? 0 : 1, parsed: offset > 0 ? 0 : 1, cleared: 1 });
     }
   }
+});
+
+/** Exercise the native poll and CDP transport with synthetic replies and a clock advanced only by polling delays. */
+function manualSignInFixture(reply, { manualMs = 1000, deadline = 2000 } = {}) {
+  const state = { now: 0, calls: [], delays: [] }; const socket = new EventEmitter();
+  const budget = new c.ScopedBudget({ clock: () => state.now, limits: { ...c.LIMITS, manualMs } });
+  budget.deadline = deadline;
+  /** Feed correlated protocol frames through the real transport without opening a native socket. */
+  socket.send = bytes => {
+    const request = JSON.parse(bytes); state.calls.push(request);
+    const response = request.method === 'Page.navigate' ? { result: {} } : reply(state, budget);
+    socket.emit('message', Buffer.from(JSON.stringify({ id: request.id, sessionId: request.sessionId, ...response })));
+  };
+  socket.terminate = () => {};
+  const owner = { cdp: new CdpConnection(socket, budget), observer: {}, page: { sessionId: 'synthetic-page' } };
+  const poll = vm.runInNewContext(`(${s.manualSignIn.toString()})`, { c, d, Date: { now: () => state.now },
+    /** Model the cancellable interval without real waiting, preserving the production delay's abort behavior. */
+    delay: async (ms, signal) => {
+      c.check(!signal.aborted, 'cancelled'); state.delays.push(ms); state.now += ms;
+    },
+  });
+  return { state, budget, owner, run: () => poll(owner, budget, budget.abort.signal) };
+}
+
+/** A navigation-lost context is only a missed poll; later success must leave the shared attempt unstopped. */
+test('synthetic manual context recovery retries native protocol errors and completes sign-in', async () => {
+  for (const message of ['Cannot find context with specified id', 'Cannot find default execution context',
+    'Execution context was destroyed.', 'Inspected target navigated or closed']) {
+    const f = manualSignInFixture(state => state.calls.length === 2
+      ? { error: { code: -32000, message } } : { result: { result: { value: true } } });
+    try {
+      await f.run(); assert.equal(f.budget.failure, null); assert.equal(f.budget.abort.signal.aborted, false);
+      assert.deepEqual(f.state.calls.map(call => call.method), ['Page.navigate', 'Runtime.evaluate', 'Runtime.evaluate']);
+      assert.deepEqual(f.state.delays, [250]); assert.equal(f.owner.cdp.pending.size, 0);
+    } finally { f.owner.cdp.close(); }
+  }
+});
+
+/** Repeated context loss cannot renew either the manual-sign-in allowance or the earlier global work deadline. */
+test('transient manual polling preserves manualMs and earlier deadline bounds', async () => {
+  for (const limits of [{ manualMs: 1000, deadline: 2000 }, { manualMs: 2000, deadline: 1000 }]) {
+    const f = manualSignInFixture(() => ({ error: { code: -32000, message: 'Execution context was destroyed.' } }), limits);
+    try {
+      await assert.rejects(f.run(), { code: 'deadline' }); assert.equal(f.state.now, 1000);
+      assert.equal(f.state.calls.length, 5); assert.deepEqual(f.state.delays, [250, 250, 250, 250]);
+      assert.equal(f.owner.cdp.pending.size, 0);
+    } finally { f.owner.cdp.close(); }
+  }
+});
+
+/** A late successful reply cannot bypass the fixed manual allowance or global work deadline. */
+test('manual polling rejects a successful evaluation that settles at either deadline', async () => {
+  for (const limits of [{ manualMs: 1000, deadline: 2000 }, { manualMs: 2000, deadline: 1000 }]) {
+    const f = manualSignInFixture(state => {
+      state.now = 1000; return { result: { result: { value: true } } };
+    }, limits);
+    try { await assert.rejects(f.run(), { code: 'deadline' }); assert.deepEqual(f.state.delays, []); }
+    finally { f.owner.cdp.close(); }
+  }
+});
+
+/** Unknown protocol errors, page exceptions and cancellation remain fatal instead of being swallowed by the retry path. */
+test('manual polling does not retry non-transient failures or cancellation', async () => {
+  for (const response of [{ error: { code: -32000, message: 'private protocol failure' } },
+    { result: { exceptionDetails: { text: 'private script failure' } } }]) {
+    const f = manualSignInFixture(() => response);
+    try {
+      await assert.rejects(f.run(), { code: 'observation' }); assert.deepEqual(f.state.delays, []);
+      assert.equal(f.state.calls.length, 2);
+    } finally { f.owner.cdp.close(); }
+  }
+  const f = manualSignInFixture((_state, budget) => {
+    budget.stop('cancelled'); return { error: { code: -32000, message: 'Execution context was destroyed.' } };
+  });
+  try {
+    await assert.rejects(f.run()); assert.equal(f.budget.failure, 'cancelled');
+    assert.equal(f.state.calls.length, 2); assert.deepEqual(f.state.delays, []);
+  } finally { f.owner.cdp.close(); }
+});
+
+/** Capture both Chrome spawn environments, stopping at mocked attachment before any browser or filesystem access. */
+test('Chrome launches omit the approved identity and retain the remaining sanitized environment', async () => {
+  const parentEnv = Object.freeze({ GATE1_APPROVED_USER_ID: ID, KEEP: 'retained', DEBUG: 'suppressed', NODE_OPTIONS: 'suppressed' });
+  const expected = s.childEnvironment(parentEnv); delete expected.GATE1_APPROVED_USER_ID;
+  const stop = new Error('mock attachment stop'); const environments = [];
+  const launch = vm.runInNewContext(`(${s.launch.toString()})`, {
+    p: { profilePreserved: async () => {} }, f: { fixtureExecutable: () => 'mock-chrome', isolationArguments: () => [] },
+    childEnvironment: () => s.childEnvironment(parentEnv), attachment: async () => { throw stop; },
+    /** Capture options at the native process boundary without starting a process. */
+    spawn: (_executable, _args, options) => { environments.push(options.env); return new EventEmitter(); },
+  });
+  for (const restart of [false, true]) {
+    await assert.rejects(launch({ profile: 'mock-profile', restart }, { port: 12345 }, { check: () => {} }), stop);
+    assert.deepEqual(environments.at(-1), expected);
+  }
+  assert.equal(environments.length, 2); assert.equal(parentEnv.GATE1_APPROVED_USER_ID, ID);
+});
+
+/** Capture the worker spawn with a synthetic environment and mocked startup failure; no parent environment is changed. */
+test('supervisor retains the approved identity in the sanitized worker environment', async () => {
+  const parentEnv = Object.freeze({ GATE1_APPROVED_USER_ID: ID, KEEP: 'retained', DEBUG: 'suppressed', NODE_OPTIONS: 'suppressed' });
+  let environment;
+  const supervise = vm.runInNewContext(`(${s.supervise.toString()})`, {
+    c, process: Object.assign(new EventEmitter(), { execPath: 'mock-node' }), __filename: 'mock-worker.cjs',
+    childEnvironment: () => s.childEnvironment(parentEnv), setTimeout, clearTimeout,
+  });
+  /** Fail after capturing the spawn options so the real supervisor releases its listeners and timers. */
+  const spawn = (_executable, _args, options) => {
+    environment = options.env; const child = new EventEmitter();
+    queueMicrotask(() => child.emit('error', new Error('mock startup failure'))); return child;
+  };
+  await assert.rejects(supervise(input().plan, HASH, async () => {}, { spawn, clock: () => 1000 }), { code: 'worker_completion' });
+  assert.deepEqual(environment, { GATE1_APPROVED_USER_ID: ID, KEEP: 'retained' });
+  assert.equal(parentEnv.GATE1_APPROVED_USER_ID, ID);
 });
 
 test('two-launch flow observes before opening and independently closes before the rejecting restart', async () => {

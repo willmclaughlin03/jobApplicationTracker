@@ -27,15 +27,22 @@ class CdpConnection extends EventEmitter {
       if (Object.hasOwn(message, 'id')) {
         const item = this.pending.get(message.id); check(item && message.sessionId === item.sessionId, 'observation');
         this.pending.delete(message.id); clearTimeout(item.timer);
-        if (message.error) { item.reject(new PreparationError('observation')); this.budget.stop('observation'); }
+        if (message.error) {
+          // Only the opted-in location poll can treat a known navigation/context-loss response as not yet ready.
+          const contextLost = item.contextLossAsFalse && message.error.code === -32000
+            && ['Cannot find context with specified id', 'Cannot find default execution context',
+              'Execution context was destroyed.', 'Inspected target navigated or closed'].includes(message.error.message);
+          if (contextLost) item.resolve({ result: { value: false } });
+          else { item.reject(new PreparationError('observation')); this.budget.stop('observation'); }
+        }
         else item.resolve(message.result || {});
       } else {
         check(typeof message.method === 'string', 'observation'); this.emit('event', message);
       }
     } catch { this.budget.stop('observation'); this.close(); }
   }
-  /** Bound command count, serialized size and lifetime; shutdown permits only Browser.close after a stop. */
-  send(method, params = {}, sessionId, cleanup = false) {
+  /** Bound commands and lifetime; contextLossAsFalse permits only evaluation polling to tolerate a lost context. */
+  send(method, params = {}, sessionId, cleanup = false, { contextLossAsFalse = false } = {}) {
     try {
       if (!cleanup) this.budget.check();
       check(!this.closed && (!cleanup || method === 'Browser.close')
@@ -49,7 +56,8 @@ class CdpConnection extends EventEmitter {
         const timer = setTimeout(() => {
           this.pending.delete(id); reject(new PreparationError('deadline')); this.budget.stop('deadline'); this.close();
         }, timeout);
-        this.pending.set(id, { resolve, reject, timer, sessionId });
+        this.pending.set(id, { resolve, reject, timer, sessionId,
+          contextLossAsFalse: contextLossAsFalse === true && !cleanup && method === 'Runtime.evaluate' });
         try { this.socket.send(bytes); } catch { this.budget.stop('observation'); this.close(); }
       });
     } catch (error) { this.budget.stop(errorCode(error)); return Promise.reject(new PreparationError(errorCode(error))); }
