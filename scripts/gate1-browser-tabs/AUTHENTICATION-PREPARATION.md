@@ -1,7 +1,8 @@
 # Authentication preparation: offline controls and qualification
 
-This seven-file addition implements the approved offline scope after anonymous
-build attribution. Gate 1 remains open. It does not enable live authentication.
+The original seven-file addition implements the approved offline scope after anonymous
+build attribution. The scoped controls described below are a subsequent implementation.
+Gate 1 remains open; no native qualification or live execution has been performed for it.
 The application, eleven previously reviewed files, original README, consumed
 build attempt and accepted isolation receipts are unchanged.
 
@@ -13,6 +14,15 @@ rewrite either dependency or substitute new bytes into historical receipts.
 
 ## Coverage decision
 
+The project owner approved the
+[scoped pre-production measurement contract](../../docs/UIDesign/gate1-authentication-measurement-decision.md)
+on 2026-11-04, limited to authentication preparation. It accepts incomplete
+background measurement as an explicit limitation for future reviewed preparation;
+it provides no whole-browser request ceiling, executed pass or live approval.
+The companion defines the acceptance boundary. The owner subsequently approved
+the eleven-file implementation described below, limited to source changes and
+offline validation. The approved companion remains unchanged as the decision record.
+
 The pinned Playwright protocol describes `Target.setAutoAttach` in terms of
 related targets, including iframes and workers. Page `Network`/`Fetch` events do
 not establish complete browser-background coverage. A CONNECT proxy can constrain
@@ -22,17 +32,21 @@ inside TLS. A passing page-event comparison therefore retains
 
 `--execute-reviewed-manifest` fails with `coverage_unqualified` before reading a
 manifest or performing any I/O. `finalizeAuthentication()` also always rejects.
-There is no force flag or native live adapter. The future plan validator records
+There is no force flag or native live adapter in that original helper. Its plan validator records
 the proposed contract without granting execution. Offline evidence cannot satisfy
 the existing diagnostic's `validatePreparation` contract.
 
-## Approved local qualification
+## Consumed local qualification
 
 Operator: Codex agent. Operational/risk owner: project owner.
-One attempt, at most 180 seconds including cleanup and postflight, two launches,
+The historical approval permitted one attempt, at most 180 seconds including
+cleanup and postflight, two launches,
 one new synthetic profile. The first 150 seconds are available for work. Browser
 closure uses the same overall clock, reserving the last 15 seconds for postflight.
 No automatic repeat or extra case follows a stopped or inconclusive native run.
+The single attempt has been consumed. Its pass covers its original source set
+only; neither the merged review follow-up nor this documentation change inherits
+native qualification. See the companion's preserved-evidence record.
 
 The worker:
 
@@ -101,15 +115,17 @@ node scripts/gate1-browser-tabs/authentication-preparation.cjs --source-hash
 node scripts/gate1-browser-tabs/authentication-preparation.cjs --qualify-loopback <reviewed-source-set>
 ```
 
-The last command consumes the separately approved single native attempt. Unit
+The last command describes the consumed native attempt; it is not a command to
+rerun under the current approval. Any further native exercise requires a new
+bounded proposal, fresh single-use paths and separate approval. Unit
 tests use mocks, do not launch Chrome and do not create the attempt directory.
 Syntax, scoped ESLint and whitespace checks precede the native run. After changing
 code, do not describe an earlier source-bound native receipt as validation of the
 changed source. Preserve the attempt and return to the owner if a repeat is needed.
 
-## Future live preparation contract (unapproved and not executable)
+## Frozen target policy for future execution
 
-Frozen attribution: deployment `dpl_jbyKAs8vNoVbGQ4vSM5hKd7LSrTJ`, source
+Historical frozen attribution: deployment `dpl_jbyKAs8vNoVbGQ4vSM5hKd7LSrTJ`, source
 `62b4133d257b43529d93e62f98afc8ccb2faf15b`, build `YB6TC2dgLcUGcHUpFCAaM`.
 Canonical `job-application-tracker-kappa-seven.vercel.app`. Future execution must
 recheck exact project/alias/deployment metadata before and after; current Git refs
@@ -140,27 +156,154 @@ session 8 included, canonical static 80, provider static 120, Supabase 4, Google
 non-static 96, metadata 6 at 30 seconds each. Browser HTTP operations 30 seconds,
 restart session 5 seconds; proxy request body bytes 64 MiB, connections 128 total/16
 concurrent; receipt 16 KiB. Every redirect and uncertain dispatch stays charged.
-These limits are validated as proposed values, not implemented live coverage.
+The original helper validates these proposed values without implementing live coverage.
+Under the scoped decision, HTTP allowances cover accounted page/request-client
+attempts only. Proxy connection concurrency is not HTTP concurrency. The 64 MiB
+body allowance does not bound encrypted tunnels or response bytes. A concrete
+implementation freezes separate tunnel-byte accounting, observed HTTP concurrency
+and pending-event bounds below. No complete browser or OS-wide containment claim follows.
 
 Current application/static/session ledger (build already included): actual
-150/150/52, conservative 151/150/52. Draft maximum after preparation: 174/350/60
-and 175/350/60, respectively. These are ceilings, never executed totals. Provider
+150/150/52, conservative 151/150/52. Draft accounted-traffic maximum after
+preparation: 174/350/60 and 175/350/60, respectively. These are ceilings for that
+accounted scope, never executed totals or whole-browser upper bounds. Provider
 non-static and metadata counters remain separate. Historical background traffic
 is still unmeasured. Offline loopback counts do not increment hosted ledgers.
 
 Expected UUID must be supplied privately as `GATE1_APPROVED_USER_ID` before a
 future live attempt. Never request it in chat, read `.env`, or derive it from the
 session under test. Comparison occurs in memory before/after restart. The final
-live receipt would require exact target/build/profile, measured incremental
-counts, identity verification, full browser traffic measurement, normal closure
-and independently established process exit. No synthetic receipt substitutes.
+scoped receipt would require exact target/build/profile, measured incremental
+counts with explicit coverage, identity verification, normal closure and
+independently established process exit. It must retain
+`browserTrafficMeasured: false` and `hostedQualified: false`, and bind a distinct
+schema/version to the reviewed owner decision and sources. The existing hosted
+diagnostic still requires `browserTrafficMeasured: true` and must reject scoped
+evidence until a separately reviewed consumer change. No synthetic receipt or
+boolean waiver substitutes for either contract.
 
-## Next decision
+## Scoped implementation and offline validation
 
-Review this bounded offline result and resolve the specific complete-traffic
-coverage gap with the owner. This code does not implement an unreviewed TLS
-interceptor, OS firewall change or weakened receipt contract. Any selected
-measurement correction or explicit amendment needs a concrete scope before code
-or execution. Only then prepare the separate live authentication proposal, followed
-by separate hosted CSRF approval if preparation succeeds. Neither result closes
-Gate 1 or authorizes checkout, load, rollback or provider changes.
+The five `authentication-preparation-scoped*.cjs` modules and their five matching
+tests implement the approved local scope. The original helpers, strict hosted
+consumer and consumed dependency/evidence copies remain unchanged.
+
+| Module suffix | Responsibility |
+| --- | --- |
+| `scoped.cjs` | Source/tool binding, expiring execution-review validation, two-launch ownership, deadline/cancellation, worker supervision and native adapters. |
+| `scoped-contract.cjs` | Strict version-2 plan, native evidence, successful/stopped attempt schemas; atomic request budgets and explicit coverage. |
+| `scoped-proxy.cjs` | Exact CONNECT authorities, connection/byte admission, backpressure and owned socket closure. |
+| `scoped-observer.cjs` | One raw bounded CDP controller, paused-target initialization and Fetch/Network redirect reconciliation. |
+| `scoped-postflight.cjs` | Independent process/listener/profile verification and exclusive receipt finalization after successful worker exit. |
+
+The source hash includes the exact ten new module/test files, the existing
+preparation/dependency aggregate (which includes this document), and the companion
+decision's digest. Working-byte and line-ending changes therefore invalidate
+matching qualification. Tool binding additionally pins the Playwright utility
+bundle used for WebSocket transport to
+`580f571bf063e2256b51b3946a035bc452fc0e22808d5547b198baea39923a32`.
+The previously accepted Chrome package and its EXE/DLL NotSigned disclosure remain.
+
+The approved implementation limits add browser-to-upstream 8 MiB,
+upstream-to-browser 56 MiB, combined tunnel payload 64 MiB, observed HTTP in-flight
+32, attached target sessions including frames 16, retained hop records 1,024,
+relevant events 4,096, pending CDP commands 64 and CONNECT headers 8 KiB. Existing
+request, deadline, connection and 16 KiB receipt limits remain. A conservative
+64 KiB protocol-message cap also bounds the raw CDP parser; an oversized message
+stops observation. These are stopping limits, not measured OAuth requirements.
+
+Tunnel payload is reserved atomically before forwarding; CONNECT head is charged
+before starting its upstream connection. Read, rejected, admitted and locally
+enqueued bytes are separate. Each direction is counted once. A local write or
+continuation acknowledgement does not prove server receipt. Over-limit chunks
+are rejected whole, failed reservations remain charged, and drain callbacks cannot
+resume a stopped socket. The CONNECT response/header framing is outside tunnel
+payload accounting. This is neither a whole-browser request count nor a
+whole-process memory guarantee. Response/body checks after buffering are not
+streaming memory bounds.
+
+First launch uses only the raw CDP controller, including normal-close recovery.
+It pauses related targets, installs interception recursively, then resumes supported
+targets. Two owned blank pages must be ready before forwarding opens. Unexpected
+workers, unpaused targets, detachments, mismatched Fetch/Network method/URL pairs,
+missing events, provider HTTP refusal, repeated OAuth initiation or exceeded
+bounds stop the attempt. Ephemeral correlation fingerprints remain in memory only.
+Native qualification must prove this target ordering; passing mocks cannot.
+
+The worker verifies the private expected identity through the observed page,
+seals forwarding, closes normally and independently verifies process/listener
+exit before restarting the same preserved profile. Only the restart attaches
+Playwright, with the proxy still rejecting browser forwarding. Its single exact
+context-bound session operation is separately reserved with retries/redirects
+disabled and identity compared again. The context owns cookie access/write-back;
+no browser storage is exported. Actual persistence, write-back, cancellation and
+restored-worker blocking still require fresh native evidence.
+
+Cancellation seals sockets, signals metadata children, disposes the active request
+client and proceeds to normal browser closure on the shared deadline. Late results
+cannot reopen dispatch or produce successful completion. Stopped attempts preserve
+aggregate charged/uncertain counts and partial cleanup when their marker is owned;
+failed/partial evidence writes never become finalized success. No forced browser
+termination or automatic retry is implemented.
+
+Use main-checkout dependencies and repo-local TEMP/TMP for these offline checks:
+
+```powershell
+node --test scripts/gate1-browser-tabs/__tests__/authentication-preparation-scoped*.test.cjs scripts/gate1-browser-tabs/__tests__/authentication-preparation.test.cjs scripts/gate1-browser-tabs/__tests__/authentication-preparation-traffic.test.cjs scripts/gate1-browser-tabs/__tests__/authentication-preparation-postflight.test.cjs scripts/gate1-browser-tabs/__tests__/hosted-csrf-diagnostic.test.cjs
+node scripts/gate1-browser-tabs/authentication-preparation-scoped.cjs --source-hash
+```
+
+Also run `node --check` and scoped ESLint on the ten new JavaScript files, plus
+`git diff --check` and whitespace/link checks including ignored new files.
+These tests mock native/network boundaries and do not qualify Chrome or providers.
+
+## Separate native and live reviews
+
+No native qualification, execution review, real profile or scoped receipt was
+created by this implementation. The next proposal is a fresh, bounded synthetic
+qualification using new single-use paths, exact source/tool hashes, fixed cases,
+budgets, deadline/cleanup and independent postflight. Preserve the consumed
+`offline-01` artifacts. Qualification must cover target-before-resume ordering,
+redirect reservations, persistent synthetic cookies, request-client access and
+write-back, actual cancellation, restored-worker blocking, transport overflow and
+normal/independently verified closure. Its harness and execution need their own
+named-file review and approval.
+
+The required `manualContextRecovery` case must use a synthetic loopback navigation
+that replaces the execution context while the native `manualSignIn` location poll
+is pending. Confirm a recognized context-loss protocol response is treated as
+"not yet", followed by a successful poll without stopping the attempt. Include
+repeated context loss through the unchanged manual/global deadline, plus an
+unrecognized protocol failure and target detachment that still stop. Retain only
+the categorical check result, never protocol payloads. Mocked transport coverage
+does not establish this native qualification; missing or false coverage is rejected.
+
+After independently reviewing that qualification, reconcile the actual deployment,
+canonical alias and build under a separately bounded approval. Historical target
+constants intentionally fail on drift; no automatic retargeting follows.
+
+The prepared live entry is `--execute-scoped` with the exact digest of a separately
+approved `execution-review.json`. There is no force flag or bundled execution
+approval. The fixed candidate directory is
+`.tmp/gate1-authentication-preparation-scoped-01/`; creating it and its input files
+belongs to the later execution review, not this implementation. The strict review
+binds operator/owner, expiry, source/decision/tool hashes, `reviewed-plan.json`,
+`native-qualification.json` and separate `native-completion.json`. That completion
+must match the reviewed native attempt hash, successful worker exit and finalized
+receipt. Old schema-1 receipts and changed evidence digests are rejected. Inputs
+contain no private expected identity; it remains `GATE1_APPROVED_USER_ID`.
+
+The worker requires supervisor IPC, an exclusively created `worker-started`
+marker and the new exact real profile. The attempt is `attempt.json`; the distinct
+final output is `scoped-preparation.json`, never the old hosted authentication
+receipt. Supervision requires actual zero worker exit and exactly one finalized
+completion, then independently rechecks inputs, source/tool binding, process
+absence, listeners and profile before exclusive finalization. A stopped or partial
+file cannot substitute for that completion. The total 900-second clock begins
+before the worker starts and reserves cleanup/postflight time.
+
+Successful scoped receipts still carry `browserTrafficMeasured:false`,
+`hostedQualified:false`, `gate1Status:open` and unknown background coverage.
+The strict hosted consumer rejects them. Any later consumer change and hosted
+CSRF exercise remain separately reviewed work. No TLS interceptor, OS firewall
+change, checkout, load, rollback, provider change or production release follows.
