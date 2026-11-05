@@ -18,8 +18,11 @@ const CORE = 'C:/Users/willm/AppData/Local/npm-cache/_npx/a5b920f00216d246/node_
 const UTILS_HASH = '580f571bf063e2256b51b3946a035bc452fc0e22808d5547b198baea39923a32';
 const DECISION_FILE = path.resolve(__dirname, '../../docs/UIDesign/gate1-authentication-measurement-decision.md');
 const MODULES = Object.freeze(['authentication-preparation-scoped', 'authentication-preparation-scoped-contract',
-  'authentication-preparation-scoped-proxy', 'authentication-preparation-scoped-observer', 'authentication-preparation-scoped-postflight']);
-const FILES = Object.freeze(MODULES.flatMap(name => [`${name}.cjs`, `__tests__/${name}.test.cjs`]));
+  'authentication-preparation-scoped-proxy', 'authentication-preparation-scoped-observer', 'authentication-preparation-scoped-postflight',
+  'authentication-preparation-scoped-native', 'authentication-preparation-scoped-native-contract', 'authentication-preparation-scoped-native-fixtures']);
+const FILES = Object.freeze([...MODULES.flatMap(name => [`${name}.cjs`, `__tests__/${name}.test.cjs`]),
+  'fixtures/scoped-native-loopback-cert.pem', 'fixtures/scoped-native-loopback-key.pem']);
+const syntheticOwners = new WeakMap();
 const HASH = z.string().regex(/^[a-f0-9]{64}$/);
 const REVIEW_SCHEMA = z.object({ scope: z.literal('scoped-authentication-execution-review-v1'),
   operator: z.literal('Codex'), owner: z.literal('project-owner'), planHash: HASH, qualificationHash: HASH,
@@ -286,6 +289,7 @@ async function connectController(owner, budget, cleanupOnly = false) {
   });
   owner.cdp = new CdpConnection(owner.socket, budget);
   if (cleanupOnly) owner.cdp.closing = true;
+  if (syntheticOwners.has(owner)) nativeController(owner, budget);
   await new Promise((resolve, reject) => { owner.socket.once('open', resolve); owner.socket.once('error', () => reject(new c.PreparationError('observation'))); });
   if (!cleanupOnly) {
     try { budget.check(); } catch (error) { owner.cdp.close(); throw error; }
@@ -294,19 +298,24 @@ async function connectController(owner, budget, cleanupOnly = false) {
 
 /** Launch behind a closed proxy; Playwright is attached only to the rejecting-proxy restart. */
 async function launch(owner, proxy, budget) {
-  await p.profilePreserved(); budget.check(); owner.launchTime = Date.now();
+  const policy = syntheticOwners.get(owner);
+  if (policy) await p.nativeProfile(owner.profile);
+  else { c.check(owner.profile === d.PROFILE, 'profile'); await p.profilePreserved(); }
+  budget.check(); owner.launchTime = Date.now();
   // The approved identity is worker-only; Chrome keeps the remaining sanitized environment.
   const env = childEnvironment(); delete env.GATE1_APPROVED_USER_ID;
   owner.child = spawn(f.fixtureExecutable('cft158'), [`--user-data-dir=${owner.profile}`, '--no-first-run',
     '--no-default-browser-check', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
-    '--disable-background-networking', '--disable-quic', '--no-startup-window', ...f.isolationArguments(proxy.port)],
+    '--disable-background-networking', '--disable-quic', '--no-startup-window', ...f.isolationArguments(proxy.port),
+    ...(policy ? [`--ignore-certificate-errors-spki-list=${policy.spki}`, '--site-per-process'] : [])],
   { stdio: 'ignore', windowsHide: true, env });
   owner.child.once('error', () => { owner.failed = true; budget.stop('operation'); });
   await attachment(owner, budget);
   budget.check();
   if (!owner.restart) { await connectController(owner, budget); return; }
   const runtime = require(CORE);
-  owner.browser = await runtime.chromium.connectOverCDP(`http://127.0.0.1:${owner.port}`, { noDefaults: true, timeout: 5000 });
+  owner.browser = policy ? await nativePlaywright(owner, budget, runtime)
+    : await runtime.chromium.connectOverCDP(`http://127.0.0.1:${owner.port}`, { noDefaults: true, timeout: 5000 });
   budget.check(); const contexts = owner.browser.contexts(); c.check(contexts.length === 1, 'observation');
   owner.context = contexts[0];
   c.check(owner.context.serviceWorkers().length === 0 && owner.context.pages().length === 0, 'observation');
@@ -317,19 +326,32 @@ async function launch(owner, proxy, budget) {
 
 /** Prepare both blank targets before opening forwarding; unsupported ordering fails closed. */
 async function observe(owner, budget) {
-  owner.observer = new ScopedObserver(owner.cdp, budget); await owner.observer.start();
+  const policy = syntheticOwners.get(owner);
+  owner.observer = new ScopedObserver(owner.cdp, budget, policy?.classify);
+  if (policy?.missingPair) {
+    const handle = owner.observer.handle.bind(owner.observer);
+    /** Withhold one actual Fetch event; its Network counterpart still reserves capacity in the real observer. */
+    owner.observer.handle = message => {
+      if (message.method === 'Fetch.requestPaused' && !owner.native.realEventWithheld) {
+        budget.event(); owner.native.realEventWithheld = true; return;
+      }
+      handle(message);
+    };
+  }
+  await owner.observer.start();
   owner.keeper = await owner.observer.createPage(); owner.page = await owner.observer.createPage();
 }
 
 /** Permit one owner-operated sign-in; local boolean polling generates no additional HTTP requests. */
 async function manualSignIn(owner, budget, signal) {
+  const origin = syntheticOwners.get(owner)?.origin || d.ORIGIN;
   owner.observer.phase = 'oauth';
-  const navigation = await owner.cdp.send('Page.navigate', { url: `${d.ORIGIN}/login` }, owner.page.sessionId);
+  const navigation = await owner.cdp.send('Page.navigate', { url: `${origin}/login` }, owner.page.sessionId);
   c.check(!navigation.errorText, 'operation');
   const end = Math.min(budget.deadline, Date.now() + budget.limits.manualMs);
   while (Date.now() < end) {
     const result = await owner.cdp.send('Runtime.evaluate', {
-      expression: `location.origin === ${JSON.stringify(d.ORIGIN)} && location.pathname === '/'`, returnByValue: true,
+      expression: `location.origin === ${JSON.stringify(origin)} && location.pathname === '/'`, returnByValue: true,
     }, owner.page.sessionId, false, { contextLossAsFalse: true });
     budget.check(); c.check(Date.now() < end, 'deadline');
     c.check(!result.exceptionDetails, 'observation'); if (result.result?.value === true) return;
@@ -354,6 +376,11 @@ async function pageIdentity(owner, budget, identity) {
 /** Close normally using the existing controller or restart Playwright; actual zero process exit is mandatory. */
 async function close(owner, budget) {
   if (owner.closed) return ownerRecord(owner);
+  if (syntheticOwners.has(owner)) {
+    owner.nativeClosing = true;
+    // A failed Playwright attachment owns its transport; retire it before raw normal-close recovery.
+    if (owner.restart && !owner.browser?.isConnected()) { owner.nativeTransport?.close(); owner.restart = false; }
+  }
   if (!owner.restart) {
     if ((!owner.cdp || owner.cdp.closed || owner.socket?.readyState !== 1) && owner.child?.exitCode === null) {
       owner.cdp?.close();
@@ -372,9 +399,151 @@ async function close(owner, budget) {
   owner.cdp?.close(); return ownerRecord(owner);
 }
 
+/** Bound the pinned in-process Playwright transport before its first CDP command; do not patch package files. */
+async function nativePlaywright(owner, budget, runtime) {
+  c.check(syntheticOwners.has(owner), 'approval');
+  const implementation = runtime.chromium._connection?.toImpl?.(runtime.chromium);
+  c.check(typeof implementation?._connectOverCDPImpl === 'function', 'toolchain');
+  const original = implementation._connectOverCDPImpl;
+  /** Install the exact pinned transport seam before CRBrowser creates or resumes targets. */
+  implementation._connectOverCDPImpl = async function (progress, transport, closeAndWait, options, onClose) {
+    owner.nativeTransport = transport;
+    c.check(transport._ws?._receiver && typeof transport.send === 'function' && typeof transport.close === 'function', 'toolchain');
+    transport._ws._receiver._maxPayload = MESSAGE_BYTES;
+    transport._progress = null; // Never retain raw malformed protocol in Playwright progress logs.
+    const send = transport.send.bind(transport); const pending = new Map(); let receive; let closed = false;
+    /** Cancel timers and stop future work on unexpected closure, including an idle transport with no pending commands. */
+    transport._ws.once('close', () => {
+      closed = true; for (const timer of pending.values()) clearTimeout(timer); pending.clear();
+      if (!owner.nativeClosing) budget.stop('observation');
+    });
+    /** Apply the global command ceiling and per-message/pending limits before enqueueing bytes. */
+    transport.send = message => {
+      const closing = owner.nativeClosing === true;
+      try {
+        c.check(!closed, 'observation');
+        c.check(!closing || ['Target.attachToBrowserTarget', 'Target.detachFromTarget', 'Browser.close'].includes(message.method), 'observation');
+        if (!closing) budget.check(); budget.command(closing);
+        c.check(Buffer.byteLength(JSON.stringify(message)) <= MESSAGE_BYTES && pending.size < budget.limits.pendingCommands
+          && Number.isInteger(message.id) && !pending.has(message.id), 'observation');
+        const remaining = Math.min(5000, (closing ? budget.end : budget.deadline) - budget.clock()); c.check(remaining > 0, 'deadline');
+        pending.set(message.id, setTimeout(() => { budget.stop('deadline'); transport.close(); }, remaining)); send(message);
+      } catch (error) { budget.stop(c.errorCode(error)); transport.close(); throw new c.PreparationError(c.errorCode(error)); }
+    };
+    Object.defineProperty(transport, 'onmessage', { configurable: true,
+      /** Preserve Playwright's callback assignment while wrapping only its bounded transport boundary. */
+      set: callback => { receive = callback; },
+      /** Validate replies/events privately and never throw raw protocol into Playwright's logger. */
+      get: () => message => {
+        if (closed) return;
+        try {
+          c.check(Buffer.byteLength(JSON.stringify(message)) <= MESSAGE_BYTES, 'observation');
+          if (Object.hasOwn(message, 'id')) {
+            c.check(pending.has(message.id), 'observation'); clearTimeout(pending.get(message.id)); pending.delete(message.id);
+          } else if (/^(Target\.|Fetch\.|Network\.|Inspector\.)/.test(message.method || '') && !owner.nativeClosing) budget.event();
+          receive?.(message);
+        } catch (error) { budget.stop(c.errorCode(error)); transport.close(); }
+      },
+    });
+    try { return await original.call(this, progress, transport, closeAndWait, options, onClose); }
+    catch (error) { transport.close(); throw error; }
+  };
+  try { return await runtime.chromium.connectOverCDP(`ws://127.0.0.1:${owner.port}${owner.endpoint}`, { noDefaults: true, timeout: 5000 }); }
+  finally { implementation._connectOverCDPImpl = original; }
+}
+
 /** Project only fixed-profile process metadata for independent postflight. */
 function ownerRecord(owner) {
-  return { profile: d.PROFILE, pid: owner.child?.pid, port: owner.port, closedNormally: owner.closed === true, exitCode: owner.child?.exitCode };
+  return { profile: syntheticOwners.has(owner) ? owner.profile : d.PROFILE, pid: owner.child?.pid,
+    port: owner.port, closedNormally: owner.closed === true, exitCode: owner.child?.exitCode };
+}
+
+/** Observe native command acknowledgements and actual errors privately, without changing protocol replies. */
+function nativeController(owner, budget) {
+  const policy = syntheticOwners.get(owner); const connection = owner.cdp;
+  const send = connection.send.bind(connection); const setup = new Map();
+  owner.native ||= { pageReady: 0, frameReady: 0, contextLoss: 0, replacements: 0, contextReplacements: 0, nativeError: false,
+    nativeDetach: false, workerObserved: false, realEventWithheld: false };
+  /** Inspect a real inbound frame before the controller consumes it; retain categories only. */
+  owner.socket.prependListener('message', bytes => {
+    try {
+      c.check(bytes.length <= MESSAGE_BYTES, 'observation'); const message = JSON.parse(bytes.toString());
+      const pending = connection.pending.get(message.id);
+      if (message.error && pending) {
+        if (pending.contextLossAsFalse && message.error.code === -32000
+          && ['Cannot find context with specified id', 'Cannot find default execution context',
+            'Execution context was destroyed.', 'Inspected target navigated or closed'].includes(message.error.message)) owner.native.contextLoss++;
+        else owner.native.nativeError = true;
+      }
+      if (message.method === 'Target.detachedFromTarget') owner.native.nativeDetach = true;
+      if (['Target.targetCreated', 'Target.attachedToTarget'].includes(message.method)
+        && ['service_worker', 'worker', 'shared_worker'].includes(message.params?.targetInfo?.type)) owner.native.workerObserved = true;
+      if (!owner.observer && !owner.nativeClosing && /^(Target\.|Fetch\.|Network\.|Inspector\.)/.test(message.method || '')) budget.event();
+      if (policy.navigation && message.method === 'Runtime.executionContextsCleared' && !owner.nativeClosing) {
+        budget.event(); owner.native.contextReplacements++;
+      }
+    } catch { budget.stop('observation'); }
+  });
+  /** Charge before sending and use only real completion acknowledgements for target setup evidence. */
+  connection.send = async (method, params = {}, session, cleanupOnly = false, options = {}) => {
+    budget.command(cleanupOnly);
+    const pending = send(method, params, session, cleanupOnly, options);
+    if (method === 'Runtime.evaluate' && options.contextLossAsFalse && policy.navigation) {
+      const next = owner.native.replacements;
+      if (next < 16) {
+        owner.native.replacements++;
+        const route = next === 15 && policy.navigation === 'recover' ? '/' : next % 2 ? '/nav-a' : '/nav-b';
+        // A real concurrent navigation races the actual synchronous location poll; no error is fabricated.
+        connection.send('Page.navigate', { url: `${policy.origin}${route}` }, session).catch(() => budget.stop('observation'));
+      }
+    }
+    const result = await pending;
+    if (session && ['Network.enable', 'Network.setCacheDisabled', 'Network.setBypassServiceWorker', 'Fetch.enable'].includes(method)) {
+      if (!setup.has(session)) setup.set(session, new Set()); setup.get(session).add(method);
+    }
+    if (method === 'Runtime.runIfWaitingForDebugger') {
+      if (policy.workerSetup && owner.workerReady?.has(session)) return result;
+      c.check(setup.get(session)?.size === 4, 'observation');
+      const target = owner.observer?.targets.get(session); c.check(target?.ready, 'observation');
+      owner.native[target.type === 'iframe' ? 'frameReady' : 'pageReady']++;
+    }
+    return result;
+  };
+}
+
+/** Produce only fixed synthetic adapters; live CLI entry points never receive these policies or paths. */
+function syntheticAdapters(caseId, navigation = null) {
+  const n = require('./authentication-preparation-scoped-native-contract.cjs');
+  c.check(n.PROFILE_NAMES.includes(caseId) && (navigation === null
+    || (caseId === 'lifecycle' && navigation === 'recover') || (caseId === 'manual-deadline' && navigation === 'deadline')), 'approval');
+  const policy = Object.freeze({ origin: n.ORIGIN, spki: n.SPKI, classify: n.classify, navigation,
+    missingPair: caseId === 'missing-pair', workerSetup: caseId === 'restored-worker' });
+  return {
+    /** Register an exact profile before shared launch; no expected real identity reaches this adapter. */
+    launch: async (owner, proxy, budget) => {
+      c.check(owner.profile === n.profile(caseId) && budget instanceof n.NativeBudget && proxy.listenPort === 18445, 'approval');
+      syntheticOwners.set(owner, policy); return launch(owner, proxy, budget);
+    },
+    observe, close, ownerRecord, pageIdentity: (owner, budget) => pageIdentity(owner, budget, n.ID),
+    /** Enable real execution-context lifecycle witnesses before using the unchanged bounded manual poll. */
+    manualSignIn: async (owner, budget, signal) => {
+      await owner.cdp.send('Runtime.enable', {}, owner.page.sessionId); return manualSignIn(owner, budget, signal);
+    },
+    inspect: p.inspectNativeClosure, profile: () => p.nativeProfile(n.profile(caseId)),
+    /** Reserve each fixed loopback bypass explicitly; certificate exceptions never affect another destination. */
+    request: async (owner, budget, route) => {
+      c.check(syntheticOwners.has(owner) && ['/api/auth/session', '/api/native/writeback', '/api/native/hold'].includes(route), 'destination');
+      const token = budget.reserve(n.classify(`${n.ORIGIN}${route}`, 'GET'), 'requestClient'); let response;
+      try {
+        response = await owner.context.request.get(`${n.ORIGIN}${route}`, { timeout: budget.limits.restartMs,
+          maxRedirects: 0, maxRetries: 0, failOnStatusCode: false, ignoreHTTPSErrors: true });
+        budget.check(); budget.acknowledge(token); budget.confirm(token); c.check(response.status() === 200, 'identity');
+        const bytes = await response.body(); budget.check(); c.check(bytes.length <= d.LIMITS.jsonBytes, 'identity');
+        if (route === '/api/auth/session') a.verifyIdentity(JSON.parse(bytes.toString('utf8')), n.ID);
+        budget.finish(token); return true;
+      } finally { if (response) await response.dispose(); }
+    },
+  };
 }
 
 /** Verify exact immutable inputs again; historical attribution is accepted only on its frozen target. */
@@ -479,6 +648,7 @@ async function main(args) {
 module.exports = { CORE, UTILS_HASH, DECISION_FILE, MODULES, FILES, sourceHashes, toolHashes, childEnvironment,
   REVIEW_SCHEMA, QUALIFICATION_COMPLETION, readReviewed, loadReviewed,
   step, cleanup, requestIdentity, reconcileTarget, stoppedAttempt, runScoped, delay, attachment, connectController,
-  launch, observe, manualSignIn, pageIdentity, close, ownerRecord, verifyBindings, nativeDependencies, supervise, main };
+  launch, observe, manualSignIn, pageIdentity, close, ownerRecord, verifyBindings, nativeDependencies, supervise, main,
+  syntheticAdapters, nativeController, nativePlaywright };
 if (require.main === module) main(process.argv.slice(2)).then(result => process.stdout.write(JSON.stringify(result) + '\n'),
   error => { process.stderr.write(JSON.stringify({ phase: 'stopped', firstFailure: c.errorCode(error) }) + '\n'); process.exitCode = 1; });

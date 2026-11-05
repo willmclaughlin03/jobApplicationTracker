@@ -19,6 +19,11 @@ const completionSchema = z.object({ exitCode: z.literal(0), phase: z.literal('pa
 /** Verify only directory metadata/readability and realpath, never inspect authentication storage. */
 async function profilePreserved(profile = d.PROFILE, io = fs) {
   c.check(profile === d.PROFILE, 'profile');
+  return inspectProfileDirectory(profile, io);
+}
+
+/** Share metadata-only inspection after the caller has validated its separate live or synthetic path. */
+async function inspectProfileDirectory(profile, io = fs) {
   try {
     const stat = await io.lstat(profile);
     c.check(stat.isDirectory() && !stat.isSymbolicLink()
@@ -29,8 +34,15 @@ async function profilePreserved(profile = d.PROFILE, io = fs) {
 
 /** Independently inventory all Chrome processes, refusing incomplete path/command-line visibility. */
 async function inspectAbsence(readInventory = p.inventory) {
+  return inspectProfileAbsence(d.PROFILE, readInventory);
+}
+
+/** Inspect the pinned executable or exact approved profile; no supplied shell text or storage is read. */
+async function inspectProfileAbsence(profilePath, readInventory = p.inventory) {
+  const n = require('./authentication-preparation-scoped-native-contract.cjs');
+  c.check(profilePath === d.PROFILE || n.PROFILES.includes(profilePath), 'profile');
   const executable = fixture.fixtureExecutable('cft158').replaceAll('/', '\\').replaceAll("'", "''");
-  const profile = d.PROFILE.replaceAll('/', '\\').replaceAll("'", "''");
+  const profile = profilePath.replaceAll('/', '\\').replaceAll("'", "''");
   const script = "$ErrorActionPreference='Stop'; $all=@(Get-CimInstance Win32_Process); "
     + "$p=@($all | Where-Object { $_.Name -eq 'chrome.exe' }); "
     + "$u=@($p | Where-Object { -not $_.ExecutablePath -or -not $_.CommandLine }); "
@@ -79,8 +91,13 @@ function reviewAttempt(record, completion, plan, now = Date.now()) {
 async function writeExclusive(file, record, io = fs) {
   c.check([ATTEMPT, RESULT].includes(file), 'receipt');
   if (file === RESULT) c.validateReceipt(record); else c.validateAttempt(record);
+  return writeBytesExclusive(file, record, DIRECTORY, io);
+}
+
+/** Fsync and close exclusive evidence writes; failed or partial files stay preserved for review. */
+async function writeBytesExclusive(file, record, directory, io) {
   const bytes = Buffer.from(JSON.stringify(record) + '\n'); c.check(bytes.length <= c.LIMITS.receiptBytes, 'receipt');
-  c.check(path.resolve(await io.realpath(DIRECTORY)) === path.resolve(DIRECTORY), 'receipt');
+  c.check(path.resolve(await io.realpath(directory)) === path.resolve(directory), 'receipt');
   let handle; let failed = false;
   try {
     handle = await io.open(file, 'wx'); await handle.writeFile(bytes); await handle.sync();
@@ -88,6 +105,63 @@ async function writeExclusive(file, record, io = fs) {
   finally { if (handle) { try { await handle.close(); } catch { failed = true; } } }
   c.check(!failed, 'receipt');
   return d.digest(bytes);
+}
+
+/** Validate synthetic profile metadata through a separate exact eight-profile policy. */
+async function nativeProfile(profile, io = fs) {
+  const n = require('./authentication-preparation-scoped-native-contract.cjs');
+  c.check(n.PROFILES.includes(profile), 'profile'); return inspectProfileDirectory(profile, io);
+}
+
+/** Independently corroborate a native launch using normal exit, process inventory and its CDP listener. */
+async function inspectNativeClosure(owner, deps = {}) {
+  const n = require('./authentication-preparation-scoped-native-contract.cjs');
+  c.check(n.ownerSchema.safeParse(owner).success, 'closure');
+  await (deps.absence || inspectProfileAbsence)(owner.profile);
+  await (deps.portClosed || p.portClosed)(owner.port);
+  await (deps.profile || nativeProfile)(owner.profile); return true;
+}
+
+/** Read bounded aggregate native files only, rejecting redirected parents and symbolic links. */
+async function readNative(name, io = fs) {
+  const n = require('./authentication-preparation-scoped-native-contract.cjs');
+  c.check(n.ARTIFACTS.includes(name) && name !== 'worker-started', 'receipt');
+  try {
+    c.check(path.resolve(await io.realpath(n.DIRECTORY)) === path.resolve(n.DIRECTORY), 'receipt');
+    const file = path.join(n.DIRECTORY, name); const stat = await io.lstat(file);
+    c.check(stat.isFile() && !stat.isSymbolicLink() && stat.size > 0 && stat.size <= n.LIMITS.receiptBytes, 'receipt');
+    const bytes = await io.readFile(file); c.check(bytes.length <= n.LIMITS.receiptBytes, 'receipt');
+    return { record: JSON.parse(bytes.toString('utf8')), hash: d.digest(bytes) };
+  } catch { throw new c.PreparationError('receipt'); }
+}
+
+/** Keep native outputs distinct from live receipts and approval inputs; never create an approval. */
+async function writeNative(name, record, io = fs) {
+  const n = require('./authentication-preparation-scoped-native-contract.cjs');
+  c.check(['attempt.json', 'native-completion.json', 'native-qualification.json'].includes(name), 'receipt');
+  if (name === 'attempt.json') n.validateAttempt(record);
+  else if (name === 'native-completion.json') c.check(require('./authentication-preparation-scoped.cjs').QUALIFICATION_COMPLETION.safeParse(record).success, 'worker_completion');
+  else c.check(c.qualificationSchema.safeParse(record).success, 'coverage_unqualified');
+  return writeBytesExclusive(path.join(n.DIRECTORY, name), record, n.DIRECTORY, io);
+}
+
+/** Share a latched absolute deadline for pre-write stages; late callbacks cannot authorize later work. */
+function deadlineStages(deadline, clock = Date.now) {
+  let expired = false;
+  /** Latch expiry even when an operation settles before its timer callback is delivered. */
+  function checkDeadline() { if (clock() >= deadline) expired = true; c.check(!expired, 'expired'); }
+  /** Bound one read-only pre-write operation; exclusive writes must be awaited separately. */
+  return async function stage(operation) {
+    checkDeadline(); let timer;
+    try {
+      const value = await Promise.race([Promise.resolve().then(() => {
+        checkDeadline(); return operation();
+      }), new Promise((_, reject) => {
+        timer = setTimeout(() => { expired = true; reject(new c.PreparationError('expired')); }, Math.max(1, deadline - clock()));
+      })]);
+      checkDeadline(); return value;
+    } finally { clearTimeout(timer); }
+  };
 }
 
 /** Recheck source/decision/plan/tool binding, OS closure and profile after worker exit before finalization. */
@@ -133,4 +207,5 @@ async function finalize(completion, plan, verifyBindings, deps = {}) {
 }
 
 module.exports = { DIRECTORY, ATTEMPT, RESULT, completionSchema, profilePreserved, inspectAbsence,
-  inspectClosure, readAttempt, reviewAttempt, writeExclusive, finalize };
+  inspectClosure, readAttempt, reviewAttempt, writeExclusive, finalize, inspectProfileAbsence,
+  nativeProfile, inspectNativeClosure, readNative, writeNative, deadlineStages };
