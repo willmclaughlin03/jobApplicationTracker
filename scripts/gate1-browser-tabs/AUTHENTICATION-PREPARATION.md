@@ -492,7 +492,8 @@ retains raw URLs, destination hashes, parser exceptions, headers, cookies or bod
 Destination policy, readiness denials, admission/byte counters, deadlines,
 single-use paths, evidence limits and qualification requirements are unchanged.
 The live proxy keeps its existing destination-only stop. The fixed native path
-remains consumed, and this implementation supplies no replacement execution mode.
+remains consumed. Attribution alone supplies no replacement execution mode; the
+separately reviewed startup-only mechanism below has its own path and contract.
 Mocks cover every reason, first-failure races, late callbacks, strict receipt
 validation, historical compatibility and blocked dispatch/qualification. They do
 not identify the historical rejection or establish native capabilities.
@@ -503,3 +504,150 @@ approval. Do not rerun `native-01`, expand destinations or infer zero background
 traffic. Gate 1 remains open; `browserTrafficMeasured` and `hostedQualified` remain
 false, and background HTTP remains unknown. Publication logs are updated only
 when a separate PR push is authorized.
+
+## One bounded startup decision
+
+The approved nine-file implementation adds
+[`authentication-preparation-scoped-startup.cjs`](./authentication-preparation-scoped-startup.cjs).
+It exists to support **one decision**, following one separately approved native
+observation. Implementation and offline tests do not authorize that execution.
+The existing full native qualification and strict hosted consumers remain unchanged.
+
+The operator is Codex; the operational/risk owner is the project owner. The fixed
+single-use root is `.tmp/gate1-authentication-preparation-scoped-startup-01/` under
+the main repository. Its only artifacts are `execution-review.json`,
+`worker-started`, `profiles/startup/`, `attempt.json` and `postflight.json`.
+The expiring review binds the exact command, paths, limits, operator/owner,
+source/decision/tool digests, public synthetic certificate/key digests and SPKI.
+Its maximum validity is one hour, and all 180 seconds must remain at start.
+An existing marker, profile, extra file, redirected directory or artifact stops
+execution. Nothing is overwritten, deleted, retried or reused.
+
+After validating the reviewed bytes, the worker exclusively creates and fsyncs
+the marker and creates the fresh profile before any listener/probe/browser work.
+It checks process absence and all four fixed ports before starting only the
+proxy at `127.0.0.1:18445`. The fixture listeners at `127.0.0.1:18443` and
+`127.0.0.2:18444`, and the sink at `127.0.0.1:18446`, remain closed throughout.
+The proxy retains the existing synthetic two-authority policy but **cannot open
+forwarding**. A permitted-authority denial behind the closed gate is distinct
+from an attributed destination-policy rejection. Raw attempted destinations and
+parser/protocol details are never retained.
+
+Exactly one Chrome launch uses the existing pinned executable and arguments:
+
+```text
+--user-data-dir=<fixed startup profile>
+--no-first-run
+--no-default-browser-check
+--remote-debugging-port=0
+--remote-debugging-address=127.0.0.1
+--disable-background-networking
+--disable-quic
+--no-startup-window
+--proxy-server=http://127.0.0.1:18445
+--proxy-bypass-list=<-loopback>
+--ignore-certificate-errors-spki-list=aiOImjtPc7gcEV9pd9ga1Uihkin8l7/rvDLRx5kZ7SA=
+--site-per-process
+```
+
+Chrome output is ignored and its environment is sanitized; the expected real
+identity is stripped from both worker and browser. The existing observer prepares
+two `about:blank` pages. There is no navigation, fixture request, request-client
+operation or sign-in. Attachment and page readiness consume the same 15-second
+window starting at spawn. First failure ends observation immediately. Both pages
+must become ready before the window ends for a no-rejection observation.
+
+| Cumulative constraint | Startup maximum |
+| --- | ---: |
+| Attempts / total / work / cleanup and independent postflight | 1 / 180 s / 60 s / 120 s |
+| Spawn-relative observation / attachment / ordinary operation | 15 s / 10 s / 5 s |
+| Launches / profiles / concurrent Chrome | 1 / 1 / 1 |
+| Pages / attached target sessions | 2 / 2 |
+| Application, session, all static/provider, metadata, request-client admissions | 0 each |
+| Admitted upstream/downstream/combined forwarded payload and parsed body bytes | 0 each |
+| Proxy connections / simultaneous admissions | 16 / 4 |
+| CDP commands / work commands / reserved cleanup commands | 64 / 60 / 4 |
+| Relevant events / pending commands / HTTP records | 128 / 8 / 8 |
+| CONNECT header / protocol message / evidence per file | 8 KiB / 64 KiB / 16 KiB |
+| Controller connections, including normal-close recovery | 2 |
+| Listener probes, preflight plus independent postflight | 9 (4 + 4 fixed + 1 owned CDP) |
+
+Accepted proxy connections include later-denied connections. Over-limit attempts
+and rejected bytes are separate aggregate observations, not extra admissions.
+Zero admitted payload does not imply zero whole-browser network traffic. Browser
+background HTTP stays unknown; these are not OS-wide egress or whole-process
+memory guarantees. The startup adapter shares the corrected first-failure logic
+through a distinct fixed budget; it cannot borrow the larger native envelope.
+
+The worker writes strict categorical `attempt.json` evidence: outcome,
+`firstFailure`, `destinationReason`, failure stage, readiness/window times,
+aggregate counters, source/tool bindings and bounded process metadata. Cleanup
+is recorded separately, so cleanup callbacks cannot replace an earlier failure.
+Normal `Browser.close` and one bounded controller recovery are allowed; force-kill
+and profile deletion are not. Cancellation also remains active during cleanup
+and evidence writes. Partial artifacts are preserved for review.
+
+Only after actual worker exit does the parent independently inspect process
+absence, preserved profile metadata and all fixed/CDP listener closures. Missing
+process visibility, malformed/missing worker evidence, a failed check or incomplete
+cleanup prevents a complete observation. Companion independent checks still run
+within the original deadline even if another check fails. No native qualification,
+authentication-preparation or hosted receipt is produced.
+
+`postflight.json` is explicitly marked `requires_timely_supervisor_result`.
+Accept its outcome only with the matching `postflightHash` and a timely supervisor
+result with `receiptFinalized:true`. Cancellation or expiry during the exclusive
+write leaves provisional bytes intact but returns an incomplete result; file
+existence alone is not completion. Missing/untrusted attempts cannot create a
+replacement postflight artifact. Independent check results then return only in
+the bounded supervisor result. Existing qualification consumers reject both
+startup formats regardless of their outcome.
+
+Offline read-only commands:
+
+```powershell
+node scripts/gate1-browser-tabs/authentication-preparation-scoped-startup.cjs --source-hash
+node scripts/gate1-browser-tabs/authentication-preparation-scoped-startup.cjs --review-template
+```
+
+The template has invalid zero approval timestamps. No execution input is created
+by these commands. The new module and test, this document and the measurement
+decision are source-bound. Run the existing twelve related offline suites plus
+the startup suite, syntax checks, focused ESLint and `git diff --check` before
+presenting the concrete separate execution review. Do not use execution as a test.
+
+The later separately approved command is exactly:
+
+```text
+node scripts/gate1-browser-tabs/authentication-preparation-scoped-startup.cjs --execute-startup <execution-review-sha256>
+```
+
+The internal worker additionally requires supervisor IPC; calling its flag alone
+cannot bypass review. Review the pinned package hashes and the existing unsigned
+Chrome EXE/DLL disclosure before approving execution. Do not regenerate TLS
+material or modify installed packages.
+
+After at most that one observation, return to an explicit decision:
+
+| Evidence | Required disposition |
+| --- | --- |
+| Attributed rejection with trustworthy stage/counters/bindings/closure | Verify the explanation against current code; propose the smallest correction and tests, or a concrete browser/policy compatibility decision. A reason enum alone is not a complete root cause. Obtain the applicable approval for new work. |
+| Complete window without rejection | Report only "no rejection observed within this window." This does not identify the historical cause, establish a fix or qualify the full browser workflow. |
+| Generic, incomplete, contradictory or unverifiable evidence | Preserve the attempt, name the gap and reassess the browser-testing approach. Present a concrete alternative or an explicit decision to leave it unqualified. Do not automatically build another diagnostic. |
+
+There is no automatic retry, new helper, larger budget, expanded destination policy
+or weaker readiness guard. Additional investigation needs material justification,
+a finite proposal and applicable approval, consistent with the Gate 1 continuation
+amendment. This diagnostic cannot qualify restart, persistent cookies,
+request-client access/write-back, cancellation, restored-worker blocking, manual
+context recovery, transport or the full closure matrix. A new rejection describes
+this attempt, not automatically the historical consumed native attempt.
+
+After the decision, full native capabilities still require separately approved
+work, followed by separate deployment/canonical-alias/build reconciliation, real
+authentication-preparation approval, independent evidence review and a separate
+hosted CSRF consumer/execution proposal. Do not retarget historical evidence after
+a merge. The hosted ledger stays actual `150/150/52`, conservative `151/150/52`;
+synthetic startup work adds nothing. Gate 1 remains open, both measurement and
+hosted-qualification booleans remain false, and other Gate 1 obligations and the
+closed artifact-scanner investigation retain their existing dispositions.
