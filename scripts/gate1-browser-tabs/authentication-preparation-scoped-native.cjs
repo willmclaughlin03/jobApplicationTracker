@@ -307,7 +307,10 @@ async function run(input, startedAt, deps = dependencies()) {
       }
     }
     n.qualificationChecks(results); await stage(() => deps.verify(input));
-  } catch (caught) { error = caught; root.stop(c.errorCode(caught)); }
+  } catch (caught) {
+    root.stop(c.errorCode(caught));
+    error = c.errorCode(caught) === 'stopped' ? new c.PreparationError(root.failure) : caught;
+  }
   finally {
     if (fixtures) {
       try { await p.deadlineStages(root.end, root.clock)(() => fixtures.close()); } catch { cleanup = false; }
