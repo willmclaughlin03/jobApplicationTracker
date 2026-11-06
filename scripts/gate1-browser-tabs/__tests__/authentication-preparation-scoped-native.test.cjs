@@ -61,6 +61,59 @@ test('subcase cleanup failure remains false in stopped evidence without replacin
   const result = await q.run(); assert.equal(result.firstFailure, 'observation'); assert.equal(q.state.writes[0].record.cleanup, false);
 });
 
+/** Retain classifier attribution through actual orchestration, later guard rejection and failing listener cleanup. */
+test('stopped native evidence preserves its first destination reason without expanding worker IPC', async () => {
+  const q = fixture();
+  q.deps.browserCase = async (item, root) => {
+    q.state.calls.push(item.id); const budget = new n.NativeBudget(root, item);
+    n.classify(`${n.ORIGIN}/login?token=private`, 'GET', budget);
+  };
+  q.deps.fixtures = root => ({ start: async () => {}, close: async () => {
+    root.destination('fixture_host'); throw new Error('private cleanup failure');
+  } });
+  const result = await q.run(); const record = q.state.writes[0].record;
+  assert.deepEqual(result, { phase: 'stopped', firstFailure: 'destination', receiptFinalized: false });
+  assert.equal(record.destinationReason, 'route_query_fragment'); assert.equal(record.firstFailure, 'destination');
+  assert.equal(record.cleanup, false); assert.equal(record.completedCases, 0); assert.equal(record.hostedQualified, false);
+  assert.equal(q.state.calls.includes('restored-worker'), false); assert.equal(q.state.writes.length, 1);
+  assert.equal(q.state.writes[0].name, 'attempt.json'); assert.equal(JSON.stringify(record).includes('private'), false);
+  assert.throws(() => d.validatePreparation(record)); assert.equal(n.attemptSchema.safeParse(record).success, false);
+});
+
+/** Old stopped receipts stay valid and unattributed; private diagnostics, inconsistent reasons and success extensions fail. */
+test('native receipt attribution remains strict, bounded and compatible with historical absent reasons', async () => {
+  const q = fixture(); q.deps.browserCase = async () => { throw new c.PreparationError('destination'); };
+  await q.run(); const record = q.state.writes[0].record; assert.equal(record.destinationReason, null);
+  const historical = { ...record }; delete historical.destinationReason; assert.equal(n.validateAttempt(historical), historical);
+  for (const destinationReason of n.destinationReasonSchema.options) n.validateAttempt({ ...record, destinationReason });
+  for (const invalid of [{ ...record, destinationReason: 'unknown' }, { ...record, destinationReason: 'https://private.test' },
+    { ...record, destinationReason: { reason: 'proxy_authority', url: 'private' } },
+    { ...record, destinationReason: 'proxy_authority', firstFailure: 'cancelled' },
+    { ...record, destinationReason: 'proxy_authority', private: 'secret' },
+    { ...record, destinationReason: 'private'.repeat(3000) }]) {
+    assert.throws(() => n.validateAttempt(invalid), { code: 'receipt' });
+  }
+  const passed = fixture(); await passed.run();
+  assert.throws(() => n.validateAttempt({ ...passed.state.writes[0].record, destinationReason: null }), { code: 'receipt' });
+  const p = require('../authentication-preparation-scoped-postflight.cjs'); let retained;
+  const io = { realpath: async value => value, open: async (_file, mode) => {
+    assert.equal(mode, 'wx'); return { writeFile: async bytes => { retained = bytes; }, sync: async () => {}, close: async () => {} };
+  } };
+  await p.writeNative('attempt.json', { ...record, destinationReason: 'proxy_authority' }, io);
+  assert.ok(retained.length <= 16384); assert.equal(c.LIMITS.receiptBytes, 16384);
+  assert.equal(JSON.parse(retained.toString()).destinationReason, 'proxy_authority');
+});
+
+/** Non-destination failures cannot receive cleanup attribution, and invalid navigation sends no CDP command. */
+test('native cancellation keeps unattributed evidence and rejected navigation never dispatches', async () => {
+  const q = fixture(); q.deps.browserCase = async (_item, root) => { root.stop('cancelled'); throw new c.PreparationError('cancelled'); };
+  q.deps.fixtures = root => ({ start: async () => {}, close: async () => { root.destination('fixture_host'); } });
+  assert.equal((await q.run()).firstFailure, 'cancelled'); assert.equal(q.state.writes[0].record.destinationReason, null);
+  const root = new n.NativeLedger(0, 480000, () => 1000); const budget = new n.NativeBudget(root, n.CASES[0]); let commands = 0;
+  await assert.rejects(r.navigate({ cdp: { send: async () => { commands++; } } }, budget, '/private'), { code: 'destination' });
+  assert.equal(budget.destinationReason, 'route_origin_path'); assert.equal(commands, 0);
+});
+
 test('failed preflight cannot create a marker, profiles, listener or attempt receipt', async () => {
   const q = fixture(); q.deps.preflight = async () => { throw new c.PreparationError('process_present'); };
   await assert.rejects(q.run(), { code: 'process_present' }); assert.deepEqual(q.state.calls, ['verify']); assert.equal(q.state.writes.length, 0);
@@ -152,6 +205,7 @@ test('native supervisor rejects malformed, oversized and duplicate stopped messa
   for (const messages of [[stopped, stopped], [stopped, completion], [completion, stopped],
     [{ ...stopped, phase: 'passed' }], [{ ...stopped, firstFailure: 'private failure' }],
     [{ ...stopped, receiptFinalized: true }], [{ ...stopped, private: 'details' }],
+    [{ ...stopped, destinationReason: 'proxy_authority' }],
     [{ phase: 'stopped', receiptFinalized: false }], [{ ...stopped, firstFailure: 'x'.repeat(3000) }],
     [{ ...stopped, private: 'details' }, stopped]]) {
     let finalized = false; let cancelled = 0;

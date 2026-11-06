@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const { TextDecoder } = require('node:util');
 const s = require('../authentication-preparation-scoped.cjs');
 const c = require('../authentication-preparation-scoped-contract.cjs');
-const { CdpConnection } = require('../authentication-preparation-scoped-observer.cjs');
+const { CdpConnection, ScopedObserver } = require('../authentication-preparation-scoped-observer.cjs');
 const a = require('../authentication-preparation.cjs');
 const d = require('../hosted-csrf-diagnostic.cjs');
 const ID = '00000000-0000-4000-8000-000000000001'; const HASH = 'a'.repeat(64);
@@ -380,6 +380,59 @@ test('live and synthetic adapters cannot exchange arbitrary profiles or destinat
   const budget = new n.NativeBudget(new n.NativeLedger(0, 480000, () => 1000), n.CASES[0]);
   await assert.rejects(adapter.launch({ profile: d.PROFILE }, { listenPort: 18445 }, budget), { code: 'approval' });
   await assert.rejects(adapter.request({}, budget, '/api/auth/session'), { code: 'destination' });
+});
+
+/** Run the actual adapter and observe functions with mock launch/readiness only; real event handling remains intact. */
+async function nativeAdapterFixture() {
+  const n = require('../authentication-preparation-scoped-native-contract.cjs');
+  const root = new n.NativeLedger(0, 480000, () => 1000); const budget = new n.NativeBudget(root, n.CASES[0]);
+  const syntheticOwners = new WeakMap(); const sent = [];
+  /** Bypass unrelated native readiness in this test while keeping the real observer's callbacks and accounting. */
+  class ReadyObserver extends ScopedObserver {
+    /** Supply mocked readiness without issuing native commands or opening a browser. */
+    async start() { this.ready = true; }
+    /** Register a synthetic ready target so request events exercise the actual classifier boundary. */
+    async createPage() {
+      const target = { id: 'page', sessionId: 'page', ready: true };
+      this.targets.set('page', target); return target;
+    }
+  }
+  const observe = vm.runInNewContext(`(${s.observe.toString()})`, { syntheticOwners, ScopedObserver: ReadyObserver });
+  const factory = vm.runInNewContext(`(${s.syntheticAdapters.toString()})`, { c, syntheticOwners,
+    require: () => n, launch: async () => {}, observe, close: s.close, ownerRecord: s.ownerRecord,
+    pageIdentity: s.pageIdentity, manualSignIn: s.manualSignIn, p: {} });
+  const owner = { profile: n.PROFILES[0], cdp: new EventEmitter(), context: { request: { get: async () => { sent.push('request'); } } } };
+  owner.cdp.send = async method => { sent.push(method); return {}; };
+  const adapter = factory('lifecycle'); await adapter.launch(owner, { listenPort: 18445 }, budget);
+  return { n, root, budget, adapter, owner, sent };
+}
+
+/** Synchronous Network and asynchronous Fetch failures must latch their reason before observer sanitization. */
+test('synthetic observer preserves classifier attribution and blocks continuation after a rejected event', async () => {
+  for (const method of ['Network.requestWillBeSent', 'Fetch.requestPaused']) {
+    const q = await nativeAdapterFixture(); await q.adapter.observe(q.owner, q.budget);
+    const event = { method, sessionId: 'page', params: { requestId: 'request', networkId: 'network',
+      request: { url: `${q.n.ORIGIN}/login?token=private`, method: 'GET' } } };
+    q.owner.cdp.emit('event', event); await Promise.all([...q.owner.observer.tasks]);
+    assert.equal(q.budget.failure, 'destination'); assert.equal(q.budget.destinationReason, 'route_query_fragment');
+    q.root.stop('destination'); assert.equal(q.root.destinationReason, 'route_query_fragment');
+    q.owner.cdp.emit('event', { ...event, params: { ...event.params, request: { url: `${q.n.ORIGIN}/login`, method: 'GET' } } });
+    await Promise.all([...q.owner.observer.tasks]);
+    assert.deepEqual(q.sent, []); assert.equal(q.root.totals.application, 0);
+    assert.equal(q.root.totals.records, method === 'Fetch.requestPaused' ? 1 : 0);
+    assert.equal(q.owner.observer.streams.size, method === 'Fetch.requestPaused' ? 1 : 0);
+    assert.equal(JSON.stringify(q.budget.snapshot()).includes('private'), false); q.owner.observer.close();
+  }
+});
+
+/** The explicit request client rejects owner/route guards before reservations or any browser-proxy bypass. */
+test('synthetic request-client rejection distinguishes ownership from route policy without dispatch', async () => {
+  for (const validOwner of [true, false]) {
+    const q = await nativeAdapterFixture();
+    await assert.rejects(q.adapter.request(validOwner ? q.owner : {}, q.budget, '/private?token=secret'), { code: 'destination' });
+    assert.equal(q.budget.destinationReason, validOwner ? 'request_client_route' : 'request_client_owner');
+    assert.equal(q.root.totals.application, 0); assert.equal(q.root.totals.requestClient, 0); assert.deepEqual(q.sent, []);
+  }
 });
 
 /** Mock real framed transport, proving that native witnesses require a genuine incoming error frame. */

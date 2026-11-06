@@ -454,3 +454,52 @@ After one separately approved attempt, independently review its evidence before
 proposing deployment/canonical-alias/build reconciliation, real authentication
 preparation or any hosted-consumer change. Synthetic qualification closes none of
 the remaining Gate 1 rows and adds nothing to the historical hosted request ledger.
+
+## Destination rejection attribution
+
+The one approved `scoped-native-01` attempt is consumed. Its retained receipt
+reports `firstFailure:destination`, one launch, three proxy connections and zero
+completed cases. Cleanup was reported successful and independently reviewed.
+The exact rejecting guard was not retained. Preserve its marker, review, receipt
+and eight profiles; no completion or qualification was produced. Merged cleanup
+and stopped-worker reporting fixes did not repeat that native execution.
+
+New source-only attribution retains a nullable fixed-enum `destinationReason`
+in stopped native attempt receipts. Absence in historical schema-1 receipts and
+`null` in new receipts mean the reason is unavailable (or inapplicable when the
+first failure is not `destination`); neither can be filled from later callbacks.
+Successful receipts and worker IPC retain their existing strict shapes. The
+supervisor still reports the original `firstFailure`, while the additional reason
+is available only in the stopped attempt receipt. A non-null reason requires
+`firstFailure:destination` and cannot establish qualification.
+
+| Boundary | Fixed reasons |
+| --- | --- |
+| Proxy request/parser | `proxy_http_request`, `proxy_parser_error` |
+| CONNECT guards, in existing evaluation order | `proxy_owner_missing`, `proxy_owner_reused`, `proxy_method`, `proxy_authority` |
+| HTTPS fixture | `fixture_closing`, `fixture_host`, `fixture_transfer_encoding`, `fixture_content_length`, `fixture_body` |
+| Synthetic classifier | `route_url`, `route_method`, `route_credentials`, `route_query_fragment`, `route_normalization`, `route_origin_path` |
+| Synthetic request client | `request_client_owner`, `request_client_route` |
+
+The active native budget or root captures its first reason synchronously before
+abort handlers seal transports. Propagation to the root preserves that reason;
+prior failures, retired budgets and cleanup callbacks cannot replace it or supply
+missing attribution. The synthetic observer binds classification to its native
+budget before generic callback error handling discards exception details. These
+reasons describe guards, not actual destination strings or protocol data. Nothing
+retains raw URLs, destination hashes, parser exceptions, headers, cookies or bodies.
+
+Destination policy, readiness denials, admission/byte counters, deadlines,
+single-use paths, evidence limits and qualification requirements are unchanged.
+The live proxy keeps its existing destination-only stop. The fixed native path
+remains consumed, and this implementation supplies no replacement execution mode.
+Mocks cover every reason, first-failure races, late callbacks, strict receipt
+validation, historical compatibility and blocked dispatch/qualification. They do
+not identify the historical rejection or establish native capabilities.
+
+Any further native observation requires a separate finite startup-diagnostic
+decision, an explicitly reviewed fresh single-use mechanism and execution
+approval. Do not rerun `native-01`, expand destinations or infer zero background
+traffic. Gate 1 remains open; `browserTrafficMeasured` and `hostedQualified` remain
+false, and background HTTP remains unknown. Publication logs are updated only
+when a separate PR push is authorized.

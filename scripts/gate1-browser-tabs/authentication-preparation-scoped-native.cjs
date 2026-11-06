@@ -93,7 +93,7 @@ async function settled(owner, budget) {
 
 /** Navigate only a classified synthetic route; the real observer reserves each redirect hop. */
 async function navigate(owner, budget, route) {
-  n.classify(`${n.ORIGIN}${route}`, 'GET');
+  n.classify(`${n.ORIGIN}${route}`, 'GET', budget);
   const result = await owner.cdp.send('Page.navigate', { url: `${n.ORIGIN}${route}` }, owner.page.sessionId);
   c.check(!result.errorText, 'operation'); await settled(owner, budget);
 }
@@ -319,7 +319,8 @@ async function run(input, startedAt, deps = dependencies()) {
     startedAt, completedAt: root.clock(), totals: { ...root.totals }, traffic: root.traffic(), browserTrafficMeasured: false, hostedQualified: false,
     gate1Status: 'open', backgroundHttp: 'unknown' };
   const record = error ? { ...common, phase: c.errorCode(error) === 'coverage_unqualified' ? 'inconclusive' : 'stopped',
-    firstFailure: c.errorCode(error), completedCases: results.length, cleanup } : { ...common, phase: 'passed', cases: results,
+    firstFailure: c.errorCode(error), destinationReason: c.errorCode(error) === 'destination' ? root.destinationReason : null,
+    completedCases: results.length, cleanup } : { ...common, phase: 'passed', cases: results,
     owners, checks: n.qualificationChecks(results) };
   n.validateAttempt(record);
   if (!state.reserved) throw error || new c.PreparationError('already_used');
