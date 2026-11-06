@@ -10,6 +10,64 @@ const a = require('../authentication-preparation.cjs');
 const d = require('../hosted-csrf-diagnostic.cjs');
 const HASH = 'a'.repeat(64);
 
+/** Construct an incomplete aggregate only; no real native result is fabricated or written. */
+function startupRecord() {
+  const n = require('../authentication-preparation-scoped-native-contract.cjs');
+  const root = new n.NativeLedger(1000, 181000, () => 1000, 'startup'); new n.NativeBudget(root, n.STARTUP_CASE);
+  return { ...Object.fromEntries(Object.keys(n.bindingSchema.shape).map(key => [key, HASH])), schemaVersion: 1,
+    scope: 'scoped_authentication_startup_attempt', reviewHash: HASH, startedAt: 1000, completedAt: 1500,
+    launchAt: null, observationEndedAt: null, readyAt: null, pagesReady: 0, outcome: 'incomplete',
+    firstFailure: 'process_inspection', destinationReason: null, failureStage: 'preflight', cleanup: true,
+    owner: null, totals: root.totals, traffic: root.traffic(), proxy: null,
+    browserTrafficMeasured: false, hostedQualified: false, gate1Status: 'open', backgroundHttp: 'unknown' };
+}
+
+/** New metadata-only paths do not widen either the original native profile list or the live path validator. */
+test('startup profile inspection is exact and process visibility remains independently mandatory', async () => {
+  const n = require('../authentication-preparation-scoped-native-contract.cjs');
+  const io = { lstat: async () => ({ isDirectory: () => true, isSymbolicLink: () => false }), realpath: async value => value, access: async () => {} };
+  assert.equal(await p.startupProfile(n.STARTUP_PROFILE, io), true);
+  for (const profile of [d.PROFILE, n.PROFILES[0], `${n.STARTUP_PROFILE}/other`]) await assert.rejects(p.startupProfile(profile, io), { code: 'profile' });
+  await assert.rejects(p.nativeProfile(n.STARTUP_PROFILE, io), { code: 'profile' });
+  await assert.rejects(p.profilePreserved(n.STARTUP_PROFILE, io), { code: 'profile' });
+  assert.equal(await p.inspectProfileAbsence(n.STARTUP_PROFILE, async script => {
+    assert.ok(script.includes(n.STARTUP_PROFILE.replaceAll('/', '\\'))); return { complete: true, matches: 0, uninspectable: 0 };
+  }), true);
+  await assert.rejects(p.inspectProfileAbsence(n.STARTUP_PROFILE, async () => ({ complete: true, matches: 0, uninspectable: 1 })), { code: 'process_inspection' });
+  await assert.rejects(p.inspectProfileAbsence(n.STARTUP_PROFILE, async () => ({ complete: true, matches: 1, uninspectable: 0 })), { code: 'process_present' });
+});
+
+/** Bounded aggregate reads reject profile traversal, symlinks, oversized files and redirected parents before parsing. */
+test('startup evidence reads never accept arbitrary names or redirected oversized files', async () => {
+  const n = require('../authentication-preparation-scoped-native-contract.cjs'); const bytes = require('node:buffer').Buffer.from(JSON.stringify(startupRecord()));
+  const io = { realpath: async file => file,
+    lstat: async () => ({ isFile: () => true, isSymbolicLink: () => false, size: bytes.length }), readFile: async () => bytes };
+  assert.equal((await p.readStartup('attempt.json', io)).record.scope, 'scoped_authentication_startup_attempt');
+  for (const name of ['worker-started', '../attempt.json', 'profiles/startup/Cookies', 'native-qualification.json']) await assert.rejects(p.readStartup(name, io), { code: 'receipt' });
+  await assert.rejects(p.readStartup('attempt.json', { ...io, realpath: async () => n.DIRECTORY }), { code: 'receipt' });
+  for (const changed of [{ size: 16385 }, { size: 0 }, { isSymbolicLink: () => true }, { isFile: () => false }]) {
+    await assert.rejects(p.readStartup('attempt.json', { ...io, lstat: async () => ({ ...await io.lstat(), ...changed }),
+      readFile: () => assert.fail('invalid metadata must be rejected before reading') }), { code: 'receipt' });
+  }
+});
+
+/** Exclusive writes fsync and close; partial failures never delete or replace the consumed evidence. */
+test('startup evidence writes are strict exclusive and preserve write sync and close failures', async () => {
+  const n = require('../authentication-preparation-scoped-native-contract.cjs'); const record = startupRecord();
+  for (const failure of [null, 'writeFile', 'sync', 'close']) {
+    const calls = []; const io = { realpath: async file => file, open: async (file, mode) => {
+      assert.equal(file, require('node:path').join(n.STARTUP_DIRECTORY, 'attempt.json')); assert.equal(mode, 'wx');
+      return Object.fromEntries(['writeFile', 'sync', 'close'].map(name => [name, async () => { calls.push(name); if (name === failure) throw new Error('synthetic'); }]));
+    } };
+    if (failure) await assert.rejects(p.writeStartup('attempt.json', record, io), { code: 'receipt' });
+    else assert.match(await p.writeStartup('attempt.json', record, io), /^[a-f0-9]{64}$/);
+    assert.equal(calls.at(-1), 'close');
+  }
+  await assert.rejects(p.writeStartup('execution-review.json', record), { code: 'receipt' });
+  await assert.rejects(p.writeStartup('attempt.json', { ...record, rawUrl: 'private' }), { code: 'receipt' });
+  await assert.rejects(p.writeNative('attempt.json', record), { code: 'receipt' });
+});
+
 /** Keep metadata-only native profile checks separate from live wrapper acceptance. */
 test('native closure paths never weaken exact live profile and evidence guards', async () => {
   const n = require('../authentication-preparation-scoped-native-contract.cjs'); const profile = n.PROFILES[0];

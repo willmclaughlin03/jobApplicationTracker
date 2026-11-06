@@ -12,6 +12,61 @@ const a = require('../authentication-preparation.cjs');
 const d = require('../hosted-csrf-diagnostic.cjs');
 const ID = '00000000-0000-4000-8000-000000000001'; const HASH = 'a'.repeat(64);
 
+/** Exercise the actual startup adapter/launch at mocked OS boundaries and freeze the complete approved argument list. */
+test('startup adapter exposes only launch observation closure and keeps the pinned Chrome arguments', async () => {
+  const n = require('../authentication-preparation-scoped-native-contract.cjs'); const syntheticOwners = new WeakMap();
+  const calls = []; let captured; const stop = new c.PreparationError('observation');
+  const launch = vm.runInNewContext(`(${s.launch.toString()})`, { c, d, syntheticOwners, Date: { now: () => 1000 },
+    p: { startupProfile: async profile => { assert.equal(profile, n.STARTUP_PROFILE); calls.push('profile'); } },
+    f: { fixtureExecutable: () => 'pinned-chrome', isolationArguments: require('../request-client-isolation.cjs').isolationArguments },
+    childEnvironment: () => s.childEnvironment({ GATE1_APPROVED_USER_ID: ID, DEBUG: 'private', KEEP: 'retained' }),
+    spawn: (executable, args, options) => { captured = { executable, args: Array.from(args), options }; calls.push('spawn'); return new EventEmitter(); },
+    attachment: async () => { calls.push('attachment'); throw stop; },
+  });
+  const factory = vm.runInNewContext(`(${s.startupAdapters.toString()})`, { require: () => n, c, syntheticOwners,
+    launch, observe: s.observe, close: s.close });
+  const adapter = factory(); assert.deepEqual(Object.keys(adapter), ['launch', 'observe', 'close']);
+  const root = new n.NativeLedger(1000, 181000, () => 1000, 'startup'); const budget = new n.NativeBudget(root, n.STARTUP_CASE);
+  const owner = { profile: n.STARTUP_PROFILE, restart: false, onSpawn: () => calls.push('spawn-clock') };
+  const proxy = { listenPort: 18445, port: 18445, forwarding: false };
+  await assert.rejects(adapter.launch(owner, proxy, budget), stop);
+  assert.deepEqual(calls, ['profile', 'spawn', 'spawn-clock', 'attachment']);
+  assert.deepEqual(captured.args, [`--user-data-dir=${n.STARTUP_PROFILE}`, '--no-first-run', '--no-default-browser-check',
+    '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1', '--disable-background-networking', '--disable-quic',
+    '--no-startup-window', '--proxy-server=http://127.0.0.1:18445', '--proxy-bypass-list=<-loopback>',
+    `--ignore-certificate-errors-spki-list=${n.SPKI}`, '--site-per-process']);
+  assert.equal(captured.options.windowsHide, true); assert.equal(captured.options.stdio, 'ignore');
+  assert.deepEqual(captured.options.env, { KEEP: 'retained' });
+  for (const changed of [{ profile: d.PROFILE }, { profile: n.PROFILES[0] }, { restart: true }, { onSpawn: undefined }]) {
+    await assert.rejects(adapter.launch({ ...owner, ...changed }, proxy, budget), { code: 'approval' });
+  }
+  await assert.rejects(adapter.launch(owner, { ...proxy, forwarding: true }, budget), { code: 'approval' });
+  await assert.rejects(s.launch({ profile: n.STARTUP_PROFILE }, {}, {}), { code: 'profile' });
+});
+
+/** Charge controller attempts before socket creation, including one failed-attachment recovery but never a third connection. */
+test('startup controller counts initial and normal-close recovery sockets before opening them', async () => {
+  const n = require('../authentication-preparation-scoped-native-contract.cjs'); const syntheticOwners = new WeakMap(); let connections = 0;
+  /** Simulate only WebSocket readiness; the production connection never accesses a real listener. */
+  class Socket extends EventEmitter {
+    /** Inspect parser limits before asynchronously announcing mocked readiness. */
+    constructor(_url, options) {
+      super(); connections++; assert.equal(options.maxPayload, 65536); assert.equal(options.perMessageDeflate, false);
+      assert.equal(options.handshakeTimeout, 5000); queueMicrotask(() => this.emit('open'));
+    }
+    /** Match local-controller termination without affecting a browser. */
+    terminate() {}
+  }
+  const connect = vm.runInNewContext(`(${s.connectController.toString()})`, { syntheticOwners, CdpConnection,
+    require: () => ({ ws: Socket }), path: require('node:path'), CORE: '.', MESSAGE_BYTES: 65536,
+    nativeController: () => {}, c });
+  const owner = { port: 24000, endpoint: '/mock-endpoint' }; syntheticOwners.set(owner, { startup: true });
+  const budget = new n.NativeBudget(new n.NativeLedger(1000, 181000, () => 1000, 'startup'), n.STARTUP_CASE);
+  await connect(owner, budget); owner.cdp.close(); budget.stop('observation');
+  await connect(owner, budget, true); owner.cdp.close();
+  await assert.rejects(connect(owner, budget, true), { code: 'budget' }); assert.equal(connections, 2);
+});
+
 /** Build fully synthetic provenance; this object is never supplied to the gated native CLI. */
 function input() {
   return { plan: { schemaVersion: 2, decision: c.DECISION, approval: 'scoped-authentication-preparation',
@@ -353,7 +408,9 @@ test('execution review independently binds manifest, native receipt and actual n
 });
 
 test('source binding includes the decision digest, all modules/tests and both public TLS fixture files', async () => {
-  assert.equal(s.FILES.length, 18); let decision = HASH; let source = HASH;
+  assert.equal(s.FILES.length, 20); let decision = HASH; let source = HASH;
+  assert.ok(s.FILES.includes('authentication-preparation-scoped-startup.cjs'));
+  assert.ok(s.FILES.includes('__tests__/authentication-preparation-scoped-startup.test.cjs'));
   const sandbox = { FILES: s.FILES, DECISION_FILE: 'decision', __dirname: '.',
     path: require('node:path'), d, a: { sourceHash: async () => HASH,
       hashFile: async file => file === 'decision' ? decision : source } };
