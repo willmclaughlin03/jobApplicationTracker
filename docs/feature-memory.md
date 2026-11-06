@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-11-01
 
+- `2026-11-05` - `Scoped native destination attribution`: Retain fixed proxy, fixture, classifier and request-client rejection reasons in stopped native receipts, capturing the first reason before abort callbacks and preserving historical receipts without attribution. Keep worker IPC, destination policy, budgets and qualification contracts unchanged. Add 13 mocked regressions; all 315 related offline tests, syntax, focused lint, whitespace and documentation checks passed. No native or hosted exercise ran; historical evidence is unchanged and GATE-1 remains open.
+
 - `2026-11-05` - `Scoped native worker failure reporting`: Validate the bounded stopped/inconclusive worker result before successful completion validation and preserve its firstFailure category through supervisor exit. Retain strict schemas, the 2048-byte cap and single-message safeguard, with parent cancellation, expiration and transport errors taking precedence. Three new mocked regressions cover actual stopped results, malformed/duplicate messages and parent error races. All 302 related offline tests, focused lint and whitespace checks pass. No native or hosted exercise ran; GATE-1 remains open.
 
 - `2026-11-05` - `Scoped native cleanup review fixes`: Await every tracked proxy socket's close event before returning, register browser ownership only after launch budget admission and categorize failed qualification removal as receipt failure. Add regressions for asynchronous socket accounting, rejected launch cleanup and cancellation/expiration removal outcomes. All 299 related offline tests, focused lint and whitespace checks pass. No native or hosted exercise ran; GATE-1 remains open.

@@ -38,6 +38,7 @@ class ScopedProxy {
   constructor(budget, { createServer = http.createServer, connect = net.connect, synthetic = null } = {}) {
     const n = require('./authentication-preparation-scoped-native-contract.cjs');
     check(synthetic === null || (['fixtures', 'transport'].includes(synthetic) && budget instanceof n.NativeBudget), 'approval');
+    this.nativeBudget = budget instanceof n.NativeBudget ? budget : null;
     this.authorities = synthetic === 'fixtures' ? ['127.0.0.1:18443', '127.0.0.2:18444']
       : synthetic === 'transport' ? ['127.0.0.1:18446'] : AUTHORITIES;
     this.listenPort = synthetic ? 18445 : 0;
@@ -50,11 +51,15 @@ class ScopedProxy {
     this.server.on('connection', socket => this.accept(socket));
     this.server.on('connect', (request, socket, head) => this.tunnel(request, socket, head));
     this.server.on('request', (request, response) => {
-      this.counts.denied++; this.budget.stop('destination'); request.destroy(); response.destroy();
+      this.counts.denied++; this.stopDestination('proxy_http_request'); request.destroy(); response.destroy();
     });
-    this.server.on('clientError', (_error, socket) => { this.budget.stop('destination'); socket.destroy(); });
+    this.server.on('clientError', (_error, socket) => { this.stopDestination('proxy_parser_error'); socket.destroy(); });
     this.server.on('error', () => this.budget.stop('operation'));
     this.onStop = () => this.seal(); budget.abort.signal.addEventListener('abort', this.onStop, { once: true });
+  }
+  /** Attribute native rejection before sealing sockets; live budgets retain their existing destination-only stop. */
+  stopDestination(reason) {
+    if (this.nativeBudget) this.nativeBudget.destination(reason); else this.budget.stop('destination');
   }
   /** Register accepted sockets and count every connection, including later policy denials. */
   accept(socket) {
@@ -118,9 +123,11 @@ class ScopedProxy {
   /** Admit exact CONNECT authority/443 only; encrypted methods, paths and HTTP authorities remain opaque. */
   tunnel(request, socket, head = Buffer.alloc(0)) {
     const owner = this.sockets.get(socket);
-    if (!owner || owner.handled || request.method !== 'CONNECT' || !this.authorities.includes(request.url)) {
+    const reason = !owner ? 'proxy_owner_missing' : owner.handled ? 'proxy_owner_reused'
+      : request.method !== 'CONNECT' ? 'proxy_method' : !this.authorities.includes(request.url) ? 'proxy_authority' : null;
+    if (reason) {
       this.counts.denied++; this.bytes.reserve('upstream', head.length, false);
-      this.budget.stop('destination'); socket.destroy(); return;
+      this.stopDestination(reason); socket.destroy(); return;
     }
     owner.handled = true; socket.pause();
     if (!this.forwarding || this.closing || this.budget.failure) {

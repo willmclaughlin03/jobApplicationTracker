@@ -38,6 +38,71 @@ test('only exact loopback GET routes are admitted, including the separate frame 
   assert.throws(() => n.profile(d.PROFILE));
 });
 
+/** Exercise every classifier guard with synthetic inputs; the reason never contains the rejected input. */
+test('native route attribution distinguishes fixed guards without changing classification or reserving traffic', () => {
+  const cases = [['not a private URL', 'GET', 'route_url'], [`${n.ORIGIN}/login`, 'POST', 'route_method'],
+    ['https://private:secret@127.0.0.1:18443/login', 'GET', 'route_credentials'],
+    [`${n.ORIGIN}/login?private=secret`, 'GET', 'route_query_fragment'],
+    [`${n.ORIGIN}/login#private`, 'GET', 'route_query_fragment'],
+    [`${n.ORIGIN}/a/../login`, 'GET', 'route_normalization'],
+    ['https://private.test/login', 'GET', 'route_origin_path'], [`${n.FRAME_ORIGIN}/login`, 'GET', 'route_origin_path']];
+  for (const [url, method, reason] of cases) {
+    const root = new n.NativeLedger(0, 480000, () => 1000); const budget = new n.NativeBudget(root, n.CASES[0]);
+    assert.throws(() => n.classify(url, method, budget), { code: 'destination', message: 'destination' });
+    assert.equal(budget.destinationReason, reason); assert.equal(budget.failure, 'destination');
+    root.stop('destination'); assert.equal(root.destinationReason, reason);
+    assert.equal(Object.values(root.totals).every(value => value === 0), true);
+  }
+  const root = new n.NativeLedger(0, 480000, () => 1000); const budget = new n.NativeBudget(root, n.CASES[0]);
+  assert.equal(n.classify(`${n.ORIGIN}/api/auth/session`, 'GET', budget), 'session');
+  assert.equal(n.classify(`${n.FRAME_ORIGIN}/frame`, 'GET', budget), 'application');
+  assert.equal(root.failure, null); assert.equal(budget.destinationReason, null);
+});
+
+/** Abort listeners run synchronously, so the triggering guard must be retained before they reject again. */
+test('first destination reason survives reentrant abort callbacks and root propagation', () => {
+  for (const source of ['case', 'root']) {
+    const root = new n.NativeLedger(0, 480000, () => 1000); const budget = new n.NativeBudget(root, n.CASES[0]);
+    budget.abort.signal.addEventListener('abort', () => {
+      budget.destination('proxy_parser_error'); root.destination('fixture_host');
+    }, { once: true });
+    if (source === 'case') budget.destination('proxy_authority'); else root.destination('fixture_body');
+    const reason = source === 'case' ? 'proxy_authority' : 'fixture_body';
+    root.stop('destination'); root.destination('fixture_content_length'); budget.destination('proxy_http_request');
+    assert.equal(root.failure, 'destination'); assert.equal(root.destinationReason, reason);
+    assert.equal(budget.failure, 'destination'); assert.equal(budget.abort.signal.aborted, true);
+    assert.throws(() => budget.reserve('application'));
+  }
+});
+
+/** Missing attribution is never filled from cleanup, an earlier stop or a retired case's callbacks. */
+test('earlier failures and retired native budgets cannot acquire a later destination reason', () => {
+  for (const scope of ['case', 'root']) {
+    for (const failure of ['cancelled', 'deadline', 'destination']) {
+      const root = new n.NativeLedger(0, 480000, () => 1000); const budget = new n.NativeBudget(root, n.CASES[0]);
+      (scope === 'case' ? budget : root).stop(failure);
+      budget.destination('proxy_authority'); root.stop(failure); root.destination('fixture_host');
+      assert.equal(root.failure, failure); assert.equal(root.destinationReason, null); assert.equal(budget.destinationReason, null);
+    }
+  }
+  const root = new n.NativeLedger(0, 480000, () => 1000); const old = new n.NativeBudget(root, n.CASES[0]);
+  root.finishCase(old); const active = new n.NativeBudget(root, n.CASES[1]); old.destination('proxy_authority');
+  assert.equal(old.destinationReason, null); assert.equal(active.failure, null); assert.equal(root.destinationReason, null);
+  active.destination('proxy_method'); root.stop('destination'); assert.equal(root.destinationReason, 'proxy_method');
+});
+
+/** Arbitrary diagnostics cannot become retained reasons, even through the attribution helper itself. */
+test('destination attribution rejects unknown and private reasons before mutating the native ledger', () => {
+  const root = new n.NativeLedger(0, 480000, () => 1000); const budget = new n.NativeBudget(root, n.CASES[0]);
+  for (const reason of ['https://private.test/?token=secret', 'unknown', { url: 'private' }]) {
+    assert.throws(() => root.destination(reason), { code: 'schema' });
+    assert.throws(() => budget.destination(reason), { code: 'schema' });
+    assert.throws(() => n.requireDestination(false, reason, budget), { code: 'schema' });
+  }
+  assert.equal(root.failure, null); assert.equal(budget.failure, null); assert.equal(root.destinationReason, null);
+  assert.throws(() => n.requireDestination(false, 'route_url', {}), { code: 'schema' });
+});
+
 test('expected local stops retain cumulative reservations and cannot renew the original clock', () => {
   let now = 1000; const root = new n.NativeLedger(now, 481000, () => now);
   const first = new n.NativeBudget(root, n.CASES[2]);

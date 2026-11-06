@@ -91,12 +91,14 @@ class Fixtures {
   /** Admit exact GET routes with no bodies; raw headers and cookie values stay inside this synchronous call. */
   handle(origin, request, response) {
     try {
-      this.root.check(); c.check(!this.closing && request.headers.host === origin.slice(8)
-        && !request.headers['transfer-encoding'] && (!request.headers['content-length'] || request.headers['content-length'] === '0'), 'destination');
-      n.classify(`${origin}${request.url}`, request.method);
+      this.root.check(); n.requireDestination(!this.closing, 'fixture_closing', this.root);
+      n.requireDestination(request.headers.host === origin.slice(8), 'fixture_host', this.root);
+      n.requireDestination(!request.headers['transfer-encoding'], 'fixture_transfer_encoding', this.root);
+      n.requireDestination(!request.headers['content-length'] || request.headers['content-length'] === '0', 'fixture_content_length', this.root);
+      n.classify(`${origin}${request.url}`, request.method, this.root);
       this.root.charge({ fixtureRequests: 1, ...(request.url === '/api/auth/session' ? { fixtureSession: 1 } : {}),
         ...(request.url === '/worker-probe' ? { fixtureProbe: 1 } : {}) }); this.counts.requests++;
-      request.on('data', bytes => { this.root.active?.body(bytes.length); this.root.stop('destination'); request.destroy(); response.destroy(); });
+      request.on('data', bytes => { this.root.active?.body(bytes.length); this.root.destination('fixture_body'); request.destroy(); response.destroy(); });
       const cookie = cookieState(request.headers.cookie); const route = request.url;
       if (this.seedTokens) {
         const entry = this.seedTokens.get(route); c.check(entry && !entry.used, 'budget'); entry.used = true;
@@ -142,7 +144,7 @@ class Fixtures {
   seed(budget) {
     c.check(!this.seedTokens, 'fixture'); this.seedTokens = new Map();
     for (const route of ['/worker-seed', '/worker.js', '/worker-probe']) {
-      this.seedTokens.set(route, { budget, token: budget.reserve(n.classify(`${n.ORIGIN}${route}`, 'GET')), used: false });
+      this.seedTokens.set(route, { budget, token: budget.reserve(n.classify(`${n.ORIGIN}${route}`, 'GET', budget)), used: false });
     }
   }
   /** Require all pre-reserved setup requests witnessed; setup is never counted as observed page coverage. */
