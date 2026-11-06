@@ -327,7 +327,9 @@ async function launch(owner, proxy, budget) {
 /** Prepare both blank targets before opening forwarding; unsupported ordering fails closed. */
 async function observe(owner, budget) {
   const policy = syntheticOwners.get(owner);
-  owner.observer = new ScopedObserver(owner.cdp, budget, policy?.classify);
+  /** Capture a synthetic rejection before observer callbacks reduce exceptions to their public failure category. */
+  const classify = policy ? (raw, method) => policy.classify(raw, method, budget) : undefined;
+  owner.observer = new ScopedObserver(owner.cdp, budget, classify);
   if (policy?.missingPair) {
     const handle = owner.observer.handle.bind(owner.observer);
     /** Withhold one actual Fetch event; its Network counterpart still reserves capacity in the real observer. */
@@ -532,8 +534,9 @@ function syntheticAdapters(caseId, navigation = null) {
     inspect: p.inspectNativeClosure, profile: () => p.nativeProfile(n.profile(caseId)),
     /** Reserve each fixed loopback bypass explicitly; certificate exceptions never affect another destination. */
     request: async (owner, budget, route) => {
-      c.check(syntheticOwners.has(owner) && ['/api/auth/session', '/api/native/writeback', '/api/native/hold'].includes(route), 'destination');
-      const token = budget.reserve(n.classify(`${n.ORIGIN}${route}`, 'GET'), 'requestClient'); let response;
+      n.requireDestination(syntheticOwners.has(owner), 'request_client_owner', budget);
+      n.requireDestination(['/api/auth/session', '/api/native/writeback', '/api/native/hold'].includes(route), 'request_client_route', budget);
+      const token = budget.reserve(n.classify(`${n.ORIGIN}${route}`, 'GET', budget), 'requestClient'); let response;
       try {
         response = await owner.context.request.get(`${n.ORIGIN}${route}`, { timeout: budget.limits.restartMs,
           maxRedirects: 0, maxRetries: 0, failOnStatusCode: false, ignoreHTTPSErrors: true });

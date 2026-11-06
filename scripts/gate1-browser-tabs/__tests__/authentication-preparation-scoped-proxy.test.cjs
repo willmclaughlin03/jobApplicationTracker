@@ -174,3 +174,58 @@ test('synthetic cumulative tunnel exhaustion cannot be bypassed by a new proxy',
   const bytes = new TunnelBudget(budget); assert.equal(bytes.reserve('upstream', 1), false);
   assert.equal(bytes.upstream.admitted, 0); assert.equal(bytes.upstream.rejected, 1); assert.equal(root.failure, 'budget');
 });
+
+/** Reuse actual proxy callbacks with a native budget and fake sockets; no listener or browser is opened. */
+async function nativeFixture() {
+  const n = require('../authentication-preparation-scoped-native-contract.cjs');
+  const root = new n.NativeLedger(0, 480000, () => 1000); const budget = new n.NativeBudget(root, n.CASES[0]);
+  const server = new EventEmitter(); const upstreams = [];
+  server.listen = (_port, _host, ready) => ready(); server.address = () => ({ port: 18445 }); server.close = done => done();
+  const proxy = new ScopedProxy(budget, { synthetic: 'fixtures', createServer: () => server,
+    connect: () => { const upstream = socket(); upstreams.push(upstream); return upstream; } });
+  await proxy.start(); proxy.open(); const client = socket(); server.emit('connection', client);
+  return { root, budget, proxy, server, client, upstreams };
+}
+
+/** Every rejecting proxy boundary has a fixed category while retaining the original denial and byte accounting. */
+test('native proxy distinguishes HTTP, parser and each CONNECT rejection before upstream dispatch', async () => {
+  for (const reason of ['proxy_http_request', 'proxy_parser_error', 'proxy_owner_missing', 'proxy_owner_reused', 'proxy_method', 'proxy_authority']) {
+    const q = await nativeFixture(); const request = { method: 'CONNECT', url: '127.0.0.1:18443' };
+    let rejected = q.client; let response;
+    if (reason === 'proxy_http_request') {
+      response = socket(); q.server.emit('request', Object.assign(socket(), { url: 'https://private.test/?secret=value' }), response);
+    } else if (reason === 'proxy_parser_error') {
+      q.server.emit('clientError', Object.assign(new Error('private parser contents'), { rawPacket: Buffer.from('private') }), q.client);
+    } else {
+      if (reason === 'proxy_owner_missing') rejected = socket();
+      if (reason === 'proxy_owner_reused') q.proxy.sockets.get(q.client).handled = true;
+      if (reason === 'proxy_method') request.method = 'POST';
+      if (reason === 'proxy_authority') request.url = 'private.test:443';
+      q.server.emit('connect', request, rejected, Buffer.from('private'));
+      assert.equal(q.proxy.snapshot().upstream.rejected, 7);
+    }
+    assert.equal(q.budget.failure, 'destination'); assert.equal(q.budget.destinationReason, reason);
+    assert.equal(q.upstreams.length, 0); assert.equal(rejected.destroyed, true);
+    if (response) assert.equal(response.destroyed, true);
+    assert.equal(JSON.stringify(q.proxy.snapshot()).includes('private'), false);
+    assert.equal(q.proxy.snapshot().forwardingClosed, true);
+    q.root.stop('destination'); assert.equal(q.root.destinationReason, reason);
+    await q.proxy.close(); assert.equal(q.root.connections, 0);
+  }
+});
+
+/** A valid but closed readiness barrier is an expected denial, not a new destination violation. */
+test('native readiness denial and late cleanup callbacks cannot invent or replace attribution', async () => {
+  const q = await nativeFixture(); q.proxy.seal(); const client = socket(); q.server.emit('connection', client);
+  q.server.emit('connect', { method: 'CONNECT', url: '127.0.0.1:18443' }, client, Buffer.alloc(0));
+  assert.equal(q.budget.failure, null); assert.equal(q.budget.destinationReason, null); assert.equal(q.upstreams.length, 0);
+  assert.equal(q.proxy.evidence.deniedFixture, 1);
+  q.budget.stop('cancelled'); q.server.emit('clientError', new Error('private'), client);
+  q.server.emit('request', socket(), socket()); assert.equal(q.budget.failure, 'cancelled');
+  assert.equal(q.budget.destinationReason, null); await q.proxy.close();
+
+  const other = await nativeFixture();
+  other.client.once('close', () => other.server.emit('clientError', new Error('private cleanup'), other.client));
+  other.server.emit('connect', { method: 'CONNECT', url: 'private.test:443' }, other.client, Buffer.alloc(0));
+  assert.equal(other.budget.destinationReason, 'proxy_authority'); await other.proxy.close();
+});

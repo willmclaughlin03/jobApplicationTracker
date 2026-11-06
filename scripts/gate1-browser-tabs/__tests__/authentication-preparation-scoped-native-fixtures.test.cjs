@@ -48,6 +48,36 @@ test('unexpected routes, hosts, methods and body framing stop instead of forward
   assert.equal(q.root.failure, 'destination'); assert.equal(q.root.totals.proxyBytes, 1);
 });
 
+/** Classify exact fixture guards without retaining request headers, paths, cookies or payloads. */
+test('fixture rejections retain fixed reasons and deny requests before fixture accounting', async () => {
+  const headers = { host: '127.0.0.1:18443' };
+  for (const [reason, route, extra] of [
+    ['fixture_closing', '/login', {}], ['fixture_host', '/login', { headers: { host: 'private.test' } }],
+    ['fixture_transfer_encoding', '/login', { headers: { ...headers, 'transfer-encoding': 'private' } }],
+    ['fixture_content_length', '/login', { headers: { ...headers, 'content-length': '1' } }],
+    ['route_method', '/login', { method: 'POST' }], ['route_query_fragment', '/login?secret=private', {}],
+    ['route_normalization', '/a/../login', {}], ['route_origin_path', '/private', {}],
+  ]) {
+    const q = fixture(); if (reason === 'fixture_closing') await q.fixtures.close();
+    const { req, res } = q.request(route, 'private', extra);
+    assert.equal(q.root.failure, 'destination'); assert.equal(q.root.destinationReason, reason);
+    assert.equal(req.destroyed, true); assert.equal(res.destroyed, true); assert.equal(res.body, null);
+    assert.equal(q.root.totals.fixtureRequests, 0); assert.equal(q.budget.abort.signal.aborted, true);
+    q.request('/another-private-route'); assert.equal(q.root.destinationReason, reason);
+  }
+});
+
+/** Body rejection keeps the original parsed-byte charge; subsequent failures cannot replace the first reason. */
+test('fixture body attribution survives cleanup and respects earlier case cancellation', async () => {
+  const q = fixture(); const { req, res } = q.request('/login', '', { headers: { host: '127.0.0.1:18443', 'content-length': '0' } });
+  req.emit('data', Buffer.from('private')); assert.equal(q.root.totals.proxyBytes, 7);
+  assert.equal(q.root.destinationReason, 'fixture_body'); assert.equal(req.destroyed, true); assert.equal(res.destroyed, true);
+  await q.fixtures.close(); q.request('/private'); assert.equal(q.root.destinationReason, 'fixture_body');
+
+  const other = fixture(); other.budget.stop('cancelled'); other.request('/private');
+  assert.equal(other.root.destinationReason, null); assert.equal(other.budget.failure, 'cancelled');
+});
+
 test('held request requires the actual socket close event; request completion alone is not cancellation evidence', () => {
   const q = fixture(); const { req, res } = q.request('/api/native/hold');
   assert.equal(q.fixtures.counts.held, 1); assert.equal(res.body, null);

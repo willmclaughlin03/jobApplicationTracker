@@ -48,6 +48,11 @@ const WITNESSES = Object.freeze({
 });
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const integer = z.number().int().nonnegative().safe();
+const destinationReasonSchema = z.enum(['proxy_http_request', 'proxy_parser_error', 'proxy_owner_missing',
+  'proxy_owner_reused', 'proxy_method', 'proxy_authority', 'fixture_closing', 'fixture_host',
+  'fixture_transfer_encoding', 'fixture_content_length', 'fixture_body', 'route_url', 'route_method',
+  'route_credentials', 'route_query_fragment', 'route_normalization', 'route_origin_path',
+  'request_client_owner', 'request_client_route']);
 const bindingSchema = z.object({ sourceSet: hash, decisionHash: hash, toolSet: hash, certificateHash: hash, keyHash: hash }).strict();
 const reviewSchema = bindingSchema.extend({ scope: z.literal('scoped-authentication-native-execution-review-v1'),
   operator: z.literal('Codex'), owner: z.literal('project-owner'), directory: z.literal(DIRECTORY),
@@ -79,15 +84,27 @@ const stoppedSchema = bindingSchema.extend({ schemaVersion: z.literal(1), scope:
   firstFailure: z.enum(['approval', 'expired', 'integrity', 'budget', 'deadline', 'observation', 'operation', 'cancelled',
     'closure', 'process_inspection', 'process_present', 'port_open', 'receipt', 'already_used', 'toolchain', 'profile',
     'fixture', 'worker_completion', 'coverage_unqualified', 'destination', 'schema', 'identity', 'stopped', 'arguments', 'target', 'debug_logging']),
+  destinationReason: destinationReasonSchema.nullable().optional(),
   completedCases: integer.max(9), cleanup: z.boolean(), totals: totalsSchema, traffic: trafficSchema,
   browserTrafficMeasured: z.literal(false), hostedQualified: z.literal(false), gate1Status: z.literal('open'), backgroundHttp: z.literal('unknown') }).strict();
 
-/** Reject normalization tricks and all non-fixture requests before any dispatch is reserved. */
-function classify(raw, method) {
-  let url; try { url = new URL(raw); } catch { throw new c.PreparationError('destination'); }
-  c.check(method === 'GET' && !url.username && !url.password && !url.search && !url.hash
-    && raw === `${url.origin}${url.pathname}` && ((url.origin === ORIGIN && ROUTES.includes(url.pathname))
-      || (url.origin === FRAME_ORIGIN && ['/frame', '/favicon.ico'].includes(url.pathname))), 'destination');
+/** Stop an optional native owner before throwing; only fixed reasons can enter retained attribution. */
+function requireDestination(value, reason, owner = null) {
+  if (value) return;
+  c.check(destinationReasonSchema.safeParse(reason).success
+    && (owner === null || owner instanceof NativeLedger || owner instanceof NativeBudget), 'schema');
+  owner?.destination(reason); throw new c.PreparationError('destination');
+}
+
+/** Reject the unchanged fixture policy; an optional native owner latches the exact guard before callback sanitization. */
+function classify(raw, method, owner = null) {
+  let url; try { url = new URL(raw); } catch { requireDestination(false, 'route_url', owner); }
+  requireDestination(method === 'GET', 'route_method', owner);
+  requireDestination(!url.username && !url.password, 'route_credentials', owner);
+  requireDestination(!url.search && !url.hash, 'route_query_fragment', owner);
+  requireDestination(raw === `${url.origin}${url.pathname}`, 'route_normalization', owner);
+  requireDestination((url.origin === ORIGIN && ROUTES.includes(url.pathname))
+    || (url.origin === FRAME_ORIGIN && ['/frame', '/favicon.ico'].includes(url.pathname)), 'route_origin_path', owner);
   return url.pathname === '/api/auth/session' ? 'session' : ['/worker.js', '/favicon.ico'].includes(url.pathname) ? 'canonicalStatic' : 'application';
 }
 
@@ -107,6 +124,7 @@ function qualificationChecks(results) {
 function validateAttempt(record) {
   const passed = record?.phase === 'passed';
   c.check((passed ? attemptSchema : stoppedSchema).safeParse(record).success, 'receipt');
+  if (!passed && record.destinationReason != null) c.check(record.firstFailure === 'destination', 'receipt');
   c.check(record.completedAt >= record.startedAt && record.completedAt - record.startedAt < LIMITS.wholeMs
     && record.totals.session <= record.totals.application
     && record.totals.tunnelBytes === record.totals.upstreamBytes + record.totals.downstreamBytes, 'receipt');
@@ -130,11 +148,24 @@ class NativeLedger {
   constructor(startedAt, expiresAt, clock = Date.now) {
     this.clock = clock; this.startedAt = startedAt; this.end = Math.min(startedAt + LIMITS.wholeMs, expiresAt);
     this.deadline = this.end - LIMITS.cleanupMs; this.failure = null; this.active = null; this.chrome = 0; this.connections = 0; this.budgets = [];
-    this.cleanupFailed = false;
+    this.cleanupFailed = false; this.destinationReason = null;
     this.totals = Object.fromEntries(Object.keys(totalsSchema.shape).map(key => [key, 0]));
   }
   /** Latch a global violation and abort the currently active case immediately. */
-  stop(code) { if (!this.failure) this.failure = code; this.active?.stop(code); }
+  stop(code) {
+    if (!this.failure) {
+      this.failure = code;
+      this.destinationReason = code === 'destination'
+        ? this.destinationReason || (this.active?.failure === 'destination' ? this.active.destinationReason : null) : null;
+    }
+    this.active?.stop(code);
+  }
+  /** Attribute a root guard before abort callbacks; an earlier root or case failure keeps its original meaning. */
+  destination(reason) {
+    c.check(destinationReasonSchema.safeParse(reason).success, 'schema');
+    if (!this.failure && !this.active?.failure) this.destinationReason = reason;
+    this.stop('destination');
+  }
   /** Reject every new operation after the original work deadline or global failure. */
   check() { if (this.clock() >= this.deadline) this.stop('deadline'); c.check(!this.failure, this.failure || 'stopped'); }
   /** Reserve cumulative counters atomically; overflowing reservations are denied without refunding earlier work. */
@@ -162,7 +193,14 @@ class NativeBudget extends c.ScopedBudget {
     super({ clock: root.clock, limits: { ...LIMITS, ...limits } });
     c.check(Object.entries(this.limits).every(([key, value]) => Object.hasOwn(LIMITS, key) && value <= LIMITS[key] && value >= 0), 'budget');
     this.root = root; this.item = item; root.active = this; root.budgets.push(this);
+    this.destinationReason = null;
     this.startedAt = root.startedAt; this.deadline = root.deadline; this.end = root.end;
+  }
+  /** Latch this active case's first guard before synchronous abort handlers; retired budgets cannot supply attribution. */
+  destination(reason) {
+    c.check(destinationReasonSchema.safeParse(reason).success, 'schema');
+    if (!this.failure && !this.root.failure && this.root.active === this) this.destinationReason = reason;
+    this.stop('destination');
   }
   /** Every active callback shares the overall deadline, including callbacks after expected local failures. */
   check() { this.root.check(); super.check(); }
@@ -201,4 +239,4 @@ class NativeBudget extends c.ScopedBudget {
 
 module.exports = { DIRECTORY, ORIGIN, FRAME_ORIGIN, SPKI, ID, PROFILE_NAMES, PROFILES, PORTS, ARTIFACTS, ROUTES,
   LIMITS, CASES, WITNESSES, bindingSchema, reviewSchema, ownerSchema, totalsSchema, attemptSchema, stoppedSchema,
-  classify, profile, validateReview, qualificationChecks, validateAttempt, NativeLedger, NativeBudget };
+  destinationReasonSchema, requireDestination, classify, profile, validateReview, qualificationChecks, validateAttempt, NativeLedger, NativeBudget };
