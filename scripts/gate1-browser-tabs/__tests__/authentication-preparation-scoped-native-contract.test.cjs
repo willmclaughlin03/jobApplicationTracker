@@ -75,6 +75,30 @@ test('first destination reason survives reentrant abort callbacks and root propa
   }
 });
 
+/** A generic stop must retain the active case's cause before cleanup retires that budget. */
+test('generic native stops promote the original active failure and retain it after cleanup', () => {
+  for (const failure of ['destination', 'observation']) for (const alreadyStopped of [false, true]) {
+    const root = new n.NativeLedger(0, 480000, () => 1000); const budget = new n.NativeBudget(root, n.CASES[0]);
+    if (failure === 'destination') budget.destination('proxy_authority'); else budget.stop(failure);
+    // Model an earlier catch that has already stored only the generic check error on the root.
+    if (alreadyStopped) root.failure = 'stopped';
+    assert.throws(() => budget.check(), { code: 'stopped' });
+    root.stop('stopped'); root.stop('stopped'); root.finishCase(budget); root.stop('stopped');
+    assert.equal(root.failure, failure); assert.equal(root.destinationReason, failure === 'destination' ? 'proxy_authority' : null);
+    assert.equal(budget.failure, failure); assert.equal(root.active, null);
+  }
+});
+
+/** Expected negatives and later guards cannot supply a cause for an unrelated generic stop. */
+test('generic native stops do not borrow retired failures or later destination attribution', () => {
+  const root = new n.NativeLedger(0, 480000, () => 1000); const retired = new n.NativeBudget(root, n.CASES[2]);
+  retired.stop('cancelled'); root.finishCase(retired); root.check();
+  const active = new n.NativeBudget(root, n.CASES[3]); root.stop('stopped');
+  active.destination('proxy_authority'); root.destination('fixture_host'); root.stop('stopped');
+  assert.equal(root.failure, 'stopped'); assert.equal(root.destinationReason, null);
+  assert.equal(active.failure, 'stopped'); assert.equal(active.destinationReason, null);
+});
+
 /** Missing attribution is never filled from cleanup, an earlier stop or a retired case's callbacks. */
 test('earlier failures and retired native budgets cannot acquire a later destination reason', () => {
   for (const scope of ['case', 'root']) {

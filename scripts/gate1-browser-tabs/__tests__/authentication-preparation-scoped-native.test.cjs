@@ -9,6 +9,7 @@ const r = require('../authentication-preparation-scoped-native.cjs');
 const n = require('../authentication-preparation-scoped-native-contract.cjs');
 const c = require('../authentication-preparation-scoped-contract.cjs');
 const d = require('../hosted-csrf-diagnostic.cjs');
+const { ScopedProxy } = require('../authentication-preparation-scoped-proxy.cjs');
 const HASH = 'a'.repeat(64);
 
 /** Supply pure in-memory review inputs and mock every filesystem/native boundary of the actual orchestrator. */
@@ -78,6 +79,54 @@ test('stopped native evidence preserves its first destination reason without exp
   assert.equal(q.state.calls.includes('restored-worker'), false); assert.equal(q.state.writes.length, 1);
   assert.equal(q.state.writes[0].name, 'attempt.json'); assert.equal(JSON.stringify(record).includes('private'), false);
   assert.throws(() => d.validatePreparation(record)); assert.equal(n.attemptSchema.safeParse(record).success, false);
+});
+
+/** Exercise real proxy callbacks and browser-case cleanup before checking the written failure receipt. */
+test('proxy callback failures survive later budget checks and case cleanup in native receipts', async () => {
+  for (const event of ['request', 'clientError', 'connect']) for (const earlier of [null, 'cancelled', 'deadline']) {
+    const q = fixture(); let ledger; let closed = 0; let inspected = 0;
+    const reason = { request: 'proxy_http_request', clientError: 'proxy_parser_error', connect: 'proxy_authority' }[event];
+    /** Keep the actual browser-case flow while replacing only native server and browser boundaries. */
+    q.deps.browserCase = (item, root, fixtures) => {
+      ledger = root; const server = new EventEmitter();
+      server.listen = (_port, _host, ready) => ready(); server.address = () => ({ port: 18445 }); server.close = ready => ready();
+      const adapter = {
+        launch: async () => {},
+        /** Deliver a proxy rejection asynchronously, then reproduce the next guarded browser operation. */
+        observe: async (_owner, budget) => {
+          await setImmediate();
+          if (earlier) root.stop(earlier);
+          const socket = new EventEmitter(); socket.setTimeout = () => {};
+          /** Settle connection accounting synchronously without creating a real socket. */
+          socket.destroy = () => { if (!socket.destroyed) { socket.destroyed = true; socket.emit('close'); } };
+          if (event === 'connect') {
+            server.emit('connection', socket); server.emit('connect', { method: 'CONNECT', url: 'private.test:443' }, socket);
+          } else if (event === 'request') server.emit('request', socket, socket);
+          else server.emit('clientError', new Error('private parser diagnostics'), socket);
+          budget.check();
+        },
+        /** Return the normal closure witness so the real case cleanup releases its browser ownership. */
+        close: async owner => { closed++; return { profile: owner.profile, pid: 77, port: 24567, closedNormally: true, exitCode: 0 }; },
+        inspect: async () => { inspected++; return true; },
+      };
+      return r.browserCase(item, root, fixtures, { adapters: () => adapter,
+        proxy: budget => new ScopedProxy(budget, { synthetic: 'fixtures', createServer: () => server,
+          connect: () => assert.fail('rejected destination must not connect') }) });
+    };
+    /** A later cleanup rejection must not supply or replace the original destination attribution. */
+    q.deps.fixtures = root => ({ start: async () => {}, close: async () => {
+      root.destination('fixture_host'); throw new Error('private cleanup diagnostics');
+    } });
+    const result = await q.run(); const record = q.state.writes[0].record; const failure = earlier || 'destination';
+    assert.deepEqual(result, { phase: 'stopped', firstFailure: failure, receiptFinalized: false });
+    assert.equal(record.firstFailure, failure); assert.equal(record.destinationReason, earlier ? null : reason);
+    assert.equal(ledger.failure, failure); assert.equal(ledger.destinationReason, record.destinationReason);
+    assert.equal(ledger.active, null); assert.equal(ledger.chrome, 0); assert.equal(ledger.connections, 0);
+    assert.equal(closed, 1); assert.equal(inspected, 1); assert.equal(record.cleanup, false);
+    assert.equal(record.completedCases, 0); assert.equal(record.totals.launches, 1);
+    assert.equal(q.state.writes.length, 1); assert.equal(q.state.writes[0].name, 'attempt.json');
+    assert.equal(JSON.stringify(record).includes('private'), false); n.validateAttempt(record);
+  }
 });
 
 /** Old stopped receipts stay valid and unattributed; private diagnostics, inconsistent reasons and success extensions fail. */
