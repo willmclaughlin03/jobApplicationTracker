@@ -4,6 +4,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { z } = require('zod');
 const s = require('./authentication-preparation-scoped.cjs');
 const c = require('./authentication-preparation-scoped-contract.cjs');
 const n = require('./authentication-preparation-scoped-native-contract.cjs');
@@ -11,6 +12,8 @@ const f = require('./authentication-preparation-scoped-native-fixtures.cjs');
 const p = require('./authentication-preparation-scoped-postflight.cjs');
 const { ScopedProxy } = require('./authentication-preparation-scoped-proxy.cjs');
 const workerSchema = s.QUALIFICATION_COMPLETION.omit({ scope: true, exitCode: true }).strict();
+const stoppedWorkerSchema = n.stoppedSchema.pick({ phase: true, firstFailure: true })
+  .extend({ receiptFinalized: z.literal(false) }).strict();
 
 /** Derive current provenance read-only; the public TLS key is never account or production material. */
 async function bindings() {
@@ -366,7 +369,7 @@ async function finalize(message, input, deadline, deps = {}) {
 /** Strip the real expected identity from the synthetic worker as well as the owned Chrome environment. */
 function workerEnvironment(env = process.env) { const result = s.childEnvironment(env); delete result.GATE1_APPROVED_USER_ID; return result; }
 
-/** Require exactly one bounded completion and actual zero worker exit; late or duplicate messages never pass. */
+/** Validate one bounded worker result; only a timely successful completion with zero exit may finalize. */
 async function supervise(input, deps = {}) {
   const clock = deps.clock || Date.now; const startedAt = clock(); const deadline = Math.min(startedAt + n.LIMITS.wholeMs, input.review.expiresAt);
   const signals = deps.signals || process; const cancellation = new AbortController(); let cancelWorker = () => {};
@@ -377,7 +380,7 @@ async function supervise(input, deps = {}) {
     const message = await new Promise((resolve, reject) => {
       const child = (deps.spawn || spawn)(process.execPath, [__filename, '--native-worker', input.reviewHash, String(startedAt)],
         { windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'], env: workerEnvironment() });
-      let completion; let invalid = false; let finished = false;
+      let completion; let stopped = null; let invalid = false; let finished = false;
       /** IPC cancellation never force-kills Chrome; the original end clock remains authoritative. */
       const cancel = () => { if (child.connected) child.send({ cancel: true }, () => {}); };
       cancelWorker = cancel;
@@ -388,14 +391,18 @@ async function supervise(input, deps = {}) {
         if (finished) return; finished = true; clearTimeout(workTimer); clearTimeout(endTimer);
         cancelWorker = () => {};
         if (cancellation.signal.aborted) reject(new c.PreparationError('cancelled'));
-        else if (error || invalid || code !== 0 || !completion || clock() >= deadline) reject(new c.PreparationError(error || 'worker_completion'));
+        else if (error || clock() >= deadline) reject(new c.PreparationError(error || 'expired'));
+        else if (!invalid && stopped) reject(new c.PreparationError(stopped));
+        else if (invalid || code !== 0 || !completion) reject(new c.PreparationError('worker_completion'));
         else resolve(completion);
       }
       child.on('message', value => {
         if (finished) return;
         try {
-          if (completion || Buffer.byteLength(JSON.stringify(value)) > 2048
-            || !workerSchema.safeParse(value).success) {
+          if (completion || stopped || Buffer.byteLength(JSON.stringify(value)) > 2048) {
+            invalid = true; cancel();
+          } else if (stoppedWorkerSchema.safeParse(value).success) stopped = value.firstFailure;
+          else if (!workerSchema.safeParse(value).success) {
             invalid = true; cancel();
           } else completion = value;
         } catch { invalid = true; cancel(); }

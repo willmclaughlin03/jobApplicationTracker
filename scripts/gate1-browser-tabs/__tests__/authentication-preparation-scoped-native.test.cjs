@@ -126,6 +126,69 @@ test('native supervisor strips real identity and rejects duplicate, malformed, n
   }
 });
 
+/** Real stopped worker results must retain their bounded first failure after the expected nonzero exit. */
+test('native supervisor preserves stopped and inconclusive worker failure categories', async () => {
+  for (const firstFailure of ['destination', 'coverage_unqualified']) {
+    const q = fixture(); let finalized = false; let cancelled = 0;
+    /** Stop the real orchestrator at a mocked browser boundary so its actual result shape crosses IPC. */
+    q.deps.browserCase = async () => { throw new c.PreparationError(firstFailure); };
+    const message = await q.run();
+    assert.equal(message.phase, firstFailure === 'coverage_unqualified' ? 'inconclusive' : 'stopped');
+    await assert.rejects(r.supervise(q.input, { clock: () => q.state.now,
+      /** Emit the worker's bounded failure before its normal failure exit without spawning a process. */
+      spawn: () => {
+        const child = new EventEmitter(); child.connected = true;
+        child.send = (_value, done) => { cancelled++; done(); };
+        queueMicrotask(() => { child.emit('message', message); child.emit('close', 1); }); return child;
+      }, finalize: async () => { finalized = true; } }), { code: firstFailure, message: firstFailure });
+    assert.equal(finalized, false); assert.equal(cancelled, 0);
+  }
+});
+
+/** Stopped results share successful completion's strict schema, byte cap and single-message boundary. */
+test('native supervisor rejects malformed, oversized and duplicate stopped messages', async () => {
+  const q = fixture(); const completion = await q.run();
+  const stopped = { phase: 'stopped', firstFailure: 'destination', receiptFinalized: false };
+  for (const messages of [[stopped, stopped], [stopped, completion], [completion, stopped],
+    [{ ...stopped, phase: 'passed' }], [{ ...stopped, firstFailure: 'private failure' }],
+    [{ ...stopped, receiptFinalized: true }], [{ ...stopped, private: 'details' }],
+    [{ phase: 'stopped', receiptFinalized: false }], [{ ...stopped, firstFailure: 'x'.repeat(3000) }],
+    [{ ...stopped, private: 'details' }, stopped]]) {
+    let finalized = false; let cancelled = 0;
+    await assert.rejects(r.supervise(q.input, { clock: () => q.state.now,
+      /** Deliver invalid or conflicting IPC before exit; cancellation requests remain observable. */
+      spawn: () => {
+        const child = new EventEmitter(); child.connected = true;
+        child.send = (_value, done) => { cancelled++; done(); };
+        queueMicrotask(() => { for (const message of messages) child.emit('message', message); child.emit('close', 1); }); return child;
+      }, finalize: async () => { finalized = true; } }), { code: 'worker_completion', message: 'worker_completion' });
+    assert.equal(finalized, false); assert.ok(cancelled > 0);
+  }
+});
+
+/** Parent cancellation, elapsed deadlines and child transport errors remain authoritative over a worker failure. */
+test('native supervisor errors take precedence over a stopped worker result', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const mode of ['SIGINT', 'SIGTERM', 'expired-close', 'expired-timer', 'cancelled-expired', 'child-error']) {
+    const q = fixture(); const signals = new EventEmitter(); let child; let finalized = false;
+    const pending = r.supervise(q.input, { clock: () => q.state.now, signals,
+      /** Retain an in-memory child so each parent event can race its stopped message and exit deterministically. */
+      spawn: () => { child = new EventEmitter(); child.connected = true; child.send = (_value, done) => done(); return child; },
+      finalize: async () => { finalized = true; } });
+    const code = mode.startsWith('expired') ? 'expired' : mode === 'child-error' ? 'worker_completion' : 'cancelled';
+    const rejected = assert.rejects(pending, { code, message: code });
+    child.emit('message', { phase: 'stopped', firstFailure: 'destination', receiptFinalized: false });
+    if (mode.includes('expired')) q.state.now = 480000;
+    if (mode === 'SIGINT' || mode === 'SIGTERM') signals.emit(mode);
+    if (mode === 'cancelled-expired') signals.emit('SIGINT');
+    if (mode === 'expired-timer') t.mock.timers.tick(479000);
+    if (mode === 'child-error') child.emit('error', new Error('private worker error'));
+    child.emit('close', 1); await rejected;
+    assert.equal(finalized, false);
+    assert.equal(signals.listenerCount('SIGINT'), 0); assert.equal(signals.listenerCount('SIGTERM'), 0);
+  }
+});
+
 test('operator cancellation between valid completion and zero exit prevents finalization and removes signal handlers', async () => {
   for (const signal of ['SIGINT', 'SIGTERM']) {
     const q = fixture(); const message = await q.run(); const signals = new EventEmitter(); let finalized = false; let cancelled = 0;
