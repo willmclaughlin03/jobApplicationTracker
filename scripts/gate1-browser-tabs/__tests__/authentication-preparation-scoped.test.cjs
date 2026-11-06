@@ -128,7 +128,7 @@ function manualSignInFixture(reply, { manualMs = 1000, deadline = 2000 } = {}) {
   };
   socket.terminate = () => {};
   const owner = { cdp: new CdpConnection(socket, budget), observer: {}, page: { sessionId: 'synthetic-page' } };
-  const poll = vm.runInNewContext(`(${s.manualSignIn.toString()})`, { c, d, Date: { now: () => state.now },
+  const poll = vm.runInNewContext(`(${s.manualSignIn.toString()})`, { c, d, syntheticOwners: new WeakMap(), Date: { now: () => state.now },
     /** Model the cancellable interval without real waiting, preserving the production delay's abort behavior. */
     delay: async (ms, signal) => {
       c.check(!signal.aborted, 'cancelled'); state.delays.push(ms); state.now += ms;
@@ -199,13 +199,14 @@ test('Chrome launches omit the approved identity and retain the remaining saniti
   const expected = s.childEnvironment(parentEnv); delete expected.GATE1_APPROVED_USER_ID;
   const stop = new Error('mock attachment stop'); const environments = [];
   const launch = vm.runInNewContext(`(${s.launch.toString()})`, {
+    c, d, syntheticOwners: new WeakMap(),
     p: { profilePreserved: async () => {} }, f: { fixtureExecutable: () => 'mock-chrome', isolationArguments: () => [] },
     childEnvironment: () => s.childEnvironment(parentEnv), attachment: async () => { throw stop; },
     /** Capture options at the native process boundary without starting a process. */
     spawn: (_executable, _args, options) => { environments.push(options.env); return new EventEmitter(); },
   });
   for (const restart of [false, true]) {
-    await assert.rejects(launch({ profile: 'mock-profile', restart }, { port: 12345 }, { check: () => {} }), stop);
+    await assert.rejects(launch({ profile: d.PROFILE, restart }, { port: 12345 }, { check: () => {} }), stop);
     assert.deepEqual(environments.at(-1), expected);
   }
   assert.equal(environments.length, 2); assert.equal(parentEnv.GATE1_APPROVED_USER_ID, ID);
@@ -351,8 +352,8 @@ test('execution review independently binds manifest, native receipt and actual n
   await assert.rejects(s.loadReviewed(HASH, ID, read, 1000), { code: 'coverage_unqualified' });
 });
 
-test('source binding includes the decision digest and all ten approved implementation/test files', async () => {
-  assert.equal(s.FILES.length, 10); let decision = HASH; let source = HASH;
+test('source binding includes the decision digest, all modules/tests and both public TLS fixture files', async () => {
+  assert.equal(s.FILES.length, 18); let decision = HASH; let source = HASH;
   const sandbox = { FILES: s.FILES, DECISION_FILE: 'decision', __dirname: '.',
     path: require('node:path'), d, a: { sourceHash: async () => HASH,
       hashFile: async file => file === 'decision' ? decision : source } };
@@ -367,6 +368,132 @@ test('consumed artifact marker refuses a second attempt without writing evidence
   const result = await s.runScoped(input(), ID, f.deps);
   assert.equal(result.firstFailure, 'already_used'); assert.equal(result.failureEvidenceWritten, false);
   assert.equal(f.state.launches, 0); assert.equal(f.state.record, null);
+});
+
+/** Live launch rejects synthetic profiles before metadata/process access, while synthetic adapters accept only their fixed case. */
+test('live and synthetic adapters cannot exchange arbitrary profiles or destinations', async () => {
+  const n = require('../authentication-preparation-scoped-native-contract.cjs');
+  await assert.rejects(s.launch({ profile: n.PROFILES[0] }, {}, {}), { code: 'profile' });
+  assert.throws(() => s.syntheticAdapters('unknown'), { code: 'approval' });
+  assert.throws(() => s.syntheticAdapters('lifecycle', 'https://external.test'), { code: 'approval' });
+  const adapter = s.syntheticAdapters('lifecycle');
+  const budget = new n.NativeBudget(new n.NativeLedger(0, 480000, () => 1000), n.CASES[0]);
+  await assert.rejects(adapter.launch({ profile: d.PROFILE }, { listenPort: 18445 }, budget), { code: 'approval' });
+  await assert.rejects(adapter.request({}, budget, '/api/auth/session'), { code: 'destination' });
+});
+
+/** Mock real framed transport, proving that native witnesses require a genuine incoming error frame. */
+test('native context witness records only recognized opted-in inbound errors and counts commands', async () => {
+  const n = require('../authentication-preparation-scoped-native-contract.cjs');
+  for (const recognized of [true, false]) {
+    const root = new n.NativeLedger(0, 480000, () => 1000); const budget = new n.NativeBudget(root, n.CASES[0]);
+    const socket = new EventEmitter(); socket.terminate = () => {};
+    socket.send = bytes => {
+      const request = JSON.parse(bytes);
+      queueMicrotask(() => socket.emit('message', Buffer.from(JSON.stringify({ id: request.id, sessionId: request.sessionId,
+        ...(recognized ? { error: { code: -32000, message: 'Execution context was destroyed.' } } : { result: { result: { value: false } } }) }))));
+    };
+    const owner = { socket, cdp: new CdpConnection(socket, budget) };
+    const instrument = vm.runInNewContext(`(${s.nativeController.toString()})`, {
+      c, MESSAGE_BYTES: 65536, syntheticOwners: { get: () => ({ origin: n.ORIGIN, navigation: null }) },
+    });
+    instrument(owner, budget);
+    assert.equal((await owner.cdp.send('Runtime.evaluate', { expression: 'false' }, 'page', false, { contextLossAsFalse: true })).result.value, false);
+    assert.equal(owner.native.contextLoss, recognized ? 1 : 0); assert.equal(root.totals.commands, 1);
+    owner.cdp.close();
+  }
+});
+
+/** Exercise the pinned Playwright seam with mocked native transport, including commands sent during attachment. */
+test('synthetic Playwright counts internal CDP commands before dispatch and bounds incoming protocol', async () => {
+  const n = require('../authentication-preparation-scoped-native-contract.cjs');
+  for (const mode of ['pass', 'commands', 'pending', 'message', 'late', 'unavailable']) {
+    const root = new n.NativeLedger(0, 480000, () => 1000); const budget = new n.NativeBudget(root, n.CASES[0]);
+    const owner = { port: 23456, endpoint: '/devtools/browser/synthetic' }; const ws = new EventEmitter(); ws._receiver = {};
+    let received = 0; let sent = 0; let restored = false;
+    const transport = { _ws: ws, _progress: { log: () => assert.fail('raw log') },
+      send: () => { sent++; }, close: () => { ws.emit('close'); } };
+    /** Model the server's protocol setup after the adapter receives ownership but before any command. */
+    const original = async (_progress, current) => {
+      assert.equal(current._ws._receiver._maxPayload, 65536); assert.equal(current._progress, null);
+      current.onmessage = () => { received++; };
+      if (mode === 'commands') root.totals.commands = 2048;
+      if (mode === 'pending') {
+        for (let id = 1; id <= 33; id++) current.send({ id, method: 'Browser.getVersion', params: {} });
+      } else current.send({ id: 1, method: 'Browser.getVersion', params: {} });
+      if (mode === 'message') current.onmessage({ id: 1, result: { value: 'x'.repeat(65536) } });
+      else if (mode === 'late') { budget.stop('cancelled'); current.send({ id: 2, method: 'Browser.getVersion', params: {} }); }
+      else current.onmessage({ id: 1, result: {} });
+      return {};
+    };
+    const impl = { _connectOverCDPImpl: original }; const runtime = { chromium: {} };
+    runtime.chromium._connection = { toImpl: () => mode === 'unavailable' ? {} : impl };
+    runtime.chromium.connectOverCDP = async () => impl._connectOverCDPImpl(null, transport);
+    const connect = vm.runInNewContext(`(${s.nativePlaywright.toString()})`, {
+      c, Buffer, setTimeout, clearTimeout, MESSAGE_BYTES: 65536, syntheticOwners: { has: () => true },
+    });
+    try {
+      if (['commands', 'pending', 'late', 'unavailable'].includes(mode)) await assert.rejects(connect(owner, budget, runtime));
+      else await connect(owner, budget, runtime);
+      restored = impl._connectOverCDPImpl === original;
+      if (mode === 'pass') { assert.equal(sent, 1); assert.equal(received, 1); assert.equal(root.totals.commands, 1); }
+      if (mode === 'message') { assert.equal(received, 0); assert.equal(budget.failure, 'observation'); }
+      if (mode === 'commands') assert.equal(sent, 0);
+      if (mode === 'pending') assert.equal(sent, 32);
+      if (mode === 'late') assert.equal(sent, 1);
+      assert.equal(restored, true);
+    } finally { transport.close(); }
+  }
+});
+
+test('Playwright closure clears pending timers, blocks late dispatch and restores its attachment hook on failure', async () => {
+  const n = require('../authentication-preparation-scoped-native-contract.cjs');
+  for (const mode of ['unexpected', 'normal', 'attach-failure', 'timeout']) {
+    const root = new n.NativeLedger(0, 480000, () => 1000); const budget = new n.NativeBudget(root, n.CASES[0]);
+    const owner = { port: 23456, endpoint: '/devtools/browser/synthetic' }; const ws = new EventEmitter(); ws._receiver = {};
+    const timers = new Set(); let sent = 0; let received = 0;
+    const transport = { _ws: ws, send: () => { sent++; }, close: () => ws.emit('close') };
+    /** Send through the real wrapper and simulate only transport completion or attachment rejection. */
+    const original = async (_progress, current) => {
+      current.onmessage = () => { received++; };
+      if (mode === 'normal') { owner.nativeClosing = true; budget.stop('cancelled'); }
+      current.send({ id: 1, method: mode === 'normal' ? 'Browser.close' : 'Browser.getVersion', params: {} });
+      assert.equal(timers.size, 1);
+      if (mode === 'attach-failure') throw new c.PreparationError('operation');
+      if (mode === 'timeout') [...timers][0](); else current.close();
+      current.onmessage({ id: 1, result: {} });
+      assert.equal(timers.size, 0); assert.equal(received, 0);
+      assert.throws(() => current.send({ id: 2, method: 'Browser.close', params: {} }));
+      return {};
+    };
+    const impl = { _connectOverCDPImpl: original }; const runtime = { chromium: { _connection: { toImpl: () => impl } } };
+    runtime.chromium.connectOverCDP = async () => impl._connectOverCDPImpl(null, transport);
+    const connect = vm.runInNewContext(`(${s.nativePlaywright.toString()})`, {
+      c, Buffer, MESSAGE_BYTES: 65536, syntheticOwners: { has: () => true },
+      setTimeout: callback => { timers.add(callback); return callback; }, clearTimeout: timer => timers.delete(timer),
+    });
+    if (mode === 'attach-failure') await assert.rejects(connect(owner, budget, runtime), { code: 'operation' });
+    else await connect(owner, budget, runtime);
+    assert.equal(impl._connectOverCDPImpl, original); assert.equal(timers.size, 0); assert.equal(sent, 1);
+    assert.equal(budget.failure, mode === 'normal' ? 'cancelled' : mode === 'timeout' ? 'deadline' : 'observation');
+  }
+});
+
+test('failed Playwright attachment retires its transport before owned raw normal-close recovery', async () => {
+  const calls = []; const owner = { restart: true, child: { exitCode: null },
+    nativeTransport: { close: () => calls.push('retire-transport') } };
+  const close = vm.runInNewContext(`(${s.close.toString()})`, {
+    c, Date: { now: () => 1000 }, syntheticOwners: { has: () => true }, ownerRecord: value => ({ closed: value.closed }),
+    attachment: async (_owner, _budget, cleanupOnly) => { assert.equal(cleanupOnly, true); calls.push('attachment'); },
+    connectController: async (value, _budget, cleanupOnly) => {
+      assert.equal(cleanupOnly, true); assert.equal(value.nativeClosing, true); calls.push('connect');
+      value.cdp = { close: () => calls.push('close-controller'), send: async (method, _params, _session, cleanup) => {
+        assert.equal(method, 'Browser.close'); assert.equal(cleanup, true); calls.push('normal-close'); value.child.exitCode = 0;
+      } };
+    },
+  });
+  assert.equal((await close(owner, { end: 5000 })).closed, true);
+  assert.deepEqual(calls, ['retire-transport', 'attachment', 'connect', 'normal-close', 'close-controller']);
 });
 
 test('deployment drift stops before Chrome and retains the failed metadata reservation', async () => {
