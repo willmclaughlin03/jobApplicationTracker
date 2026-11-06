@@ -151,14 +151,15 @@ class NativeLedger {
     this.cleanupFailed = false; this.destinationReason = null;
     this.totals = Object.fromEntries(Object.keys(totalsSchema.shape).map(key => [key, 0]));
   }
-  /** Latch a global violation and abort the currently active case immediately. */
+  /** Promote an active case's original cause through generic stops before cleanup retires its attribution. */
   stop(code) {
-    if (!this.failure) {
-      this.failure = code;
-      this.destinationReason = code === 'destination'
+    const failure = code === 'stopped' ? this.active?.failure || code : code;
+    if (!this.failure || (this.failure === 'stopped' && code === 'stopped')) {
+      this.failure = failure;
+      this.destinationReason = failure === 'destination'
         ? this.destinationReason || (this.active?.failure === 'destination' ? this.active.destinationReason : null) : null;
     }
-    this.active?.stop(code);
+    this.active?.stop(failure);
   }
   /** Attribute a root guard before abort callbacks; an earlier root or case failure keeps its original meaning. */
   destination(reason) {
