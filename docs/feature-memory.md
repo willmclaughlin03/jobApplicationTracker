@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-11-01
 
+- `2026-11-07` - `Startup validation assertion coverage`: Supply valid preparation plan/build inputs so the startup record reaches authentication-receipt validation, and assert the specific preparation, receipt, expiry and approval error codes. All 159 focused tests, targeted lint and whitespace checks passed.
+
 - `2026-11-05` - `Bounded startup observation for scoped authentication`: Add a separately reviewed single-use startup runner with one pinned Chrome launch, two blank pages, a 15-second observation window and permanently closed proxy forwarding. Bind exact sources/tools/paths and smaller cumulative budgets, retain categorical first-failure evidence, and independently verify process/listener closure and profile preservation after worker exit. Document the required decision after one approved attempt, with no automatic retry or follow-on diagnostic. All 357 related offline tests, syntax, focused lint, whitespace, documentation and provenance checks passed. No native or hosted exercise ran; native capabilities remain unqualified and GATE-1 remains open.
 
 - `2026-11-05` - `Scoped native failure promotion`: Promote the active case's original failure and destination reason through generic stopped checks before cleanup retires its budget, then retain the promoted category in the attempt receipt and worker result. Three new mocked regressions cover real proxy callbacks, an already stopped root, earlier cancellation/deadline failures and retired-case isolation. All 318 related offline tests, focused lint and whitespace checks pass. No native or hosted exercise ran; GATE-1 remains open.

@@ -102,7 +102,9 @@ test('startup reserves before activity, waits the full spawn window and closes b
   assert.deepEqual(Object.keys(f.state.records), ['attempt.json']); assert.equal(f.state.cancel, null);
   assert.throws(() => c.validateQualification(record, HASH, {}, {}), { code: 'coverage_unqualified' });
   assert.throws(() => n.validateAttempt(record), { code: 'receipt' });
-  assert.throws(() => d.validatePreparation(record));
+  const plan = { buildId: 'offline-synthetic-build' };
+  const build = { phase: 'passed', target: d.TARGET, buildId: plan.buildId, requests: { application: 1, static: 0, session: 0 } };
+  assert.throws(() => d.validatePreparation(plan, build, record), { code: 'preparation_missing' });
 });
 
 /** Closed forwarding must remain closed even if a caller mistakenly invokes the inherited open method. */
@@ -246,9 +248,10 @@ test('startup review rejects drift, expiry, extra keys and invalid templates', a
   for (const key of Object.keys(f.binding)) {
     await assert.rejects(q.loadReview(HASH, { ...deps, bindings: async () => ({ ...f.binding, [key]: 'b'.repeat(64) }) }), { code: 'integrity' });
   }
-  for (const update of [{ approvedAt: 0, expiresAt: 0 }, { expiresAt: 1000 }, { approvedAt: 1001 }, { expiresAt: 3600002 }, { force: true }]) {
-    assert.throws(() => n.validateStartupReview({ ...f.review, ...update }, 1000));
+  for (const update of [{ approvedAt: 0, expiresAt: 0 }, { expiresAt: 1000 }, { approvedAt: 1001 }, { expiresAt: 3600002 }]) {
+    assert.throws(() => n.validateStartupReview({ ...f.review, ...update }, 1000), { code: 'expired' });
   }
+  assert.throws(() => n.validateStartupReview({ ...f.review, force: true }, 1000), { code: 'approval' });
   assert.throws(() => n.validateStartupReview({ ...f.review, expiresAt: 180999 }, 1000, true), { code: 'expired' });
   await assert.rejects(q.main(['--startup-worker', HASH, '1000']), { code: 'approval' });
   await assert.rejects(q.main(['--execute-native', HASH]), { code: 'arguments' });
@@ -338,10 +341,10 @@ test('startup receipts reject private keys, contradictory claims and qualificati
   const f = await postflightFixture(context); await f.finalize(); const attempt = f.state.records['attempt.json'];
   for (const update of [{ url: 'private' }, { firstFailure: 'destination' }, { destinationReason: 'raw-host' },
     { pagesReady: 1 }, { cleanup: false }, { readyAt: null }, { readyAt: 16000 }, { browserTrafficMeasured: true }, { hostedQualified: true }]) {
-    assert.throws(() => n.validateStartupAttempt({ ...attempt, ...update }));
+    assert.throws(() => n.validateStartupAttempt({ ...attempt, ...update }), { code: 'receipt' });
   }
   const postflight = f.state.records['postflight.json'];
-  assert.throws(() => n.validateStartupPostflight({ ...postflight, checks: { ...postflight.checks, processAbsent: false } }));
-  assert.throws(() => n.validateStartupPostflight({ ...postflight, finalization: 'passed' }));
+  assert.throws(() => n.validateStartupPostflight({ ...postflight, checks: { ...postflight.checks, processAbsent: false } }), { code: 'receipt' });
+  assert.throws(() => n.validateStartupPostflight({ ...postflight, finalization: 'passed' }), { code: 'receipt' });
   await assert.rejects(p.writeStartup('native-qualification.json', attempt), { code: 'receipt' });
 });
