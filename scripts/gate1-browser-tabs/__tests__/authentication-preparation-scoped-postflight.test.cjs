@@ -107,9 +107,13 @@ test('native exclusive completion writes require successful fsync and close', as
   }
   // Reject an attempt to redirect the new writer into consumed evidence before any file is opened.
   for (const historical of [n.DIRECTORY.replace('native-02', 'native-01'), n.STARTUP_DIRECTORY]) {
+    let opened = false;
     await assert.rejects(p.writeNative('native-completion.json', record, {
-      realpath: async () => historical, open: async () => assert.fail('historical evidence must not be written'),
+      realpath: async () => historical,
+      /** Record unexpected opens so receipt error conversion cannot hide a realpath guard regression. */
+      open: async () => { opened = true; throw new Error('unexpected open'); },
     }), { code: 'receipt' });
+    assert.equal(opened, false, 'historical evidence must not be written');
   }
 });
 

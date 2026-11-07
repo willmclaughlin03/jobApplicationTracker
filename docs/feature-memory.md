@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-11-01
 
+- `2026-11-07` - `Historical native-path write guard coverage`: Track unexpected file opens and assert afterward that both historical destinations are rejected before opening. All 20 postflight tests passed; in-memory guard bypasses confirmed the old assertions missed both regressions and the updated assertions catch them.
+
 - `2026-11-07` - `Bounded synthetic launch-denial policy`: Add an explicit synthetic-only exception for blocked, well-formed CONNECT authority denials during an owned attachment interval, capped at four per launch and sixteen cumulatively without forwarding or relaxing readiness. Bind policy and counters into native v2 reviews/attempts, select fresh native-02 paths and release native supervisor references at expiry without claiming exit. All 373 related offline tests, syntax, focused ESLint, whitespace and source/template checks passed. Historical startup hashes are unchanged; no new browser exercise ran, native-02 remains absent and GATE-1 remains open.
 
 - `2026-11-07` - `Startup expiry closure documentation`: Clarify that supervisor expiry skips postflight and does not confirm worker or Chrome exit; separate process and listener inspection is required to establish closure. Comment-only change; syntax, targeted lint and whitespace checks passed.
