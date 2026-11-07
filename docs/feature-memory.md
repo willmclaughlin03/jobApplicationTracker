@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-11-01
 
+- `2026-11-07` - `Startup expiry closure documentation`: Clarify that supervisor expiry skips postflight and does not confirm worker or Chrome exit; separate process and listener inspection is required to establish closure. Comment-only change; syntax, targeted lint and whitespace checks passed.
+
 - `2026-11-07` - `Startup supervisor deadline release`: Unreference the worker and remaining IPC channel at expiry so a stalled child cannot hold the parent CLI open. Preserve normal Chrome cleanup and require actual worker close before postflight. Two new expiry regressions and the strengthened close-ordering test pass with all 181 focused offline tests, targeted lint and whitespace checks.
 
 - `2026-11-07` - `Startup validation assertion coverage`: Supply valid preparation plan/build inputs so the startup record reaches authentication-receipt validation, and assert the specific preparation, receipt, expiry and approval error codes. All 159 focused tests, targeted lint and whitespace checks passed.

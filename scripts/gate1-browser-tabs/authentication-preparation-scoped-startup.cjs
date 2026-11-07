@@ -246,7 +246,11 @@ async function supervise(input, deps = {}) {
       const stop = () => { if (child.connected) child.send({ cancel: true }, () => {}); };
       cancelWorker = stop;
       const workTimer = setTimeout(stop, Math.max(1, end - n.STARTUP_LIMITS.cleanupMs - clock()));
-      /** Release parent event-loop references at expiry; the worker still owns normal Chrome closure. */
+      /**
+       * Release parent event-loop references at expiry; the worker still owns normal Chrome closure.
+       * Expiry rejects supervision and skips postflight; it does not confirm worker or Chrome exit.
+       * Inspect process and listener state separately to establish closure.
+       */
       const endTimer = setTimeout(() => {
         stop(); child.channel?.unref(); child.unref(); finish('expired');
       }, Math.max(1, end - clock()));

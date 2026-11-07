@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-11-07` - `Startup expiry comment omitted closure limits`: The callback comment described releasing parent references without explaining that expiry skips postflight and leaves worker/Chrome exit unconfirmed. Approach: document the existing behavior at the timeout boundary. Fix: state that process and listener state require separate inspection to establish closure. Syntax, targeted lint and whitespace checks passed; runtime behavior is unchanged.
+
 - `2026-11-07` - `Stalled startup worker kept the parent alive after expiry`: Deadline rejection left the child process and IPC channel referenced. Approach: release parent event-loop references without force-killing Chrome or accepting completion early. Fix: unref both handles at expiry and cover connected/disconnected IPC, late worker events and actual-close ordering. Both new regressions failed before the fix; all 181 focused offline tests, targeted lint and whitespace checks pass.
 
 - `2026-11-07` - `Startup rejection test stopped before receipt validation`: The preparation assertion omitted the build and authentication arguments, so it passed at the missing-build guard. Approach: reach the intended receipt guard and require categorical failures. Fix: supply matching synthetic plan/build inputs, pass the startup record as authentication evidence, and match preparation_missing, receipt, expired and approval in the corresponding assertions. All 159 focused tests, targeted lint and whitespace checks passed.
