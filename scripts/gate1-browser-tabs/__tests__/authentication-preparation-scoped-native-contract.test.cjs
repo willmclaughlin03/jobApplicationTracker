@@ -7,6 +7,58 @@ const c = require('../authentication-preparation-scoped-contract.cjs');
 const d = require('../hosted-csrf-diagnostic.cjs');
 const HASH = 'a'.repeat(64);
 
+/** Keep startup cumulative limits distinct while preserving the original full-matrix defaults. */
+test('startup accepts only its frozen single case and cannot borrow qualification budgets', () => {
+  const root = new n.NativeLedger(1000, 181000, () => 1000, 'startup');
+  assert.equal(root.deadline, 61000); assert.equal(root.end, 181000);
+  assert.throws(() => new n.NativeBudget(root, n.CASES[0]), { code: 'schema' });
+  assert.throws(() => new n.NativeBudget(root, { ...n.STARTUP_CASE }), { code: 'schema' });
+  const budget = new n.NativeBudget(root, n.STARTUP_CASE); budget.launch();
+  assert.equal(root.totals.launches, 1); assert.throws(() => budget.launch(), { code: 'budget' });
+  root.chrome--; root.finishCase(budget);
+  assert.throws(() => new n.NativeBudget(root, n.STARTUP_CASE), { code: 'schema' });
+  const qualification = new n.NativeLedger(1000, 481000, () => 1000);
+  assert.equal(qualification.limits, n.LIMITS); assert.equal(qualification.deadline, 361000);
+  assert.throws(() => new n.NativeBudget(qualification, n.STARTUP_CASE), { code: 'schema' });
+});
+
+/** Every forbidden admission fails before changing retained totals, with no refund or alternate bucket. */
+test('startup refuses all HTTP, request-client, body, fixture and tunnel admissions', () => {
+  for (const key of ['application', 'session', 'canonicalStatic', 'providerStatic', 'supabase', 'google', 'metadata',
+    'requestClient', 'proxyBytes', 'upstreamBytes', 'downstreamBytes', 'tunnelBytes', 'fixtureRequests', 'fixtureSession', 'fixtureProbe']) {
+    const root = new n.NativeLedger(1000, 181000, () => 1000, 'startup'); new n.NativeBudget(root, n.STARTUP_CASE);
+    assert.throws(() => root.charge({ [key]: 1 }), { code: 'budget' }); assert.equal(root.failure, 'budget'); assert.equal(root.totals[key], 0);
+  }
+});
+
+/** Work cannot spend the four cleanup slots, and cleanup cannot spend more than its own allotment. */
+test('startup reserves four of sixty-four CDP commands for cleanup and at most two controllers', () => {
+  const root = new n.NativeLedger(1000, 181000, () => 1000, 'startup'); const budget = new n.NativeBudget(root, n.STARTUP_CASE);
+  for (let index = 0; index < 60; index++) budget.command();
+  assert.throws(() => budget.command(), { code: 'budget' }); assert.equal(root.totals.commands, 60);
+  for (let index = 0; index < 4; index++) budget.command(true);
+  assert.equal(root.totals.commands, 64); assert.equal(root.totals.cleanupCommands, 4);
+  assert.throws(() => budget.command(true), { code: 'budget' });
+  budget.controller(true); budget.controller(true); assert.throws(() => budget.controller(true), { code: 'budget' });
+  assert.equal(root.totals.controllerConnections, 2);
+  const early = new n.NativeBudget(new n.NativeLedger(1000, 181000, () => 1000, 'startup'), n.STARTUP_CASE);
+  for (let index = 0; index < 4; index++) early.command(true);
+  assert.throws(() => early.command(true), { code: 'budget' });
+});
+
+/** Concurrency release never resets accepted connections, and source/root attribution latches before cleanup. */
+test('startup enforces sixteen connections, four concurrent and first-stage attribution', () => {
+  const root = new n.NativeLedger(1000, 181000, () => 1000, 'startup'); const budget = new n.NativeBudget(root, n.STARTUP_CASE);
+  for (let index = 0; index < 16; index++) { budget.connection(); budget.connectionClosed(); }
+  assert.throws(() => budget.connection(), { code: 'budget' }); assert.equal(root.totals.proxyConnections, 16);
+  const second = new n.NativeLedger(1000, 181000, () => 1000, 'startup'); const next = new n.NativeBudget(second, n.STARTUP_CASE);
+  for (let index = 0; index < 4; index++) next.connection();
+  assert.throws(() => next.connection(), { code: 'budget' }); assert.equal(second.connections, 4);
+  const attributed = new n.NativeLedger(1000, 181000, () => 1000, 'startup'); const active = new n.NativeBudget(attributed, n.STARTUP_CASE);
+  attributed.stage = 'launch'; active.destination('proxy_authority'); attributed.stage = 'closure'; active.destination('fixture_host');
+  assert.equal(attributed.failureStage, 'launch'); assert.equal(attributed.destinationReason, 'proxy_authority');
+});
+
 /** Build an in-memory review only; it is never saved or supplied to the native CLI. */
 function review() {
   return { sourceSet: HASH, decisionHash: HASH, toolSet: HASH, certificateHash: HASH, keyHash: HASH,
