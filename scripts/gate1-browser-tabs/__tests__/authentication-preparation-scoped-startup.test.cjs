@@ -325,6 +325,7 @@ test('startup expiry during postflight fsync cannot issue a finalized result', a
 test('startup supervisor waits for actual worker close and rejects duplicate IPC as completion', async context => {
   context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1000 });
   const child = new EventEmitter(); child.connected = true; let cancellations = 0; child.send = () => { cancellations++; };
+  child.unref = context.mock.fn(); child.channel = { unref: context.mock.fn() };
   const signals = new EventEmitter(); let finalized = false;
   const pending = q.supervise(input(), { clock: Date.now, signals, spawn: (exe, args, options) => {
     assert.equal(exe, process.execPath); assert.equal(args[1], '--startup-worker'); assert.equal(options.windowsHide, true);
@@ -332,9 +333,37 @@ test('startup supervisor waits for actual worker close and rejects duplicate IPC
   }, finalize: async worker => { finalized = true; assert.equal(worker.valid, false); assert.equal(worker.exitCode, 0); return { outcome: 'incomplete' }; } });
   child.emit('message', { scope: 'scoped_authentication_startup_worker', attemptHash: HASH });
   child.emit('message', { scope: 'scoped_authentication_startup_worker', attemptHash: HASH });
-  await setImmediate(); assert.equal(finalized, false); assert.equal(cancellations, 1); child.emit('close', 0);
+  child.emit('exit', 0); await setImmediate(); assert.equal(finalized, false); assert.equal(cancellations, 1); child.emit('close', 0);
   assert.equal((await pending).outcome, 'incomplete'); assert.equal(signals.listenerCount('SIGINT'), 0);
+  assert.equal(child.unref.mock.callCount(), 0); assert.equal(child.channel.unref.mock.callCount(), 0);
 });
+
+for (const connected of [true, false]) {
+  /** Expiry releases only parent handles; IPC, exit and late close cannot finalize a stalled worker. */
+  test(`startup expiry unreferences a stalled worker with IPC connected=${connected}`, async context => {
+    context.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1000 });
+    const child = new EventEmitter(); child.connected = connected;
+    child.send = context.mock.fn(); child.unref = context.mock.fn();
+    child.kill = context.mock.fn(); child.disconnect = context.mock.fn();
+    child.channel = connected ? { unref: context.mock.fn() } : null;
+    const signals = new EventEmitter(); const finalize = context.mock.fn();
+    const pending = q.supervise(input(), { clock: Date.now, signals, spawn: () => child, finalize });
+    const rejected = assert.rejects(pending, { code: 'expired' });
+    child.emit('message', { scope: 'scoped_authentication_startup_worker', attemptHash: HASH });
+    child.emit('exit', 0); await setImmediate(); assert.equal(finalize.mock.callCount(), 0);
+    context.mock.timers.tick(n.STARTUP_LIMITS.wholeMs - n.STARTUP_LIMITS.cleanupMs);
+    assert.equal(child.send.mock.callCount(), connected ? 1 : 0); assert.equal(child.unref.mock.callCount(), 0);
+    if (connected) assert.equal(child.channel.unref.mock.callCount(), 0);
+    context.mock.timers.tick(n.STARTUP_LIMITS.cleanupMs); await rejected;
+    assert.equal(child.send.mock.callCount(), connected ? 2 : 0); assert.equal(child.unref.mock.callCount(), 1);
+    if (connected) assert.equal(child.channel.unref.mock.callCount(), 1);
+    assert.equal(child.kill.mock.callCount(), 0); assert.equal(child.disconnect.mock.callCount(), 0);
+    assert.equal(signals.listenerCount('SIGINT'), 0); assert.equal(signals.listenerCount('SIGTERM'), 0);
+    child.emit('message', { scope: 'scoped_authentication_startup_worker', attemptHash: HASH });
+    child.emit('error', new Error('late worker error')); child.emit('close', 0); await setImmediate();
+    assert.equal(finalize.mock.callCount(), 0); assert.equal(child.unref.mock.callCount(), 1);
+  });
+}
 
 /** Source or private-field substitutions cannot pass either diagnostic evidence validator. */
 test('startup receipts reject private keys, contradictory claims and qualification promotion', async context => {

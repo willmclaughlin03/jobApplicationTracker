@@ -246,7 +246,10 @@ async function supervise(input, deps = {}) {
       const stop = () => { if (child.connected) child.send({ cancel: true }, () => {}); };
       cancelWorker = stop;
       const workTimer = setTimeout(stop, Math.max(1, end - n.STARTUP_LIMITS.cleanupMs - clock()));
-      const endTimer = setTimeout(() => { stop(); finish('expired'); }, Math.max(1, end - clock()));
+      /** Release parent event-loop references at expiry; the worker still owns normal Chrome closure. */
+      const endTimer = setTimeout(() => {
+        stop(); child.channel?.unref(); child.unref(); finish('expired');
+      }, Math.max(1, end - clock()));
       /** Resolve only on real worker close; missing/duplicate IPC remains invalid for independent postflight. */
       function finish(error, exitCode) {
         if (finished) return; finished = true; clearTimeout(workTimer); clearTimeout(endTimer); cancelWorker = () => {};
