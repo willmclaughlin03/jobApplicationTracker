@@ -62,7 +62,7 @@ test('startup enforces sixteen connections, four concurrent and first-stage attr
 /** Build an in-memory review only; it is never saved or supplied to the native CLI. */
 function review() {
   return { sourceSet: HASH, decisionHash: HASH, toolSet: HASH, certificateHash: HASH, keyHash: HASH,
-    scope: 'scoped-authentication-native-execution-review-v1', operator: 'Codex', owner: 'project-owner',
+    scope: 'scoped-authentication-native-execution-review-v2', launchPolicy: { ...n.LAUNCH_POLICY }, operator: 'Codex', owner: 'project-owner',
     directory: n.DIRECTORY, command: 'node scripts/gate1-browser-tabs/authentication-preparation-scoped-native.cjs --execute-native <execution-review-sha256>',
     cases: structuredClone(n.CASES), limits: { ...n.LIMITS }, spki: n.SPKI, profiles: [...n.PROFILES], ports: [...n.PORTS], approvedAt: 0, expiresAt: 480000 };
 }
@@ -227,4 +227,54 @@ test('every mandatory check requires all predetermined native and labeled fault 
   }
   const copy = structuredClone(results); copy[4].mode = 'native'; assert.throws(() => n.qualificationChecks(copy));
   assert.throws(() => n.qualificationChecks(results.slice(1)));
+});
+
+/** A changed exception, old approval or consumed path cannot authorize the new synthetic attempt. */
+test('native v2 review binds the exact launch policy and fresh paths', () => {
+  assert.match(n.DIRECTORY, /scoped-native-02$/);
+  for (const change of [value => { value.scope = 'scoped-authentication-native-execution-review-v1'; },
+    value => { delete value.launchPolicy; }, value => { value.launchPolicy.id = 'other'; },
+    value => { value.launchPolicy.perLaunch++; }, value => { value.launchPolicy.cumulative++; },
+    value => { value.launchPolicy.force = true; }, value => { value.directory = value.directory.replace('native-02', 'native-01'); },
+    value => { value.profiles[0] = value.profiles[0].replace('native-02', 'native-01'); }]) {
+    const value = review(); change(value); assert.throws(() => n.validateReview(value, 1000), { code: 'approval' });
+  }
+});
+
+/** Supply aggregate stopped evidence without creating an execution review or any native resources. */
+function stoppedAttempt() {
+  const root = new n.NativeLedger(1000, 481000, () => 1000); const budget = new n.NativeBudget(root, n.CASES[0]);
+  budget.launch(); budget.connection(); const interval = budget.beginLaunchInterval(); budget.launchDenial(interval);
+  budget.endLaunchInterval(interval);
+  return { sourceSet: HASH, decisionHash: HASH, toolSet: HASH, certificateHash: HASH, keyHash: HASH,
+    schemaVersion: 2, scope: 'scoped_authentication_native_attempt', reviewHash: HASH, startedAt: 1000, completedAt: 2000,
+    phase: 'stopped', firstFailure: 'cancelled', completedCases: 0, cleanup: false,
+    launchPolicy: { ...n.LAUNCH_POLICY }, launchDenials: structuredClone(root.launchDenials), totals: root.totals, traffic: root.traffic(),
+    browserTrafficMeasured: false, hostedQualified: false, gate1Status: 'open', backgroundHttp: 'unknown' };
+}
+
+/** Reject fabricated tolerance, private fields and inconsistent arithmetic before qualification can consume the attempt. */
+test('native attempt policy evidence reconciles per-launch and cumulative charges against connections', () => {
+  n.validateAttempt(stoppedAttempt());
+  for (const change of [value => { value.schemaVersion = 1; }, value => { delete value.launchPolicy; },
+    value => { value.launchPolicy.perLaunch = 5; }, value => { delete value.launchDenials; },
+    value => { value.launchDenials.total = 2; }, value => { value.launchDenials.perLaunch = []; },
+    value => { value.launchDenials.perLaunch = [0, 1]; }, value => { value.launchDenials.perLaunch = [5]; value.launchDenials.total = 5; },
+    value => { value.launchDenials.perLaunch = [4, 4, 4, 4, 1]; value.launchDenials.total = 17; value.totals.launches = 5; value.totals.proxyConnections = 17; },
+    value => { value.totals.proxyConnections = 0; }, value => { value.launchDenials.authority = 'private.test:443'; },
+    value => { value.launchDenials.perLaunch = [-1]; }, value => { value.launchDenials.perLaunch = [0.5]; }]) {
+    const value = stoppedAttempt(); change(value); assert.throws(() => n.validateAttempt(value), { code: 'receipt' });
+  }
+});
+
+/** Native-only accounting cannot silently extend the consumed startup review, totals or attempt schemas. */
+test('startup remains strict and has no inherited launch-denial policy fields', () => {
+  const root = new n.NativeLedger(1000, 181000, () => 1000, 'startup'); const budget = new n.NativeBudget(root, n.STARTUP_CASE);
+  budget.launch(); assert.equal(root.launchDenials, undefined);
+  assert.equal(Object.hasOwn(n.STARTUP_LIMITS, 'launchPolicy'), false);
+  assert.equal(Object.hasOwn(n.startupReviewSchema.shape, 'launchPolicy'), false);
+  assert.equal(Object.hasOwn(n.startupAttemptSchema.shape, 'launchDenials'), false);
+  assert.equal(Object.hasOwn(n.startupTotalsSchema.shape, 'launchDenials'), false);
+  assert.match(n.STARTUP_DIRECTORY, /scoped-startup-01$/);
+  assert.throws(() => budget.beginLaunchInterval(), { code: 'approval' });
 });

@@ -23,7 +23,8 @@ async function bindings() {
 
 /** Emit an invalid-until-approved template in memory; never create execution inputs or grant approval. */
 async function reviewTemplate() {
-  return { ...await bindings(), scope: 'scoped-authentication-native-execution-review-v1', operator: 'Codex', owner: 'project-owner',
+  return { ...await bindings(), scope: 'scoped-authentication-native-execution-review-v2', launchPolicy: n.LAUNCH_POLICY,
+    operator: 'Codex', owner: 'project-owner',
     directory: n.DIRECTORY, command: 'node scripts/gate1-browser-tabs/authentication-preparation-scoped-native.cjs --execute-native <execution-review-sha256>',
     cases: n.CASES, limits: n.LIMITS, spki: n.SPKI, profiles: n.PROFILES, ports: n.PORTS, approvedAt: 0, expiresAt: 0 };
 }
@@ -71,7 +72,17 @@ async function listenersAbsent(probe = null) {
 async function launchOwned(context, restart = false) {
   const { budget, adapter, owners, proxy } = context;
   const owner = { profile: n.profile(context.item.id), restart, closed: false }; budget.launch(); owners.push(owner);
-  await s.step(budget, () => adapter.launch(owner, proxy, budget), n.LIMITS.attachmentMs); return owner;
+  const interval = proxy.beginLaunchInterval();
+  try {
+    /** Retire on adapter settlement as well as step cancellation; late settlements retain their original token. */
+    await s.step(budget, async () => {
+      try {
+        await adapter.launch(owner, proxy, budget);
+        budget.require(budget.clock() < interval.deadline, 'deadline');
+      } finally { proxy.endLaunchInterval(interval); }
+    }, n.LIMITS.attachmentMs);
+    return owner;
+  } finally { proxy.endLaunchInterval(interval); }
 }
 
 /** Stop observation only after its positive summary or an already stopped negative case, then close normally. */
@@ -242,7 +253,8 @@ async function browserCase(item, root, fixtures, deps = {}) {
   } };
   budget.abort.signal.addEventListener('abort', abort, { once: true });
   try {
-    context.proxy = deps.proxy ? deps.proxy(budget) : new ScopedProxy(budget, { synthetic: 'fixtures' }); await s.step(budget, () => context.proxy.start());
+    context.proxy = deps.proxy ? deps.proxy(budget) : new ScopedProxy(budget, { synthetic: 'fixtures', launchPolicy: n.LAUNCH_POLICY });
+    await s.step(budget, () => context.proxy.start());
     witnesses = await (item.id === 'lifecycle' ? lifecycle(context) : item.id === 'restored-worker' ? restoredWorker(context) : negativeCase(context));
     c.check(budget.failure === item.expected && Object.values(witnesses).every(value => value === true), 'coverage_unqualified');
   } catch (caught) { error = caught; root.stop(c.errorCode(caught)); }
@@ -318,7 +330,8 @@ async function run(input, startedAt, deps = dependencies()) {
     clearTimeout(timer); removeCancel();
   }
   if (!cleanup || root.cleanupFailed || root.chrome !== 0 || root.connections !== 0) { cleanup = false; error ||= new c.PreparationError('closure'); }
-  const common = { ...input.binding, schemaVersion: 1, scope: 'scoped_authentication_native_attempt', reviewHash: input.reviewHash,
+  const common = { ...input.binding, schemaVersion: 2, scope: 'scoped_authentication_native_attempt', reviewHash: input.reviewHash,
+    launchPolicy: n.LAUNCH_POLICY, launchDenials: { total: root.launchDenials.total, perLaunch: [...root.launchDenials.perLaunch] },
     startedAt, completedAt: root.clock(), totals: { ...root.totals }, traffic: root.traffic(), browserTrafficMeasured: false, hostedQualified: false,
     gate1Status: 'open', backgroundHttp: 'unknown' };
   const record = error ? { ...common, phase: c.errorCode(error) === 'coverage_unqualified' ? 'inconclusive' : 'stopped',
@@ -389,7 +402,10 @@ async function supervise(input, deps = {}) {
       const cancel = () => { if (child.connected) child.send({ cancel: true }, () => {}); };
       cancelWorker = cancel;
       const workTimer = setTimeout(cancel, Math.max(1, deadline - n.LIMITS.cleanupMs - clock()));
-      const endTimer = setTimeout(() => { cancel(); finish('expired'); }, Math.max(1, deadline - clock()));
+      const endTimer = setTimeout(() => {
+        // Releasing parent references establishes neither worker nor Chrome exit; expiry cannot finalize.
+        cancel(); child.channel?.unref(); child.unref(); finish('expired');
+      }, Math.max(1, deadline - clock()));
       /** Finish once and remove worker timers; operator signals remain active until finalization settles. */
       function finish(error, code) {
         if (finished) return; finished = true; clearTimeout(workTimer); clearTimeout(endTimer);

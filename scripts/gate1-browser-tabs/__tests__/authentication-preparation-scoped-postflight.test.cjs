@@ -71,11 +71,14 @@ test('startup evidence writes are strict exclusive and preserve write sync and c
 /** Keep metadata-only native profile checks separate from live wrapper acceptance. */
 test('native closure paths never weaken exact live profile and evidence guards', async () => {
   const n = require('../authentication-preparation-scoped-native-contract.cjs'); const profile = n.PROFILES[0];
+  assert.match(n.DIRECTORY, /scoped-native-02$/);
   const io = { lstat: async () => ({ isDirectory: () => true, isSymbolicLink: () => false }), realpath: async value => value, access: async () => {} };
   assert.equal(await p.nativeProfile(profile, io), true);
   await assert.rejects(p.profilePreserved(profile, io), { code: 'profile' });
   await assert.rejects(p.nativeProfile(d.PROFILE, io), { code: 'profile' });
   await assert.rejects(p.nativeProfile(`${profile}/other`, io), { code: 'profile' });
+  await assert.rejects(p.nativeProfile(profile.replace('native-02', 'native-01'), io), { code: 'profile' });
+  await assert.rejects(p.nativeProfile(n.STARTUP_PROFILE, io), { code: 'profile' });
   await assert.rejects(p.writeExclusive(require('node:path').join(n.DIRECTORY, 'attempt.json'), {}), { code: 'receipt' });
   await assert.rejects(p.writeNative('execution-review.json', {}), { code: 'receipt' });
   await assert.rejects(p.readNative('../attempt.json'), { code: 'receipt' });
@@ -101,6 +104,12 @@ test('native exclusive completion writes require successful fsync and close', as
     if (failure) await assert.rejects(p.writeNative('native-completion.json', record, io), { code: 'receipt' });
     else assert.match(await p.writeNative('native-completion.json', record, io), /^[a-f0-9]{64}$/);
     assert.equal(calls.at(-1), 'close');
+  }
+  // Reject an attempt to redirect the new writer into consumed evidence before any file is opened.
+  for (const historical of [n.DIRECTORY.replace('native-02', 'native-01'), n.STARTUP_DIRECTORY]) {
+    await assert.rejects(p.writeNative('native-completion.json', record, {
+      realpath: async () => historical, open: async () => assert.fail('historical evidence must not be written'),
+    }), { code: 'receipt' });
   }
 });
 

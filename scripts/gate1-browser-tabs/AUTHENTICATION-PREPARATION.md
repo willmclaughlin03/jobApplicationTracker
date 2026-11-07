@@ -319,8 +319,8 @@ matching mocked tests. Implementation and offline tests grant no native executio
 approval. Gate 1 remains open. The measurement decision, strict hosted consumer,
 legacy refusals, historical receipts and hosted ledger are unchanged.
 
-The only proposed attempt root is
-`.tmp/gate1-authentication-preparation-scoped-native-01/` in the main workspace,
+The only proposed fresh attempt root is
+`.tmp/gate1-authentication-preparation-scoped-native-02/` in the main workspace,
 independent of the source worktree. It must remain absent during implementation
 and mocked validation. A later, separate owner approval supplies exactly one
 `execution-review.json` in that otherwise empty real directory. The worker checks
@@ -412,6 +412,7 @@ results stop the whole attempt without retries or additional diagnostics.
 | Provider / hosted metadata | 0 / 0 |
 | Explicit request-client operations / accounted HTTP in flight | 8 included / 8 |
 | Proxy connections / concurrent | 256 / 8 |
+| Tolerated blocked authority denials per launch / cumulative | 4 / 16, only in the owned attachment interval |
 | Admitted upstream / downstream / combined payload | 4 / 12 / 16 MiB |
 | Parsed request-body bytes | 64 KiB |
 | Retained records / relevant events / total CDP commands | 256 / 8,192 / 2,048 |
@@ -455,6 +456,87 @@ proposing deployment/canonical-alias/build reconciliation, real authentication
 preparation or any hosted-consumer change. Synthetic qualification closes none of
 the remaining Gate 1 rows and adds nothing to the historical hosted request ledger.
 
+## Synthetic launch-denial policy (implementation only)
+
+The owner approved this nine-file implementation and offline validation after the
+one consumed November 7 startup observation. See the
+[measurement decision](../../docs/UIDesign/gate1-authentication-measurement-decision.md#synthetic-launch-exception-following-the-november-7-observation)
+for the evidence, acceptance and limitations. No further startup diagnostic is
+scheduled. Implementation approval does not authorize execution of native-02,
+authentication or hosted CSRF.
+
+The consumed startup observation rejected an owned CONNECT at the fixture authority
+guard during launch, about 2.7 seconds after Chrome spawned, before any ready pages.
+Three proxy connections were accepted and one authority was denied; no HTTP request,
+tunnel or payload was admitted. Its three `overLimit` entries were stopped/closing
+refusals, not demonstrated exhaustion of a numeric cap. Independent postflight
+completed successfully and matched the timely finalized supervisor result. The
+raw authority and originating component are unknown. This is not evidence of benign
+traffic or the root cause of historical native-01.
+
+Only the full native runner's fixture proxy opts into
+`synthetic-blocked-launch-authority-v1`. All other proxy construction stays strict,
+including the startup diagnostic, raw transport cases and real authentication.
+The exception changes whether a narrowly eligible blocked request stops the
+synthetic exercise; it never permits that request to connect upstream.
+
+An eligible request must be CONNECT on an owned unused socket accepted in the
+current launch interval, have no initial payload, and fail only fixture authority
+membership. Its authority must fit the bounded DNS/IPv4 or bracketed IPv6 host/port
+grammar, with port 1–65535, no leading-zero port, credentials, path, query, fragment,
+whitespace or control characters. Only categorical counts are retained. The socket
+is destroyed without an upstream connection, response or forwarded payload.
+
+The interval starts after the browser launch is reserved and registered for cleanup.
+It ends when the launch adapter finishes attachment, fails, is cancelled or reaches
+the existing ten-second attachment deadline. The shared ledger forbids overlapping
+intervals and reopening the same launch. Each socket retains its interval token;
+an old socket cannot borrow the next launch's allowance and stale completion cannot
+close its interval. Cleanup retires the interval. Closed forwarding during later
+request-client restart or restored-worker work does not enable the exception.
+
+At most four eligible denials per launch and sixteen cumulatively may be tolerated.
+Every accepted socket still consumes the unchanged connection allowance. Failed
+reservations do not refund earlier counts, renew clocks or reset between cases.
+Overflow stops the entire exercise. Invalid syntax, parser/method/ownership errors,
+initial payload on a disallowed CONNECT and out-of-interval denials remain fatal.
+Page/worker/request-client policy, readiness before forwarding, restored-worker
+observation and zero-origin witness, persistent cookies, request-client access and
+write-back, normal closure and independent process exit all remain required.
+
+The review scope is `scoped-authentication-native-execution-review-v2` and carries
+`launchPolicy:{id:'synthetic-blocked-launch-authority-v1',perLaunch:4,cumulative:16}`.
+Both passed and stopped native attempts use `schemaVersion:2`, the same exact
+`launchPolicy` and `launchDenials:{total,perLaunch}`. The ordered array has one count
+for every reserved launch, each at most four. Its sum must equal the total, which
+must be at most sixteen and no greater than accepted proxy connections. Unknown,
+private, missing or contradictory fields are rejected. The finalizer validates
+the attempt before writing completion or qualification; their existing attempt
+hash binding is unchanged. Old native reviews/attempts cannot authorize new writes
+or qualification. Startup limits, schemas, paths and strict policy remain separate.
+
+Preserve `.tmp/gate1-authentication-preparation-scoped-native-01/` and
+`.tmp/gate1-authentication-preparation-scoped-startup-01/` exactly as consumed,
+including profiles. The new writer uses only fixed native-02 paths, accepts no
+arbitrary path override and creates nothing during offline tests. Historical
+evidence remains interpretable with its original source; do not migrate its bytes
+or rewrite historical hashes to match this source set.
+
+At supervisor expiry, request worker cancellation, release child/IPC event-loop
+references and report expiry without finalization. Reference release is not worker
+exit, Chrome exit or successful closure. No force-kill is used; absent independent
+evidence, closure remains unconfirmed.
+
+Run all thirteen related offline test files, syntax checks for the seven changed
+CJS files, focused ESLint and `git diff --check`. Read-only source-hash and review
+template commands create no approval or execution artifacts. Verify preserved
+evidence hashes and that native-02 remains absent. A separate execution review
+must freeze current source/tool/TLS bindings, the existing full matrix, cumulative
+limits, expiry and closure/evidence acceptance before one native attempt. A result
+returns to a decision, not another automatic diagnostic. Even a synthetic pass
+does not establish real-authentication startup compatibility. Native capabilities
+remain unqualified until executed and accepted; Gate 1 remains open.
+
 ## Destination rejection attribution
 
 The one approved `scoped-native-01` attempt is consumed. Its retained receipt
@@ -468,7 +550,8 @@ New source-only attribution retains a nullable fixed-enum `destinationReason`
 in stopped native attempt receipts. Absence in historical schema-1 receipts and
 `null` in new receipts mean the reason is unavailable (or inapplicable when the
 first failure is not `destination`); neither can be filled from later callbacks.
-Successful receipts and worker IPC retain their existing strict shapes. The
+At that attribution-only revision, successful receipts and worker IPC retained
+their existing strict shapes. The new policy above versions native attempts; the
 supervisor still reports the original `firstFailure`, while the additional reason
 is available only in the stopped attempt receipt. A non-null reason requires
 `firstFailure:destination` and cannot establish qualification.
@@ -489,23 +572,27 @@ budget before generic callback error handling discards exception details. These
 reasons describe guards, not actual destination strings or protocol data. Nothing
 retains raw URLs, destination hashes, parser exceptions, headers, cookies or bodies.
 
-Destination policy, readiness denials, admission/byte counters, deadlines,
-single-use paths, evidence limits and qualification requirements are unchanged.
-The live proxy keeps its existing destination-only stop. The fixed native path
-remains consumed. Attribution alone supplies no replacement execution mode; the
-separately reviewed startup-only mechanism below has its own path and contract.
+Attribution alone did not change destination policy, readiness denials, counters,
+deadlines, evidence limits or qualification requirements. The live proxy keeps its
+existing destination-only stop. The historical native-01 path remains consumed.
+The separately reviewed startup-only mechanism below also remains consumed; the
+new synthetic policy above supplies the separately reviewable native-02 proposal.
 Mocks cover every reason, first-failure races, late callbacks, strict receipt
 validation, historical compatibility and blocked dispatch/qualification. They do
 not identify the historical rejection or establish native capabilities.
 
-Any further native observation requires a separate finite startup-diagnostic
-decision, an explicitly reviewed fresh single-use mechanism and execution
-approval. Do not rerun `native-01`, expand destinations or infer zero background
+The required finite startup observation has now occurred once. No further startup
+diagnostic is scheduled. Full native execution still requires its separate review
+and approval. Do not rerun `native-01`, expand destinations or infer zero background
 traffic. Gate 1 remains open; `browserTrafficMeasured` and `hostedQualified` remain
 false, and background HTTP remains unknown. Publication logs are updated only
 when a separate PR push is authorized.
 
-## One bounded startup decision
+## One bounded startup decision (consumed)
+
+The following describes the consumed startup-01 contract and its original review
+commands. Preserve its evidence and do not rerun it. The result and next policy
+decision are recorded above; no native capabilities were established by startup.
 
 The approved nine-file implementation adds
 [`authentication-preparation-scoped-startup.cjs`](./authentication-preparation-scoped-startup.cjs).
