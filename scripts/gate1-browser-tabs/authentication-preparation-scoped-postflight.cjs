@@ -40,7 +40,7 @@ async function inspectAbsence(readInventory = p.inventory) {
 /** Inspect the pinned executable or exact approved profile; no supplied shell text or storage is read. */
 async function inspectProfileAbsence(profilePath, readInventory = p.inventory) {
   const n = require('./authentication-preparation-scoped-native-contract.cjs');
-  c.check(profilePath === d.PROFILE || n.PROFILES.includes(profilePath), 'profile');
+  c.check(profilePath === d.PROFILE || n.PROFILES.includes(profilePath) || profilePath === n.STARTUP_PROFILE, 'profile');
   const executable = fixture.fixtureExecutable('cft158').replaceAll('/', '\\').replaceAll("'", "''");
   const profile = profilePath.replaceAll('/', '\\').replaceAll("'", "''");
   const script = "$ErrorActionPreference='Stop'; $all=@(Get-CimInstance Win32_Process); "
@@ -145,6 +145,33 @@ async function writeNative(name, record, io = fs) {
   return writeBytesExclusive(path.join(n.DIRECTORY, name), record, n.DIRECTORY, io);
 }
 
+/** Verify only the separate startup profile's directory metadata; old native/live path contracts stay exact. */
+async function startupProfile(profile, io = fs) {
+  const n = require('./authentication-preparation-scoped-native-contract.cjs');
+  c.check(profile === n.STARTUP_PROFILE, 'profile'); return inspectProfileDirectory(profile, io);
+}
+
+/** Read only a fixed bounded startup review or aggregate result, never the marker or profile contents. */
+async function readStartup(name, io = fs) {
+  const n = require('./authentication-preparation-scoped-native-contract.cjs');
+  c.check(n.STARTUP_ARTIFACTS.includes(name) && name !== 'worker-started', 'receipt');
+  try {
+    c.check(path.resolve(await io.realpath(n.STARTUP_DIRECTORY)) === path.resolve(n.STARTUP_DIRECTORY), 'receipt');
+    const file = path.join(n.STARTUP_DIRECTORY, name); const stat = await io.lstat(file);
+    c.check(stat.isFile() && !stat.isSymbolicLink() && stat.size > 0 && stat.size <= n.STARTUP_LIMITS.receiptBytes, 'receipt');
+    const bytes = await io.readFile(file); c.check(bytes.length <= n.STARTUP_LIMITS.receiptBytes, 'receipt');
+    return { record: JSON.parse(bytes.toString('utf8')), hash: d.digest(bytes) };
+  } catch { throw new c.PreparationError('receipt'); }
+}
+
+/** Write only strict startup evidence exclusively; never create an approval, qualification, or replacement file. */
+async function writeStartup(name, record, io = fs) {
+  const n = require('./authentication-preparation-scoped-native-contract.cjs');
+  c.check(['attempt.json', 'postflight.json'].includes(name), 'receipt');
+  if (name === 'attempt.json') n.validateStartupAttempt(record); else n.validateStartupPostflight(record);
+  return writeBytesExclusive(path.join(n.STARTUP_DIRECTORY, name), record, n.STARTUP_DIRECTORY, io);
+}
+
 /** Share a latched absolute deadline for pre-write stages; late callbacks cannot authorize later work. */
 function deadlineStages(deadline, clock = Date.now) {
   let expired = false;
@@ -208,4 +235,4 @@ async function finalize(completion, plan, verifyBindings, deps = {}) {
 
 module.exports = { DIRECTORY, ATTEMPT, RESULT, completionSchema, profilePreserved, inspectAbsence,
   inspectClosure, readAttempt, reviewAttempt, writeExclusive, finalize, inspectProfileAbsence,
-  nativeProfile, inspectNativeClosure, readNative, writeNative, deadlineStages };
+  nativeProfile, inspectNativeClosure, readNative, writeNative, deadlineStages, startupProfile, readStartup, writeStartup };

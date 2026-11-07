@@ -88,6 +88,103 @@ const stoppedSchema = bindingSchema.extend({ schemaVersion: z.literal(1), scope:
   completedCases: integer.max(9), cleanup: z.boolean(), totals: totalsSchema, traffic: trafficSchema,
   browserTrafficMeasured: z.literal(false), hostedQualified: z.literal(false), gate1Status: z.literal('open'), backgroundHttp: z.literal('unknown') }).strict();
 
+const STARTUP_DIRECTORY = path.join(path.dirname(d.DIRECTORY), 'gate1-authentication-preparation-scoped-startup-01');
+const STARTUP_PROFILE = path.join(STARTUP_DIRECTORY, 'profiles', 'startup');
+const STARTUP_ARTIFACTS = Object.freeze(['execution-review.json', 'worker-started', 'attempt.json', 'postflight.json']);
+const STARTUP_COMMAND = 'node scripts/gate1-browser-tabs/authentication-preparation-scoped-startup.cjs --execute-startup <execution-review-sha256>';
+const STARTUP_CASE = Object.freeze({ id: 'startup', launches: 1 });
+const STARTUP_LIMITS = Object.freeze({ ...LIMITS, wholeMs: 180000, cleanupMs: 120000, observationMs: 15000,
+  manualMs: 0, metadataMs: 0, launches: 1, profiles: 1, pages: 2, targetSessions: 2,
+  application: 0, session: 0, canonicalStatic: 0, requestClient: 0, navigations: 0,
+  proxyConnections: 16, proxyConcurrent: 4, proxyBytes: 0, upstreamBytes: 0, downstreamBytes: 0, tunnelBytes: 0,
+  records: 8, events: 128, pendingCommands: 8, commands: 64, cleanupCommands: 4,
+  controllerConnections: 2, listenerProbes: 9 });
+const startupTotalsSchema = z.object({
+  ...Object.fromEntries(Object.keys(totalsSchema.shape).map(key => [key, integer.max(STARTUP_LIMITS[key] || 0)])),
+  controllerConnections: integer.max(2), listenerProbes: integer.max(4), cleanupCommands: integer.max(4),
+}).strict();
+const startupStageSchema = z.enum(['reservation', 'preflight', 'proxy', 'launch', 'observe', 'window', 'closure', 'evidence']);
+const startupOutcomeSchema = z.enum(['rejection', 'no_rejection_observed', 'incomplete']);
+const startupReviewSchema = bindingSchema.extend({ scope: z.literal('scoped-authentication-startup-review-v1'),
+  operator: z.literal('Codex'), owner: z.literal('project-owner'), directory: z.literal(STARTUP_DIRECTORY),
+  command: z.literal(STARTUP_COMMAND), profile: z.literal(STARTUP_PROFILE), limits: c.exact(STARTUP_LIMITS),
+  artifacts: z.tuple(STARTUP_ARTIFACTS.map(value => z.literal(value))), spki: z.literal(SPKI),
+  ports: z.tuple(PORTS.map(value => z.literal(value))), forwarding: z.literal('closed'),
+  approvedAt: integer, expiresAt: integer }).strict();
+const startupOwnerSchema = z.object({ profile: z.literal(STARTUP_PROFILE), pid: integer.positive().nullable(),
+  port: integer.min(1).max(65535).nullable(), closedNormally: z.boolean(), exitCode: integer.nullable() }).strict();
+const startupTrafficSchema = z.object(Object.fromEntries(Object.keys(trafficSchema.shape).map(key =>
+  [key, ['observed', 'unreservedObservations'].includes(key) ? integer.max(8) : z.literal(0)]))).strict();
+const startupDirectionSchema = z.object({ read: integer, rejected: integer, admitted: z.literal(0), written: z.literal(0) }).strict();
+const startupProxySchema = z.object({ connections: integer.max(16), concurrent: integer.max(4), overLimit: integer,
+  denied: integer, tunnels: z.literal(0), upstream: startupDirectionSchema, downstream: startupDirectionSchema,
+  forwardingClosed: z.literal(true) }).strict();
+const startupCoverage = { browserTrafficMeasured: z.literal(false), hostedQualified: z.literal(false),
+  gate1Status: z.literal('open'), backgroundHttp: z.literal('unknown') };
+const startupAttemptSchema = bindingSchema.extend({ schemaVersion: z.literal(1), scope: z.literal('scoped_authentication_startup_attempt'),
+  reviewHash: hash, startedAt: integer, completedAt: integer, launchAt: integer.nullable(), observationEndedAt: integer.nullable(),
+  readyAt: integer.nullable(), pagesReady: integer.max(2), outcome: startupOutcomeSchema,
+  firstFailure: stoppedSchema.shape.firstFailure.nullable(), destinationReason: destinationReasonSchema.nullable(),
+  failureStage: startupStageSchema.nullable(), cleanup: z.boolean(), owner: startupOwnerSchema.nullable(),
+  totals: startupTotalsSchema, traffic: startupTrafficSchema, proxy: startupProxySchema.nullable(), ...startupCoverage }).strict();
+const startupWorkerSchema = z.object({ scope: z.literal('scoped_authentication_startup_worker'), attemptHash: hash }).strict();
+const startupPostflightSchema = bindingSchema.extend({ schemaVersion: z.literal(1), scope: z.literal('scoped_authentication_startup_postflight'),
+  reviewHash: hash, attemptHash: hash, startedAt: integer, completedAt: integer, outcome: startupOutcomeSchema,
+  firstFailure: stoppedSchema.shape.firstFailure.nullable(), destinationReason: destinationReasonSchema.nullable(),
+  failureStage: startupStageSchema.nullable(), postflightFailure: stoppedSchema.shape.firstFailure.nullable(),
+  finalization: z.literal('requires_timely_supervisor_result'),
+  checks: z.object(Object.fromEntries(['workerExited', 'bindings', 'normalClosure', 'processAbsent', 'listenersClosed',
+    'profilePreserved'].map(key => [key, z.boolean()]))).strict(), listenerProbes: integer.max(5), ...startupCoverage }).strict();
+
+/** Bind the single startup observation to its exact smaller envelope and a real expiring owner review. */
+function validateStartupReview(review, now = Date.now(), starting = false) {
+  c.check(startupReviewSchema.safeParse(review).success, 'approval');
+  c.check(review.approvedAt > 0 && review.approvedAt <= now && now < review.expiresAt
+    && review.expiresAt - review.approvedAt <= 3600000
+    && (!starting || review.expiresAt - now >= STARTUP_LIMITS.wholeMs), 'expired'); return review;
+}
+
+/** Reject contradictory or private startup evidence; a diagnostic result never satisfies native qualification. */
+function validateStartupAttempt(record) {
+  c.check(startupAttemptSchema.safeParse(record).success, 'receipt');
+  c.check(record.completedAt >= record.startedAt && record.completedAt - record.startedAt < STARTUP_LIMITS.wholeMs
+    && (record.firstFailure === null) === (record.failureStage === null)
+    && (record.destinationReason === null || record.firstFailure === 'destination'), 'receipt');
+  const { launchAt, readyAt, observationEndedAt, owner, proxy } = record;
+  c.check((launchAt === null || (launchAt >= record.startedAt && launchAt <= record.completedAt && owner && owner.pid !== null))
+    && (readyAt === null || (launchAt !== null && readyAt >= launchAt && readyAt < launchAt + STARTUP_LIMITS.observationMs))
+    && (observationEndedAt === null || (launchAt !== null && observationEndedAt >= launchAt && observationEndedAt <= record.completedAt)), 'receipt');
+  c.check(record.traffic.observed <= record.totals.records && record.traffic.unreservedObservations <= record.totals.records
+    && (readyAt === null || record.pagesReady === 2)
+    && record.totals.cleanupCommands <= record.totals.commands
+    && record.totals.commands - record.totals.cleanupCommands <= 60, 'receipt');
+  if (owner?.closedNormally) c.check(owner.pid !== null && owner.port !== null && owner.exitCode === 0, 'closure');
+  if (proxy) c.check(proxy.connections === record.totals.proxyConnections
+    && proxy.upstream.read === proxy.upstream.rejected && proxy.downstream.read === proxy.downstream.rejected, 'receipt');
+  if (record.cleanup) c.check((!owner || owner.closedNormally) && (!proxy || proxy.concurrent === 0), 'closure');
+  if (record.outcome === 'rejection') c.check(record.firstFailure === 'destination' && record.destinationReason !== null
+    && ['proxy', 'launch', 'observe', 'window'].includes(record.failureStage), 'receipt');
+  if (record.outcome === 'no_rejection_observed') c.check(record.firstFailure === null && record.cleanup && owner?.closedNormally
+    && record.totals.launches === 1 && record.totals.controllerConnections >= 1 && record.totals.listenerProbes === 4
+    && record.pagesReady === 2 && readyAt !== null && launchAt !== null && observationEndedAt !== null
+    && record.totals.records === 0 && record.traffic.unreservedObservations === 0
+    && observationEndedAt >= launchAt + STARTUP_LIMITS.observationMs && proxy !== null, 'receipt');
+  return record;
+}
+
+/** Completed postflight requires every independent check; incomplete results retain the original observation separately. */
+function validateStartupPostflight(record) {
+  c.check(startupPostflightSchema.safeParse(record).success && record.completedAt >= record.startedAt
+    && record.completedAt - record.startedAt < STARTUP_LIMITS.wholeMs
+    && (record.firstFailure === null) === (record.failureStage === null)
+    && (record.destinationReason === null || record.firstFailure === 'destination'), 'receipt');
+  if (record.outcome !== 'incomplete') c.check(Object.values(record.checks).every(Boolean)
+    && record.listenerProbes === 5 && record.postflightFailure === null, 'receipt');
+  if (record.outcome === 'rejection') c.check(record.firstFailure === 'destination' && record.destinationReason !== null, 'receipt');
+  if (record.outcome === 'no_rejection_observed') c.check(record.firstFailure === null, 'receipt');
+  return record;
+}
+
 /** Stop an optional native owner before throwing; only fixed reasons can enter retained attribution. */
 function requireDestination(value, reason, owner = null) {
   if (value) return;
@@ -145,20 +242,26 @@ function validateAttempt(record) {
 /** Keep one cumulative envelope across permanently stopped case budgets; no expected failure resets it. */
 class NativeLedger {
   /** Start the original supervisor clock, leaving the final 120 seconds for cleanup and postflight. */
-  constructor(startedAt, expiresAt, clock = Date.now) {
-    this.clock = clock; this.startedAt = startedAt; this.end = Math.min(startedAt + LIMITS.wholeMs, expiresAt);
-    this.deadline = this.end - LIMITS.cleanupMs; this.failure = null; this.active = null; this.chrome = 0; this.connections = 0; this.budgets = [];
+  constructor(startedAt, expiresAt, clock = Date.now, mode = 'qualification') {
+    c.check(['qualification', 'startup'].includes(mode), 'schema'); this.mode = mode;
+    this.limits = mode === 'startup' ? STARTUP_LIMITS : LIMITS;
+    this.totalsSchema = mode === 'startup' ? startupTotalsSchema : totalsSchema;
+    this.stage = 'reservation'; this.failureStage = null;
+    this.clock = clock; this.startedAt = startedAt; this.end = Math.min(startedAt + this.limits.wholeMs, expiresAt);
+    this.deadline = this.end - this.limits.cleanupMs; this.failure = null; this.active = null; this.chrome = 0; this.connections = 0; this.budgets = [];
     this.cleanupFailed = false; this.destinationReason = null;
-    this.totals = Object.fromEntries(Object.keys(totalsSchema.shape).map(key => [key, 0]));
+    this.totals = Object.fromEntries(Object.keys(this.totalsSchema.shape).map(key => [key, 0]));
   }
-  /** Latch a global violation and abort the currently active case immediately. */
+  /** Promote an active case's original cause through generic stops before cleanup retires its attribution. */
   stop(code) {
-    if (!this.failure) {
-      this.failure = code;
-      this.destinationReason = code === 'destination'
+    const failure = code === 'stopped' ? this.active?.failure || code : code;
+    if (!this.failure || (this.failure === 'stopped' && code === 'stopped')) {
+      this.failure = failure;
+      this.failureStage ||= this.stage;
+      this.destinationReason = failure === 'destination'
         ? this.destinationReason || (this.active?.failure === 'destination' ? this.active.destinationReason : null) : null;
     }
-    this.active?.stop(code);
+    this.active?.stop(failure);
   }
   /** Attribute a root guard before abort callbacks; an earlier root or case failure keeps its original meaning. */
   destination(reason) {
@@ -172,7 +275,7 @@ class NativeLedger {
   charge(changes) {
     this.check(); const next = { ...this.totals };
     for (const [key, amount] of Object.entries(changes)) { c.check(Number.isSafeInteger(amount) && amount >= 0 && Object.hasOwn(next, key), 'schema'); next[key] += amount; }
-    if (!totalsSchema.safeParse(next).success) { this.stop('budget'); throw new c.PreparationError('budget'); }
+    if (!this.totalsSchema.safeParse(next).success) { this.stop('budget'); throw new c.PreparationError('budget'); }
     this.totals = next;
   }
   /** Release only concurrency after verified cleanup, never cumulative charges or failed HTTP uncertainty. */
@@ -189,12 +292,15 @@ class NativeLedger {
 class NativeBudget extends c.ScopedBudget {
   /** Accept only a frozen case and smaller declared transport/manual limits. */
   constructor(root, item, limits = {}) {
-    c.check(CASES.includes(item) && !root.active && root.budgets.length < 16, 'schema');
-    super({ clock: root.clock, limits: { ...LIMITS, ...limits } });
-    c.check(Object.entries(this.limits).every(([key, value]) => Object.hasOwn(LIMITS, key) && value <= LIMITS[key] && value >= 0), 'budget');
+    c.check(root instanceof NativeLedger && (root.mode === 'startup' ? item === STARTUP_CASE : CASES.includes(item))
+      && !root.active && root.budgets.length < (root.mode === 'startup' ? 1 : 16), 'schema');
+    super({ clock: root.clock, limits: { ...root.limits, ...limits } });
+    c.check(Object.entries(this.limits).every(([key, value]) => Object.hasOwn(root.limits, key) && value <= root.limits[key] && value >= 0), 'budget');
     this.root = root; this.item = item; root.active = this; root.budgets.push(this);
     this.destinationReason = null;
     this.startedAt = root.startedAt; this.deadline = root.deadline; this.end = root.end;
+    // The sole startup case propagates immediately so failure stage/reason precede cleanup callbacks.
+    if (root.mode === 'startup') this.abort.signal.addEventListener('abort', () => root.stop(this.failure), { once: true });
   }
   /** Latch this active case's first guard before synchronous abort handlers; retired budgets cannot supply attribution. */
   destination(reason) {
@@ -224,12 +330,27 @@ class NativeBudget extends c.ScopedBudget {
   }
   /** Count raw CDP commands before their transport sends; cleanup commands retain the same ceiling. */
   command(cleanup = false) {
-    if (cleanup) { c.check(this.root.totals.commands < LIMITS.commands && this.clock() < this.end, 'budget'); this.root.totals.commands++; }
-    else this.root.charge({ commands: 1 });
+    if (cleanup) {
+      c.check(this.root.totals.commands < this.root.limits.commands && this.clock() < this.end, 'budget');
+      if (this.root.mode === 'startup') {
+        c.check(this.root.totals.cleanupCommands < this.root.limits.cleanupCommands, 'budget'); this.root.totals.cleanupCommands++;
+      }
+      this.root.totals.commands++;
+    }
+    else {
+      if (this.root.mode === 'startup') this.require(this.root.totals.commands < this.root.limits.commands - this.root.limits.cleanupCommands, 'budget');
+      this.root.charge({ commands: 1 });
+    }
+  }
+  /** Charge a startup controller before opening its socket, including the one permitted normal-close recovery. */
+  controller(cleanup = false) {
+    c.check(this.root.mode === 'startup' && this.clock() < this.end, 'approval');
+    c.check(this.root.totals.controllerConnections < this.root.limits.controllerConnections, 'budget');
+    if (!cleanup) this.root.check(); this.root.totals.controllerConnections++;
   }
   /** Preserve global connection concurrency even when transport subcases stop independently. */
   connection() {
-    this.require(this.root.connections < LIMITS.proxyConcurrent, 'budget'); this.root.charge({ proxyConnections: 1 }); this.root.connections++;
+    this.require(this.root.connections < this.root.limits.proxyConcurrent, 'budget'); this.root.charge({ proxyConnections: 1 }); this.root.connections++;
   }
   /** Release an actually closed connection only; cumulative admission is permanent. */
   connectionClosed() { this.root.connections--; }
@@ -240,3 +361,6 @@ class NativeBudget extends c.ScopedBudget {
 module.exports = { DIRECTORY, ORIGIN, FRAME_ORIGIN, SPKI, ID, PROFILE_NAMES, PROFILES, PORTS, ARTIFACTS, ROUTES,
   LIMITS, CASES, WITNESSES, bindingSchema, reviewSchema, ownerSchema, totalsSchema, attemptSchema, stoppedSchema,
   destinationReasonSchema, requireDestination, classify, profile, validateReview, qualificationChecks, validateAttempt, NativeLedger, NativeBudget };
+Object.assign(module.exports, { STARTUP_DIRECTORY, STARTUP_PROFILE, STARTUP_ARTIFACTS, STARTUP_COMMAND, STARTUP_CASE, STARTUP_LIMITS,
+  startupReviewSchema, startupOwnerSchema, startupTotalsSchema, startupAttemptSchema, startupWorkerSchema, startupPostflightSchema,
+  validateStartupReview, validateStartupAttempt, validateStartupPostflight });

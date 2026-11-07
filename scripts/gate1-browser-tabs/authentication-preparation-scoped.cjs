@@ -19,7 +19,8 @@ const UTILS_HASH = '580f571bf063e2256b51b3946a035bc452fc0e22808d5547b198baea3992
 const DECISION_FILE = path.resolve(__dirname, '../../docs/UIDesign/gate1-authentication-measurement-decision.md');
 const MODULES = Object.freeze(['authentication-preparation-scoped', 'authentication-preparation-scoped-contract',
   'authentication-preparation-scoped-proxy', 'authentication-preparation-scoped-observer', 'authentication-preparation-scoped-postflight',
-  'authentication-preparation-scoped-native', 'authentication-preparation-scoped-native-contract', 'authentication-preparation-scoped-native-fixtures']);
+  'authentication-preparation-scoped-native', 'authentication-preparation-scoped-native-contract', 'authentication-preparation-scoped-native-fixtures',
+  'authentication-preparation-scoped-startup']);
 const FILES = Object.freeze([...MODULES.flatMap(name => [`${name}.cjs`, `__tests__/${name}.test.cjs`]),
   'fixtures/scoped-native-loopback-cert.pem', 'fixtures/scoped-native-loopback-key.pem']);
 const syntheticOwners = new WeakMap();
@@ -283,6 +284,7 @@ async function attachment(owner, budget, cleanupOnly = false) {
 /** Create the sole bounded CDP transport for the first launch, owning the socket before waiting for open. */
 async function connectController(owner, budget, cleanupOnly = false) {
   if (!cleanupOnly) budget.check();
+  if (syntheticOwners.get(owner)?.startup) budget.controller(cleanupOnly);
   const { ws } = require(path.join(CORE, 'lib/utilsBundle.js'));
   owner.socket = new ws(`ws://127.0.0.1:${owner.port}${owner.endpoint}`, {
     maxPayload: MESSAGE_BYTES, perMessageDeflate: false, handshakeTimeout: 5000,
@@ -299,7 +301,8 @@ async function connectController(owner, budget, cleanupOnly = false) {
 /** Launch behind a closed proxy; Playwright is attached only to the rejecting-proxy restart. */
 async function launch(owner, proxy, budget) {
   const policy = syntheticOwners.get(owner);
-  if (policy) await p.nativeProfile(owner.profile);
+  if (policy?.startup) await p.startupProfile(owner.profile);
+  else if (policy) await p.nativeProfile(owner.profile);
   else { c.check(owner.profile === d.PROFILE, 'profile'); await p.profilePreserved(); }
   budget.check(); owner.launchTime = Date.now();
   // The approved identity is worker-only; Chrome keeps the remaining sanitized environment.
@@ -310,6 +313,7 @@ async function launch(owner, proxy, budget) {
     ...(policy ? [`--ignore-certificate-errors-spki-list=${policy.spki}`, '--site-per-process'] : [])],
   { stdio: 'ignore', windowsHide: true, env });
   owner.child.once('error', () => { owner.failed = true; budget.stop('operation'); });
+  if (policy?.startup) owner.onSpawn();
   await attachment(owner, budget);
   budget.check();
   if (!owner.restart) { await connectController(owner, budget); return; }
@@ -549,6 +553,22 @@ function syntheticAdapters(caseId, navigation = null) {
   };
 }
 
+/** Expose only one fresh startup launch, blank-page observation and normal closure; no authentication/request adapters. */
+function startupAdapters() {
+  const n = require('./authentication-preparation-scoped-native-contract.cjs');
+  const policy = Object.freeze({ startup: true, origin: n.ORIGIN, spki: n.SPKI, classify: n.classify });
+  return {
+    /** Register the exact startup owner and budget before invoking the unchanged pinned launch configuration. */
+    launch: async (owner, proxy, budget) => {
+      c.check(owner.profile === n.STARTUP_PROFILE && owner.restart === false && typeof owner.onSpawn === 'function'
+        && budget instanceof n.NativeBudget && budget.root.mode === 'startup' && budget.item === n.STARTUP_CASE
+        && proxy.listenPort === 18445 && proxy.port === 18445 && proxy.forwarding === false, 'approval');
+      syntheticOwners.set(owner, policy); return launch(owner, proxy, budget);
+    },
+    observe, close,
+  };
+}
+
 /** Verify exact immutable inputs again; historical attribution is accepted only on its frozen target. */
 async function verifyBindings(plan, planHash) {
   const sources = await sourceHashes();
@@ -652,6 +672,6 @@ module.exports = { CORE, UTILS_HASH, DECISION_FILE, MODULES, FILES, sourceHashes
   REVIEW_SCHEMA, QUALIFICATION_COMPLETION, readReviewed, loadReviewed,
   step, cleanup, requestIdentity, reconcileTarget, stoppedAttempt, runScoped, delay, attachment, connectController,
   launch, observe, manualSignIn, pageIdentity, close, ownerRecord, verifyBindings, nativeDependencies, supervise, main,
-  syntheticAdapters, nativeController, nativePlaywright };
+  syntheticAdapters, startupAdapters, nativeController, nativePlaywright };
 if (require.main === module) main(process.argv.slice(2)).then(result => process.stdout.write(JSON.stringify(result) + '\n'),
   error => { process.stderr.write(JSON.stringify({ phase: 'stopped', firstFailure: c.errorCode(error) }) + '\n'); process.exitCode = 1; });
