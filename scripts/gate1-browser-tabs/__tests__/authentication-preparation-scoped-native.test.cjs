@@ -15,7 +15,7 @@ const HASH = 'a'.repeat(64);
 /** Supply pure in-memory review inputs and mock every filesystem/native boundary of the actual orchestrator. */
 function fixture() {
   const binding = { sourceSet: HASH, decisionHash: HASH, toolSet: HASH, certificateHash: HASH, keyHash: HASH };
-  const review = { ...binding, scope: 'scoped-authentication-native-execution-review-v1', operator: 'Codex', owner: 'project-owner',
+  const review = { ...binding, scope: 'scoped-authentication-native-execution-review-v2', launchPolicy: { ...n.LAUNCH_POLICY }, operator: 'Codex', owner: 'project-owner',
     directory: n.DIRECTORY, command: 'node scripts/gate1-browser-tabs/authentication-preparation-scoped-native.cjs --execute-native <execution-review-sha256>',
     cases: structuredClone(n.CASES), limits: { ...n.LIMITS }, spki: n.SPKI, profiles: [...n.PROFILES], ports: [...n.PORTS], approvedAt: 0, expiresAt: 480000 };
   const input = { binding, review, reviewHash: HASH }; const state = { now: 1000, calls: [], writes: [], owners: 0, cancel: null };
@@ -110,7 +110,7 @@ test('proxy callback failures survive later budget checks and case cleanup in na
         inspect: async () => { inspected++; return true; },
       };
       return r.browserCase(item, root, fixtures, { adapters: () => adapter,
-        proxy: budget => new ScopedProxy(budget, { synthetic: 'fixtures', createServer: () => server,
+        proxy: budget => new ScopedProxy(budget, { synthetic: 'fixtures', launchPolicy: n.LAUNCH_POLICY, createServer: () => server,
           connect: () => assert.fail('rejected destination must not connect') }) });
     };
     /** A later cleanup rejection must not supply or replace the original destination attribution. */
@@ -129,11 +129,11 @@ test('proxy callback failures survive later budget checks and case cleanup in na
   }
 });
 
-/** Old stopped receipts stay valid and unattributed; private diagnostics, inconsistent reasons and success extensions fail. */
-test('native receipt attribution remains strict, bounded and compatible with historical absent reasons', async () => {
+/** V2 attribution may be absent, while private diagnostics, inconsistent reasons and success extensions still fail. */
+test('native v2 receipt attribution remains strict and bounded with optional absent reasons', async () => {
   const q = fixture(); q.deps.browserCase = async () => { throw new c.PreparationError('destination'); };
   await q.run(); const record = q.state.writes[0].record; assert.equal(record.destinationReason, null);
-  const historical = { ...record }; delete historical.destinationReason; assert.equal(n.validateAttempt(historical), historical);
+  const unattributed = { ...record }; delete unattributed.destinationReason; assert.equal(n.validateAttempt(unattributed), unattributed);
   for (const destinationReason of n.destinationReasonSchema.options) n.validateAttempt({ ...record, destinationReason });
   for (const invalid of [{ ...record, destinationReason: 'unknown' }, { ...record, destinationReason: 'https://private.test' },
     { ...record, destinationReason: { reason: 'proxy_authority', url: 'private' } },
@@ -276,7 +276,7 @@ test('native supervisor errors take precedence over a stopped worker result', as
     const q = fixture(); const signals = new EventEmitter(); let child; let finalized = false;
     const pending = r.supervise(q.input, { clock: () => q.state.now, signals,
       /** Retain an in-memory child so each parent event can race its stopped message and exit deterministically. */
-      spawn: () => { child = new EventEmitter(); child.connected = true; child.send = (_value, done) => done(); return child; },
+      spawn: () => { child = new EventEmitter(); child.connected = true; child.send = (_value, done) => done(); child.unref = () => {}; return child; },
       finalize: async () => { finalized = true; } });
     const code = mode.startsWith('expired') ? 'expired' : mode === 'child-error' ? 'worker_completion' : 'cancelled';
     const rejected = assert.rejects(pending, { code, message: code });
@@ -332,6 +332,8 @@ test('native finalizer independently inspects all owners before writing completi
   assert.deepEqual(q.calls, ['verify', ...Array(11).fill('inspect'), 'listeners', 'verify', 'native-completion.json', 'native-qualification.json']);
   for (const mutation of [value => { value.record.owners[0].profile = d.PROFILE; }, value => { value.record.checks.manualContextRecovery = false; },
     value => { value.record.cases[0].witnesses.contextLoss = false; }, value => { value.message.attemptHash = 'b'.repeat(64); },
+    value => { value.record.schemaVersion = 1; }, value => { value.record.launchPolicy = { ...n.LAUNCH_POLICY, perLaunch: 5 }; },
+    value => { delete value.record.launchDenials; }, value => { value.record.launchDenials.total = 1; },
     value => { value.finalDeps.startedAt = 999; }]) {
     const invalid = await finalizerFixture(); mutation(invalid); await assert.rejects(invalid.finalize());
     assert.equal(invalid.calls.includes('native-qualification.json'), false);
@@ -494,6 +496,8 @@ test('exhausted launch budget skips browser cleanup and still closes the proxy',
 test('failed native launch remains owned for normal closure and cannot start a second browser', async () => {
   const root = new n.NativeLedger(0, 480000, () => 1000); const calls = [];
   const proxy = { start: async () => {}, seal: () => {}, close: async () => {}, open: () => {} };
+  proxy.beginLaunchInterval = () => root.active.beginLaunchInterval();
+  proxy.endLaunchInterval = interval => root.active?.endLaunchInterval(interval);
   const adapter = { launch: async owner => { calls.push('launch'); owner.child = { pid: 77, exitCode: null }; owner.port = 24567;
     throw new c.PreparationError('observation'); },
   close: async owner => { calls.push('close'); owner.closed = true; owner.child.exitCode = 0;
@@ -501,4 +505,88 @@ test('failed native launch remains owned for normal closure and cannot start a s
   inspect: async () => { calls.push('inspect'); return true; } };
   await assert.rejects(r.browserCase(n.CASES[0], root, {}, { proxy: () => proxy, adapters: () => adapter }), { code: 'observation' });
   assert.deepEqual(calls, ['launch', 'close', 'inspect']); assert.equal(root.totals.launches, 1); assert.equal(root.chrome, 0);
+  assert.equal(root.launchInterval, null);
+});
+
+/** Keep actual owned-launch and proxy code while replacing Chrome and sockets with controllable in-memory boundaries. */
+function ownedLaunchFixture() {
+  const state = { now: 1000 }; const root = new n.NativeLedger(1000, 481000, () => state.now);
+  const item = n.CASES[0]; const budget = new n.NativeBudget(root, item); const server = new EventEmitter();
+  server.close = done => done();
+  const proxy = new ScopedProxy(budget, { synthetic: 'fixtures', launchPolicy: n.LAUNCH_POLICY,
+    createServer: () => server, connect: () => assert.fail('launch denial must never connect') });
+  const context = { root, budget, item, proxy, owners: [], adapter: { launch: async () => {} } };
+  /** Create one owned unused socket and deliver a blocked synthetic authority without retaining its destination. */
+  const deny = () => {
+    const socket = new EventEmitter(); socket.setTimeout = () => {};
+    socket.destroy = () => { if (!socket.destroyed) { socket.destroyed = true; socket.emit('close'); } };
+    server.emit('connection', socket); server.emit('connect', { method: 'CONNECT', url: 'unlisted.test:443' }, socket);
+  };
+  return { state, root, budget, proxy, context, deny };
+}
+
+/** Successful attachment closes the exception immediately, including restarts that keep forwarding closed. */
+test('owned launch intervals cover attachment only and preserve cumulative restart denials', async () => {
+  const q = ownedLaunchFixture(); const intervals = [];
+  q.context.adapter.launch = async owner => {
+    assert.equal(q.context.owners.at(-1), owner); assert.equal(q.root.chrome, 1);
+    intervals.push(q.proxy.launchInterval); q.deny(); assert.equal(q.budget.failure, null);
+  };
+  const first = await r.launchOwned(q.context); assert.equal(first.restart, false);
+  assert.equal(q.proxy.launchInterval, null); assert.equal(q.root.launchInterval, null);
+  q.root.chrome--;
+  const second = await r.launchOwned(q.context, true); assert.equal(second.restart, true);
+  assert.notEqual(intervals[0], intervals[1]); assert.deepEqual(q.root.launchDenials, { total: 2, perLaunch: [1, 1] });
+  assert.equal(q.proxy.forwarding, false); q.deny(); assert.equal(q.budget.failure, 'destination');
+  assert.equal(q.root.launchDenials.total, 2); await q.proxy.close();
+});
+
+/** Failure, cancellation and the original ten-second deadline all retire the interval before late adapter settlement. */
+test('owned launch cancellation failure and timeout never leave or reopen an exception', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  for (const mode of ['failure', 'cancelled', 'deadline', 'late-settlement']) {
+    const q = ownedLaunchFixture(); let release; let rejectLaunch;
+    q.context.adapter.launch = () => new Promise((resolve, reject) => { release = resolve; rejectLaunch = reject; });
+    const pending = r.launchOwned(q.context); const code = mode === 'failure' ? 'observation' : mode === 'cancelled' ? 'cancelled' : 'deadline';
+    const rejected = assert.rejects(pending, { code }); await setImmediate();
+    assert.ok(q.proxy.launchInterval); q.deny();
+    if (mode === 'failure') rejectLaunch(new c.PreparationError('observation'));
+    else if (mode === 'cancelled') q.budget.stop('cancelled');
+    else { q.state.now = 11000; if (mode === 'deadline') t.mock.timers.tick(10000); else release(); }
+    await rejected; assert.equal(q.proxy.launchInterval, null); assert.equal(q.root.launchInterval, null);
+    release(); await setImmediate(); q.deny(); assert.equal(q.budget.failure, code);
+    assert.deepEqual(q.root.launchDenials, { total: 1, perLaunch: [1] }); await q.proxy.close();
+  }
+});
+
+/** A later launch owns a new token, and delayed callbacks from the first cannot close or spend its allowance. */
+test('stale launch callbacks cannot affect a subsequent active restart', async () => {
+  const q = ownedLaunchFixture(); let old;
+  q.context.adapter.launch = async () => { old = q.proxy.launchInterval; };
+  await r.launchOwned(q.context); q.root.chrome--; let release;
+  q.context.adapter.launch = () => new Promise(resolve => { release = resolve; });
+  const pending = r.launchOwned(q.context, true); await setImmediate(); const current = q.proxy.launchInterval;
+  q.proxy.endLaunchInterval(old); q.budget.endLaunchInterval(old);
+  assert.equal(q.root.launchInterval, current); assert.equal(q.proxy.launchInterval, current);
+  q.deny(); release(); await pending;
+  assert.deepEqual(q.root.launchDenials, { total: 1, perLaunch: [0, 1] }); await q.proxy.close();
+});
+
+/** Expiry must release the parent's IPC/process references without inventing exit or finalizing late evidence. */
+test('native supervisor expiry cancels and unreferences a surviving worker without qualification', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const q = fixture(); const message = await q.run(); const signals = new EventEmitter(); const calls = []; let child;
+  const pending = r.supervise(q.input, { clock: () => q.state.now, signals,
+    /** Simulate a worker that never exits; no process is started and reference releases are observable. */
+    spawn: () => {
+      child = new EventEmitter(); child.connected = true;
+      child.send = (_value, done) => { calls.push('cancel'); done(); };
+      child.unref = () => calls.push('child-unref'); child.channel = { unref: () => calls.push('channel-unref') };
+      child.kill = () => assert.fail('expiry cannot force-kill'); return child;
+    }, finalize: async () => { calls.push('finalize'); } });
+  const rejected = assert.rejects(pending, { code: 'expired' }); q.state.now = 480000; t.mock.timers.tick(479000); await rejected;
+  assert.deepEqual(calls, ['cancel', 'cancel', 'channel-unref', 'child-unref']);
+  assert.equal(child.connected, true); child.emit('message', message); child.emit('close', 0); await setImmediate();
+  assert.equal(calls.includes('finalize'), false); assert.equal(signals.listenerCount('SIGINT'), 0);
+  assert.equal(signals.listenerCount('SIGTERM'), 0);
 });

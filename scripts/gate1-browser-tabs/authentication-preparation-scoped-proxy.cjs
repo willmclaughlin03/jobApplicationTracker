@@ -8,6 +8,19 @@ const { SUPPORT, SUPABASE } = require('./authentication-preparation-traffic.cjs'
 const { check, errorCode } = require('./authentication-preparation-scoped-contract.cjs');
 const AUTHORITIES = Object.freeze([TARGET.canonical, SUPABASE, 'accounts.google.com', ...SUPPORT].map(host => `${host}:443`));
 
+/** Recognize bounded CONNECT host/port syntax only; this never grants an authority forwarding permission. */
+function wellFormedAuthority(value) {
+  // Reject line endings explicitly: JavaScript's end anchor can otherwise match before a final newline.
+  if (typeof value !== 'string' || value.length > 260 || value.includes('\r') || value.includes('\n')) return false;
+  const ipv6 = /^\[([0-9a-fA-F:.]+)\]:([1-9][0-9]{0,4})$/.exec(value);
+  if (ipv6) return net.isIP(ipv6[1]) === 6 && Number(ipv6[2]) <= 65535;
+  const match = /^([a-zA-Z0-9.-]+):([1-9][0-9]{0,4})$/.exec(value);
+  if (!match || match[1].length > 253 || Number(match[2]) > 65535) return false;
+  const host = match[1].endsWith('.') ? match[1].slice(0, -1) : match[1];
+  if (/^[0-9.]+$/.test(host)) return net.isIP(host) === 4;
+  return host.split('.').every(label => /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/.test(label));
+}
+
 /** Account payload reads once, retaining attempted/rejected bytes separately from forwarding reservations. */
 class TunnelBudget {
   /** Share the worker's stop signal and numeric limits; no request counts are inferred from tunnels. */
@@ -35,10 +48,13 @@ class TunnelBudget {
 /** Own every socket before asynchronous connect; callbacks cannot reopen forwarding after a stop. */
 class ScopedProxy {
   /** Dependency injection permits fully mocked transport tests without listening or forwarding. */
-  constructor(budget, { createServer = http.createServer, connect = net.connect, synthetic = null } = {}) {
+  constructor(budget, { createServer = http.createServer, connect = net.connect, synthetic = null, launchPolicy = null } = {}) {
     const n = require('./authentication-preparation-scoped-native-contract.cjs');
     check(synthetic === null || (['fixtures', 'transport'].includes(synthetic) && budget instanceof n.NativeBudget), 'approval');
     this.nativeBudget = budget instanceof n.NativeBudget ? budget : null;
+    check(launchPolicy === null || (launchPolicy === n.LAUNCH_POLICY && synthetic === 'fixtures'
+      && this.nativeBudget?.root.mode === 'qualification'), 'approval');
+    this.launchPolicy = launchPolicy; this.launchInterval = null;
     this.authorities = synthetic === 'fixtures' ? ['127.0.0.1:18443', '127.0.0.2:18444']
       : synthetic === 'transport' ? ['127.0.0.1:18446'] : AUTHORITIES;
     this.listenPort = synthetic ? 18445 : 0;
@@ -70,7 +86,7 @@ class ScopedProxy {
     }
     try { this.budget.connection?.(); } catch { socket.on('error', () => {}); socket.destroy(); return; }
     this.counts.connections++; this.counts.concurrent++;
-    const owner = { socket, upstream: null, connected: false, handled: false };
+    const owner = { socket, upstream: null, connected: false, handled: false, launchInterval: this.launchInterval };
     this.sockets.set(socket, owner);
     socket.on('error', () => { if (!this.closing && this.forwarding) this.budget.stop('operation'); socket.destroy(); });
     socket.setTimeout(this.budget.limits.operationMs, () => {
@@ -96,10 +112,22 @@ class ScopedProxy {
     });
     this.port = this.server.address()?.port; this.budget.check(); check(this.port, 'operation'); return this;
   }
-  /** Only the observer-readiness barrier may enable forwarding; a sealed proxy never reopens. */
-  open() { this.budget.check(); check(!this.closing, 'stopped'); this.forwarding = true; }
+  /** Enable the reviewed synthetic exception only for a newly reserved owned launch, while forwarding stays closed. */
+  beginLaunchInterval() {
+    this.budget.check(); check(this.launchPolicy && !this.closing && !this.forwarding && !this.launchInterval, 'approval');
+    this.launchInterval = this.nativeBudget.beginLaunchInterval(); return this.launchInterval;
+  }
+  /** End an exact interval without letting stale adapter callbacks retire or borrow a later interval. */
+  endLaunchInterval(interval) {
+    if (interval && this.launchInterval === interval) {
+      this.nativeBudget.endLaunchInterval(interval); this.launchInterval = null;
+    }
+  }
+  /** Only the observer-readiness barrier may enable forwarding after attachment has finished. */
+  open() { this.budget.check(); check(!this.closing && !this.launchInterval, 'stopped'); this.forwarding = true; }
   /** Stop forwarding and destroy owned network activity, including still-connecting upstream sockets. */
   seal() {
+    this.endLaunchInterval(this.launchInterval);
     this.forwarding = false;
     for (const owner of this.sockets.values()) { owner.socket.destroy(); owner.upstream?.destroy(); }
   }
@@ -127,6 +155,13 @@ class ScopedProxy {
       : request.method !== 'CONNECT' ? 'proxy_method' : !this.authorities.includes(request.url) ? 'proxy_authority' : null;
     if (reason) {
       this.counts.denied++; this.bytes.reserve('upstream', head.length, false);
+      if (reason === 'proxy_authority' && this.launchPolicy && this.launchInterval
+        && owner.launchInterval === this.launchInterval && !socket.destroyed && !this.forwarding && !this.closing
+        && head.length === 0 && wellFormedAuthority(request.url)) {
+        owner.handled = true;
+        try { this.nativeBudget.launchDenial(this.launchInterval); } catch { /* The original stop remains authoritative. */ }
+        socket.destroy(); return;
+      }
       this.stopDestination(reason); socket.destroy(); return;
     }
     owner.handled = true; socket.pause();

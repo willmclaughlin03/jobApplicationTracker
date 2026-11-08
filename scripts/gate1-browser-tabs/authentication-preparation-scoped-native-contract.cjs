@@ -5,7 +5,8 @@ const path = require('node:path');
 const { z } = require('zod');
 const c = require('./authentication-preparation-scoped-contract.cjs');
 const d = require('./hosted-csrf-diagnostic.cjs');
-const DIRECTORY = path.join(path.dirname(d.DIRECTORY), 'gate1-authentication-preparation-scoped-native-01');
+const DIRECTORY = path.join(path.dirname(d.DIRECTORY), 'gate1-authentication-preparation-scoped-native-02');
+const LAUNCH_POLICY = Object.freeze({ id: 'synthetic-blocked-launch-authority-v1', perLaunch: 4, cumulative: 16 });
 const ORIGIN = 'https://127.0.0.1:18443';
 const FRAME_ORIGIN = 'https://127.0.0.2:18444';
 const SPKI = 'aiOImjtPc7gcEV9pd9ga1Uihkin8l7/rvDLRx5kZ7SA=';
@@ -54,7 +55,8 @@ const destinationReasonSchema = z.enum(['proxy_http_request', 'proxy_parser_erro
   'route_credentials', 'route_query_fragment', 'route_normalization', 'route_origin_path',
   'request_client_owner', 'request_client_route']);
 const bindingSchema = z.object({ sourceSet: hash, decisionHash: hash, toolSet: hash, certificateHash: hash, keyHash: hash }).strict();
-const reviewSchema = bindingSchema.extend({ scope: z.literal('scoped-authentication-native-execution-review-v1'),
+const reviewSchema = bindingSchema.extend({ scope: z.literal('scoped-authentication-native-execution-review-v2'),
+  launchPolicy: c.exact(LAUNCH_POLICY),
   operator: z.literal('Codex'), owner: z.literal('project-owner'), directory: z.literal(DIRECTORY),
   command: z.literal('node scripts/gate1-browser-tabs/authentication-preparation-scoped-native.cjs --execute-native <execution-review-sha256>'),
   cases: z.tuple(CASES.map(item => c.exact(item))), limits: c.exact(LIMITS), spki: z.literal(SPKI),
@@ -74,12 +76,16 @@ const caseSchemas = CASES.map(item => z.object({ id: z.literal(item.id), mode: z
   outcome: z.literal('passed'), failure: z.literal(item.expected), launches: z.literal(item.launches),
   witnesses: c.exact(Object.fromEntries(WITNESSES[item.id].map(key => [key, true]))),
   cleanup: z.literal(true) }).strict());
-const attemptSchema = bindingSchema.extend({ schemaVersion: z.literal(1), scope: z.literal('scoped_authentication_native_attempt'),
+const launchDenialsSchema = z.object({ total: integer.max(LAUNCH_POLICY.cumulative),
+  perLaunch: z.array(integer.max(LAUNCH_POLICY.perLaunch)).max(LIMITS.launches) }).strict();
+const attemptSchema = bindingSchema.extend({ schemaVersion: z.literal(2), scope: z.literal('scoped_authentication_native_attempt'),
+  launchPolicy: c.exact(LAUNCH_POLICY), launchDenials: launchDenialsSchema,
   reviewHash: hash, startedAt: integer, completedAt: integer, phase: z.literal('passed'),
   cases: z.tuple(caseSchemas), owners: z.array(ownerSchema).length(11), totals: totalsSchema, traffic: trafficSchema,
   checks: c.exact(Object.fromEntries(c.QUALIFICATION_CHECKS.map(key => [key, true]))),
   browserTrafficMeasured: z.literal(false), hostedQualified: z.literal(false), gate1Status: z.literal('open'), backgroundHttp: z.literal('unknown') }).strict();
-const stoppedSchema = bindingSchema.extend({ schemaVersion: z.literal(1), scope: z.literal('scoped_authentication_native_attempt'),
+const stoppedSchema = bindingSchema.extend({ schemaVersion: z.literal(2), scope: z.literal('scoped_authentication_native_attempt'),
+  launchPolicy: c.exact(LAUNCH_POLICY), launchDenials: launchDenialsSchema,
   reviewHash: hash, startedAt: integer, completedAt: integer, phase: z.enum(['stopped', 'inconclusive']),
   firstFailure: z.enum(['approval', 'expired', 'integrity', 'budget', 'deadline', 'observation', 'operation', 'cancelled',
     'closure', 'process_inspection', 'process_present', 'port_open', 'receipt', 'already_used', 'toolchain', 'profile',
@@ -221,6 +227,9 @@ function qualificationChecks(results) {
 function validateAttempt(record) {
   const passed = record?.phase === 'passed';
   c.check((passed ? attemptSchema : stoppedSchema).safeParse(record).success, 'receipt');
+  c.check(record.launchDenials.perLaunch.length === record.totals.launches
+    && record.launchDenials.total === record.launchDenials.perLaunch.reduce((sum, value) => sum + value, 0)
+    && record.launchDenials.total <= record.totals.proxyConnections, 'receipt');
   if (!passed && record.destinationReason != null) c.check(record.firstFailure === 'destination', 'receipt');
   c.check(record.completedAt >= record.startedAt && record.completedAt - record.startedAt < LIMITS.wholeMs
     && record.totals.session <= record.totals.application
@@ -251,6 +260,10 @@ class NativeLedger {
     this.deadline = this.end - this.limits.cleanupMs; this.failure = null; this.active = null; this.chrome = 0; this.connections = 0; this.budgets = [];
     this.cleanupFailed = false; this.destinationReason = null;
     this.totals = Object.fromEntries(Object.keys(this.totalsSchema.shape).map(key => [key, 0]));
+    // Keep native-only policy accounting out of the consumed startup schemas and totals.
+    if (mode === 'qualification') {
+      this.launchDenials = { total: 0, perLaunch: [] }; this.launchInterval = null; this.lastLaunchInterval = 0;
+    }
   }
   /** Promote an active case's original cause through generic stops before cleanup retires its attribution. */
   stop(code) {
@@ -327,6 +340,33 @@ class NativeBudget extends c.ScopedBudget {
   launch() {
     this.check(); this.require(this.root.chrome === 0 && this.launches < this.item.launches, 'budget');
     this.root.charge({ launches: 1 }); this.root.chrome++; super.launch();
+    if (this.root.mode === 'qualification') this.root.launchDenials.perLaunch.push(0);
+  }
+  /** Bind one interval to a reserved active launch; cleanup or another proxy cannot reopen it. */
+  beginLaunchInterval() {
+    this.check(); const root = this.root;
+    this.require(root.mode === 'qualification' && root.active === this && root.chrome === 1
+      && !root.launchInterval && root.lastLaunchInterval < root.totals.launches, 'approval');
+    root.lastLaunchInterval = root.totals.launches;
+    root.launchInterval = Object.freeze({ budget: this, index: root.totals.launches - 1,
+      deadline: Math.min(this.clock() + LIMITS.attachmentMs, this.deadline) });
+    return root.launchInterval;
+  }
+  /** Retire only this exact interval; late adapter settlement cannot close a later launch's interval. */
+  endLaunchInterval(interval) {
+    if (interval?.budget === this && this.root.launchInterval === interval) this.root.launchInterval = null;
+  }
+  /** Charge a blocked denial once within the owned attachment clock; overflow stops the entire exercise. */
+  launchDenial(interval) {
+    this.check(); const root = this.root;
+    this.require(root.mode === 'qualification' && interval?.budget === this && root.launchInterval === interval
+      && root.active === this && root.chrome === 1, 'destination');
+    this.require(this.clock() < interval.deadline, 'deadline');
+    const counts = root.launchDenials;
+    if (counts.total >= LAUNCH_POLICY.cumulative || counts.perLaunch[interval.index] >= LAUNCH_POLICY.perLaunch) {
+      root.stop('budget'); throw new c.PreparationError('budget');
+    }
+    counts.total++; counts.perLaunch[interval.index]++;
   }
   /** Count raw CDP commands before their transport sends; cleanup commands retain the same ceiling. */
   command(cleanup = false) {
@@ -358,7 +398,7 @@ class NativeBudget extends c.ScopedBudget {
   tunnel(direction, bytes) { this.root.charge({ [`${direction}Bytes`]: bytes, tunnelBytes: bytes }); }
 }
 
-module.exports = { DIRECTORY, ORIGIN, FRAME_ORIGIN, SPKI, ID, PROFILE_NAMES, PROFILES, PORTS, ARTIFACTS, ROUTES,
+module.exports = { DIRECTORY, LAUNCH_POLICY, ORIGIN, FRAME_ORIGIN, SPKI, ID, PROFILE_NAMES, PROFILES, PORTS, ARTIFACTS, ROUTES,
   LIMITS, CASES, WITNESSES, bindingSchema, reviewSchema, ownerSchema, totalsSchema, attemptSchema, stoppedSchema,
   destinationReasonSchema, requireDestination, classify, profile, validateReview, qualificationChecks, validateAttempt, NativeLedger, NativeBudget };
 Object.assign(module.exports, { STARTUP_DIRECTORY, STARTUP_PROFILE, STARTUP_ARTIFACTS, STARTUP_COMMAND, STARTUP_CASE, STARTUP_LIMITS,
