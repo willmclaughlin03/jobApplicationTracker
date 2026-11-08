@@ -1,5 +1,5 @@
 import RedisMock from 'ioredis-mock';
-import { AUTH_RATE_LIMIT_OPERATIONS, getAuthRateLimitPolicy } from '../authRateLimitPolicy.js';
+import { AUTH_RATE_LIMIT_OPERATIONS, AUTH_RATE_LIMIT_POLICIES, getAuthRateLimitPolicy } from '../authRateLimitPolicy.js';
 import {
   AUTH_RATE_LIMIT_REDIS_SCRIPT, AUTH_RATE_LIMIT_REDIS_SCRIPT_SHA,
   executeAuthRateLimitRedisScript, parseAuthRateLimitRedisResult,
@@ -8,7 +8,7 @@ import { AUTH_RATE_LIMIT_NOSCRIPT, createAuthRateLimitRedisClient } from '../aut
 
 let sequence = 0;
 /** Executes production Lua in isolated in-memory Redis; no JS quota substitute. */
-function harness({ failWrite = false } = {}) {
+function harness({ failWrite = false, script = AUTH_RATE_LIMIT_REDIS_SCRIPT } = {}) {
   sequence += 1;
   const redis = new RedisMock({ host: 'auth-limiter-unit', port: 9000 + sequence });
   // ioredis-mock rounds epoch seconds and takes microseconds from unrelated hrtime.
@@ -22,7 +22,7 @@ redis.call = function(command, ...)
   ${failWrite ? "if command == 'SET' then error('synthetic write failure') end" : ''}
   return original_call(command, ...)
 end
-${AUTH_RATE_LIMIT_REDIS_SCRIPT}` });
+${script}` });
   /** Supplies coherent Redis TIME fields to the actual Lua at the fake wall clock. */
   redis.decide = (redisKey, operation) => redis.decideAtTime(
     redisKey, operation, String(Math.floor(Date.now() / 1000)), String((Date.now() % 1000) * 1000)
@@ -39,10 +39,73 @@ async function seed(redis, operation, { hour = 0, hc = 1, day = 0, dc = hc, ttl 
 /** Supplies the shared monotonic clock/deadline context for wrapper tests. */
 function context() { return { signal: new AbortController().signal, deadlineAt: 1500, now: () => Date.now() }; }
 
+/**
+ * Builds production Lua with larger PRE_AUTH limits to catch policy-bound drift.
+ * @param {object} limits hourly/daily overrides; other policies remain unchanged
+ * @returns {string} isolated script; the policy mock is removed even on failure
+ */
+function scriptWithPolicyLimits(limits) {
+  let script;
+  jest.isolateModules(() => {
+    jest.doMock('../authRateLimitPolicy.js', () => ({
+      ...jest.requireActual('../authRateLimitPolicy.js'),
+      AUTH_RATE_LIMIT_POLICIES: {
+        ...AUTH_RATE_LIMIT_POLICIES,
+        free: {
+          ...AUTH_RATE_LIMIT_POLICIES.free,
+          PRE_AUTH: { ...AUTH_RATE_LIMIT_POLICIES.free.PRE_AUTH, ...limits },
+        },
+      },
+    }));
+    try {
+      ({ AUTH_RATE_LIMIT_REDIS_SCRIPT: script } = require('../authRateLimitRedisScript.js'));
+    } finally { jest.dontMock('../authRateLimitPolicy.js'); }
+  });
+  return script;
+}
+
 /** Tests actual Lua transitions, strict output parsing, and bounded fallback. */
 describe('authRateLimitRedisScript', () => {
   beforeEach(() => { jest.useFakeTimers(); jest.setSystemTime(0); });
   afterEach(() => { jest.useRealTimers(); });
+
+  // Larger policies must survive persisted-state parsing and retain both storage caps.
+  it.each([[5000, 50000], [9_999_999_999, 9_999_999_999]])(
+    'round-trips increased policy limits %p/%p within the stored-value caps', async (hourly, daily) => {
+      const redis = harness({ script: scriptWithPolicyLimits({ hourly, daily }) });
+      jest.setSystemTime(4102444799999);
+      const now = 4102444799;
+      const hour = now - (now % 3600);
+      const day = now - (now % 86400);
+      const redisKey = key('PRE_AUTH');
+      expect(await redis.decide(redisKey, 'PRE_AUTH')).toEqual([
+        1, 0, now, hourly - 1, daily - 1, hour + 3600, day + 86400, 0,
+      ]);
+      expect(await redis.decide(redisKey, 'PRE_AUTH')).toEqual([
+        1, 0, now, hourly - 2, daily - 2, hour + 3600, day + 86400, 0,
+      ]);
+      await redis.set(redisKey, `1:${hourly}:${daily}:${hour}:${hourly - 1}:${day}:${daily - 1}`, 'PX', 1);
+      expect(await redis.decide(redisKey, 'PRE_AUTH')).toEqual([
+        1, 0, now, 0, 0, hour + 3600, day + 86400, 0,
+      ]);
+      const state = await redis.get(redisKey);
+      expect(Buffer.byteLength(state, 'utf8')).toBeLessThanOrEqual(96);
+      for (const field of state.split(':').slice(1)) expect(field.length).toBeLessThanOrEqual(10);
+      expect(await redis.decide(redisKey, 'PRE_AUTH')).toEqual([
+        1, 1, now, 0, 0, hour + 3600, day + 86400, 1,
+      ]);
+      expect(await redis.get(redisKey)).toBe(state);
+      expect(await redis.pttl(redisKey)).toBe(1);
+    }
+  );
+  // Unrepresentable code-owned limits must fail before generating a writable script.
+  it.each([
+    { hourly: 10_000_000_000 }, { daily: 10_000_000_000 },
+    { hourly: 0 }, { daily: -1 }, { hourly: 1.5 }, { daily: NaN },
+    { hourly: Infinity }, { daily: '30000' },
+  ])('rejects policy limits outside the stored integer contract: %p', (limits) => {
+    expect(() => scriptWithPolicyLimits(limits)).toThrow('Auth rate limit policy must use positive integers of at most 10 digits');
+  });
 
   it.each(AUTH_RATE_LIMIT_OPERATIONS)('allows the last hourly request then rejects without any write: %s', async (operation) => {
     const redis = harness();

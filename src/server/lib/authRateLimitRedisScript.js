@@ -7,8 +7,22 @@ import {
 } from './authRateLimitRedisClient.js';
 
 const MAX_TIME_SECONDS = 4_102_444_799;
-/** Serializes only code-owned operation policies into the static Lua source. */
+// Keep persisted-limit bounds aligned with the table used to generate Lua policies.
+const POLICY_VALUES = Object.values(AUTH_RATE_LIMIT_POLICIES.free);
+const MAX_HOURLY_LIMIT = Math.max(...POLICY_VALUES.map((policy) => policy.hourly));
+const MAX_DAILY_LIMIT = Math.max(...POLICY_VALUES.map((policy) => policy.daily));
+
+/**
+ * Serializes code-owned operation/policy pairs into static Lua, rejecting limits
+ * outside integer's 10-digit cap. Six such fields plus version/separators occupy
+ * at most 67 bytes, so valid state also fits the unchanged 96-byte STRLEN cap.
+ */
 function luaPolicy([operation, policy]) {
+  for (const limit of [policy.hourly, policy.daily]) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 9_999_999_999) {
+      throw new Error('Auth rate limit policy must use positive integers of at most 10 digits');
+    }
+  }
   return `${operation} = {${policy.hourly}, ${policy.daily}}`;
 }
 
@@ -53,8 +67,8 @@ if key_type == 'string' then
   if stored_ttl < 0 or stored_ttl > 86400000 then return invalid end
   local raw = redis.call('GET', KEYS[1])
   local hl, dl, hs, hc, ds, dc = string.match(raw, '^1:(%d+):(%d+):(%d+):(%d+):(%d+):(%d+)$')
-  hl = integer(hl, 3000)
-  dl = integer(dl, 30000)
+  hl = integer(hl, ${MAX_HOURLY_LIMIT})
+  dl = integer(dl, ${MAX_DAILY_LIMIT})
   hs = integer(hs, ${MAX_TIME_SECONDS})
   hc = integer(hc, policy[1])
   ds = integer(ds, ${MAX_TIME_SECONDS})
