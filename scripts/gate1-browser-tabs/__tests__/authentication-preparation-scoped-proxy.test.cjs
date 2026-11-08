@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter, getEventListeners } = require('node:events');
 const { ScopedBudget, LIMITS } = require('../authentication-preparation-scoped-contract.cjs');
 const { TunnelBudget, ScopedProxy, AUTHORITIES } = require('../authentication-preparation-scoped-proxy.cjs');
+const n = require('../authentication-preparation-scoped-native-contract.cjs');
 
 /** Simulate socket backpressure and optional asynchronous close events without opening network resources. */
 function socket({ closeAsync = false } = {}) {
@@ -228,4 +229,136 @@ test('native readiness denial and late cleanup callbacks cannot invent or replac
   other.client.once('close', () => other.server.emit('clientError', new Error('private cleanup'), other.client));
   other.server.emit('connect', { method: 'CONNECT', url: 'private.test:443' }, other.client, Buffer.alloc(0));
   assert.equal(other.budget.destinationReason, 'proxy_authority'); await other.proxy.close();
+});
+
+/** Exercise the opt-in launch policy through real callbacks, with all network boundaries replaced in memory. */
+async function launchFixture({ root = new n.NativeLedger(0, 480000, () => 1000), item = n.CASES[0], begin = true, policy = n.LAUNCH_POLICY } = {}) {
+  const budget = new n.NativeBudget(root, item); const server = new EventEmitter(); let upstreams = 0;
+  server.listen = (_port, _host, ready) => ready(); server.address = () => ({ port: 18445 }); server.close = done => done();
+  const proxy = new ScopedProxy(budget, { synthetic: 'fixtures', launchPolicy: policy, createServer: () => server,
+    connect: () => { upstreams++; return socket(); } });
+  await proxy.start(); budget.launch(); const interval = begin ? proxy.beginLaunchInterval() : null;
+  /** Deliver one synthetic CONNECT; the caller can retain a socket across interval boundaries. */
+  const deny = (url = 'unlisted.test:443', client = null, head = Buffer.alloc(0), method = 'CONNECT') => {
+    if (!client) { client = socket(); server.emit('connection', client); }
+    server.emit('connect', { method, url }, client, head); return client;
+  };
+  return { root, budget, proxy, server, interval, deny, upstreams: () => upstreams };
+}
+
+/** Tolerance counts blocked connections only; even a correct fixture stays behind the unchanged readiness barrier. */
+test('eligible launch denials are destroyed with zero upstream dispatch and no HTTP or byte admission', async () => {
+  const q = await launchFixture();
+  for (const authority of ['unlisted.test:443', '[2001:db8::1]:443', '192.0.2.1:8443', 'Example.TEST.:443']) {
+    const client = q.deny(authority); assert.equal(client.destroyed, true); assert.deepEqual(client.writes, []);
+  }
+  q.deny('127.0.0.1:18443');
+  assert.deepEqual(q.root.launchDenials, { total: 4, perLaunch: [4] });
+  assert.equal(q.root.totals.proxyConnections, 5); assert.equal(q.budget.failure, null); assert.equal(q.upstreams(), 0);
+  assert.equal(q.root.totals.application, 0); assert.equal(q.root.totals.tunnelBytes, 0);
+  assert.equal(q.proxy.snapshot().denied, 5); assert.equal(q.proxy.snapshot().forwardingClosed, true);
+  assert.equal(q.proxy.evidence.deniedFixture, 1);
+  assert.equal(JSON.stringify(q.root.launchDenials).includes('unlisted'), false);
+  await q.proxy.close(); assert.equal(q.root.launchInterval, null);
+});
+
+/** Syntax failures, payload, wrong methods and ownership errors never enter the tolerant counter. */
+test('launch exception rejects malformed authorities and all noneligible CONNECTs', async () => {
+  const malformed = ['', 'unlisted.test', 'user@unlisted.test:443', 'unlisted.test:443/path', 'unlisted.test:443?x',
+    'unlisted.test:443#x', 'unlisted.test:0', 'unlisted.test:65536', 'unlisted.test:0443', 'unlisted.test:\n443',
+    'unlisted.test:443\r\n', 'unlisted.test:443\n', '[::1]:443\n', 'unlisted.test:443\0', 'unlisted.test:443\u007f',
+    'unlisted.test: 443', '-bad.test:443', 'bad..test:443', `${'a'.repeat(64)}.test:443`, '999.0.0.1:443',
+    '[not-ip]:443', '[2001:::1]:443', '[::1%zone]:443', 'https://unlisted.test:443', {}, null];
+  for (const authority of malformed) {
+    const q = await launchFixture(); q.deny(authority);
+    assert.equal(q.budget.failure, 'destination'); assert.equal(q.root.launchDenials.total, 0);
+    assert.equal(q.upstreams(), 0); await q.proxy.close();
+  }
+  for (const mode of ['head', 'method', 'missing', 'reused', 'parser', 'http']) {
+    const q = await launchFixture(); const client = socket();
+    if (mode !== 'missing') q.server.emit('connection', client);
+    if (mode === 'reused') q.proxy.sockets.get(client).handled = true;
+    if (mode === 'parser') q.server.emit('clientError', new Error('synthetic'), client);
+    else if (mode === 'http') q.server.emit('request', client, socket());
+    else q.deny('unlisted.test:443', client, Buffer.from(mode === 'head' ? 'payload' : ''), mode === 'method' ? 'POST' : 'CONNECT');
+    assert.equal(q.budget.failure, 'destination'); assert.equal(q.root.launchDenials.total, 0);
+    assert.equal(q.upstreams(), 0); await q.proxy.close();
+  }
+});
+
+/** Default, startup and transport policies cannot opt into synthetic fixture launch tolerance. */
+test('strict policies reject authority denials and cannot borrow launch permission', async () => {
+  const strict = await launchFixture({ begin: false, policy: null }); strict.deny();
+  assert.equal(strict.budget.failure, 'destination'); assert.equal(strict.root.launchDenials.total, 0); await strict.proxy.close();
+  const startup = new n.NativeBudget(new n.NativeLedger(0, 180000, () => 1000, 'startup'), n.STARTUP_CASE);
+  for (const [budget, synthetic] of [[startup, 'fixtures'], [new ScopedBudget(), null],
+    [new n.NativeBudget(new n.NativeLedger(0, 480000, () => 1000), n.CASES[0]), 'transport']]) {
+    assert.throws(() => new ScopedProxy(budget, { synthetic, launchPolicy: n.LAUNCH_POLICY }), { code: 'approval' });
+  }
+  const live = await fixture(); live.server.emit('connect', { method: 'CONNECT', url: 'unlisted.test:443' }, live.client);
+  assert.equal(live.budget.failure, 'destination'); assert.equal(live.upstreams.length, 0); await live.proxy.close();
+});
+
+/** Closed forwarding is insufficient: both the socket and request must belong to the same active launch interval. */
+test('outside-interval and stale-socket denials remain fatal and old callbacks cannot borrow a restart interval', async () => {
+  for (const mode of ['before', 'after', 'prior-socket', 'stale-launch']) {
+    const q = await launchFixture({ begin: mode !== 'before' && mode !== 'prior-socket' });
+    let client;
+    if (mode === 'prior-socket' || mode === 'stale-launch') { client = socket(); q.server.emit('connection', client); }
+    if (mode === 'prior-socket') q.proxy.beginLaunchInterval();
+    if (mode === 'after') q.proxy.endLaunchInterval(q.interval);
+    if (mode === 'stale-launch') {
+      q.proxy.endLaunchInterval(q.interval); q.root.chrome--; q.budget.launch();
+      const next = q.proxy.beginLaunchInterval(); q.proxy.endLaunchInterval(q.interval);
+      assert.equal(q.proxy.launchInterval, next);
+    }
+    q.deny('unlisted.test:443', client); assert.equal(q.budget.failure, 'destination');
+    assert.equal(q.root.launchDenials.total, 0); assert.equal(q.upstreams(), 0); await q.proxy.close();
+  }
+});
+
+/** A launch cannot renew its clock or allowance through overlap, reentry, a new proxy or cleanup. */
+test('launch intervals cannot overlap or reopen and an elapsed attachment clock stops before tolerance', async () => {
+  for (const mode of ['overlap', 'reopen', 'cleanup']) {
+    const q = await launchFixture();
+    if (mode === 'reopen') q.proxy.endLaunchInterval(q.interval);
+    if (mode === 'cleanup') await q.proxy.close();
+    assert.throws(() => q.proxy.beginLaunchInterval(), { code: 'approval' }); await q.proxy.close();
+  }
+  const shared = await launchFixture(); shared.proxy.endLaunchInterval(shared.interval);
+  const other = new ScopedProxy(shared.budget, { synthetic: 'fixtures', launchPolicy: n.LAUNCH_POLICY, createServer: () => new EventEmitter() });
+  assert.throws(() => other.beginLaunchInterval(), { code: 'approval' });
+  assert.equal(shared.root.lastLaunchInterval, 1); await shared.proxy.close();
+  let now = 1000; const q = await launchFixture({ root: new n.NativeLedger(1000, 481000, () => now) });
+  now = 11000; q.deny(); assert.equal(q.budget.failure, 'deadline'); assert.equal(q.root.launchDenials.total, 0);
+  assert.equal(q.upstreams(), 0); await q.proxy.close();
+});
+
+/** Per-launch overflow is global, and cumulative reservations survive normal restarts and retirement of expected-negative cases. */
+test('launch denial limits stop at four per launch and sixteen across cases without refunds', async () => {
+  const one = await launchFixture(); for (let index = 0; index < 5; index++) one.deny();
+  assert.equal(one.root.failure, 'budget'); assert.deepEqual(one.root.launchDenials, { total: 4, perLaunch: [4] });
+  assert.equal(one.root.totals.proxyConnections, 5); assert.equal(one.upstreams(), 0); await one.proxy.close();
+  const root = new n.NativeLedger(0, 480000, () => 1000);
+  for (let index = 0; index < 5; index++) {
+    const q = await launchFixture({ root, item: n.CASES[index] });
+    for (let count = 0; count < (index < 4 ? 4 : 1); count++) q.deny();
+    if (index < 4) { assert.equal(root.failure, null); q.budget.stop(q.budget.item.expected || 'cancelled'); }
+    else assert.equal(root.failure, 'budget');
+    assert.equal(q.upstreams(), 0); await q.proxy.close(); root.chrome--; root.finishCase(q.budget);
+  }
+  assert.deepEqual(root.launchDenials, { total: 16, perLaunch: [4, 4, 4, 4, 0] });
+  assert.equal(root.totals.proxyConnections, 17); assert.equal(root.deadline, 360000);
+});
+
+/** Launch tolerance never supplements existing connection allowances or overrides an earlier stop. */
+test('launch denials still consume connection budgets and preserve cancellation', async () => {
+  for (const mode of ['cumulative', 'concurrent', 'cancelled']) {
+    const q = await launchFixture();
+    if (mode === 'cumulative') q.root.totals.proxyConnections = n.LIMITS.proxyConnections;
+    if (mode === 'concurrent') for (let index = 0; index < n.LIMITS.proxyConcurrent; index++) q.server.emit('connection', socket());
+    if (mode === 'cancelled') q.budget.stop('cancelled');
+    q.deny(); assert.equal(q.budget.failure, mode === 'cancelled' ? 'cancelled' : 'budget');
+    assert.equal(q.root.launchDenials.total, 0); assert.equal(q.upstreams(), 0); await q.proxy.close();
+  }
 });

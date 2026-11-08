@@ -207,3 +207,86 @@ This approved documentation scope changes only this companion and the linked
 authentication-preparation document. It does not update the feature/fix logs,
 publish a branch or execute authentication. Documentation verification consists
 of diff/whitespace and link/content review plus read-only source-hash recomputation.
+
+## Synthetic launch exception following the November 7 observation
+
+The owner approved the nine-file synthetic implementation and offline checks
+after reviewing the one consumed startup observation. This is a bounded policy
+compatibility decision. It grants no new startup observation, native execution,
+real authentication, hosted exercise or publication approval.
+
+The startup observation returned `outcome:rejection`, `firstFailure:destination`,
+`destinationReason:proxy_authority`, `failureStage:launch`, approximately 2.7 seconds
+after spawning the pinned Chrome. It recorded one launch, zero ready pages, three
+accepted proxy connections, one authority denial and zero admitted HTTP requests,
+tunnels or forwarded payload. Three additional connections were refused through
+the stopped/closing guard; the proxy's `overLimit` counter includes that condition
+and does not establish exhaustion of its numeric connection allowance.
+
+Independent postflight reported worker exit, matching bindings, normal Chrome
+closure, process absence, closed listeners and preserved profile. Its hash matched
+the timely supervisor result with `receiptFinalized:true`. The raw authority and
+originating component were not retained. The result does not identify benign
+background traffic, establish the older native-01 failure's cause or qualify any
+native capability. The strict proxy stopped as designed.
+
+The new `synthetic-blocked-launch-authority-v1` policy applies only to the full
+synthetic qualification runner's fixture proxy. It tolerates an authority denial
+only on an owned unused socket accepted during the same owned launch/attachment
+interval, for a well-formed CONNECT authority with a valid port and no initial
+payload. The socket is always destroyed without upstream connection or forwarding.
+The exception permits at most four such denials per launch and sixteen across the
+whole exercise, additionally charged against the existing 256 cumulative/eight
+concurrent proxy-connection limits. Exceeding either denial allowance stops the
+exercise. These limits are acceptance criteria, not measured traffic predictions.
+
+The interval begins only after reserving and registering the launch and ends on
+adapter attachment completion, failure, cancellation or the existing ten-second
+attachment deadline. It cannot overlap or reopen for the same launch. Socket and
+callback ownership prevents an earlier launch from borrowing a later interval.
+A closed proxy alone never enables tolerance: request-client restart operations
+and restored-worker observations occur after the interval and remain strict.
+
+Malformed CONNECT input, parser errors, unexpected methods, initial payload on a
+disallowed CONNECT, missing/reused socket ownership and authority denials outside
+the interval remain fatal. Page, worker and request-client destination failures,
+readiness before forwarding, restored-worker observation plus zero origin requests,
+persistent-cookie/request-client witnesses, cancellation, deadlines, normal closure
+and independent exit verification retain their existing requirements. No authority
+is added to the forwarding allowlist. Startup, transport, live authentication and
+hosted policies do not acquire this exception.
+
+The native execution review is now v2 and binds the literal policy and both caps.
+Native attempts use schema version 2, retaining the exact policy, a total and an
+ordered per-launch denial count. Their strict validator reconciles the counts with
+launch and connection totals before qualification can be issued. Completion and
+qualification receipts continue to bind the validated attempt by its hash. Startup
+schemas remain separate. Historical evidence is not migrated or reinterpreted.
+
+The only future native attempt path is
+`.tmp/gate1-authentication-preparation-scoped-native-02/`. It remains uncreated
+during implementation and offline checks. Preserve consumed `scoped-native-01`
+and `scoped-startup-01` evidence and profiles. The preserved startup review,
+attempt and postflight SHA-256 digests are respectively:
+
+- `8bfc290e7c10d2fdd3b890c7f0a0c1b56bd7dfe1d16ffc27d2c1fcbbf54f630b`
+- `ef297f22ea7b42c3ddfb695391326fd3c7e0844df7162529edd7dcb3d7b3159a`
+- `3e1ce70d6d9db260633eb12701fb19aa3ff629c595950da6f44cc2a177092240`
+
+The native supervisor requests cancellation and releases child/IPC event-loop
+references at expiry. This establishes neither worker nor Chrome exit; expiry
+cannot finalize qualification, force-kill Chrome or establish successful closure.
+
+After offline review, separately propose one full native matrix execution with
+fresh source/tool/TLS bindings, cases, budgets, expiry and independent postflight.
+Its result returns to a decision; failure authorizes no automatic helper, retry,
+larger allowance or broader exception. A synthetic pass would not establish that
+real authentication works under its stricter startup policy. Deployment/canonical
+alias/build reconciliation, real authentication preparation, independent evidence
+review and hosted-CSRF consumer/execution proposals remain separate later steps.
+Native capabilities remain unqualified until exercised and accepted. Gate 1 stays
+open, `browserTrafficMeasured:false`, `hostedQualified:false` and background HTTP
+unknown. The hosted ledger remains actual `150/150/52`, conservative `151/150/52`;
+synthetic work adds nothing. Other Gate 1 requirements, the exact 400-request
+allowance/61-second representation and the closed inconclusive artifact-scanner
+investigation are unchanged.
