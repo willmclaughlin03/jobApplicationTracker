@@ -14,6 +14,10 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-11-08
+
+- `2026-11-08` - `Local CHUNK-5A auth-limiter foundation`: Add explicit five-operation policies for every tier, operation-separated HMAC identities, request-scoped Redis transport, one-write atomic hourly/daily Lua quotas, and a bounded evaluator with 157 new tests. All 457 focused/regression tests across 23 suites, focused ESLint and whitespace checks passed. Existing routes and the temporary ceiling remain unchanged; rotation, activation and hosted qualification remain pending, and GATE-1 stays open.
+
 ### Week of 2026-11-01
 
 - `2026-11-07` - `Historical native-path write guard coverage`: Track unexpected file opens and assert afterward that both historical destinations are rejected before opening. All 20 postflight tests passed; in-memory guard bypasses confirmed the old assertions missed both regressions and the updated assertions catch them.
