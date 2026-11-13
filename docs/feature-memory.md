@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-11-08
 
+- `2026-11-13` - `Persistent Gate 1 redeployment identification`: Preserve the bounded canonical deployment/source/build identification runner and provider child in tracked operator tooling, with explicit qualification-workspace/CLI paths, pinned dependencies, sanitized evidence, and 72 offline checks. Document the required local evidence and separate live authorization. Hosted identification and runtime observation remain unexecuted; Gate 1 remains open.
+
 - `2026-11-08` - `Auth limiter policy-derived storage bounds`: Derive persisted hourly/daily validation bounds from the shared free-tier policy table and reject policy limits outside the positive 10-digit integer contract. Preserve the 10-character parser and 96-byte value caps; add ten regression cases covering larger policies, maximum representable state and invalid limits. All 167 auth limiter tests, focused ESLint and whitespace checks passed.
 
 - `2026-11-08` - `Local CHUNK-5A auth-limiter foundation`: Add explicit five-operation policies for every tier, operation-separated HMAC identities, request-scoped Redis transport, one-write atomic hourly/daily Lua quotas, and a bounded evaluator with 157 new tests. All 457 focused/regression tests across 23 suites, focused ESLint and whitespace checks passed. Existing routes and the temporary ceiling remain unchanged; rotation, activation and hosted qualification remain pending, and GATE-1 stays open.
