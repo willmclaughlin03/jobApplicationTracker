@@ -273,7 +273,7 @@ async function main(args) {
     const { cliPromise } = await import(pathToFileURL(path.join(CLI, 'index.js')).href);
     cliExitCode = await cliPromise;
     failure = failure || guard.state.failure || (cliExitCode !== 0 || !guard.state.metadata ? 'cli_failed' : null);
-  } catch (error) { failure = guard?.state.failure || (error instanceof ReadError ? error.code : 'internal'); }
+  } catch (error) { failure = failure || guard?.state.failure || (error instanceof ReadError ? error.code : 'internal'); }
   const state = guard?.state;
   const receipt = { type: 'receipt', schemaVersion: 1, result: failure ? 'stopped' : 'read', failure,
     nativeFetchCalls: state?.nativeFetchCalls ?? 0, adapterCalls: state?.adapterCalls ?? 0,
