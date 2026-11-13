@@ -255,7 +255,7 @@ test('worker pin verification rejects drift in the Zod entry it actually loaded'
 
 /** Run the private entry point with synthetic CLI imports, transport and IPC; isolate process mutations. */
 async function runMain({ stream = 'stdout', outputBytes = LIMITS.outputBytes + 1, cliExitCode = 0,
-  guardFailure = false } = {}) {
+  guardFailure = false, cliReject = false } = {}) {
   const events = [];
   const runtime = { Buffer, Response, Headers, AbortController, setTimeout, clearTimeout,
     __dirname: path.resolve(__dirname, '..'), module: { exports: {} },
@@ -280,7 +280,7 @@ async function runMain({ stream = 'stdout', outputBytes = LIMITS.outputBytes + 1
       return runtime.fetch(`https://api.vercel.com${url}`, options);
     }
   }
-  /** Model a CLI that catches output errors and still resolves its exit-code promise. */
+  /** Model a CLI that catches output errors before resolving or rejecting its exit-code promise. */
   runtime.importCli = async function importCli(url) {
     if (url.endsWith('/chunks/chunk-DECIQZZQ.js')) return { Client, isValidAccessToken: () => true };
     assert.ok(url.endsWith('/index.js'));
@@ -289,7 +289,7 @@ async function runMain({ stream = 'stdout', outputBytes = LIMITS.outputBytes + 1
     try { runtime.process[stream].write(Buffer.alloc(outputBytes)); }
     catch (error) { assert.equal(error.code, 'output_limit'); }
     if (guardFailure) await assert.rejects(client.fetch(runtime.process.argv[3]), { code: 'request_budget' });
-    return { cliPromise: Promise.resolve(cliExitCode) };
+    return { cliPromise: cliReject ? Promise.reject(new Error('synthetic CLI failure')) : Promise.resolve(cliExitCode) };
   };
   const source = fs.readFileSync(path.join(__dirname, '../provider-read-child.cjs'), 'utf8');
   // Replace only external CLI loading/pin checks in the isolated copy; execute the real main and guards.
@@ -304,6 +304,8 @@ for (const [label, options] of [
   ['stderr with a successful CLI exit', { stream: 'stderr' }],
   ['a failed CLI exit', { cliExitCode: 1 }],
   ['a subsequent guard failure', { guardFailure: true }],
+  ['a CLI promise rejection', { cliReject: true }],
+  ['a subsequent guard failure and CLI promise rejection', { guardFailure: true, cliReject: true }],
 ]) {
   test(`preserves output_limit after ${label}`, async () => {
     const { exitCode, receipt } = await runMain(options);
@@ -312,7 +314,7 @@ for (const [label, options] of [
     assert.equal(receipt.result, 'stopped');
     assert.equal(receipt.failure, 'output_limit');
     assert.equal(receipt.metadata, null);
-    assert.equal(receipt.cliExitCode, options.cliExitCode ?? 0);
+    assert.equal(receipt.cliExitCode, options.cliReject ? null : options.cliExitCode ?? 0);
     assert.equal(receipt.nativeFetchCalls, 1);
     assert.equal(receipt.adapterCalls, 1);
   });

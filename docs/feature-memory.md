@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-11-08
 
+- `2026-11-13` - `Gate 1 CLI rejection failure preservation`. Preserve an already recorded output-limit failure when the CLI promise later rejects. Add two regression fixtures covering rejection with and without a subsequent guard failure. All 90 offline tests, syntax checks, focused ESLint and whitespace checks passed.
+
 - `2026-11-13` - `Gate 1 redeployment review fixes`: Preserve provider output-limit failures, derive worker dependency paths from the approved workspace, bind both runners to its pinned Zod entry with the resolved path in the approval digest, and track existing/partial reservation evidence independently of the returned sink. All 88 offline tests, syntax checks, focused ESLint and whitespace checks passed. No hosted exercise ran.
 
 - `2026-11-13` - `Persistent Gate 1 redeployment identification`: Preserve the bounded canonical deployment/source/build identification runner and provider child in tracked operator tooling, with explicit qualification-workspace/CLI paths, pinned dependencies, sanitized evidence, and 72 offline checks. Document the required local evidence and separate live authorization. Hosted identification and runtime observation remain unexecuted; Gate 1 remains open.
