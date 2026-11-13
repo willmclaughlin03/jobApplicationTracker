@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-11-08
 
+- `2026-11-13` - `Gate 1 redeployment review fixes`: Preserve provider output-limit failures, derive worker dependency paths from the approved workspace, bind both runners to its pinned Zod entry with the resolved path in the approval digest, and track existing/partial reservation evidence independently of the returned sink. All 88 offline tests, syntax checks, focused ESLint and whitespace checks passed. No hosted exercise ran.
+
 - `2026-11-13` - `Persistent Gate 1 redeployment identification`: Preserve the bounded canonical deployment/source/build identification runner and provider child in tracked operator tooling, with explicit qualification-workspace/CLI paths, pinned dependencies, sanitized evidence, and 72 offline checks. Document the required local evidence and separate live authorization. Hosted identification and runtime observation remain unexecuted; Gate 1 remains open.
 
 - `2026-11-08` - `Auth limiter policy-derived storage bounds`: Derive persisted hourly/daily validation bounds from the shared free-tier policy table and reject policy limits outside the positive 10-digit integer contract. Preserve the 10-character parser and 96-byte value caps; add ten regression cases covering larger policies, maximum representable state and invalid limits. All 167 auth limiter tests, focused ESLint and whitespace checks passed.

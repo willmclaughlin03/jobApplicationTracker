@@ -7,11 +7,15 @@ const os = require('node:os');
 const fs = require('node:fs');
 const { createHash } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
-const { z } = require('zod');
 
 // These nonsecret paths let a linked PR checkout use the preserved qualification workspace.
 // CLI hashes remain mandatory for every location; this never accepts a credential override.
 const ROOT = path.resolve(process.env.GATE1_REVIEW_WORKSPACE || path.join(__dirname, '../..'));
+const ZOD_PIN = Object.freeze({ file: 'node_modules/zod/index.cjs',
+  sha256: '2a3455cecff4f7021c92d0a3e2e5fc170c0448dc5cc261160127e08f4888a9c2' });
+// Bind both runners to the workspace copy covered by preparation, regardless of checkout-local modules.
+const ZOD_ENTRY = require.resolve(path.join(ROOT, ZOD_PIN.file));
+const { z } = require(ZOD_ENTRY);
 const CLI = path.resolve(process.env.GATE1_VERCEL_CLI_DIST || path.join(os.homedir(),
   'AppData/Local/npm-cache/_npx/67eb4586ca667318/node_modules/vercel/dist'));
 const TARGET = Object.freeze({ projectId: 'prj_b2nMrysMSJtpmqoeGx5g0WGgGuom',
@@ -110,8 +114,11 @@ function projectMetadata(phase, raw) {
     rollingReleaseConfigured: raw.rollingRelease != null });
 }
 
-/** Check reviewed CLI bytes before any CLI module is imported or reads its own authorization. */
+/** Check the loaded Zod entry and reviewed CLI bytes before any CLI import or authorization access. */
 function verifyPins(read = fs.readFileSync) {
+  if (createHash('sha256').update(read(ZOD_ENTRY)).digest('hex') !== ZOD_PIN.sha256) {
+    throw new ReadError('dependency_changed');
+  }
   for (const [name, expected] of Object.entries(PINS)) {
     const actual = createHash('sha256').update(read(path.join(CLI, name))).digest('hex');
     if (actual !== expected) throw new ReadError('dependency_changed');
@@ -127,6 +134,8 @@ function childEnvironment(source = process.env) {
   }
   return { ...env, TEMP: path.join(ROOT, '.tmp'), TMP: path.join(ROOT, '.tmp'), CI: '1', NO_COLOR: '1',
     GATE1_REVIEW_WORKSPACE: ROOT, GATE1_VERCEL_CLI_DIST: CLI,
+    // Resolve dependencies for external checkouts without inheriting an arbitrary NODE_PATH.
+    NODE_PATH: path.join(ROOT, 'node_modules'),
     NO_UPDATE_NOTIFIER: '1',
     VERCEL_TELEMETRY_DISABLED: '1', VERCEL_GUIDANCE_DISABLED: '1', VERCEL_CLI_USE_NATIVE_BINARY: '0',
     NODE_DISABLE_COMPILE_CACHE: '1' };
@@ -263,7 +272,7 @@ async function main(args) {
     process.argv = [process.execPath, path.join(CLI, 'vc.js'), 'api', guard.endpoint, '--method', 'GET', '--raw', '--non-interactive'];
     const { cliPromise } = await import(pathToFileURL(path.join(CLI, 'index.js')).href);
     cliExitCode = await cliPromise;
-    failure = guard.state.failure || (cliExitCode !== 0 || !guard.state.metadata ? 'cli_failed' : null);
+    failure = failure || guard.state.failure || (cliExitCode !== 0 || !guard.state.metadata ? 'cli_failed' : null);
   } catch (error) { failure = guard?.state.failure || (error instanceof ReadError ? error.code : 'internal'); }
   const state = guard?.state;
   const receipt = { type: 'receipt', schemaVersion: 1, result: failure ? 'stopped' : 'read', failure,
@@ -274,7 +283,7 @@ async function main(args) {
   return failure ? 1 : 0;
 }
 
-module.exports = { ROOT, CLI, TARGET, LIMITS, PINS, CODES, ReadError, parse, operation, validateMetadata,
+module.exports = { ROOT, CLI, ZOD_PIN, ZOD_ENTRY, z, TARGET, LIMITS, PINS, CODES, ReadError, parse, operation, validateMetadata,
   projectMetadata, verifyPins, childEnvironment, boundedJson, createGuard, installClientGuards };
 if (require.main === module) {
   void main(process.argv.slice(2)).then((code) => process.exit(code), () => process.exit(1));

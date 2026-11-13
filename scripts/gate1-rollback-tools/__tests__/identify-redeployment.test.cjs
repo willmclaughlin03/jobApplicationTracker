@@ -1,10 +1,13 @@
 'use strict';
-/* global AbortController, Response, setImmediate */
+/* global __dirname, Buffer, AbortController, Response, setImmediate, setTimeout, clearTimeout */
 
 /** Offline orchestration, persistence and child-protocol tests. No evidence files or provider calls are made. */
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 const runner = require('../identify-redeployment.cjs');
 const provider = require('../provider-read-child.cjs');
 const DEPLOYMENT = 'dpl_SyntheticReplacement';
@@ -156,12 +159,24 @@ test('real login transport sends one canonical anonymous request and retains no 
 });
 
 /** Model a filesystem in memory so reservation/checkpoint tests never create evidence artifacts. */
-function fakeIo(existing = false) {
+function fakeIo(existing = false, failAt = null) {
   const writes = [], data = [];
+  let present = existing;
+  /** Simulate a filesystem failure at a named reservation operation, after recording any attempted write. */
+  function fail(point) { if (failAt === point) throw new Error('synthetic disk failure'); }
   return { writes, data,
-    mkdirSync() { if (existing) { const error = new Error(); error.code = 'EEXIST'; throw error; } },
-    writeFileSync(file, bytes, options) { writes.push({ file, bytes, options }); },
-    openSync(file, flag) { writes.push({ file, flag }); return 1; },
+    /** Report attempt-directory presence independently of open report handles. */
+    existsSync() { return present; },
+    /** Model exclusive directory creation, including a competing reservation after the initial check. */
+    mkdirSync() {
+      if (failAt === 'race') present = true;
+      if (present) { const error = new Error(); error.code = 'EEXIST'; throw error; }
+      fail('mkdir'); present = true;
+    },
+    /** Record partial profile/reservation writes before an injected failure. */
+    writeFileSync(file, bytes, options) { writes.push({ file, bytes, options }); fail(path.basename(file)); },
+    /** Model report creation failing before a sink can be returned. */
+    openSync(file, flag) { writes.push({ file, flag }); fail('report.json'); return 1; },
     ftruncateSync() {}, writeSync(fd, bytes, offset, length) { data.push(bytes.toString()); return length; },
     fsyncSync() {}, closeSync() {},
   };
@@ -182,6 +197,60 @@ test('existing reservation blocks all file writes and dispatch', () => {
   assert.throws(() => runner.reserve(MANIFEST, io), { code: 'evidence_exists' });
   assert.equal(io.writes.length, 0);
 });
+
+/** Exercise the real main/reserve recovery flow with in-memory I/O and no provider or CLI execution. */
+async function recovery(io, args = ['--execute', MANIFEST.packageDigest]) {
+  const output = [];
+  let runs = 0;
+  const runtime = { __dirname: path.resolve(__dirname, '..'), Buffer, AbortController, setTimeout, clearTimeout,
+    module: { exports: {} }, manifest: MANIFEST,
+    process: { stdout: { write: (text) => output.push(JSON.parse(text)) } },
+    /** Substitute only filesystem and provider-module imports; all evidence writes stay in memory. */
+    require(name) {
+      if (name === 'node:fs') return io;
+      if (name === './provider-read-child.cjs') return provider;
+      return require(name);
+    },
+    /** Record any execution after reserve returns and force the outer recovery path without traffic. */
+    run() { runs++; throw new Error('synthetic execution failure'); },
+  };
+  const source = fs.readFileSync(path.join(__dirname, '../identify-redeployment.cjs'), 'utf8');
+  const main = vm.runInNewContext(source + '\npreparation = () => manifest; verifySource = () => {};'
+    + ' reviewedLogin = () => ({}); runWithAdapters = run; main;', runtime);
+  const exitCode = await main(args);
+  return { exitCode, report: output.at(-1), runs };
+}
+
+for (const [label, existing, failAt, expected, evidenceMayExist, writes, runs] of [
+  ['existing reservation', true, null, 'evidence_exists', true, 0, 0],
+  ['competing reservation', false, 'race', 'evidence_exists', true, 0, 0],
+  ['directory creation failure', false, 'mkdir', 'checkpoint', false, 0, 0],
+  ['profile write failure', false, 'profile.json', 'checkpoint', true, 1, 0],
+  ['reservation write failure', false, 'reservation.json', 'checkpoint', true, 2, 0],
+  ['report creation failure', false, 'report.json', 'checkpoint', true, 3, 0],
+  ['failure after reserve returns', false, null, 'internal', true, 3, 1],
+]) {
+  test(`recovery reports evidence presence after ${label}`, async () => {
+    const io = fakeIo(existing, failAt);
+    const result = await recovery(io);
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.report.failure, expected);
+    assert.equal(result.report.evidenceMayExist, evidenceMayExist);
+    assert.equal(io.writes.length, writes);
+    assert.equal(result.runs, runs);
+  });
+}
+
+for (const existing of [false, true]) {
+  test(`recovery checks existing evidence (${existing}) before argument validation`, async () => {
+    const io = fakeIo(existing);
+    const result = await recovery(io, ['--invalid']);
+    assert.equal(result.report.failure, 'arguments');
+    assert.equal(result.report.evidenceMayExist, existing);
+    assert.equal(io.writes.length, 0);
+    assert.equal(result.runs, 0);
+  });
+}
 
 /** Provide an EventEmitter child whose entire protocol is driven by the test callback. */
 function fakeFork(actions) {
@@ -249,5 +318,8 @@ test('preparation verifies pins and computes a repeatable digest without evidenc
   assert.equal(first.packageDigest, second.packageDigest);
   assert.equal(Object.keys(first.components).length, 4);
   assert.equal(first.reviewWorkspace, provider.ROOT);
+  assert.equal(first.validatorEntry, require.resolve(path.join(provider.ROOT, 'node_modules/zod/index.cjs')));
+  assert.equal(first.validatorEntry, provider.ZOD_ENTRY);
+  assert.equal(first.localDependencies[provider.ZOD_PIN.file], runner.hash(fs.readFileSync(first.validatorEntry)));
   assert.equal(first.profile.ownerAttestations.onlyChangedSetting, 'GATE1_RESTART_PROBE_SECRET');
 });

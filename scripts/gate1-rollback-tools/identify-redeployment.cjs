@@ -7,9 +7,8 @@ const path = require('node:path');
 const { fork, execFileSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const { performance } = require('node:perf_hooks');
-const { z } = require('zod');
 const provider = require('./provider-read-child.cjs');
-const { ROOT, CLI, TARGET, LIMITS, PINS, ReadError } = provider;
+const { ROOT, CLI, ZOD_PIN, ZOD_ENTRY, z, TARGET, LIMITS, PINS, ReadError } = provider;
 const SOURCE = '.tmp/worktrees/gate1-production-canary-f3c62a4d';
 const GIT_SHA = 'f3c62a4d221fa39e920c0b5faecb61f1add7bab4';
 const PREVIOUS = 'dpl_Hd8Lta3bGKjjhDwMkNfTQxazBZax';
@@ -27,7 +26,7 @@ const LOCAL_PINS = Object.freeze({
   [`${SOURCE}/package-lock.json`]: 'eaed6549900522ba1d4a17891d180189f98c9cdad828137a597a69c272ba977b',
   '.tmp/gate1-rollback/canonical-redeployment-post-login-attempt-2/report.json': '65af70c6c42e54d48d5587b4a4cbac18e938eed52b137f3c93d66256e7693c3e',
   '.tmp/gate1-rollback/replacement-Hd8Lta3b-fixture-attempt-1/fixture-readiness.json': 'a5056af3dd32ec302ad59d79b870492d443f6fd15ced8796352ffa5edcc7417a',
-  'node_modules/zod/index.cjs': '2a3455cecff4f7021c92d0a3e2e5fc170c0448dc5cc261160127e08f4888a9c2',
+  [ZOD_PIN.file]: ZOD_PIN.sha256,
 });
 const PROFILE = Object.freeze({ schemaVersion: 1, scope: 'canonical_secret_redeployment_identification_only',
   ...TARGET, previousDeploymentId: PREVIOUS, reviewedGitSha: GIT_SHA, reviewedSource: SOURCE,
@@ -74,7 +73,7 @@ function preparation() {
   }
   const components = Object.fromEntries(FILES.map((file) => [file, hash(fs.readFileSync(path.join(__dirname, file)))]));
   const manifest = { profile: PROFILE, components, localDependencies: LOCAL_PINS, cliDependencies: PINS,
-    reviewWorkspace: ROOT, cliDirectory: CLI, cliVersion: '62.2.0', localNodeVersion: process.version };
+    reviewWorkspace: ROOT, validatorEntry: ZOD_ENTRY, cliDirectory: CLI, cliVersion: '62.2.0', localNodeVersion: process.version };
   return { ...manifest, packageDigest: hash(JSON.stringify(manifest)) };
 }
 
@@ -114,12 +113,15 @@ function reviewedLogin() {
   };
 }
 
-/** Reserve a fresh directory and three named files. Existing evidence is never reused or deleted. */
-function reserve(manifest, io = fs) {
+/** Reserve fresh evidence without reusing/deleting it; latch directory presence in reservation before file writes. */
+function reserve(manifest, io = fs, reservation = {}) {
   const dir = path.join(ROOT, DIRECTORY);
   let reportFd;
-  try { io.mkdirSync(dir); }
-  catch (error) { stop(error.code === 'EEXIST' ? 'evidence_exists' : 'checkpoint'); }
+  try { io.mkdirSync(dir); reservation.evidenceMayExist = true; }
+  catch (error) {
+    if (error.code === 'EEXIST') reservation.evidenceMayExist = true;
+    stop(error.code === 'EEXIST' ? 'evidence_exists' : 'checkpoint');
+  }
   try {
     io.writeFileSync(path.join(dir, 'profile.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
     io.writeFileSync(path.join(dir, 'reservation.json'), JSON.stringify({ schemaVersion: 1,
@@ -294,7 +296,9 @@ async function runWithAdapters(manifest, deps) {
 /** Default preparation is read-only. Live mode verifies its exact approval before reserving any evidence. */
 async function main(args) {
   let sink;
+  const reservation = { evidenceMayExist: false };
   try {
+    reservation.evidenceMayExist = fs.existsSync(path.join(ROOT, DIRECTORY));
     if (!(args.length === 0 || (args.length === 1 && args[0] === '--prepare')
       || (args.length === 2 && args[0] === '--execute' && /^[a-f0-9]{64}$/.test(args[1])))) stop('arguments');
     const manifest = preparation();
@@ -305,14 +309,14 @@ async function main(args) {
     if (args[1] !== manifest.packageDigest) stop('approval');
     verifySource();
     const loginTransport = reviewedLogin();
-    sink = reserve(manifest);
+    sink = reserve(manifest, fs, reservation);
     const report = await runWithAdapters(manifest, { mode: 'live', provider: readProvider, save: sink.save,
       ...loginTransport });
     process.stdout.write(JSON.stringify(report, null, 2) + '\n');
     return report.result === 'identified' ? 0 : 1;
   } catch (error) {
     process.stdout.write(JSON.stringify({ result: 'stopped', failure: failureCode(error), gate1Status: 'open',
-      gate5aStatus: 'unpassed', evidenceMayExist: Boolean(sink), rollbackExecuted: false }) + '\n');
+      gate5aStatus: 'unpassed', evidenceMayExist: reservation.evidenceMayExist, rollbackExecuted: false }) + '\n');
     return 1;
   } finally { if (sink) { try { sink.close(); } catch { /* No further traffic or replay follows close failure. */ } } }
 }

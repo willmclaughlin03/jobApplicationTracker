@@ -1,9 +1,13 @@
 'use strict';
-/* global Buffer, Response, ReadableStream */
+/* global __dirname, process, Buffer, Response, ReadableStream, Headers, AbortController, setTimeout, clearTimeout */
 
 /** Offline transport/auth/privacy tests. Every response and credential in this file is synthetic. */
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const { execFileSync } = require('node:child_process');
 const child = require('../provider-read-child.cjs');
 const { TARGET, LIMITS, operation, projectMetadata, createGuard, installClientGuards } = child;
 const DEPLOYMENT = 'dpl_SyntheticReplacement';
@@ -183,18 +187,143 @@ test('CLI user lookup is suppressed without consuming the approved read', async 
 test('child environment excludes credentials, proxies, debugging and injected Node options', () => {
   const env = child.childEnvironment({ SystemRoot: 'C:/Windows', Path: 'synthetic-path', USERPROFILE: 'synthetic-home',
     VERCEL_TOKEN: SECRET_SENTINEL, GATE1_RESTART_PROBE_SECRET: SECRET_SENTINEL,
-    NODE_OPTIONS: SECRET_SENTINEL, HTTPS_PROXY: SECRET_SENTINEL, DEBUG: SECRET_SENTINEL });
+    NODE_OPTIONS: SECRET_SENTINEL, NODE_PATH: SECRET_SENTINEL, Node_Path: SECRET_SENTINEL,
+    HTTPS_PROXY: SECRET_SENTINEL, DEBUG: SECRET_SENTINEL });
   assert.equal(env.PATH, 'synthetic-path');
   assert.ok(!JSON.stringify(env).includes(SECRET_SENTINEL));
   assert.equal(env.VERCEL_TELEMETRY_DISABLED, '1');
   assert.equal(env.NO_UPDATE_NOTIFIER, '1');
   assert.equal(env.GATE1_REVIEW_WORKSPACE, child.ROOT);
   assert.equal(env.GATE1_VERCEL_CLI_DIST, child.CLI);
+  assert.equal(env.NODE_PATH, path.join(child.ROOT, 'node_modules'));
   assert.equal(env.TEMP, env.TMP);
+});
+
+test('both runners use workspace Zod despite conflicting checkout resolution or cwd', () => {
+  // Compile the unchanged worker at a virtual external path; no external files or CLI imports are needed.
+  const script = `
+    const assert = require('node:assert/strict');
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const Module = require('node:module');
+    const filename = path.join(path.parse(process.argv[1]).root,
+      '__gate1_external_checkout__', 'scripts', 'gate1-rollback-tools', 'provider-read-child.cjs');
+    const worker = new Module(filename);
+    worker.filename = filename;
+    worker.paths = [];
+    const loadWorker = worker.require.bind(worker);
+    /** Simulate a checkout-local Zod copy that must never be selected. */
+    worker.require = function loadDependency(name) {
+      assert.notEqual(name, 'zod', 'worker selected checkout-local Zod');
+      return loadWorker(name);
+    };
+    worker._compile(fs.readFileSync(process.argv[1], 'utf8'), filename);
+    const approvedEntry = require.resolve(path.join(worker.exports.ROOT, 'node_modules', 'zod', 'index.cjs'));
+    assert.equal(worker.exports.ZOD_ENTRY, approvedEntry);
+    assert.equal(worker.exports.z, require(approvedEntry).z);
+    assert.ok(worker.exports.operation({ phase: 'alias_before', deploymentId: null }).startsWith('/v4/aliases/'));
+    const parentFilename = path.join(path.dirname(filename), 'identify-redeployment.cjs');
+    const parent = new Module(parentFilename);
+    parent.filename = parentFilename;
+    parent.paths = [];
+    const loadParent = parent.require.bind(parent);
+    /** Keep the parent on the same provider module and reject any independent bare Zod lookup. */
+    parent.require = function loadDependency(name) {
+      if (name === './provider-read-child.cjs') return worker.exports;
+      assert.notEqual(name, 'zod', 'parent selected checkout-local Zod');
+      return loadParent(name);
+    };
+    parent._compile(fs.readFileSync(process.argv[2], 'utf8'), parentFilename);
+    assert.equal(parent.exports.LOCAL_PINS[worker.exports.ZOD_PIN.file], worker.exports.ZOD_PIN.sha256);
+  `;
+  for (const cwd of [child.ROOT, path.dirname(process.execPath)]) {
+    execFileSync(process.execPath, ['-e', script, path.resolve(__dirname, '../provider-read-child.cjs'),
+      path.resolve(__dirname, '../identify-redeployment.cjs')], {
+      cwd, env: child.childEnvironment(), windowsHide: true, timeout: 10000, stdio: 'pipe',
+    });
+  }
 });
 
 test('dependency drift fails without reading auth or dispatching', () => {
   assert.throws(() => child.verifyPins(() => Buffer.from('changed')), { code: 'dependency_changed' });
+});
+
+test('worker pin verification rejects drift in the Zod entry it actually loaded', () => {
+  assert.throws(() => child.verifyPins((file) => file === child.ZOD_ENTRY
+    ? Buffer.from('changed validator') : fs.readFileSync(file)), { code: 'dependency_changed' });
+});
+
+/** Run the private entry point with synthetic CLI imports, transport and IPC; isolate process mutations. */
+async function runMain({ stream = 'stdout', outputBytes = LIMITS.outputBytes + 1, cliExitCode = 0,
+  guardFailure = false } = {}) {
+  const events = [];
+  const runtime = { Buffer, Response, Headers, AbortController, setTimeout, clearTimeout,
+    __dirname: path.resolve(__dirname, '..'), module: { exports: {} },
+    process: { env: { GATE1_REVIEW_WORKSPACE: child.ROOT }, execPath: 'synthetic-node', stdout: {}, stderr: {},
+      /** Capture only synthetic IPC events and acknowledge the final receipt. */
+      send(event, callback) { events.push(event); callback?.(); } },
+    /** Supply a valid provider response without making a network request. */
+    fetch: async () => response(fixture('alias_before')),
+    /** Stub mutable Node transports so installing guards cannot affect the test runner. */
+    require(name) {
+      if (name === 'node:http' || name === 'node:https') return {};
+      if (name === 'node:module') return { syncBuiltinESMExports() {} };
+      return require(name);
+    },
+  };
+  runtime.require.resolve = require.resolve;
+  /** Exercise the real CLI adapter and fetch guards with synthetic authorization. */
+  class Client {
+    /** Route the mock CLI request through the installed authorization and native-fetch guards. */
+    async _fetch(url, options) {
+      await this.ensureAuthorized();
+      return runtime.fetch(`https://api.vercel.com${url}`, options);
+    }
+  }
+  /** Model a CLI that catches output errors and still resolves its exit-code promise. */
+  runtime.importCli = async function importCli(url) {
+    if (url.endsWith('/chunks/chunk-DECIQZZQ.js')) return { Client, isValidAccessToken: () => true };
+    assert.ok(url.endsWith('/index.js'));
+    const client = new Client();
+    await client.fetch(runtime.process.argv[3]);
+    try { runtime.process[stream].write(Buffer.alloc(outputBytes)); }
+    catch (error) { assert.equal(error.code, 'output_limit'); }
+    if (guardFailure) await assert.rejects(client.fetch(runtime.process.argv[3]), { code: 'request_budget' });
+    return { cliPromise: Promise.resolve(cliExitCode) };
+  };
+  const source = fs.readFileSync(path.join(__dirname, '../provider-read-child.cjs'), 'utf8');
+  // Replace only external CLI loading/pin checks in the isolated copy; execute the real main and guards.
+  const main = vm.runInNewContext(source.replaceAll('await import(', 'await importCli(')
+    + '\nverifyPins = () => {}; main;', runtime);
+  const exitCode = await main(['--read', 'alias_before', '-']);
+  return { exitCode, receipt: events.at(-1) };
+}
+
+for (const [label, options] of [
+  ['stdout with a successful CLI exit', {}],
+  ['stderr with a successful CLI exit', { stream: 'stderr' }],
+  ['a failed CLI exit', { cliExitCode: 1 }],
+  ['a subsequent guard failure', { guardFailure: true }],
+]) {
+  test(`preserves output_limit after ${label}`, async () => {
+    const { exitCode, receipt } = await runMain(options);
+    assert.equal(exitCode, 1);
+    assert.equal(receipt.type, 'receipt');
+    assert.equal(receipt.result, 'stopped');
+    assert.equal(receipt.failure, 'output_limit');
+    assert.equal(receipt.metadata, null);
+    assert.equal(receipt.cliExitCode, options.cliExitCode ?? 0);
+    assert.equal(receipt.nativeFetchCalls, 1);
+    assert.equal(receipt.adapterCalls, 1);
+  });
+}
+
+test('accepts successful CLI output at the exact discard limit', async () => {
+  const { exitCode, receipt } = await runMain({ outputBytes: LIMITS.outputBytes });
+  assert.equal(exitCode, 0);
+  assert.equal(receipt.result, 'read');
+  assert.equal(receipt.failure, null);
+  assert.equal(receipt.metadata.deploymentId, DEPLOYMENT);
 });
 
 module.exports = { fixture, DEPLOYMENT };
