@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-11-14` - `Dispatch checkpoint failures reported as child protocol errors`: The IPC catch converted a trusted onDispatch checkpoint exception to child_protocol, obscuring the consumed attempt's stop reason. Approach: catch trusted callback failures separately from child-message validation. Fix: sanitize callback errors through the parent allowlist while preserving existing ReadError behavior for untrusted validation failures. The composed regression reproduced the bug before the fix; all 128 offline tests, syntax checks, focused ESLint and whitespace checks passed.
+
 - `2026-11-14` - `Build attribution unavailable in identification-only metadata`: The earlier provider projection omitted build outputs and toolchain observations. Approach: add a separate bounded build-attribution package that retains only allowlisted facts and explicit evidence gaps. Fix: enforce target/build/alias agreement, finite event/output caps, strict IPC, version/runtime conflict checks, deadlines and consumed-attempt rejection, with 121 passing offline tests. Source-lock versions and partial metadata cannot become hosted manifest qualification; publication grants no live execution approval.
 
 - `2026-11-13` - `Gate 1 CLI rejection overwrote output-limit failures`. A CLI that caught the output-limit exception and then rejected its promise replaced the recorded failure with internal or a later guard error. Prioritize the existing local failure in the catch handler before guard state and caught-error classification. Both new regression fixtures reproduced the bug before the fix. All 90 offline tests, syntax checks, focused ESLint and whitespace checks passed.

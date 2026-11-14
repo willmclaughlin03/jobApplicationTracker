@@ -228,6 +228,59 @@ function receipt() {
     metadata: metadata('alias_before') };
 }
 
+/** Compose reservation, orchestration and child IPC so a dispatch checkpoint failure keeps its consumed stop reason. */
+test('dispatch checkpoint failure reports checkpoint and consumes the attempt', async () => {
+  const io = fakeIo(), output = [], h = harness();
+  const write = io.writeSync;
+  let childRef;
+  /** Fail only the first announced-dispatch write; earlier reservation checkpoints remain durable in memory. */
+  mocks.spyOn(io, 'writeSync').mockImplementation((fd, bytes, offset, length) => {
+    if (JSON.parse(bytes.toString()).providerDispatchAnnouncements === 1) throw new Error(SECRET);
+    return write(fd, bytes, offset, length);
+  });
+  mocks.spyOn(io, 'closeSync');
+  const code = await runner.main(['--execute', MANIFEST.packageDigest], {
+    prepare: () => MANIFEST, verifySource: () => {}, output: (value) => output.push(value),
+    reserve: (manifest, unused, state) => runner.reserve(manifest, io, state),
+    loginTransport: { login: h.deps.login, loginBuild: h.deps.loginBuild },
+    /** Use the real parent IPC reader with a synthetic child, including late messages after the checkpoint failure. */
+    provider(phase, deploymentId, timeoutMs, signal, onDispatch) {
+      return runner.readProvider(phase, deploymentId, timeoutMs, signal, onDispatch, fakeFork((child) => {
+        childRef = child;
+        child.emit('message', { type: 'dispatch' }); child.emit('message', receipt()); child.emit('close', 0);
+      }));
+    },
+  });
+  const report = output.at(-1);
+  assert.equal(code, 1); assert.equal(report.result, 'stopped'); assert.equal(report.failure, 'checkpoint');
+  assert.equal(report.phase, 'alias_before'); assert.equal(report.providerAttempts, 1);
+  assert.equal(report.providerDispatchAnnouncements, 1); assert.equal(report.applicationAttempts, 0);
+  assert.deepEqual(report.observations, []); assert.deepEqual(h.calls, []);
+  assert.equal(childRef.killed, true); assert.equal(io.writeSync.mock.calls.length, 3);
+  assert.equal(io.closeSync.mock.calls.length, 1); assert.ok(!JSON.stringify(report).includes(SECRET));
+  assert.throws(() => runner.reserve(MANIFEST, io), { code: 'evidence_exists' });
+});
+
+/** Trusted callback failures preserve only the parent's allowlisted code, never arbitrary exception text. */
+test.each(['checkpoint', 'overall_deadline', 'request_budget', 'not_allowlisted'])('sanitizes parent dispatch failure %s', async (code) => {
+  const expected = code === 'not_allowlisted' ? 'internal' : code;
+  await assert.rejects(runner.readProvider('alias_before', TARGET.deploymentId, 1000, new AbortController().signal,
+    () => { throw Object.assign(new Error(SECRET), { code }); },
+    fakeFork((child) => child.emit('message', { type: 'dispatch' }))), { code: expected, message: expected });
+});
+
+/** Untrusted metadata validation keeps ReadError classifications and cannot forge a parent checkpoint failure. */
+test.each([
+  [new provider.ReadError('provider_schema'), 'provider_schema'],
+  [Object.assign(new Error(SECRET), { code: 'checkpoint' }), 'child_protocol'],
+])('keeps child validation failure %s classified as %s', async (error, expected) => {
+  mocks.spyOn(provider, 'validateMetadata').mockImplementation(() => { throw error; });
+  await assert.rejects(runner.readProvider('alias_before', TARGET.deploymentId, 1000, new AbortController().signal,
+    () => {}, fakeFork((child) => {
+      child.emit('message', { type: 'dispatch' }); child.emit('message', receipt());
+    })), { code: expected, message: expected });
+});
+
 test('child receipts require a dispatch announcement and successful process completion', async () => {
   let dispatched = 0;
   const value = await runner.readProvider('alias_before', TARGET.deploymentId, 1000, new AbortController().signal,

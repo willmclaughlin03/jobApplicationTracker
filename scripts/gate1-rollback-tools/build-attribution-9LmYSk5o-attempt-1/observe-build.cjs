@@ -195,7 +195,12 @@ function readProvider(phase, deploymentId, timeoutMs, signal, onDispatch, forkIm
           if (message?.type === 'dispatch') {
             if (receipt || announced || Object.keys(message).length !== 1) throw new ReadError('child_protocol');
             announced++;
-            onDispatch();
+            // Parent checkpoint/deadline failures use a broader allowlist than untrusted child messages.
+            try { onDispatch(); }
+            catch (error) {
+              const code = failureCode(error);
+              finish(Object.assign(new Error(code), { code }));
+            }
           } else {
             if (receipt) throw new ReadError('child_protocol');
             receipt = provider.parse(receiptSchema, message, 'child_protocol');
