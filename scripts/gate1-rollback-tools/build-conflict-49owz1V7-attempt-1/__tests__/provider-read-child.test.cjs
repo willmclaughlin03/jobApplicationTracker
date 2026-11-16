@@ -327,6 +327,47 @@ test('worker pin verification rejects drift in the Zod entry it actually loaded'
     ? Buffer.from('changed validator') : fs.readFileSync(file)), { code: 'dependency_changed' });
 });
 
+/** Evaluate fresh module initialization with read-only pin mocks and recorded dependency loads, without running main. */
+function initializeChild(changedFile, events) {
+  const source = fs.readFileSync(path.join(__dirname, '../provider-read-child.cjs'), 'utf8');
+  const runtime = { __dirname: path.resolve(__dirname, '..'), module: { exports: {} },
+    process: { env: { GATE1_REVIEW_WORKSPACE: child.ROOT, GATE1_VERCEL_CLI_DIST: child.CLI } },
+    /** Record pin reads and simulate changed bytes without modifying any preserved dependency. */
+    require(name) {
+      if (name === 'node:fs') return {
+        /** Read only dependency bytes; substitute drift for the selected pin. */
+        readFileSync(file) {
+          events.push(['read', file]);
+          return file === changedFile ? Buffer.from('changed dependency') : fs.readFileSync(file);
+        },
+      };
+      if (!name.startsWith('node:')) events.push(['require', name]);
+      return require(name);
+    },
+  };
+  runtime.require.resolve = require.resolve;
+  vm.runInNewContext(source, runtime);
+  return runtime.module.exports;
+}
+
+/** A changed validator, projector or CLI pin must stop initialization before either dependency can execute. */
+test.each([child.ZOD_ENTRY, child.UPSTREAM_FILE, path.join(child.CLI, 'index.js')])(
+  'initialization rejects changed %s before dependency evaluation', (file) => {
+    const events = [];
+    assert.throws(() => initializeChild(file, events), { code: 'dependency_changed' });
+    assert.deepEqual(events.filter(([kind]) => kind === 'require'), []);
+  });
+
+/** Valid pins permit schema/projector initialization only after every existing pin has been read. */
+test('initialization verifies all pins before loading valid dependencies', () => {
+  const events = [], initialized = initializeChild(null, events);
+  const firstLoad = events.findIndex(([kind]) => kind === 'require');
+  assert.deepEqual(new Set(events.slice(0, firstLoad).map(([, file]) => file)),
+    new Set([child.ZOD_ENTRY, child.UPSTREAM_FILE, ...Object.keys(child.PINS).map((name) => path.join(child.CLI, name))]));
+  assert.deepEqual(events.slice(firstLoad), [['require', child.ZOD_ENTRY], ['require', child.UPSTREAM_FILE]]);
+  assert.equal(initialized.projectMetadata('builds', fixture()).classification, 'not_reproduced');
+});
+
 /** Run the private entry point with synthetic CLI imports, transport and IPC; isolate process mutations. */
 async function runMain({ stream = 'stdout', outputBytes = LIMITS.outputBytes + 1, cliExitCode = 0,
   guardFailure = false, cliReject = false, raw = fixture() } = {}) {

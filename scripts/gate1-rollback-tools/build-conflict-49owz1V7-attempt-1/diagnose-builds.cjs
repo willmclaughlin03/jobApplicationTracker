@@ -9,7 +9,7 @@ const { createHash } = require('node:crypto');
 const { performance } = require('node:perf_hooks');
 const provider = require('./provider-read-child.cjs');
 const { ROOT, TARGET, LIMITS, z, ReadError } = provider;
-const upstream = require(path.join(ROOT, '.tmp/gate1-rollback-tools/build-attribution-49owz1V7-attempt-1/observe-build.cjs'));
+const UPSTREAM_FILE = '.tmp/gate1-rollback-tools/build-attribution-49owz1V7-attempt-1/observe-build.cjs';
 const SOURCE = '.tmp/worktrees/gate1-production-canary-50c4a957';
 const DIRECTORY = '.tmp/gate1-rollback/replacement-49owz1V7-build-conflict-attempt-1';
 const PRIOR_DIRECTORY = '.tmp/gate1-rollback/replacement-49owz1V7-build-attribution-attempt-1';
@@ -17,10 +17,14 @@ const PRIOR_DIGEST = 'f5ca16f68d6d6620524dfb37d59d52693fcb06c546cb6f168328c7b4e2
 const FILES = ['README.md', 'diagnose-builds.cjs', 'provider-read-child.cjs',
   '__tests__/diagnose-builds.test.cjs', '__tests__/provider-read-child.test.cjs'];
 const LOCAL_PINS = Object.freeze({
+  [UPSTREAM_FILE]: '18e9ae7dbb45e03d664da99f5e5be8aafd5f0a40c5dbd9777ecc398aaa72ac78',
   [PRIOR_DIRECTORY + '/profile.json']: 'b51dad8b31467eb732121c2c743536eca27c0f730ceab530ece5611986512ebe',
   [PRIOR_DIRECTORY + '/reservation.json']: 'ef9db7f9f06febdbd25dd86c15a2aeb2b0fc04db51ff101dff98e99e6d6ca232',
   [PRIOR_DIRECTORY + '/report.json']: '10a43f54fe091760119e724939793971fb3819656dd692cf61686686e60a90c3',
 });
+// Bind the observer to its preserved manifest hash before its module body can execute.
+if (hash(fs.readFileSync(path.join(ROOT, UPSTREAM_FILE))) !== LOCAL_PINS[UPSTREAM_FILE]) stop('dependency_changed');
+const upstream = require(path.join(ROOT, UPSTREAM_FILE));
 const PROFILE = Object.freeze({ schemaVersion: 1, scope: 'single_build_conflict_diagnostic_only', target: TARGET,
   reviewedSource: SOURCE, operator: 'Codex', operationalOwner: 'Will',
   priorAttempt: { evidenceDirectory: PRIOR_DIRECTORY, packageDigest: PRIOR_DIGEST,

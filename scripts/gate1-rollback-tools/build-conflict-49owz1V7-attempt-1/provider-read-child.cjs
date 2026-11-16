@@ -15,7 +15,6 @@ const ZOD_PIN = Object.freeze({ file: 'node_modules/zod/index.cjs',
   sha256: '2a3455cecff4f7021c92d0a3e2e5fc170c0448dc5cc261160127e08f4888a9c2' });
 // Bind both runners to the workspace copy covered by preparation, regardless of checkout-local modules.
 const ZOD_ENTRY = require.resolve(path.join(ROOT, ZOD_PIN.file));
-const { z } = require(ZOD_ENTRY);
 const CLI = path.resolve(process.env.GATE1_VERCEL_CLI_DIST || path.join(os.homedir(),
   'AppData/Local/npm-cache/_npx/67eb4586ca667318/node_modules/vercel/dist'));
 const TARGET = Object.freeze({ projectId: 'prj_b2nMrysMSJtpmqoeGx5g0WGgGuom',
@@ -42,7 +41,6 @@ const CODES = Object.freeze(['arguments', 'dependency_changed', 'request_not_all
 
 const UPSTREAM_FILE = path.join(ROOT, '.tmp/gate1-rollback-tools/build-attribution-49owz1V7-attempt-1/provider-read-child.cjs');
 const UPSTREAM_SHA256 = 'fbd6ece0912c9c583ef1d7ca7a6fc81d2214d59932867a904fb067b432bc0e1b';
-const upstream = require(UPSTREAM_FILE);
 const REASONS = Object.freeze(['response_deployment_mismatch', 'response_project_mismatch',
   'build_deployment_mismatch', 'output_runtime_fields_disagree', 'output_node_runtime_mismatch',
   'duplicate_route_runtime_disagrees']);
@@ -54,6 +52,17 @@ const SLOT_ORDER_BY_REASON = Object.freeze({
   output_node_runtime_mismatch: 'output_runtime_then_lambda_runtime',
   duplicate_route_runtime_disagrees: 'previous_then_current_projected_runtime',
 });
+
+/** Normalize failures to fixed codes; never retain an exception message or provider input. */
+class ReadError extends Error {
+  /** Keep only a shared error code so parent/child failures cannot expose payload text. */
+  constructor(code) { super(CODES.includes(code) ? code : 'internal'); this.code = this.message; }
+}
+
+// Verify every pin before either dependency can evaluate code, including during a parent import.
+verifyPins();
+const { z } = require(ZOD_ENTRY);
+const upstream = require(UPSTREAM_FILE);
 const inputSchema = z.object({ phase: z.literal('builds'), deploymentId: z.literal(TARGET.deploymentId) }).strict();
 const metadataSchema = z.object({
   classification: z.enum(['conflict_identified', 'not_reproduced']),
@@ -64,12 +73,6 @@ const metadataSchema = z.object({
   qualification: z.literal('unqualified_metadata_only'),
   historicalCause: z.literal('not_proven_same_response'),
 }).strict();
-
-/** Normalize failures to fixed codes; never retain an exception message or provider input. */
-class ReadError extends Error {
-  /** Keep only a shared error code so parent/child failures cannot expose payload text. */
-  constructor(code) { super(CODES.includes(code) ? code : 'internal'); this.code = this.message; }
-}
 
 /** Validate a boundary value while discarding Zod's input-bearing error details. */
 function parse(schema, value, code = 'provider_schema') {
@@ -195,7 +198,7 @@ function projectMetadata(phase, raw) {
     qualification: 'unqualified_metadata_only', historicalCause: 'not_proven_same_response' });
 }
 
-/** Check the loaded Zod entry and reviewed CLI bytes before any CLI import or authorization access. */
+/** Verify Zod, the preserved projector and CLI bytes before dependency evaluation; recheck before live access. */
 function verifyPins(read = fs.readFileSync) {
   if (createHash('sha256').update(read(UPSTREAM_FILE)).digest('hex') !== UPSTREAM_SHA256) {
     throw new ReadError('dependency_changed');

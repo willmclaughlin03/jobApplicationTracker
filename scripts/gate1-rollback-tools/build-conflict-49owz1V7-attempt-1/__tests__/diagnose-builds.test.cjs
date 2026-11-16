@@ -5,6 +5,7 @@ const { test, jest: mocks, afterEach } = require('@jest/globals');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const runner = require('../diagnose-builds.cjs');
 const provider = require('../provider-read-child.cjs');
@@ -347,7 +348,44 @@ test('cancels a provider child and ignores late receipts', async () => {
 });
 
 
-/** Every consumed-attempt evidence file must remain exact before source checks, reservations or transport. */
+/** Load fresh parent initialization with read-only mocks, recording whether the preserved observer is evaluated. */
+function initializeParent(changed, events) {
+  const source = fs.readFileSync(path.join(__dirname, '../diagnose-builds.cjs'), 'utf8');
+  const observer = path.join(provider.ROOT, '.tmp/gate1-rollback-tools/build-attribution-49owz1V7-attempt-1/observe-build.cjs');
+  const runtime = { __dirname: path.resolve(__dirname, '..'), module: { exports: {} },
+    /** Keep the provider isolated and intercept only the observer's pin read and import. */
+    require(name) {
+      if (name === './provider-read-child.cjs') return provider;
+      if (name === 'node:fs') return {
+        /** Substitute changed observer bytes without writing to the preserved package. */
+        readFileSync(file) {
+          assert.equal(file, observer); events.push('read');
+          return changed ? Buffer.from('changed observer') : fs.readFileSync(file);
+        },
+      };
+      if (name === observer) { events.push('require'); return upstream; }
+      return require(name);
+    },
+  };
+  vm.runInNewContext(source, runtime);
+  return runtime.module.exports;
+}
+
+/** Dependency drift must fail before the preserved observer's module body can perform any side effects. */
+test('parent rejects changed observer bytes before importing it', () => {
+  const events = [];
+  assert.throws(() => initializeParent(true, events), { code: 'dependency_changed' });
+  assert.deepEqual(events, ['read']);
+});
+
+/** The successful path retains the original target and imports the observer only after reading its pinned bytes. */
+test('parent verifies the observer before importing valid bytes', () => {
+  const events = [], initialized = initializeParent(false, events);
+  assert.deepEqual(events, ['read', 'require']);
+  assert.equal(initialized.PROFILE.target.deploymentId, TARGET.deploymentId);
+});
+
+/** Every consumed-attempt evidence file and preserved observer must remain exact before source checks or effects. */
 test.each(Object.keys(runner.LOCAL_PINS))('changed provenance %s blocks execution', async (relativeFile) => {
   const read = fs.readFileSync, output = [], sideEffect = mocks.fn();
   const evidenceExists = fs.existsSync(path.join(provider.ROOT, runner.PROFILE.evidenceDirectory));
