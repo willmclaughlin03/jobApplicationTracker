@@ -31,6 +31,11 @@ const {
   middleware,
 } = require('../middleware.js');
 const { ERROR_STATUS_CODES } = require('../shared/constants/errorStatusCodes.js');
+const {
+  MIDDLEWARE_PROBE_KEY_HEADER,
+  MIDDLEWARE_PROBE_CHALLENGE_HEADER,
+  MIDDLEWARE_PROBE_RESPONSE_HEADER,
+} = require('../server/lib/gate1MiddlewareRuntimeProbe.js');
 
 /**
  * Builds a minimal observable NextResponse substitute for middleware tests.
@@ -50,6 +55,7 @@ function createMockNextResponse(kind, destination = null) {
     headers: {
       set: jest.fn((name, value) => headerValues.set(name.toLowerCase(), value)),
       get: jest.fn((name) => headerValues.get(name.toLowerCase())),
+      delete: jest.fn((name) => headerValues.delete(name.toLowerCase())),
     },
     cookies: {
       set: jest.fn(),
@@ -75,9 +81,13 @@ function createMockRequest(pathname, initialCookies = []) {
   };
 
   return {
+    method: 'GET',
+    url: `https://example.test${pathname}`,
+    headers: new Headers(),
     cookies: requestCookies,
     nextUrl: {
       pathname,
+      search: '',
       clone: jest.fn(() => ({ pathname })),
     },
   };
@@ -323,5 +333,112 @@ describe('middleware matcher', () => {
   it('does not exclude nearby page routes that only begin with api', () => {
     expect(matcher.test('/apix')).toBe(true);
     expect(matcher.test('/apiary')).toBe(true);
+  });
+});
+
+/** Integration keeps the real observer on login while mocking only framework and Supabase. */
+describe('middleware runtime candidate', () => {
+  const syntheticSecret = 'a'.repeat(64);
+  const syntheticChallenge = 'b'.repeat(32);
+  const environmentKeys = ['NODE_ENV', 'VERCEL', 'VERCEL_ENV',
+    'GATE1_MIDDLEWARE_RUNTIME_PROBE_ENABLED', 'GATE1_MIDDLEWARE_RUNTIME_PROBE_SECRET'];
+  let savedEnvironment;
+
+  /** Seed only synthetic diagnostic settings and reset observable response/auth effects. */
+  beforeEach(() => {
+    savedEnvironment = Object.fromEntries(environmentKeys.map((name) => [name, process.env[name]]));
+    Object.assign(process.env, { NODE_ENV: 'production', VERCEL: '1', VERCEL_ENV: 'preview',
+      GATE1_MIDDLEWARE_RUNTIME_PROBE_ENABLED: 'true',
+      GATE1_MIDDLEWARE_RUNTIME_PROBE_SECRET: syntheticSecret });
+    jest.clearAllMocks();
+    mockGetUser.mockResolvedValue({ data: { user: null } });
+    mockCreateServerClient.mockImplementation(() => ({ auth: { getUser: mockGetUser } }));
+    mockNext.mockImplementation(() => createMockNextResponse('next'));
+    mockRedirect.mockImplementation((destination) => createMockNextResponse('redirect', destination));
+  });
+
+  /** Restore exactly the environment keys touched by this synthetic suite. */
+  afterEach(() => {
+    for (const [name, value] of Object.entries(savedEnvironment)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  /** Attach the dedicated synthetic credential without using ordinary auth or cookies. */
+  function diagnosticRequest(pathname = '/login') {
+    const req = createMockRequest(pathname);
+    req.headers.set(MIDDLEWARE_PROBE_KEY_HEADER, syntheticSecret);
+    req.headers.set(MIDDLEWARE_PROBE_CHALLENGE_HEADER, syntheticChallenge);
+    return req;
+  }
+
+  /** Runtime selection is explicit while the original API exclusion stays in place. */
+  it('selects Node.js middleware without widening the matcher', () => {
+    expect(config.runtime).toBe('nodejs');
+    expect(config.matcher).toEqual([
+      '/((?!_next/static|_next/image|favicon.ico|api(?:/|$)|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    ]);
+  });
+
+  /** The probe uses NextResponse.next, retaining the login page and stripping private input. */
+  it('observes an authenticated login request without replacing the page or calling Supabase', async () => {
+    const req = diagnosticRequest();
+    const response = await middleware(req);
+    expect(response.kind).toBe('next');
+    expect(mockNext).toHaveBeenCalledTimes(1);
+    expect(mockRedirect).not.toHaveBeenCalled();
+    expect(mockCreateServerClient).not.toHaveBeenCalled();
+    expect(response.cookies.set).not.toHaveBeenCalled();
+    expect(JSON.parse(response.headers.get(MIDDLEWARE_PROBE_RESPONSE_HEADER))).toEqual({
+      schemaVersion: 1, scope: 'middleware', challenge: syntheticChallenge,
+      nodeVersion: process.version, node22: process.versions.node.startsWith('22.'),
+    });
+    const forwarded = mockNext.mock.calls[0][0].request.headers;
+    expect(forwarded.has(MIDDLEWARE_PROBE_KEY_HEADER)).toBe(false);
+    expect(forwarded.has(MIDDLEWARE_PROBE_CHALLENGE_HEADER)).toBe(false);
+    expect(req.headers.get(MIDDLEWARE_PROBE_KEY_HEADER)).toBe(syntheticSecret);
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store');
+    expect(response.headers.get('CDN-Cache-Control')).toBe('no-store');
+    expect(response.headers.get('Vercel-CDN-Cache-Control')).toBe('no-store');
+  });
+
+  /** A wrong credential never blocks login or manufactures an execution observation. */
+  it('continues login without diagnostic output after incorrect authentication', async () => {
+    const req = diagnosticRequest();
+    req.headers.set(MIDDLEWARE_PROBE_KEY_HEADER, 'c'.repeat(64));
+    const response = await middleware(req);
+    expect(response.kind).toBe('next');
+    expect(response.headers.get(MIDDLEWARE_PROBE_RESPONSE_HEADER)).toBeUndefined();
+    expect(mockCreateServerClient).not.toHaveBeenCalled();
+  });
+
+  /** Even valid probe credentials cannot bypass a protected route or disclose there. */
+  it.each(['/admin', '/billing', '/'])('preserves protected auth at %s', async (pathname) => {
+    const response = await middleware(diagnosticRequest(pathname));
+    expect(response.kind).toBe('redirect');
+    expect(response.destination.pathname).toBe('/login');
+    expect(mockGetUser).toHaveBeenCalledTimes(1);
+    expect(response.headers.get(MIDDLEWARE_PROBE_RESPONSE_HEADER)).toBeUndefined();
+    expect(response.headers.get('Cache-Control')).toBe('private, no-store');
+  });
+
+  /** Public/unmatched paths and wrong-method login retain their existing continuation. */
+  it.each(['/login/', '/auth/callback', '/404', '/route-that-does-not-exist'])(
+    'emits no observation for another public/unmatched path %s', async (pathname) => {
+      const response = await middleware(diagnosticRequest(pathname));
+      expect(response.kind).toBe('next');
+      expect(response.headers.get(MIDDLEWARE_PROBE_RESPONSE_HEADER)).toBeUndefined();
+      expect(mockCreateServerClient).not.toHaveBeenCalled();
+    }
+  );
+
+  /** POST is ordinary login traffic even when diagnostic headers are supplied. */
+  it('does not observe a login POST', async () => {
+    const req = diagnosticRequest();
+    req.method = 'POST';
+    const response = await middleware(req);
+    expect(response.kind).toBe('next');
+    expect(response.headers.get(MIDDLEWARE_PROBE_RESPONSE_HEADER)).toBeUndefined();
   });
 });
