@@ -16,6 +16,8 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-11-08
 
+- `2026-11-15` - `Gate 1 Node.js middleware candidate`: Explicitly select Node.js middleware and add a disabled-by-default authenticated observer for exact query-free login GETs, with bounded challenge correlation, diagnostic-header stripping and private/no-store responses. Preserve ordinary auth, matcher, redirect and cookie behavior. All 99 focused tests, syntax, ESLint, whitespace and preservation checks passed. Locked Next.js 16.3.3 build compatibility and deployed runtime remain unqualified; Gate 1 remains open.
+
 - `2026-11-15` - `Build-conflict VM CLI location consistency`: Pass the configured child CLI location into the runMain test VM so initialization verifies the same dependency bytes as the initial import. All 113 focused tests, a custom-location check, syntax, ESLint and whitespace checks passed.
 
 - `2026-11-15` - `Build-conflict dependency verification before imports`: Verify existing child pins before loading Zod or the preserved projector, and verify the parent's observer against its preserved manifest hash before import and during preparation. Add initialization-order regressions while retaining read-only preparation and existing runtime checks. All 185 offline tests, four syntax checks, focused ESLint and whitespace checks passed; preserved baseline hashes match.
