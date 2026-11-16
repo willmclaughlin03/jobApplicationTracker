@@ -374,7 +374,8 @@ async function runMain({ stream = 'stdout', outputBytes = LIMITS.outputBytes + 1
   const events = [];
   const runtime = { Buffer, Response, Headers, AbortController, setTimeout, clearTimeout,
     __dirname: path.resolve(__dirname, '..'), module: { exports: {} },
-    process: { env: { GATE1_REVIEW_WORKSPACE: child.ROOT }, execPath: 'synthetic-node', stdout: {}, stderr: {},
+    process: { env: { GATE1_REVIEW_WORKSPACE: child.ROOT, GATE1_VERCEL_CLI_DIST: child.CLI },
+      execPath: 'synthetic-node', stdout: {}, stderr: {},
       /** Capture only synthetic IPC events and acknowledge the final receipt. */
       send(event, callback) { events.push(event); callback?.(); } },
     /** Supply a valid provider response without making a network request. */
