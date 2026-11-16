@@ -16,6 +16,12 @@ Use this file as a quick-running log of implemented changes.
 
 ### Week of 2026-11-08
 
+- `2026-11-15` - `Build-conflict VM CLI location consistency`: Pass the configured child CLI location into the runMain test VM so initialization verifies the same dependency bytes as the initial import. All 113 focused tests, a custom-location check, syntax, ESLint and whitespace checks passed.
+
+- `2026-11-15` - `Build-conflict dependency verification before imports`: Verify existing child pins before loading Zod or the preserved projector, and verify the parent's observer against its preserved manifest hash before import and during preparation. Add initialization-order regressions while retaining read-only preparation and existing runtime checks. All 185 offline tests, four syntax checks, focused ESLint and whitespace checks passed; preserved baseline hashes match.
+
+- `2026-11-15` - `Bounded Gate 1 build-conflict diagnosis`: Preserve the five-file diagnostic in tracked operator tooling, retaining a fixed conflict reason, bounded Node majors with explicit slot meaning, and allowlisted output classification while preserving the Node 22 guard and single-read/no-replay limits. Document the consumed middleware Node 24 metadata observation and its runtime-evidence limitation; publication tests preserve consumed evidence and reject inherited approval.
+
 - `2026-11-14` - `Build attribution checkpoint stop reasons`: Preserve allowlisted parent dispatch failures while retaining strict child-message error handling. Add a composed checkpoint regression covering consumed reservations, child termination and no later traffic, plus trusted/untrusted error boundary cases. All 128 offline tests, syntax checks, focused ESLint and whitespace checks passed.
 
 - `2026-11-14` - `Bounded Gate 1 build attribution`: Preserve the four-file operator package with five guarded provider reads, two anonymous login checks, pinned source/runtime provenance, allowlisted build/version/route/function facts and exclusive no-replay evidence. Resolve preserved helpers through the qualification workspace and document local prerequisites, offline checks and separate live approval. Missing facts remain unqualified; no build-attribution exercise or rollback ran.
