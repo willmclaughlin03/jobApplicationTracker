@@ -1,5 +1,5 @@
 /**
- * Next.js Edge Middleware - session refresh + auth gate
+ * Next.js Node.js Middleware - session refresh + auth gate
  *
  * Purpose: Runs on every page navigation request to:
  * 1. Silently refresh the Supabase access token when it has expired but a
@@ -11,8 +11,9 @@
  * page paths bypass Supabase construction entirely. Unmatched paths continue
  * to Next.js so the real route or 404 behavior remains authoritative.
  *
- * Uses the anon key (not service role) - middleware runs at the Edge and
- * only needs to validate/refresh the user's own session.
+ * Uses the anon key (not service role) to validate/refresh the user's own session.
+ * The explicit Node.js runtime is a Gate 1 compatibility candidate; its locked
+ * build and deployed Node 22 execution still require separate qualification.
  *
  * Graceful degradation: if Supabase is unreachable, the redirect is skipped
  * and the user keeps their existing cookies. The next API call will surface
@@ -24,12 +25,14 @@
  *
  * Connects to:
  * - @supabase/ssr createServerClient for cookie-based session management
- * - NextRequest/NextResponse for Edge-compatible cookie access
+ * - NextRequest/NextResponse for cookie access
+ * - Dedicated Gate 1 middleware observer for authenticated diagnostic login GETs
  */
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse } from 'next/server';
 import { ERROR_STATUS_CODES } from './shared/constants/errorStatusCodes';
 import { PRIVATE_NO_STORE } from './shared/constants/authV2.js';
+import { gate1MiddlewareRuntimeProbe } from './server/lib/gate1MiddlewareRuntimeProbe.js';
 
 export const ROUTE_POLICY = Object.freeze({
   PROTECTED: 'protected',
@@ -149,9 +152,17 @@ function finalizeProtectedResponse(response, cookies) {
   return response;
 }
 
+/**
+ * Refreshes protected sessions while public/unmatched requests continue normally.
+ * @param {import('next/server').NextRequest} req Incoming page request.
+ * @returns {Promise<import('next/server').NextResponse>} Auth/cookie-preserving response.
+ * The optional login observer adds bounded diagnostics without bypassing the page.
+ */
 export async function middleware(req) {
   const routePolicy = classifyRoutePolicy(req.nextUrl.pathname);
   if (routePolicy !== ROUTE_POLICY.PROTECTED) {
+    const probeResponse = gate1MiddlewareRuntimeProbe.handle(req);
+    if (probeResponse) return probeResponse;
     return NextResponse.next({ request: req });
   }
 
@@ -190,6 +201,7 @@ export async function middleware(req) {
 }
 
 export const config = {
+  runtime: 'nodejs',
   matcher: [
     /*
      * Match all paths except:
