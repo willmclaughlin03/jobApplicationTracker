@@ -14,6 +14,10 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+### Week of 2026-11-15
+
+- `2026-11-16` - `Consumed exact-main middleware qualification package`: Preserve the six-file offline build and compiled-reader/local-smoke tooling in tracked operator files, with a permanent CLI refusal for the consumed attempt and regression coverage. Reconcile the successful exact-main Next.js 16.3.3 CI build separately from the local attempt, which stopped at source verification before installation/build with zero requests and confirmed container closure. All 81 offline tests, four syntax checks and focused ESLint passed. Original evidence remains local and frozen; compiled and hosted runtime qualification remain outstanding, Gate 1 open and Gate 5A unpassed.
+
 ### Week of 2026-11-08
 
 - `2026-11-15` - `Gate 1 Node.js middleware candidate`: Explicitly select Node.js middleware and add a disabled-by-default authenticated observer for exact query-free login GETs, with bounded challenge correlation, diagnostic-header stripping and private/no-store responses. Preserve ordinary auth, matcher, redirect and cookie behavior. All 99 focused tests, syntax, ESLint, whitespace and preservation checks passed. Locked Next.js 16.3.3 build compatibility and deployed runtime remain unqualified; Gate 1 remains open.
