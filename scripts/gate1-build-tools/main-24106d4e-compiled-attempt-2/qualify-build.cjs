@@ -140,7 +140,8 @@ async function prepare(dependencies = {}) {
     packageHashes: Object.fromEntries(FILES.map(name => [name, fileHash(path.join(__dirname, name), 1024 * 1024)])),
     sourceManifest: manifest, sourceArchiveSha256: sha(archive), sourceRoutes: routesFromSource(manifest), limits: LIMITS,
     destination: DEST, worktree: WORKTREE, inputs: INPUTS, checkoutPolicy: { autocrlf: true, filemode: false },
-    archivePolicy: { autocrlf: false, eol: 'lf', comparison: 'exact_git_blob', parserSha256: archiveTool.PARSER_SHA256 }, archiveVerification: verification,
+    archivePolicy: { autocrlf: false, eol: 'lf', comparison: 'exact_git_blob', parserSha256s: archiveTool.PARSER_SHA256S,
+      parserSha256: verification.parserSha256 }, archiveVerification: verification,
     network: 'none', requests: 6,
     gate1: 'open', hostedRuntime: 'unqualified', artifactPrivacy: 'not_evaluated' };
   return { digest: sha(JSON.stringify(contract)), contract, archive };
@@ -244,10 +245,11 @@ function terminal(bytes) {
   return value;
 }
 
-/** Stop only the named attempt container and confirm closure; no retries or container removal. */
+/** After an attempted create, confirm absence or stop the named container; no retries or removal. */
 async function cleanupContainer(run, created, successful) {
   if (!created) return true;
   const prefix = ['--context', 'desktop-linux'];
+  if (!(await run('docker', [...prefix, 'ps', '-aq', '--filter', `name=^/${NAME}$`])).length) return true;
   let state = JSON.parse(await run('docker', [...prefix, 'inspect', '--format', '{{json .State}}', NAME]));
   if (state.Running) {
     await run('docker', [...prefix, 'kill', NAME], { capture: false });

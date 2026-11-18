@@ -119,11 +119,46 @@ describe('resource and cleanup boundaries', () => {
     expect(() => tool.containerArgs('sha256:' + 'a'.repeat(64), 'safe', seconds, 'b'.repeat(64))).toThrow('docker');
   });
 
+  /** No create attempt means no Docker lookup or cleanup side effect is needed. */
+  it('skips Docker cleanup when creation was never attempted', async () => {
+    const run = jest.fn();
+    await expect(tool.cleanupContainer(run, false, false)).resolves.toBe(true);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  /** A failed create can leave no container; successful absence must not mask the original failure. */
+  it('returns without inspecting when the exact attempt container is absent', async () => {
+    const run = jest.fn().mockResolvedValueOnce(Buffer.alloc(0));
+    await expect(tool.cleanupContainer(run, true, false)).resolves.toBe(true);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith('docker', ['--context', 'desktop-linux', 'ps', '-aq', '--filter',
+      'name=^/gate1-main-24106d4e-compiled-attempt-2$']);
+  });
+
+  /** A create timeout can leave a stopped container; inspect its state even without a successful create response. */
+  it('verifies a stopped container left behind by a timed-out create', async () => {
+    const run = jest.fn().mockResolvedValueOnce(Buffer.from('synthetic-container-id\n'))
+      .mockResolvedValueOnce(Buffer.from('{"Running":false,"OOMKilled":false,"ExitCode":0}'));
+    await expect(tool.cleanupContainer(run, true, false)).resolves.toBe(true);
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run).toHaveBeenNthCalledWith(2, 'docker', ['--context', 'desktop-linux', 'inspect', '--format',
+      '{{json .State}}', 'gate1-main-24106d4e-compiled-attempt-2']);
+  });
+
+  /** A failed existence query cannot establish absence and must still fail cleanup. */
+  it('propagates a failed container lookup instead of assuming absence', async () => {
+    const error = new tool.QualificationError('child');
+    const run = jest.fn().mockRejectedValueOnce(error);
+    await expect(tool.cleanupContainer(run, true, false)).rejects.toBe(error);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it('kills a still-running attempt once and verifies that it stopped', async () => {
-    const run = jest.fn().mockResolvedValueOnce(Buffer.from('{"Running":true,"OOMKilled":false,"ExitCode":0}'))
+    const run = jest.fn().mockResolvedValueOnce(Buffer.from('synthetic-container-id\n'))
+      .mockResolvedValueOnce(Buffer.from('{"Running":true,"OOMKilled":false,"ExitCode":0}'))
       .mockResolvedValueOnce(Buffer.alloc(0)).mockResolvedValueOnce(Buffer.from('{"Running":false,"OOMKilled":false,"ExitCode":137}'));
     await expect(tool.cleanupContainer(run, true, false)).resolves.toBe(true);
-    expect(run).toHaveBeenCalledTimes(3); expect(run.mock.calls[1][1]).toContain('kill');
+    expect(run).toHaveBeenCalledTimes(4); expect(run.mock.calls[2][1]).toContain('kill');
     expect(run.mock.calls.flat(3)).not.toContain('rm');
   });
 
@@ -132,12 +167,14 @@ describe('resource and cleanup boundaries', () => {
     { Running: false, OOMKilled: true, ExitCode: 137 },
     {},
   ])('does not assume cleanup from incomplete or conflicting Docker state %#', state => {
-    const run = jest.fn().mockResolvedValue(Buffer.from(JSON.stringify(state)));
+    const run = jest.fn().mockResolvedValueOnce(Buffer.from('synthetic-container-id\n'))
+      .mockResolvedValue(Buffer.from(JSON.stringify(state)));
     return expect(tool.cleanupContainer(run, true, false)).rejects.toThrow('cleanup');
   });
 
   it('refuses a success result when its container exited nonzero', () => {
-    const run = jest.fn().mockResolvedValue(Buffer.from('{"Running":false,"OOMKilled":false,"ExitCode":1}'));
+    const run = jest.fn().mockResolvedValueOnce(Buffer.from('synthetic-container-id\n'))
+      .mockResolvedValue(Buffer.from('{"Running":false,"OOMKilled":false,"ExitCode":1}'));
     return expect(tool.cleanupContainer(run, true, true)).rejects.toThrow('cleanup');
   });
 

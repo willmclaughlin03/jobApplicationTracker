@@ -5,7 +5,11 @@
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 
-const PARSER_SHA256 = '7f02d0edb684eafcc2bef85c66b3ab6083c26adfc5b583a6726a910cffa2c603';
+// Host preparation supports the existing shared installation and the application's locked Next version.
+const PARSER_SHA256S = Object.freeze({
+  '16.2.12': '7f02d0edb684eafcc2bef85c66b3ab6083c26adfc5b583a6726a910cffa2c603',
+  '16.3.3': 'afc929b535e65468c4891a31b2243f3e6a24874707135b8e183ddc4e7cabba77',
+});
 const CAPS = Object.freeze({ archive: 128 * 1024 * 1024, payload: 128 * 1024 * 1024, files: 4096, entries: 8192, metadata: 256 * 1024, ms: 30000 });
 const CODES = Object.freeze(['archive_parser', 'archive_format', 'archive_path', 'archive_limit', 'archive_duplicate', 'archive_link', 'archive_extra', 'archive_missing', 'archive_content']);
 
@@ -24,17 +28,18 @@ function safeName(name) {
       !/\.(pem|key|p12|pfx)$/i.test(part));
 }
 
-/** Load only the existing hash-pinned standalone reader; this does not execute the Next application. */
+/** Return an approved standalone reader and its actual digest for the contract; never execute the Next application. */
 function loadReader() {
   try {
     // NODE_PATH can supply the primary checkout's dependencies for an isolated linked worktree.
     const readerPath = require.resolve('next/dist/compiled/tar/index.min.js');
     const stat = fs.lstatSync(readerPath);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024 ||
-      crypto.createHash('sha256').update(fs.readFileSync(readerPath)).digest('hex') !== PARSER_SHA256) throw new ArchiveError('archive_parser');
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) throw new ArchiveError('archive_parser');
+    const parserSha256 = crypto.createHash('sha256').update(fs.readFileSync(readerPath)).digest('hex');
+    if (!Object.values(PARSER_SHA256S).includes(parserSha256)) throw new ArchiveError('archive_parser');
     const reader = require(readerPath);
     if (typeof reader.Parser !== 'function' || typeof reader.Header !== 'function') throw new ArchiveError('archive_parser');
-    return reader;
+    return { reader, parserSha256 };
   } catch { throw new ArchiveError('archive_parser'); }
 }
 
@@ -47,14 +52,14 @@ function archiveArguments(source, roots) {
 /** Compare each regular member to its committed Git blob ID without extraction, normalization or link traversal. */
 function verifyArchive(bytes, manifest) {
   return new Promise((resolve, reject) => {
-    let parser, timer, done = false, eof = false, entries = 0, payloadBytes = 0;
+    let parser, parserSha256, timer, done = false, eof = false, entries = 0, payloadBytes = 0;
     const expected = new Map(), seen = new Set(), found = new Set();
     /** Finish once, clear the finite timer and expose only fixed archive error categories. */
     function finish(error) {
       if (done) return;
       done = true; clearTimeout(timer);
       if (error) reject(error instanceof ArchiveError ? error : new ArchiveError('archive_format'));
-      else resolve({ files: found.size, entries, bytes: payloadBytes, parserSha256: PARSER_SHA256 });
+      else resolve({ files: found.size, entries, bytes: payloadBytes, parserSha256 });
     }
     /** Count ordinary and metadata entries together, rejecting oversized archives before further processing. */
     function countEntry() { if (++entries > CAPS.entries) throw new ArchiveError('archive_limit'); }
@@ -66,7 +71,8 @@ function verifyArchive(bytes, manifest) {
         if (expected.has(entry.name)) throw new ArchiveError('archive_duplicate');
         expected.set(entry.name, entry.oid);
       }
-      const reader = loadReader(), first = new reader.Header(bytes.subarray(0, 512));
+      const loaded = loadReader(), reader = loaded.reader, first = new reader.Header(bytes.subarray(0, 512));
+      parserSha256 = loaded.parserSha256;
       // A valid uncompressed first header avoids the reader's automatic decompression paths.
       if (!first.cksumValid || first.nullBlock || !first.path) throw new ArchiveError('archive_format');
       parser = new reader.Parser({ strict: true, maxMetaEntrySize: CAPS.metadata, brotli: false, zstd: false });
@@ -122,4 +128,4 @@ async function buildArchive(runGit, source, roots, manifest) {
   return { archive, verification };
 }
 
-module.exports = { PARSER_SHA256, CAPS, CODES, ArchiveError, archiveArguments, loadReader, verifyArchive, buildArchive };
+module.exports = { PARSER_SHA256S, CAPS, CODES, ArchiveError, archiveArguments, loadReader, verifyArchive, buildArchive };

@@ -10,6 +10,8 @@ const zlib = require('node:zlib');
 const tool = require('../source-archive.cjs');
 const runner = require('../qualify-build.cjs');
 const ROOT = path.resolve(__dirname, '../../../..');
+const installedParserSha256 = crypto.createHash('sha256')
+  .update(fs.readFileSync(require.resolve('next/dist/compiled/tar/index.min.js'))).digest('hex');
 
 /** Give synthetic member bytes their exact Git blob ID for comparison fixtures. */
 function blob(name, content = Buffer.from('text\n')) {
@@ -18,7 +20,7 @@ function blob(name, content = Buffer.from('text\n')) {
 
 /** Use the installed TAR header writer for synthetic inputs; never extract an archive. */
 function pack(entries) {
-  const { Header } = tool.loadReader(), chunks = [];
+  const { reader: { Header } } = tool.loadReader(), chunks = [];
   for (const entry of entries) {
     const content = entry.content || Buffer.alloc(0), header = new Header({ path: entry.name, type: entry.type || 'File',
       size: entry.size ?? content.length, mode: 0o644, uid: 0, gid: 0, mtime: new Date(0), linkpath: entry.linkpath || '' });
@@ -40,10 +42,28 @@ afterEach(() => jest.restoreAllMocks());
 describe('exact archive preflight', () => {
   const text = Buffer.from('text\n'), manifest = [blob('src/a.js', text)];
 
+  /** The locked application version must also be usable for CI host preparation after npm ci. */
+  it('approves a host reader for the locked application Next version', () => {
+    const lock = require('../../../../package-lock.json');
+    const next = lock.packages['node_modules/next'].version;
+    expect(next).toBe(runner.VERSIONS.next);
+    expect(tool.PARSER_SHA256S[next]).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  /** Verify the installed bundle against its version's pin and expose its measured digest for evidence. */
+  it('loads the installed supported reader and returns its actual digest', () => {
+    const next = require('next/package.json').version;
+    expect(tool.PARSER_SHA256S[next]).toBe(installedParserSha256);
+    expect(tool.loadReader()).toMatchObject({
+      reader: { Header: expect.any(Function), Parser: expect.any(Function) },
+      parserSha256: installedParserSha256,
+    });
+  });
+
   it('accepts matching files and directories without writing or extracting', async () => {
     const archive = pack([{ name: 'src/', type: 'Directory' }, { name: 'src/a.js', content: text }]);
     const write = jest.spyOn(fs, 'writeFileSync');
-    await expect(tool.verifyArchive(archive, manifest)).resolves.toMatchObject({ files: 1, entries: 2, bytes: 5, parserSha256: tool.PARSER_SHA256 });
+    await expect(tool.verifyArchive(archive, manifest)).resolves.toMatchObject({ files: 1, entries: 2, bytes: 5, parserSha256: installedParserSha256 });
     expect(write).not.toHaveBeenCalled();
   });
 

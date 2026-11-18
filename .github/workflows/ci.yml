@@ -53,6 +53,14 @@ jobs:
       - name: Run unit tests
         run: npm run test:ci
 
+      - name: Run Gate 1 build-tool tests
+        shell: bash
+        run: |
+          git --version
+          mkdir -p .tmp
+          test -w .tmp
+          npx --no-install jest --config jest.gate1-build-tools.config.cjs --ci --runInBand --no-cache
+
       - name: Build
         env:
           NEXT_PUBLIC_SUPABASE_URL: https://ci-build.invalid
