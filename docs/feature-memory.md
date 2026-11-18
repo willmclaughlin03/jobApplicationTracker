@@ -14,6 +14,12 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+- `2026-11-18` - `Preserve restart attribution during archive CI registration`: Invoke the dedicated build-tool Jest configuration directly from CI and document the same local command, keeping the reviewed application manifest intact. The 48 restart-continuity tests and all 186 build-tool tests pass.
+
+- `2026-11-18` - `Gate 1 build-tool CI and host reader compatibility`: Register the five CJS build-tool suites in CI with Git and writable temporary storage. Support exact standalone TAR reader pins for both Next 16.2.12 and the locked Next 16.3.3 host, bind the supported set and actual reader digest into preparation, and document the revised contract. Preserve original create failures when no cleanup container exists; 186 tests pass with each supported host reader.
+
+- `2026-11-16` - `Gate 1 archive byte preservation`: Published the fresh qualification candidate with separate archive Git settings, hash-pinned in-memory TAR verification and CRLF/text/binary regressions. Local preparation verified all 362 selected blobs; compiled and hosted runtime qualification remain outstanding, with Gate 1 open and Gate 5A unpassed.
+
 ### Week of 2026-11-15
 
 - `2026-11-16` - `Consumed exact-main middleware qualification package`: Preserve the six-file offline build and compiled-reader/local-smoke tooling in tracked operator files, with a permanent CLI refusal for the consumed attempt and regression coverage. Reconcile the successful exact-main Next.js 16.3.3 CI build separately from the local attempt, which stopped at source verification before installation/build with zero requests and confirmed container closure. All 81 offline tests, four syntax checks and focused ESLint passed. Original evidence remains local and frozen; compiled and hosted runtime qualification remain outstanding, Gate 1 open and Gate 5A unpassed.
