@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+- `2026-11-18` - `Gate 1 build-tool CI and host reader compatibility`: Register the five CJS build-tool suites in CI with Git and writable temporary storage. Support exact standalone TAR reader pins for both Next 16.2.12 and the locked Next 16.3.3 host, bind the supported set and actual reader digest into preparation, and document the revised contract. Preserve original create failures when no cleanup container exists; 186 tests pass with each supported host reader.
+
 - `2026-11-16` - `Gate 1 archive byte preservation`: Published the fresh qualification candidate with separate archive Git settings, hash-pinned in-memory TAR verification and CRLF/text/binary regressions. Local preparation verified all 362 selected blobs; compiled and hosted runtime qualification remain outstanding, with Gate 1 open and Gate 5A unpassed.
 
 ### Week of 2026-11-15

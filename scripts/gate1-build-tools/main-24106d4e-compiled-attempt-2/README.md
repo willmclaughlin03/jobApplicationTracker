@@ -18,8 +18,8 @@ That digest is a recorded local preparation result, not execution approval.
 
 The publication copy resolves the installed standalone TAR reader through Node's
 module lookup, including the documented `NODE_PATH` linked-worktree setup, and
-still requires its exact pinned hash before loading it. This portability change
-and publication paths change the candidate's bytes/contract. The recorded local
+still requires an approved exact hash before loading it. The supported host-reader
+pins, portability change and publication paths change the candidate's bytes/contract. The recorded local
 digest cannot authorize this copy; any execution requires review of a freshly
 prepared exact digest and separate approval. No package installation, Docker read
 or start, application build, application request or hosted qualification occurred
@@ -30,7 +30,8 @@ during publication. The consumed attempt-1 and all local evidence remain exclude
 Gate 1 remains open; Gate 5A remains unpassed. This package does not identify a
 deployment, configure the hosted probe, observe hosted execution, qualify secret
 snapshots or perform rollback. The owner approved focused local package preparation and offline checks.
-This fresh package contains eight files; the selected detached worktree already exists. Installation, image assembly, build and loopback execution
+This fresh package contains eight files; preparation requires the detached source
+worktree and preserved archives at the paths below. Installation, image assembly, build and loopback execution
 require a separate review and approval of the finished digest.
 
 ## Focused packaging correction
@@ -47,13 +48,24 @@ or allowing Docker assembly. Missing, extra, duplicate, linked, unsafe, malforme
 or content-mismatched entries fail with fixed sanitized categories. The original
 in-container exact source verification remains unchanged.
 
-The host-only parser is the already installed standalone bundle at
-`node_modules/next/dist/compiled/tar/index.min.js`, SHA-256
-`7f02d0edb684eafcc2bef85c66b3ab6083c26adfc5b583a6726a910cffa2c603`.
-Its hash is checked before loading and bound into the approval contract. No parser
-is downloaded, copied into the container, or used as Next application-build evidence.
-The host primary Next installation remains 16.2.12; the selected application build
-still requires the pinned offline Next 16.3.3 inputs.
+Host preparation supports the standalone bundle at
+`node_modules/next/dist/compiled/tar/index.min.js` from either supported installation:
+
+| Host Next version | Approved reader SHA-256 |
+| --- | --- |
+| 16.2.12 (existing shared host) | `7f02d0edb684eafcc2bef85c66b3ab6083c26adfc5b583a6726a910cffa2c603` |
+| 16.3.3 (locked application and CI installation) | `afc929b535e65468c4891a31b2243f3e6a24874707135b8e183ddc4e7cabba77` |
+
+The 16.3.3 reader matches the preserved npm package after checking that package's
+integrity against `package-lock.json`. The actual reader bytes must match one of
+these exact hashes before loading. Both the supported digest map and the digest
+actually used are bound into the approval contract; archive verification reports
+the actual digest. Unrecognized bytes still fail with `archive_parser`.
+
+The repository manifest and lockfile remain pinned to Next 16.3.3, matching the
+selected application's offline build inputs. Supporting the older shared host
+does not change that build version. No parser is downloaded, copied into the
+container, or used as Next application-build evidence.
 
 The preflight uses the existing reader without extraction or link traversal. It
 accepts only uncompressed TAR, caps archive/payload at 128 MiB, expected files at
@@ -67,7 +79,7 @@ by this local preparation. A new execution requires separate exact-digest approv
 If this focused correction cannot establish exact agreement, stop and return for
 an evidence-method decision; do not extend the investigation automatically.
 
-Local validation: 99 tests across three suites, six syntax checks and focused
+Original local validation: 99 tests across three suites, six syntax checks and focused
 repository-config ESLint passed. The real Git fixture reproduced content drift
 under `autocrlf=true`; archive-specific settings preserved both committed text and
 binary bytes. The read-only preparation output records the selected source's actual
@@ -97,10 +109,10 @@ closed as inconclusive and is not invoked by this package.
 
 ## Inputs and write boundaries
 
-All host paths are beneath `C:\Users\willm\job-application-tracker`:
+All host paths are relative to the checkout containing this tracked package:
 
 - Detached source: `.tmp/worktrees/gate1-main-24106d4e-compiled`.
-- Package: `.tmp/gate1-build-tools/main-24106d4e-compiled-attempt-2`.
+- Package: `scripts/gate1-build-tools/main-24106d4e-compiled-attempt-2`.
 - Preserved read-only archives: `.tmp/gate1-qualification-inputs-7f70e4eb`.
 - Exclusive future destination: `.tmp/gate1-build/main-24106d4e-compiled-attempt-2`.
 
@@ -136,11 +148,11 @@ deleted or reused as writable state.
 ## Read-only preparation and offline checks
 
 ```powershell
-$repo = 'C:\Users\willm\job-application-tracker'
+$repo = (git rev-parse --show-toplevel).Trim()
 $env:TEMP = Join-Path $repo '.tmp'
 $env:TMP = $env:TEMP
 $env:NODE_DISABLE_COMPILE_CACHE = '1'
-$package = Join-Path $repo '.tmp/gate1-build-tools/main-24106d4e-compiled-attempt-2'
+$package = Join-Path $repo 'scripts/gate1-build-tools/main-24106d4e-compiled-attempt-2'
 node (Join-Path $package 'qualify-build.cjs') --prepare
 ```
 
@@ -151,11 +163,14 @@ existing evidence destination. Git reads may require normal sandbox escalation.
 Checkout validation retains `autocrlf=true` and `filemode=false`. Archive creation
 overrides `core.autocrlf=false` and `core.eol=lf` for that Git command only. The archive
 must then match every selected committed blob exactly; no normalization is accepted.
-The digest binds both policies, archive verification counts and the host TAR reader hash.
+The digest binds both policies, archive verification counts, the approved host-reader
+digest map and the actual reader hash. Switching between the two host readers changes
+the digest and requires fresh preparation and exact-digest approval before execution.
+The historical preparation digest above does not approve this revised contract.
 
-Run the three CJS Jest suites with this package as rootDir, Node environment,
-`**/__tests__/*.test.cjs`, no transforms, `js/cjs/json` extensions, primary
-`node_modules` for Jest/Acorn and the pinned standalone TAR reader only, inBand and no cache. Run six `node --check`
+Run `npm run test:gate1-build-tools` for the tracked CJS suites in Node, with no
+transforms, inBand and no cache. Validate the archive suite with each supported
+host installation so both actual reader implementations and reported hashes are checked. Run six `node --check`
 commands, focused ESLint, whitespace and preservation checks. Tests use synthetic/mock cases plus an isolated temporary Git repository under
 `.tmp/gate1-archive-tests/`. The real Git regression commits text and binary fixtures,
 checks a CRLF checkout, reproduces archive drift, and proves the corrected archive
