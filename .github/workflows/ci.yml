@@ -59,7 +59,7 @@ jobs:
           git --version
           mkdir -p .tmp
           test -w .tmp
-          npm run test:gate1-build-tools
+          npx --no-install jest --config jest.gate1-build-tools.config.cjs --ci --runInBand --no-cache
 
       - name: Build
         env:

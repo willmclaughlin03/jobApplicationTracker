@@ -168,8 +168,10 @@ digest map and the actual reader hash. Switching between the two host readers ch
 the digest and requires fresh preparation and exact-digest approval before execution.
 The historical preparation digest above does not approve this revised contract.
 
-Run `npm run test:gate1-build-tools` for the tracked CJS suites in Node, with no
-transforms, inBand and no cache. Validate the archive suite with each supported
+Run `npx --no-install jest --config jest.gate1-build-tools.config.cjs --ci --runInBand --no-cache`
+for the tracked CJS suites in Node, with no transforms, inBand and no cache.
+CI invokes this configuration directly to preserve the reviewed `package.json`
+hash checked by the restart-continuity harness. Validate the archive suite with each supported
 host installation so both actual reader implementations and reported hashes are checked. Run six `node --check`
 commands, focused ESLint, whitespace and preservation checks. Tests use synthetic/mock cases plus an isolated temporary Git repository under
 `.tmp/gate1-archive-tests/`. The real Git regression commits text and binary fixtures,
