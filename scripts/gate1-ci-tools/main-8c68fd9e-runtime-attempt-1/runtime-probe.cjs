@@ -22,7 +22,8 @@ const PHASE_FILES = 6;
 
 /** Reject extra or missing evidence fields; the frozen static helper keeps this utility private. */
 function exactKeys(value, keys) {
-  return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).sort().join('|') === [...keys].sort().join('|');
+  return value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === keys.length &&
+    keys.every(key => Object.prototype.hasOwnProperty.call(value, key));
 }
 
 /** Map arbitrary exceptions to the finite evidence vocabulary before persistence. */
@@ -72,9 +73,9 @@ function getLocal(request, transport = http.request) {
   });
 }
 
-/** Parse effective private/no-store directives strictly, rejecting ambiguous or conflicting cache ages. */
+/** Parse the unquoted private/no-store contract; reject quoted values and ambiguous or conflicting cache ages. */
 function privateNoStore(headers) {
-  if (typeof headers['cache-control'] !== 'string') return false;
+  if (typeof headers['cache-control'] !== 'string' || headers['cache-control'].includes('"')) return false;
   const parts = headers['cache-control'].split(',').map(value => value.trim().toLowerCase());
   if (!parts.includes('private') || !parts.includes('no-store') || parts.includes('public')) return false;
   for (const part of parts) {

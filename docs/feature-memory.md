@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+- `2026-11-19` - `Gate 1 runtime evidence validation`: Reject quoted Cache-Control values and delimiter-colliding evidence keys. Preserve stopped reports when the final package check throws, publish complete reports exclusively through a pending file, and verify each report from one authenticated byte snapshot. Add failure, overwrite, canonical JSON and valid-policy regressions; all 258 offline runtime tests pass.
+
 - `2026-11-19` - `Gate 1 runtime review follow-ups`: Require `ProtectHome=read-only` and verify effective protected mounts while preserving scratch/cache writes. Make active journal scans tolerate concurrent appends, retain final gap and observed-prefix checks, accept the exact unloaded cleanup state, and recheck owned resources after launcher settlement within the existing five-second bound. Strengthen exclusive-publication coverage to verify `EEXIST` and original-byte preservation. All 223 offline runtime tests pass; live Linux enforcement remains unqualified.
 
 - `2026-11-19` - `Gate 1 six-case runtime qualification preparation`: Add a manual-only workflow and twelve-file package for a fresh pinned build, private compiled-reader attribution, six bounded requests and independently verified systemd isolation/cleanup. Bind the unchanged static dependency, one-run identities and sanitized report-only retention; 169 new offline tests and 117 static regressions pass. Publication grants no runtime dispatch or hosted qualification; Gate 1 remains open and Gate 5A unpassed.

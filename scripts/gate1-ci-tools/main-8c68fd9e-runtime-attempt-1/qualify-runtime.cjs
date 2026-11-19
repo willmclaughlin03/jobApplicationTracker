@@ -148,16 +148,35 @@ async function execute(env = process.env) {
   fs.mkdirSync(scratch, { mode: 0o700 });
   for (const name of ['empty-user.npmrc', 'empty-global.npmrc']) fs.writeFileSync(path.join(scratch, name), '', { flag: 'wx', mode: 0o600 });
   const report = await qualify(path.join(workspace, 'application'), scratch, context);
-  if (packageProfile().packageDigest !== profile.packageDigest) { report.stage = 'verify'; report.result = 'stopped'; if (report.failure !== 'cleanup') report.failure = 'tool_identity'; }
+  try {
+    if (packageProfile().packageDigest !== profile.packageDigest) throw new RuntimeError('tool_identity');
+  } catch {
+    report.stage = 'verify'; report.result = 'stopped';
+    if (report.failure !== 'cleanup') report.failure = 'tool_identity';
+  }
   validateReport(report, context);
-  const reportSha256 = base.writeOnce(path.join(dest, 'report.json'), report);
+  const pending = path.join(dest, '.pending-report.json');
+  let fd = fs.openSync(pending, 'wx', 0o600), reportSha256;
+  try {
+    reportSha256 = base.writeOnce(fd, report);
+    fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined;
+    fs.linkSync(pending, path.join(dest, 'report.json')); // Publish complete bytes atomically without replacing existing evidence.
+  } finally {
+    try { if (fd !== undefined) fs.closeSync(fd); }
+    finally { fs.unlinkSync(pending); } // Only remove the pending file this attempt opened exclusively.
+  }
   return { result: report.result, stage: report.stage, failure: report.failure, reportSha256 };
 }
 
-/** Verify exact saved bytes and canonical schema against a separately supplied run-bound hash. */
+/** Verify one bounded byte snapshot against the run-bound hash, canonical JSON and expected report schema. */
 function verifyReport(filename, digest, expected) {
-  if (!HASH.test(digest || '') || base.sha(base.readBounded(filename)) !== digest) throw new RuntimeError('report_digest');
-  return validateReport(probe.readJson(filename), expected);
+  if (!HASH.test(digest || '')) throw new RuntimeError('report_digest');
+  const bytes = base.readBounded(filename);
+  if (base.sha(bytes) !== digest) throw new RuntimeError('report_digest');
+  const text = bytes.toString('utf8'); let report;
+  try { report = JSON.parse(text); } catch { throw new RuntimeError('report_schema'); }
+  if (text !== JSON.stringify(report, null, 2) + '\n') throw new RuntimeError('report_schema');
+  return validateReport(report, expected);
 }
 
 /** Expose read-only preparation/review modes separately from the guarded one-run CI entry point. */

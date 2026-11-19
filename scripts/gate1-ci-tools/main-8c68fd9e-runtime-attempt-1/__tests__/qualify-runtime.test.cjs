@@ -4,6 +4,7 @@
 /** Mock controller stages and validate run-bound reports; no install, build, server or subprocess is invoked. */
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const tool = require('../qualify-runtime.cjs');
 const probe = require('../runtime-probe.cjs');
 const base = require('../../main-8c68fd9e-static-attempt-1/qualify-static.cjs');
@@ -43,6 +44,50 @@ function operations() {
   return { node: '22.23.3', source: jest.fn().mockResolvedValue({ entries: [], routes: ['/login', '/admin'] }),
     run: jest.fn().mockResolvedValue(Buffer.from('10.9.9\n')), verify: jest.fn(), installed: () => ({ next: '16.3.3', react: '18.3.1', 'react-dom': '18.3.1', acorn: '8.15.0' }),
     prepareScratch: jest.fn(), isolate: jest.fn().mockResolvedValue({ runtime: runtime(), failure: null, accounting: 'known', serviceStopped: true }) };
+}
+
+/** Load the real entry point in a synthetic Linux workspace; mock effects and retain serialized evidence for post-run checks. */
+function executionHarness(failure = null) {
+  const staticRoot = path.resolve(__dirname, '../../main-8c68fd9e-static-attempt-1'), dependency = base.packageProfile(staticRoot);
+  dependency.contract.files = Object.fromEntries(base.FILES.map(name => [name,
+    base.sha(tool.profileBytes(name === 'gate1-static.yml' ? base.workflowPath(staticRoot) : path.join(staticRoot, name)))]));
+  const saved = new Map(), opened = new Map(); let nextFd = 10;
+  const io = { realpathSync: name => name, existsSync: name => saved.has(name), mkdirSync: jest.fn(),
+    lstatSync: () => ({ isDirectory: () => true, isSymbolicLink: () => false }),
+    openSync: jest.fn(name => {
+      if (saved.has(name)) throw Object.assign(new Error('exists'), { code: 'EEXIST' });
+      const fd = nextFd++; opened.set(fd, name); saved.set(name, Buffer.alloc(0)); return fd;
+    }),
+    writeFileSync: jest.fn((target, bytes, options = {}) => {
+      const name = typeof target === 'number' ? opened.get(target) : target;
+      if (typeof target !== 'number' && options.flag === 'wx' && saved.has(name)) throw Object.assign(new Error('exists'), { code: 'EEXIST' });
+      saved.set(name, Buffer.from(bytes));
+    }),
+    fsyncSync: jest.fn(), closeSync: jest.fn(fd => opened.delete(fd)),
+    linkSync: jest.fn((source, destination) => {
+      if (saved.has(destination)) throw Object.assign(new Error('exists'), { code: 'EEXIST' });
+      saved.set(destination, saved.get(source));
+    }),
+    unlinkSync: jest.fn(name => { if (!saved.delete(name)) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); }) };
+  jest.spyOn(fs, 'writeFileSync').mockImplementation(io.writeFileSync);
+  const mockedBase = { ...base, packageProfile: jest.fn().mockReturnValue(dependency), readBounded: jest.fn().mockReturnValue(Buffer.from('synthetic-file')),
+    sourceProfile: jest.fn().mockResolvedValue({ entries: [], routes: ['/login', '/admin'] }), verifyFiles: jest.fn(),
+    supervise: jest.fn(async command => Buffer.from(command === 'git' ? context().workflowSha : base.VERSIONS.npm)),
+    installedVersions: () => ({ ...base.VERSIONS }), childEnvironment: () => ({}), writeOnce: jest.fn(base.writeOnce) };
+  const isolated = failure ? { runtime: null, accounting: 'unknown', failure, serviceStopped: failure !== 'cleanup' }
+    : { runtime: runtime(), accounting: 'known', failure: null, serviceStopped: true };
+  const isolate = jest.fn().mockResolvedValue(isolated), modules = { 'node:fs': io, 'node:path': path.posix,
+    '../main-8c68fd9e-static-attempt-1/qualify-static.cjs': mockedBase, './runtime-probe.cjs': probe,
+    './isolate-runtime.cjs': { ...require('../isolate-runtime.cjs'), environment: () => ({}), runIsolated: isolate },
+    './inspect-runtime.cjs': require('../inspect-runtime.cjs') };
+  const sandbox = { module: { exports: {} }, require: name => modules[name],
+    __dirname: `/workspace/tooling/scripts/gate1-ci-tools/${tool.NAME}`,
+    process: { platform: 'linux', arch: 'x64', versions: { node: base.VERSIONS.node } } };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../qualify-runtime.cjs'), 'utf8'), sandbox);
+  const entry = sandbox.module.exports, current = entry.packageProfile(), env = { ...environment(), GITHUB_WORKSPACE: '/workspace',
+    GATE1_PACKAGE_DIGEST: current.packageDigest, GATE1_EXECUTION_DIGEST: entry.executionProfile(current, context().workflowSha, '1').executionDigest };
+  mockedBase.packageProfile.mockClear();
+  return { entry, env, expected: entry.validateContext(env, current), base: mockedBase, dependency, saved, opened, io, isolate, isolated };
 }
 
 /** Restore spies so package identity and report readers cannot leak mocks into other tests. */
@@ -118,6 +163,88 @@ describe('bounded controller sequence', () => {
   });
 });
 
+describe('post-run package identity', () => {
+  it.each([
+    [null, 'read-error', 'tool_identity'], ['cleanup', 'read-error', 'cleanup'], ['isolation', 'read-error', 'tool_identity'],
+    [null, 'dependency-drift', 'tool_identity'], ['cleanup', 'dependency-drift', 'cleanup'],
+  ])('persists stopped evidence after %s qualification and %s', async (failure, variant, expectedFailure) => {
+    const h = executionHarness(failure);
+    h.base.packageProfile.mockReturnValueOnce(h.dependency).mockImplementationOnce(() => {
+      if (variant === 'read-error') throw Object.assign(new Error('synthetic profile read failure'), { code: 'ENOENT' });
+      return { contract: { changed: true } };
+    });
+    const result = await h.entry.execute(h.env), bytes = h.saved.get('/workspace/gate1-runtime-evidence/report.json'), report = JSON.parse(bytes);
+    expect(result).toEqual({ result: 'stopped', stage: 'verify', failure: expectedFailure, reportSha256: base.sha(bytes) });
+    expect(h.entry.validateReport(report, h.expected)).toEqual(report);
+    expect(report).toMatchObject({ result: 'stopped', stage: 'verify', failure: expectedFailure,
+      serviceStopped: failure !== 'cleanup', childrenClosed: failure !== 'cleanup' });
+    expect(() => h.entry.validateReport({ ...report, result: 'complete_runtime_only', stage: 'complete' }, h.expected)).toThrow('report_schema');
+    expect(h.base.packageProfile).toHaveBeenCalledTimes(2); expect(h.base.writeOnce).toHaveBeenCalledTimes(2);
+    expect(bytes.toString('utf8')).not.toContain('synthetic profile read failure');
+  });
+  it('continues to persist stopped evidence for a changed digest', async () => {
+    const h = executionHarness();
+    h.isolate.mockImplementationOnce(async () => { h.base.readBounded.mockReturnValue(Buffer.from('changed-file')); return h.isolated; });
+    expect(await h.entry.execute(h.env)).toMatchObject({ result: 'stopped', stage: 'verify', failure: 'tool_identity' });
+    expect(JSON.parse(h.saved.get('/workspace/gate1-runtime-evidence/report.json'))).toMatchObject({ result: 'stopped', failure: 'tool_identity' });
+  });
+  it('persists successful evidence only when the post-run identity remains unchanged', async () => {
+    const h = executionHarness();
+    expect(await h.entry.execute(h.env)).toMatchObject({ result: 'complete_runtime_only', stage: 'complete', failure: null });
+    expect(h.entry.validateReport(JSON.parse(h.saved.get('/workspace/gate1-runtime-evidence/report.json')), h.expected)).toMatchObject({ result: 'complete_runtime_only' });
+  });
+});
+
+describe('atomic report publication', () => {
+  const filename = '/workspace/gate1-runtime-evidence/report.json', pending = '/workspace/gate1-runtime-evidence/.pending-report.json';
+  it.each([null, 'cleanup'])('publishes only complete bytes with their matching hash after %s qualification', async failure => {
+    const h = executionHarness(failure), write = h.io.writeFileSync.getMockImplementation(), link = h.io.linkSync.getMockImplementation();
+    h.io.writeFileSync.mockImplementation((target, bytes, options) => {
+      const name = typeof target === 'number' ? h.opened.get(target) : target;
+      if (name.endsWith('report.json')) {
+        write(target, Buffer.from('{'), options); expect(h.saved.has(filename)).toBe(false);
+        expect(h.saved.get(pending).toString()).toBe('{');
+      }
+      write(target, bytes, options);
+    });
+    h.io.linkSync.mockImplementation((source, destination) => {
+      expect(h.opened.size).toBe(0); expect(h.io.fsyncSync).toHaveBeenCalledTimes(1);
+      h.entry.validateReport(JSON.parse(h.saved.get(source)), h.expected); link(source, destination);
+    });
+    const result = await h.entry.execute(h.env);
+    expect(result).toMatchObject({ result: failure ? 'stopped' : 'complete_runtime_only', failure, reportSha256: base.sha(h.saved.get(filename)) });
+    expect(h.io.openSync).toHaveBeenCalledWith(pending, 'wx', 0o600); expect(h.io.linkSync).toHaveBeenCalledWith(pending, filename);
+    expect(h.saved.has(pending)).toBe(false); expect(h.opened.size).toBe(0);
+  });
+  it.each(['write', 'flush', 'link'])('removes the owned pending file after a %s failure without exposing a report', async stage => {
+    const h = executionHarness(), error = Object.assign(new Error('disk'), { code: 'EIO' }), write = h.io.writeFileSync.getMockImplementation();
+    if (stage === 'write') h.io.writeFileSync.mockImplementation((target, bytes, options) => {
+      const name = typeof target === 'number' ? h.opened.get(target) : target;
+      if (name.endsWith('report.json')) { write(target, Buffer.from('{'), options); throw error; }
+      write(target, bytes, options);
+    });
+    if (stage === 'flush') h.io.fsyncSync.mockImplementation(() => { throw error; });
+    if (stage === 'link') h.io.linkSync.mockImplementation(() => { throw error; });
+    await expect(h.entry.execute(h.env)).rejects.toBe(error);
+    expect(h.saved.has(filename)).toBe(false); expect(h.saved.has(pending)).toBe(false); expect(h.opened.size).toBe(0);
+    expect(h.io.unlinkSync).toHaveBeenCalledWith(pending);
+  });
+  it('reaches exclusive publication failure and preserves existing report bytes', async () => {
+    const h = executionHarness(), original = Buffer.from('original report');
+    h.isolate.mockImplementationOnce(async () => { h.saved.set(filename, original); return h.isolated; });
+    await expect(h.entry.execute(h.env)).rejects.toMatchObject({ code: 'EEXIST' });
+    expect(h.io.linkSync).toHaveBeenCalledTimes(1); expect(h.io.linkSync).toHaveBeenCalledWith(pending, filename);
+    expect(h.saved.get(filename)).toEqual(original); expect(h.saved.has(pending)).toBe(false); expect(h.opened.size).toBe(0);
+  });
+  it('does not remove or reuse a pending file owned by another attempt', async () => {
+    const h = executionHarness(), original = Buffer.from('existing pending bytes');
+    h.isolate.mockImplementationOnce(async () => { h.saved.set(pending, original); return h.isolated; });
+    await expect(h.entry.execute(h.env)).rejects.toMatchObject({ code: 'EEXIST' });
+    expect(h.saved.get(pending)).toEqual(original); expect(h.saved.has(filename)).toBe(false);
+    expect(h.io.unlinkSync).not.toHaveBeenCalled(); expect(h.io.linkSync).not.toHaveBeenCalled();
+  });
+});
+
 describe('strict retained evidence', () => {
   it('rejects extra fields, identity drift, invented cleanup, wrong count and reordered cases', async () => {
     const good = await tool.qualify('/app', '/scratch', context(), operations());
@@ -130,9 +257,32 @@ describe('strict retained evidence', () => {
   });
   it('verifies canonical bytes and an independently supplied digest without retaining raw content', async () => {
     const report = await tool.qualify('/app', '/scratch', context(), operations()), bytes = Buffer.from(JSON.stringify(report, null, 2) + '\n');
-    jest.spyOn(base, 'readBounded').mockReturnValue(bytes);
+    const read = jest.spyOn(base, 'readBounded').mockReturnValue(bytes);
     expect(tool.verifyReport('/synthetic/report.json', base.sha(bytes), context())).toEqual(report);
+    expect(read).toHaveBeenCalledTimes(1); read.mockClear();
     expect(() => tool.verifyReport('/synthetic/report.json', 'f'.repeat(64), context())).toThrow('report_digest');
+    expect(read).toHaveBeenCalledTimes(1); read.mockClear();
+    expect(() => tool.verifyReport('/synthetic/report.json', 'not-a-digest', context())).toThrow('report_digest');
+    expect(read).not.toHaveBeenCalled();
+  });
+  it('returns the authenticated stopped report even if a later read would claim success', async () => {
+    const success = await tool.qualify('/app', '/scratch', context(), operations());
+    const stopped = { ...success, stage: 'verify', result: 'stopped', failure: 'tool_identity' }, bytes = Buffer.from(JSON.stringify(stopped, null, 2) + '\n');
+    const read = jest.spyOn(base, 'readBounded').mockReturnValueOnce(bytes).mockReturnValue(Buffer.from(JSON.stringify(success, null, 2) + '\n'));
+    expect(tool.verifyReport('/synthetic/report.json', base.sha(bytes), context())).toEqual(stopped);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+  it.each(['malformed', 'duplicate-key', 'noncanonical', 'schema', 'identity'])('rejects authenticated %s bytes even if a later read would be valid', async variant => {
+    const report = await tool.qualify('/app', '/scratch', context(), operations()), canonical = JSON.stringify(report, null, 2) + '\n';
+    let text = canonical;
+    if (variant === 'malformed') text = '{';
+    if (variant === 'duplicate-key') text = canonical.replace('{', '{\n  "schemaVersion": 1,');
+    if (variant === 'noncanonical') text = JSON.stringify(report) + '\n';
+    if (variant === 'schema') text = JSON.stringify({ ...report, extra: true }, null, 2) + '\n';
+    if (variant === 'identity') text = JSON.stringify({ ...report, runId: '124' }, null, 2) + '\n';
+    const bytes = Buffer.from(text), read = jest.spyOn(base, 'readBounded').mockReturnValueOnce(bytes).mockReturnValue(Buffer.from(canonical));
+    expect(() => tool.verifyReport('/synthetic/report.json', base.sha(bytes), context())).toThrow('report_schema');
+    expect(read).toHaveBeenCalledTimes(1);
   });
   it('exposes read-only preparation without invoking install, build or runtime', async () => {
     const source = jest.spyOn(base, 'sourceProfile').mockResolvedValue({ selectedFileCount: 362, selectedManifestSha256: 'c'.repeat(64) });

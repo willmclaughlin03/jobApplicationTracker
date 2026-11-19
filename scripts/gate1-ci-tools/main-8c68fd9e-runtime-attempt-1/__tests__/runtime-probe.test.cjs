@@ -62,6 +62,24 @@ afterEach(() => {
   }
 });
 
+describe('exact evidence keys', () => {
+  it.each([{ 'a|b': true }, { a: true }, { a: true, b: true, extra: true }])('rejects merged, missing or extra fields %#', value => {
+    expect(tool.exactKeys(value, ['a', 'b'])).toBe(false);
+  });
+  it('rejects delimiter collisions even when the key counts match', () => {
+    expect(tool.exactKeys({ a: true, 'b|c': true }, ['a|b', 'c'])).toBe(false);
+  });
+  it('does not count inherited fields in place of expected own fields', () => {
+    const value = Object.assign(Object.create({ b: true }), { a: true, extra: true });
+    expect(tool.exactKeys(value, ['a', 'b'])).toBe(false);
+  });
+  it('accepts the exact own fields regardless of order or a null prototype', () => {
+    expect(tool.exactKeys({ b: true, a: true }, ['a', 'b'])).toBe(true);
+    expect(tool.exactKeys(Object.assign(Object.create(null), { a: true, b: true }), ['a', 'b'])).toBe(true);
+    expect(tool.exactKeys({}, [])).toBe(true);
+  });
+});
+
 describe('six finite cases and privacy', () => {
   it('uses distinct fresh challenges, different valid-format wrong key, no cookies and the exact paths', () => {
     const items = cases(); expect(items.map(item => item.case)).toEqual(tool.CASES);
@@ -77,6 +95,15 @@ describe('six finite cases and privacy', () => {
     const values = cases().map(item => tool.reviewResponse(response(item), item, counts(item), 'v22.23.3'));
     expect(tool.validateCases(values)).toEqual(values);
     expect(JSON.stringify(values)).not.toMatch(/headers|challenge":|aaaaaaa|01010101|cache-control/);
+  });
+  it('rejects a response with native-count names merged into one field', () => {
+    const item = cases()[1];
+    expect(() => tool.reviewResponse(response(item), item, { 'nodeVersion|releaseName|version': 1 }, 'v22.23.3')).toThrow('runtime_read');
+  });
+  it('rejects retained evidence with native-count names merged into one field', () => {
+    const values = cases().map(item => tool.reviewResponse(response(item), item, counts(item), 'v22.23.3'));
+    values[1].nativeReadCounts = { 'nodeVersion|releaseName|version': 1 };
+    expect(() => tool.validateCases(values)).toThrow('report_schema');
   });
   it.each([0, 1, 2, 3, 4, 5])('rejects cookies in case %i even if only raw metadata contains them', i => {
     const item = cases()[i], result = response(item); result.rawHeaders.push('Set-Cookie', 'synthetic');
@@ -98,6 +125,24 @@ describe('six finite cases and privacy', () => {
   });
   it.each(['public, private, no-store', 'private, max-age=20, no-store', 'private, s-maxage = 1, no-store', 'private', 'no-store'])('rejects unsafe cache directives: %s', value => {
     expect(tool.privateNoStore({ 'cache-control': value })).toBe(false);
+  });
+  it.each([
+    'extension="x, private, no-store, y"',
+    'private, extension="x, no-store, y"',
+    'no-store, extension="x, private, y"',
+    'private, no-store, extension="ordinary"',
+    'extension="x, private, no-store',
+  ])('rejects quoted cache values without recording private/no-store evidence: %s', value => {
+    expect(tool.privateNoStore({ 'cache-control': value })).toBe(false);
+    const item = cases()[1], result = response(item);
+    result.headers['cache-control'] = value; result.rawHeaders = Object.entries(result.headers).flat();
+    expect(() => tool.reviewResponse(result, item, counts(item), 'v22.23.3')).toThrow('cache_cookie');
+  });
+  it.each([
+    'private, no-cache, no-store, max-age=0, must-revalidate',
+    ' PRIVATE , No-Store , max-age = 0 , s-maxage=0 ',
+  ])('accepts the unquoted cache policy: %s', value => {
+    expect(tool.privateNoStore({ 'cache-control': value })).toBe(true);
   });
   it('rejects a CDN override, wrong status, empty login and incorrect native reads', () => {
     const item = cases()[1];
