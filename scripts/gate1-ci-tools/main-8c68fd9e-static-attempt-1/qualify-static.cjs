@@ -90,7 +90,7 @@ function childEnvironment(scratch, install = false) {
   return base;
 }
 
-/** Bound child lifetime/streams, kill its Linux process group, and wait for closure before continuing. */
+/** Bound child lifetime/streams, kill its Linux process group on exit, and await final stream closure. */
 function supervise(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     let child, timer, closing, settled = false, failure = null, stdoutBytes = 0, stderrBytes = 0;
@@ -108,11 +108,17 @@ function supervise(command, args, options = {}) {
       if (settled) return; settled = true; clearTimeout(timer); clearTimeout(closing);
       if (error) reject(error); else resolve(Buffer.concat(output));
     }
-    /** Stop on the first fixed error and require close within the cleanup allowance. */
+    /** Terminate the owned group once; replace the run deadline with a fixed allowance for final streams. */
+    function terminate() {
+      if (closing || settled) return;
+      clearTimeout(timer);
+      closing = setTimeout(() => finish(new QualificationError('cleanup')), LIMITS.closeMs);
+      kill();
+    }
+    /** Preserve the first fixed error while requiring close within the existing cleanup allowance. */
     function stop(code) {
       if (failure || settled) return;
-      failure = new QualificationError(code); kill();
-      closing = setTimeout(() => finish(new QualificationError('cleanup')), LIMITS.closeMs);
+      failure = new QualificationError(code); terminate();
     }
     try {
       child = spawnChild(command, args, { cwd: options.cwd, env: options.env, windowsHide: true, detached: process.platform === 'linux', stdio: ['pipe', 'pipe', 'pipe'] });
@@ -122,7 +128,8 @@ function supervise(command, args, options = {}) {
     child.stderr.on('data', chunk => { stderrBytes += chunk.length; if (stderrBytes > LIMITS.streamBytes) stop('stream_limit'); });
     child.once('error', () => stop('child_spawn'));
     child.stdin.on('error', () => stop('child_exit'));
-    child.once('close', code => { kill(); finish(failure || (code === 0 ? null : new QualificationError('child_exit'))); });
+    child.once('exit', code => { if (code === 0) terminate(); else stop('child_exit'); });
+    child.once('close', code => { finish(failure || (code === 0 ? null : new QualificationError('child_exit'))); });
     child.stdin.end(options.input || undefined);
   });
 }

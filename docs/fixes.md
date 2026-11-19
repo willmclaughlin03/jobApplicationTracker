@@ -15,6 +15,8 @@ Use this file to briefly record fixes when preparing a push to a pull-request br
 
 ## Entries
 
+- `2026-11-19` - `Static qualification descendants delayed cleanup`: A direct child could exit while descendants kept inherited streams open, postponing group termination until the command deadline. Approach: separate group termination from final stream validation. Fix: terminate on `exit`, replace the command timer with one fixed `LIMITS.closeMs` closure allowance, and retain stream limits and nonzero-exit rejection until `close`. All 117 static-tool tests pass, including exit-before-close, missing-close, late-overflow and failed-exit regressions.
+
 - `2026-11-18` - `Static qualification publication paths and failure attribution`: The local draft expected an adjacent workflow, while publication places it under `.github/workflows`; the existing CI test roots also omitted the new CJS suites. Fix: resolve both layouts, add publication regressions and register the static suites; all 294 tests pass. Preserve fixed stage/category, runtime-major and known/unrecognized-output facts with strict report schema/hash/cap checks. The prior local `storage` cause remains unresolved; no application defect or Gate 1 pass is claimed.
 
 - `2026-11-18` - `Archive test script broke restart source attribution`: Adding a package script changed the manifest's pinned hash, causing 13 restart-continuity failures before their intended checks. Fix: remove the script and invoke the dedicated Jest configuration directly from CI, preserving the existing reviewed hashes and lockfile. All 48 restart-continuity tests and 186 build-tool tests pass; workflow parsing and manifest-hash verification pass.
