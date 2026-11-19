@@ -39,6 +39,13 @@ function runtime() {
     }) };
 }
 
+/** Model second-request intent: one verified case, with transport and cleanup for the last intent unconfirmed. */
+function requestIntent() {
+  const value = runtime();
+  return { ...value, stage: 'requests', attempted: 2, cases: value.cases.slice(0, 1), sourceUnchanged: false, compiledUnchanged: false,
+    descriptorsRestored: false, serverClosed: false, nextClosed: false };
+}
+
 /** Replace every effectful controller dependency with a bounded synthetic result. */
 function operations() {
   return { node: '22.23.3', source: jest.fn().mockResolvedValue({ entries: [], routes: ['/login', '/admin'] }),
@@ -161,6 +168,18 @@ describe('bounded controller sequence', () => {
     ops.isolate.mockResolvedValue({ runtime: partial, failure: 'cleanup', accounting: 'known', serviceStopped: false });
     expect(await tool.qualify('/app', '/scratch', context(), ops)).toMatchObject({ failure: 'cleanup', childrenClosed: false, serviceStopped: false, runtime: partial });
   });
+  it('reports pending-file cleanup separately from valid complete child evidence', async () => {
+    const ops = operations(), complete = runtime();
+    ops.isolate.mockResolvedValue({ runtime: complete, failure: 'cleanup', accounting: 'known', serviceStopped: true });
+    expect(await tool.qualify('/app', '/scratch', context(), ops)).toMatchObject({ result: 'stopped', failure: 'cleanup',
+      childrenClosed: false, serviceStopped: true, accounting: 'known', runtime: complete });
+  });
+  it.each(['cancelled', 'cleanup'])('retains last-attempt uncertainty in a stopped %s report', async failure => {
+    const ops = operations(), partial = requestIntent();
+    ops.isolate.mockResolvedValue({ runtime: partial, failure, accounting: 'last_attempt_uncertain', serviceStopped: failure !== 'cleanup' });
+    expect(await tool.qualify('/app', '/scratch', context(), ops)).toMatchObject({ result: 'stopped', failure,
+      accounting: 'last_attempt_uncertain', runtime: partial, childrenClosed: failure !== 'cleanup' });
+  });
 });
 
 describe('post-run package identity', () => {
@@ -249,11 +268,21 @@ describe('strict retained evidence', () => {
   it('rejects extra fields, identity drift, invented cleanup, wrong count and reordered cases', async () => {
     const good = await tool.qualify('/app', '/scratch', context(), operations());
     const changes = [r => { r.extra = 'private'; }, r => { r.source = 'f'.repeat(40); }, r => { r.serviceStopped = null; }, r => { r.childrenClosed = false; },
-      r => { r.runtime.attempted = 5; }, r => { r.runtime.cases.reverse(); }, r => { r.runtime.cases[1].challenge = 'private'; }, r => { r.accounting = 'unknown'; }];
+      r => { r.runtime.attempted = 5; }, r => { r.runtime.cases.reverse(); }, r => { r.runtime.cases[1].challenge = 'private'; }, r => { r.accounting = 'unknown'; },
+      r => { r.accounting = 'last_attempt_uncertain'; }];
     for (const change of changes) { const value = JSON.parse(JSON.stringify(good)); change(value); expect(() => tool.validateReport(value, context())).toThrow('report_schema'); }
   });
   it('rejects a mismatch between missing evidence and known accounting', () => {
     expect(() => tool.validateReport({ ...tool.initialReport(context()), failure: 'isolation', accounting: 'known' }, context())).toThrow('report_schema');
+  });
+  it.each(['missing', 'no-intent', 'terminal-stage', 'terminal-failure'])('rejects uncertain accounting with %s evidence', variant => {
+    const partial = requestIntent(), report = { ...tool.initialReport(context()), stage: 'runtime', failure: 'cancelled',
+      runtime: partial, accounting: 'last_attempt_uncertain', serviceStopped: true };
+    if (variant === 'missing') report.runtime = null;
+    if (variant === 'no-intent') partial.attempted = partial.cases.length;
+    if (variant === 'terminal-stage') partial.stage = 'cleanup';
+    if (variant === 'terminal-failure') { partial.failure = 'cleanup'; report.failure = 'cleanup'; report.childrenClosed = false; }
+    expect(() => tool.validateReport(report, context())).toThrow('report_schema');
   });
   it('verifies canonical bytes and an independently supplied digest without retaining raw content', async () => {
     const report = await tool.qualify('/app', '/scratch', context(), operations()), bytes = Buffer.from(JSON.stringify(report, null, 2) + '\n');

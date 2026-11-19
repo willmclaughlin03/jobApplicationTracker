@@ -237,17 +237,43 @@ describe('progress, phases and separate service cleanup', () => {
     const io = { statSync: () => { if (kind === 'permission') throw Object.assign(new Error('denied'), { code: 'EACCES' }); return { isDirectory: () => true }; }, readFileSync: () => 'populated 1\n' };
     return expect(tool.stopService(config(), run, io)).rejects.toThrow('cleanup');
   });
-  it('releases only after both kernel-ready and effective metadata agree, then verifies terminal evidence and cleanup', async () => {
+  it.each([null, 'input.json', 'ready.json', 'release.json', 'progress-07.json', 'phase-00.json', 'phase-05.json', 'runtime.json'])('verifies terminal evidence and reports pending cleanup separately for %s', async pending => {
     const h = harness();
     h.onTick(() => {
       if (h.releaseAt === null) return;
       for (const [i, phase] of ['inspect', 'startup', 'requests', 'cleanup', 'recheck', 'complete'].entries()) h.records.set(`phase-0${i}.json`, { inputHash: h.hash, phase, at: h.releaseAt + i });
       for (let i = 0; i < 8; i++) h.records.set(`progress-0${i}.json`, { inputHash: h.hash, runtime: progress(i) });
       h.records.set('runtime.json', { inputHash: h.hash, runtime: { ...progress(7), stage: 'complete', cases: cases(), sourceUnchanged: true, compiledUnchanged: true,
-        descriptorsRestored: true, serverClosed: true, nextClosed: true } }); h.finish();
+        descriptorsRestored: true, serverClosed: true, nextClosed: true } });
+      if (pending) h.records.set('.pending-' + pending, {});
+      h.finish();
     });
-    const result = await h.run(); expect(result).toMatchObject({ failure: null, serviceStopped: true, accounting: 'known' });
-    expect(result.runtime.cases).toHaveLength(6); expect(h.ops.stop).toHaveBeenCalledTimes(1); expect(h.signals.listenerCount('SIGTERM')).toBe(0);
+    const result = await h.run(); expect(result).toMatchObject({ failure: pending ? 'cleanup' : null, serviceStopped: true, accounting: 'known',
+      runtime: { stage: 'complete', failure: null } });
+    expect(result.runtime.attempted).toBe(6); expect(result.runtime.cases).toHaveLength(6);
+    expect(h.ops.stop).toHaveBeenCalledTimes(1); expect(h.signals.listenerCount('SIGTERM')).toBe(0);
+  });
+  it.each([[1, 'http'], [1, 'cleanup']])('retains exact terminal attempts %i after journaled intent and %s', async (attempted, failure) => {
+    const h = harness();
+    h.onTick(() => {
+      if (h.releaseAt === null) return;
+      for (const [i, phase] of ['inspect', 'startup', 'requests', 'cleanup', 'stopped'].entries()) h.records.set(`phase-0${i}.json`, { inputHash: h.hash, phase, at: h.releaseAt + i });
+      for (let i = 0; i <= 2; i++) h.records.set(`progress-0${i}.json`, { inputHash: h.hash, runtime: progress(i) });
+      h.records.set('runtime.json', { inputHash: h.hash, runtime: { ...progress(2), attempted, stage: 'cleanup', failure,
+        descriptorsRestored: true, serverClosed: failure !== 'cleanup', nextClosed: true } }); h.finish();
+    });
+    expect(await h.run()).toMatchObject({ failure, accounting: 'known', runtime: { attempted, cases: [] } });
+  });
+  it.each([0, 1, 3])('rejects terminal attempts %i that disagree with committed intent', async attempted => {
+    const h = harness();
+    h.onTick(() => {
+      if (h.releaseAt === null) return;
+      for (const [i, phase] of ['inspect', 'startup', 'requests', 'cleanup', 'stopped'].entries()) h.records.set(`phase-0${i}.json`, { inputHash: h.hash, phase, at: h.releaseAt + i });
+      for (let i = 0; i <= 3; i++) h.records.set(`progress-0${i}.json`, { inputHash: h.hash, runtime: progress(i) });
+      h.records.set('runtime.json', { inputHash: h.hash, runtime: { ...progress(3), attempted, cases: cases().slice(0, Math.min(attempted, 2)),
+        stage: 'cleanup', failure: 'http', descriptorsRestored: true, serverClosed: true, nextClosed: true } }); h.finish();
+    });
+    expect(await h.run()).toMatchObject({ failure: 'report_schema', accounting: 'last_attempt_uncertain', runtime: { attempted: 2 } });
   });
   it.each([false, true])('validates the final journal after producer exit, including records beyond a gap: %s', gap => {
     const h = harness();
@@ -353,13 +379,19 @@ describe('progress, phases and separate service cleanup', () => {
     h.ops.stop.mockImplementation(async () => { h.finish(); throw new Error('stop'); }); h.ops.recover = () => { throw new Error('bad record'); };
     expect(await h.run()).toMatchObject({ failure: 'cleanup', serviceStopped: false, runtime: null, accounting: 'unknown' });
   });
-  it('recovers attempts from durable progress after child interruption', async () => {
+  it('preserves the original failure for an unpublished pending file', async () => {
+    const h = harness();
+    h.onTick(() => { h.records.set('.pending-phase-00.json', {}); h.signals.emit('SIGTERM'); });
+    expect(await h.run()).toMatchObject({ failure: 'cancelled', serviceStopped: true, runtime: null, accounting: 'unknown' });
+  });
+  it.each([0, 1, 2, 3, 7])('recovers progress through slot %i without claiming its last request intent started', async last => {
     const h = harness();
     h.onTick(() => {
-      for (let i = 0; i <= 3; i++) h.records.set(`progress-0${i}.json`, { inputHash: h.hash, runtime: progress(i) });
+      for (let i = 0; i <= last; i++) h.records.set(`progress-0${i}.json`, { inputHash: h.hash, runtime: progress(i) });
       h.signals.emit('SIGTERM');
     });
-    const result = await h.run(); expect(result).toMatchObject({ failure: 'cancelled', accounting: 'known', runtime: { attempted: 2 } });
-    expect(result.runtime.cases).toHaveLength(1);
+    const result = await h.run();
+    expect(result).toMatchObject({ failure: 'cancelled', accounting: last < 2 ? 'known' : 'last_attempt_uncertain', runtime: { attempted: Math.max(0, last - 1) } });
+    expect(result.runtime.cases).toHaveLength(Math.max(0, last - 2));
   });
 });

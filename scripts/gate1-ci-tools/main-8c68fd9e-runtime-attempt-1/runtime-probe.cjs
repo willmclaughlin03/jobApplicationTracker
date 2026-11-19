@@ -95,7 +95,8 @@ function reviewResponse(result, request, counts, nativeVersion) {
   if (headers['set-cookie'] !== undefined || names.includes('set-cookie')) throw new RuntimeError('cache_cookie');
   if (!Number.isInteger(result.bodyBytes) || result.bodyBytes < 0 || result.bodyBytes > LIMITS.bodyBytes) throw new RuntimeError('http_cap');
   if (protectedCase) {
-    if (![307, 308].includes(result.status) || typeof headers.location !== 'string') throw new RuntimeError('route');
+    if (![307, 308].includes(result.status) || typeof headers.location !== 'string' ||
+        names.filter(name => name === 'location').length !== 1) throw new RuntimeError('route');
     let target;
     try { target = new URL(headers.location, 'http://127.0.0.1:32147'); } catch { throw new RuntimeError('route'); }
     if (target.origin !== 'http://127.0.0.1:32147' || target.pathname !== '/login' || target.search || target.hash || target.username || target.password) throw new RuntimeError('route');
@@ -188,7 +189,10 @@ async function smoke(app, inspection, report, progress, operations = {}) {
     report.stage = 'requests'; phase('requests');
     for (const item of (operations.cases || smokeCases)()) {
       if (serverError || report.attempted >= LIMITS.requests) throw new RuntimeError('http');
-      observer.reset(); report.attempted++; progress(report);
+      observer.reset();
+      const attempted = report.attempted + 1;
+      progress({ ...report, attempted }); // Publish request intent before committing the in-process transport attempt.
+      report.attempted = attempted;
       const response = await request(item);
       if (serverError) throw new RuntimeError('http');
       report.cases.push(reviewResponse(response, item, observer.snapshot(), nativeVersion));
@@ -235,7 +239,7 @@ function recordPath(scratch, name, io = fs) {
   return path.join(root, name);
 }
 
-/** Publish complete capped JSON with an exclusive hard link; unfinished writes never expose a final name. */
+/** Commit capped JSON with an exclusive link; the controller reports leftover pending links separately as cleanup. */
 function publish(scratch, name, value, io = fs) {
   const filename = recordPath(scratch, name, io), pending = path.join(path.dirname(filename), '.pending-' + name);
   const bytes = Buffer.from(JSON.stringify(value, null, 2) + '\n');
@@ -245,11 +249,12 @@ function publish(scratch, name, value, io = fs) {
     fd = io.openSync(pending, 'wx', 0o600);
     io.writeFileSync(fd, bytes); io.fsyncSync(fd); io.closeSync(fd); fd = undefined;
     io.linkSync(pending, filename); // Atomic visibility and EEXIST, unlike overwriting rename().
-    io.unlinkSync(pending);
   } catch {
     if (fd !== undefined) { try { io.closeSync(fd); } catch { /* Preserve the interrupted pending file; never replay it. */ } }
     throw new RuntimeError('persistence');
   }
+  try { io.unlinkSync(pending); }
+  catch { /* Publication committed; retain this pending link for the controller's cleanup verification. */ }
   return base.sha(bytes);
 }
 
@@ -296,7 +301,7 @@ async function childMain(app, scratch, operations = {}) {
   const inputHash = base.sha(base.readBounded(path.join(scratch, 'input.json'))), report = emptyRuntime();
   const now = operations.now || Date.now, phases = [];
   let sequence = 0, releaseAt = null;
-  /** Persist monotonic pre-request evidence exclusively; failure prevents that request from starting. */
+  /** Persist monotonic request intent exclusively; only terminal evidence confirms the last transport attempt. */
   function progress(value) {
     validateRuntime(value);
     if (sequence >= LIMITS.progressFiles) throw new RuntimeError('report_schema');

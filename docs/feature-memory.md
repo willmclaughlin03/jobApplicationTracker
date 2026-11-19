@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+- `2026-11-19` - `Gate 1 runtime request intent and publication accounting`: Require one case-insensitive raw Location field for protected redirects. Publish request intent before advancing the live attempt count, mark the last recovered intent uncertain, and retain exact terminal accounting. Treat the exclusive hard link as publication commit and report leftover pending links separately as cleanup failures. Document the evidence contract and add regression coverage; all 297 offline runtime tests pass.
+
 - `2026-11-19` - `Gate 1 runtime evidence validation`: Reject quoted Cache-Control values and delimiter-colliding evidence keys. Preserve stopped reports when the final package check throws, publish complete reports exclusively through a pending file, and verify each report from one authenticated byte snapshot. Add failure, overwrite, canonical JSON and valid-policy regressions; all 258 offline runtime tests pass.
 
 - `2026-11-19` - `Gate 1 runtime review follow-ups`: Require `ProtectHome=read-only` and verify effective protected mounts while preserving scratch/cache writes. Make active journal scans tolerate concurrent appends, retain final gap and observed-prefix checks, accept the exact unloaded cleanup state, and recheck owned resources after launcher settlement within the existing five-second bound. Strengthen exclusive-publication coverage to verify `EEXIST` and original-byte preservation. All 223 offline runtime tests pass; live Linux enforcement remains unqualified.

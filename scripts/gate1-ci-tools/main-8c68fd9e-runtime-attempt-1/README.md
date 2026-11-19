@@ -92,7 +92,7 @@ Supabase session. No application cookies are supplied. Every response rejects
 Set-Cookie. Positive/marked login and protected responses require private/no-store;
 present CDN-specific cache directives must be `no-store`. No retry, redirect
 following, browser script, subresource load or replacement challenge is allowed.
-Each attempt is durably recorded before invoking transport; the sequence stops
+Each request intent is durably recorded before invoking transport; the sequence stops
 on the first failure.
 
 ## Bounds, evidence and cleanup
@@ -124,8 +124,16 @@ Protocol JSON is capped and canonical, beneath a checked link-free scratch path.
 An exclusive pending file is fully written, flushed and closed, then atomically
 hard-linked to an exclusive final name. Readers never see a partial final file;
 overwrite is forbidden. Interrupted pending files are preserved and never replayed.
-Only contiguous monotonic pre-request snapshots can recover accounting. Absent or
-invalid progress remains unknown. Cleanup fields remain null when unobserved;
+The hard link commits publication even if removing its pending name fails. The
+controller checks the fixed protocol names after producer shutdown and reports any
+pending link beside a published record as `cleanup`, preserving the committed
+phase journal and terminal evidence. A cleanup failure prevents qualification.
+Only contiguous monotonic pre-request snapshots can recover accounting. Without a
+validated terminal report, a request snapshot has `accounting: last_attempt_uncertain`:
+`runtime.attempted` counts journaled intents; the actual transport count lies between
+`runtime.attempted - 1` and `runtime.attempted`. Valid terminal reports retain exact
+counts and `accounting: known`; validated snapshots before any intent confirm zero.
+Absent or invalid progress remains unknown. Cleanup fields remain null when unobserved;
 partial descriptor installation records whether restoration actually succeeded.
 
 Cancellation aborts the owned launcher and separately stops/verifies the owned

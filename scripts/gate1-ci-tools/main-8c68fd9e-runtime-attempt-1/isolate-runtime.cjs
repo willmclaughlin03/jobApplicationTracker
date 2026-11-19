@@ -151,7 +151,7 @@ function readBoundRecord(filename, inputHash, keys) {
   return value;
 }
 
-/** Recover only a contiguous monotonic progress prefix; absence is unknown, never assumed zero. */
+/** Recover a contiguous progress prefix; its last request is journaled intent, and absence is unknown. */
 function recoverProgress(scratch, inputHash, io = fs, read = readBoundRecord) {
   let last = null, gap = false;
   for (let index = 0; index < probe.LIMITS.progressFiles; index++) {
@@ -223,6 +223,14 @@ function readPhases(scratch, inputHash, previous, io = fs, read = readBoundRecor
   return records;
 }
 
+/** After producer shutdown, report leftover links beside published records; preserve unpublished interrupted writes. */
+function verifyPublicationCleanup(scratch, io = fs) {
+  const names = ['input.json', 'ready.json', 'release.json', 'runtime.json',
+    ...Array.from({ length: probe.LIMITS.progressFiles }, (_value, index) => `progress-${String(index).padStart(2, '0')}.json`),
+    ...Array.from({ length: probe.PHASE_FILES }, (_value, index) => `phase-${String(index).padStart(2, '0')}.json`)];
+  if (names.some(name => io.existsSync(path.join(scratch, '.pending-' + name)) && io.existsSync(path.join(scratch, name)))) throw new RuntimeError('cleanup');
+}
+
 /** Launch once, verify/release once, monitor phase deadlines and always attempt owned service cleanup. */
 async function runIsolated(app, scratch, context, selected, remainingMs, operations = {}) {
   const run = operations.run || base.supervise, io = operations.fs || fs, now = operations.now || Date.now;
@@ -237,6 +245,7 @@ async function runIsolated(app, scratch, context, selected, remainingMs, operati
   const inputHash = write(scratch, 'input.json', input);
   const options = { env: base.childEnvironment(scratch), capture: true, cap: 16384 };
   let runtime = null, failure = null, serviceStopped = null, launched = false, released = false, finished = false, childFailure = null;
+  let accounting = 'unknown';
   let pending, phases = [], releaseAt, cancelled = false;
   const abort = new AbortController(), signals = operations.signals || process;
   /** Cancellation terminates the owned launcher; finally still stops/verifies the independently managed service. */
@@ -290,7 +299,7 @@ async function runIsolated(app, scratch, context, selected, remainingMs, operati
     if (!progress || candidate.attempted !== progress.attempted || candidate.cases.length < progress.cases.length ||
         (progress.inspection && JSON.stringify(candidate.inspection) !== JSON.stringify(progress.inspection)) ||
         JSON.stringify(candidate.cases.slice(0, progress.cases.length)) !== JSON.stringify(progress.cases)) throw new RuntimeError('report_schema');
-    runtime = candidate;
+    runtime = candidate; accounting = 'known';
     failure = childFailure === 'cleanup' ? 'cleanup' : runtime.failure || childFailure;
   } catch (error) {
     failure = childFailure === 'cleanup' ? 'cleanup' : probe.failureCode(error);
@@ -319,10 +328,15 @@ async function runIsolated(app, scratch, context, selected, remainingMs, operati
     signals.removeListener('SIGINT', cancel); signals.removeListener('SIGTERM', cancel);
   }
   if (!runtime) {
-    try { runtime = (operations.recover || recoverProgress)(scratch, inputHash, io, operations.read || readBoundRecord); }
+    try {
+      runtime = (operations.recover || recoverProgress)(scratch, inputHash, io, operations.read || readBoundRecord);
+      if (runtime) accounting = runtime.attempted > 0 ? 'last_attempt_uncertain' : 'known';
+    }
     catch { if (failure !== 'cleanup') failure = 'report_schema'; }
   }
-  return { runtime, failure, serviceStopped, accounting: runtime ? 'known' : 'unknown' };
+  try { verifyPublicationCleanup(scratch, io); }
+  catch { failure = 'cleanup'; }
+  return { runtime, failure, serviceStopped, accounting };
 }
 
 module.exports = { MEMORY, PHASES, STOP_MS, PROPERTIES, unitName, environment, serviceArgs, parseProperties, duration, sameSet, serviceNames, validateService,

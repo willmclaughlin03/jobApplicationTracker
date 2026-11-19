@@ -155,6 +155,29 @@ describe('six finite cases and privacy', () => {
     const item = cases()[5], result = response(item); result.headers.location = location;
     expect(() => tool.reviewResponse(result, item, counts(item), 'v22.23.3')).toThrow('route');
   });
+  it.each([
+    ['missing', []],
+    ['duplicate', ['location', '/login', 'location', '/login']],
+    ['mixed-case duplicate', ['Location', '/login', 'lOcAtIoN', '/login']],
+    ['conflicting duplicate', ['Location', '/login', 'LOCATION', 'https://elsewhere.invalid/login']],
+  ])('rejects %s raw Location fields despite a valid normalized location', (_variant, fields) => {
+    const item = cases()[5], result = response(item);
+    result.rawHeaders = Object.entries(result.headers).filter(([name]) => name !== 'location').flat().concat(fields);
+    expect(() => tool.reviewResponse(result, item, counts(item), 'v22.23.3')).toThrow('route');
+  });
+  it.each([
+    [307, 'Location', '/login'],
+    [308, 'lOcAtIoN', 'http://127.0.0.1:32147/login'],
+  ])('accepts status %i with one %s field and a valid normalized location', (status, name, location) => {
+    const item = cases()[5], result = response(item);
+    result.status = status; result.headers.location = location;
+    result.rawHeaders = Object.entries(result.headers).filter(([key]) => key !== 'location').flat().concat(name, location, 'X-Synthetic', 'LOCATION');
+    expect(tool.reviewResponse(result, item, counts(item), 'v22.23.3')).toMatchObject({ status, loginRedirect: true });
+  });
+  it.each([200, 302])('rejects protected status %i even with one valid Location field', status => {
+    const item = cases()[5], result = response(item); result.status = status;
+    expect(() => tool.reviewResponse(result, item, counts(item), 'v22.23.3')).toThrow('route');
+  });
 });
 
 describe('bounded transport without network', () => {
@@ -191,7 +214,15 @@ describe('bounded transport without network', () => {
 
 describe('same-process lifecycle and truthful cleanup', () => {
   it('makes exactly six attempts, then closes descriptors/server/Next and aborts the listen signal', async () => {
-    const h = harness(); await h.run();
+    const h = harness();
+    await tool.smoke('/synthetic-app', inspection(), h.report, value => {
+      if (value.stage === 'requests') {
+        expect(h.report.attempted).toBe(value.attempted - 1);
+        expect(h.ops.request).toHaveBeenCalledTimes(value.attempted - 1);
+        expect(h.observer.reset).toHaveBeenCalledTimes(value.attempted);
+      }
+      tool.validateRuntime(value); h.progress.push(JSON.parse(JSON.stringify(value)));
+    }, h.ops);
     expect(h.ops.request).toHaveBeenCalledTimes(6); expect(h.progress.map(p => p.attempted)).toEqual([0, 1, 2, 3, 4, 5, 6]);
     expect(h.report).toMatchObject({ attempted: 6, serverStarted: true, descriptorsRestored: true, serverClosed: true, nextClosed: true });
     expect(h.server.options.signal.aborted).toBe(true); expect(h.ops.phase.mock.calls.flat()).toEqual(['startup', 'requests', 'cleanup']);
@@ -205,6 +236,25 @@ describe('same-process lifecycle and truthful cleanup', () => {
     const h = harness();
     await expect(tool.smoke('/app', inspection(), h.report, () => { throw new Error('persistence'); }, h.ops)).rejects.toThrow('persistence');
     expect(h.ops.request).not.toHaveBeenCalled(); expect(h.report.serverClosed).toBe(true);
+  });
+  it.each([1, 3])('preserves committed accounting and prior bytes when publication for attempt %i fails', async attempt => {
+    const h = harness(), dir = scratch(), link = fs.linkSync;
+    const previous = path.join(dir, `progress-0${attempt - 1}.json`), failed = path.join(dir, `progress-0${attempt}.json`);
+    let previousBytes;
+    jest.spyOn(fs, 'linkSync').mockImplementation((pending, filename) => {
+      if (filename === failed) { previousBytes = fs.readFileSync(previous); throw new Error('disk'); }
+      return link(pending, filename);
+    });
+    await expect(tool.smoke('/synthetic-app', inspection(), h.report, value => {
+      tool.publish(dir, `progress-0${h.progress.length}.json`, value);
+      h.progress.push(JSON.parse(JSON.stringify(value)));
+    }, h.ops)).rejects.toThrow('persistence');
+    expect(h.report.attempted).toBe(attempt - 1); expect(h.report.cases).toHaveLength(attempt - 1);
+    expect(h.ops.request).toHaveBeenCalledTimes(attempt - 1); expect(h.observer.reset).toHaveBeenCalledTimes(attempt);
+    expect(h.progress).toHaveLength(attempt); expect(h.progress.at(-1).attempted).toBe(attempt - 1);
+    expect(previousBytes).toBeDefined(); expect(fs.readFileSync(previous)).toEqual(previousBytes);
+    expect(fs.existsSync(failed)).toBe(false);
+    expect(h.report).toMatchObject({ descriptorsRestored: true, serverClosed: true, nextClosed: true });
   });
   it('stops if the server emits an error while a response is in flight', async () => {
     const h = harness(); h.ops.request.mockImplementation(async item => { h.server.emit('error', new Error('private')); return response(item); });
@@ -239,6 +289,15 @@ describe('same-process lifecycle and truthful cleanup', () => {
 });
 
 describe('atomic protocol and strict evidence', () => {
+  it('returns the committed digest after unlink failure and still refuses overwrite', () => {
+    const dir = scratch(), filename = path.join(dir, 'ready.json'), pending = path.join(dir, '.pending-ready.json');
+    const bytes = Buffer.from(JSON.stringify({ value: true }, null, 2) + '\n');
+    jest.spyOn(fs, 'unlinkSync').mockImplementation(() => { throw new Error('disk'); });
+    expect(tool.publish(dir, 'ready.json', { value: true })).toBe(base.sha(bytes));
+    expect(fs.readFileSync(filename)).toEqual(bytes); expect(fs.readFileSync(pending)).toEqual(bytes);
+    expect(() => tool.publish(dir, 'ready.json', { value: false })).toThrow('persistence');
+    expect(fs.readFileSync(filename)).toEqual(bytes);
+  });
   it('never exposes a partial file and refuses overwrite/replay', () => {
     const dir = scratch(), write = fs.writeFileSync;
     const writeSpy = jest.spyOn(fs, 'writeFileSync').mockImplementation((fd, bytes) => { expect(fs.existsSync(path.join(dir, 'ready.json'))).toBe(false); return write(fd, bytes); });
@@ -299,9 +358,14 @@ describe('atomic protocol and strict evidence', () => {
     expect(report.failure).toBe('isolation'); expect(makeNext).not.toHaveBeenCalled(); expect(fs.existsSync(path.join(dir, 'ready.json'))).toBe(false);
     expect(fs.existsSync(path.join(dir, 'progress-00.json'))).toBe(false);
   });
-  it('wires the full child lifecycle to atomic phases, eight progress records, reinspection and a canonical final report', async () => {
+  it.each([null, 'phase-00.json', 'phase-05.json', 'progress-02.json', 'runtime.json'])('preserves the full committed child lifecycle despite pending cleanup failure for %s', async pending => {
     const dir = scratch(), input = { deadline: Date.now() + 360000, entries: [], routes: ['/login', '/admin'] };
     const inputHash = tool.publish(dir, 'input.json', input), h = harness(), verify = jest.fn(), inspect = jest.fn(() => inspection()), recheck = jest.fn();
+    const unlink = fs.unlinkSync;
+    jest.spyOn(fs, 'unlinkSync').mockImplementation(filename => {
+      if (pending && filename === path.join(dir, '.pending-' + pending)) throw new Error('disk');
+      return unlink(filename);
+    });
     h.ops.request.mockImplementation(async item => { h.observer.snapshot.mockReturnValue(counts(item)); return response(item); });
     const result = await tool.childMain('/synthetic-app', dir, { validateInput: value => value, childFlag: '1', verifyKernel: jest.fn(), versions: base.VERSIONS,
       verify, inspect, recheck, parse: jest.fn(), smoke: h.ops, pause: async () => {
@@ -315,6 +379,7 @@ describe('atomic protocol and strict evidence', () => {
     expect(phases).toEqual(['inspect', 'startup', 'requests', 'cleanup', 'recheck', 'complete']);
     const isolation = require('../isolate-runtime.cjs');
     expect(isolation.recoverProgress(dir, inputHash)).toMatchObject({ attempted: 6, cases: result.cases.slice(0, 5) });
+    if (pending) expect(fs.existsSync(path.join(dir, '.pending-' + pending))).toBe(true);
   });
   it('rejects an unbound release before inspecting or loading Next', async () => {
     const dir = scratch(); tool.publish(dir, 'input.json', { deadline: Date.now() + 360000 });

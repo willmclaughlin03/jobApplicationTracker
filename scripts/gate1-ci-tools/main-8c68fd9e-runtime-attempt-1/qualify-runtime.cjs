@@ -69,11 +69,13 @@ function validateReport(report, expected) {
       report.staticPackageDigest !== STATIC_DIGEST || report.runAttempt !== 1 || !HASH.test(report.packageDigest || '') || !HASH.test(report.executionDigest || '') ||
       !COMMIT.test(report.workflowSha || '') || !INTEGER.test(report.runNumber || '') || !INTEGER.test(report.runId || '') ||
       !STAGES.includes(report.stage) || report.gate1 !== 'open' || report.gate5A !== 'unpassed' || report.artifactRetentionDays !== 7 || typeof report.childrenClosed !== 'boolean' ||
-      report.serviceStopped !== null && typeof report.serviceStopped !== 'boolean' || !['known', 'unknown'].includes(report.accounting) ||
+      report.serviceStopped !== null && typeof report.serviceStopped !== 'boolean' || !['known', 'unknown', 'last_attempt_uncertain'].includes(report.accounting) ||
       !probe.exactKeys(report.versions, Object.keys(base.VERSIONS)) || Object.values(report.versions).some(value => value !== null && (typeof value !== 'string' || !/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(value)))) throw new RuntimeError('report_schema');
   for (const key of ['packageDigest', 'executionDigest', 'workflowSha', 'runNumber', 'runId', 'runAttempt']) if (report[key] !== expected[key]) throw new RuntimeError('report_schema');
   if (report.runtime !== null) probe.validateRuntime(report.runtime);
   if ((report.runtime === null) !== (report.accounting === 'unknown')) throw new RuntimeError('report_schema');
+  if (report.accounting === 'last_attempt_uncertain' && (report.result !== 'stopped' || report.runtime.stage !== 'requests' ||
+      report.runtime.failure !== null || report.runtime.attempted !== report.runtime.cases.length + 1)) throw new RuntimeError('report_schema');
   if ((report.serviceStopped === false && (report.failure !== 'cleanup' || report.childrenClosed !== false)) ||
       (!report.childrenClosed && report.failure !== 'cleanup') || (report.runtime !== null && report.serviceStopped === null) ||
       (report.runtime?.failure === 'cleanup' && report.failure !== 'cleanup') ||
