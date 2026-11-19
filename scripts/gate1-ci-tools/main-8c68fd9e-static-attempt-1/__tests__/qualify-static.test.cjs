@@ -227,8 +227,48 @@ describe('report privacy and integrity', () => {
 describe('child supervision', () => {
   it('discards build stdout and stderr and closes descendants on normal exit', async () => {
     const value = child(), kill = jest.fn(), promise = tool.supervise('npm', ['run', 'build'], { spawn: () => value, kill });
-    value.stdout.emit('data', Buffer.from('private output')); value.stderr.emit('data', Buffer.from('private error')); value.emit('close', 0);
+    value.stdout.emit('data', Buffer.from('private output')); value.stderr.emit('data', Buffer.from('private error')); value.emit('exit', 0); value.emit('close', 0);
     expect(await promise).toEqual(Buffer.alloc(0)); expect(kill).toHaveBeenCalledTimes(1);
+  });
+  it('kills descendants on successful exit but captures final stdout and waits for close', async () => {
+    jest.useFakeTimers(); const value = child(), kill = jest.fn(), settled = jest.fn();
+    const promise = tool.supervise('node', [], { spawn: () => value, kill, capture: true, timeoutMs: 10 });
+    promise.then(settled, settled);
+    value.stdout.emit('data', Buffer.from('before')); value.emit('exit', 0);
+    expect(kill).toHaveBeenCalledTimes(1); expect(kill).toHaveBeenCalledWith(value);
+    jest.advanceTimersByTime(10); await Promise.resolve(); expect(settled).not.toHaveBeenCalled();
+    value.stdout.emit('data', Buffer.from('after')); value.emit('close', 0);
+    expect(await promise).toEqual(Buffer.from('beforeafter')); expect(kill).toHaveBeenCalledTimes(1); expect(jest.getTimerCount()).toBe(0);
+  });
+  it('bounds missing close after successful exit by the cleanup allowance', async () => {
+    jest.useFakeTimers(); const value = child(), kill = jest.fn(), settled = jest.fn();
+    const promise = tool.supervise('node', [], { spawn: () => value, kill });
+    const check = expect(promise).rejects.toThrow('cleanup'); promise.then(settled, settled);
+    value.emit('exit', 0); expect(kill).toHaveBeenCalledTimes(1);
+    jest.advanceTimersByTime(tool.LIMITS.closeMs - 1); await Promise.resolve(); expect(settled).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1); await check; expect(jest.getTimerCount()).toBe(0);
+  });
+  it.each(['stdout', 'stderr'])('rejects final %s overflow after successful exit', async stream => {
+    jest.useFakeTimers(); const value = child(), kill = jest.fn();
+    const promise = tool.supervise('node', [], { spawn: () => value, kill, cap: 4, capture: true });
+    const check = expect(promise).rejects.toThrow('stream_limit'); value.emit('exit', 0);
+    value[stream].emit('data', Buffer.alloc(stream === 'stdout' ? 5 : tool.LIMITS.streamBytes + 1)); value.emit('close', 0);
+    await check; expect(kill).toHaveBeenCalledTimes(1); expect(jest.getTimerCount()).toBe(0);
+  });
+  it('does not extend the exit cleanup allowance when final output overflows', async () => {
+    jest.useFakeTimers(); const value = child(), kill = jest.fn();
+    const promise = tool.supervise('node', [], { spawn: () => value, kill, cap: 4 });
+    const check = expect(promise).rejects.toThrow('cleanup'); value.emit('exit', 0);
+    jest.advanceTimersByTime(tool.LIMITS.closeMs - 1); value.stdout.emit('data', Buffer.from('12345'));
+    jest.advanceTimersByTime(1); await check; expect(kill).toHaveBeenCalledTimes(1); expect(jest.getTimerCount()).toBe(0);
+  });
+  it.each([[1, 1], [null, null], [1, 0], [0, 1]])('rejects exit %s and close %s after draining streams', async (exitCode, closeCode) => {
+    jest.useFakeTimers(); const value = child(), kill = jest.fn(), settled = jest.fn();
+    const promise = tool.supervise('node', [], { spawn: () => value, kill });
+    const check = expect(promise).rejects.toThrow('child_exit'); promise.then(settled, settled);
+    value.emit('exit', exitCode); expect(kill).toHaveBeenCalledTimes(1);
+    await Promise.resolve(); expect(settled).not.toHaveBeenCalled(); value.emit('close', closeCode);
+    await check; expect(kill).toHaveBeenCalledTimes(1); expect(jest.getTimerCount()).toBe(0);
   });
   it('kills on stream overflow and waits for closure', async () => {
     const value = child(), kill = jest.fn(), promise = tool.supervise('node', [], { spawn: () => value, kill, cap: 4, capture: true });
