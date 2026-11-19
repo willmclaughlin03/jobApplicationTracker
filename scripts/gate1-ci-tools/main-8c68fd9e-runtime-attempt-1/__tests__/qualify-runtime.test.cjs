@@ -90,11 +90,23 @@ function executionHarness(failure = null) {
   const sandbox = { module: { exports: {} }, require: name => modules[name],
     __dirname: `/workspace/tooling/scripts/gate1-ci-tools/${tool.NAME}`,
     process: { platform: 'linux', arch: 'x64', versions: { node: base.VERSIONS.node } } };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../qualify-runtime.cjs'), 'utf8'), sandbox);
+  const source = fs.readFileSync(path.join(__dirname, '../qualify-runtime.cjs'), 'utf8');
+  vm.runInNewContext(source, sandbox);
   const entry = sandbox.module.exports, current = entry.packageProfile(), env = { ...environment(), GITHUB_WORKSPACE: '/workspace',
     GATE1_PACKAGE_DIGEST: current.packageDigest, GATE1_EXECUTION_DIGEST: entry.executionProfile(current, context().workflowSha, '1').executionDigest };
   mockedBase.packageProfile.mockClear();
-  return { entry, env, expected: entry.validateContext(env, current), base: mockedBase, dependency, saved, opened, io, isolate, isolated };
+  /** Exercise the real CLI handler in a fresh VM with synthetic env/output, preserving the same mocked filesystem. */
+  async function runCli() {
+    const cli = { ...sandbox, module: { exports: {} }, require: name => modules[name],
+      process: { ...sandbox.process, env, argv: ['node', 'qualify-runtime.cjs', '--run'], exitCode: 0 } };
+    cli.require.main = cli.module;
+    await new Promise(resolve => {
+      cli.process.stdout = { write: jest.fn(resolve) }; cli.process.stderr = { write: jest.fn(resolve) };
+      vm.runInNewContext(source, cli);
+    });
+    return cli.process;
+  }
+  return { entry, env, expected: entry.validateContext(env, current), base: mockedBase, dependency, saved, opened, io, isolate, isolated, runCli };
 }
 
 /** Restore spies so package identity and report readers cannot leak mocks into other tests. */
@@ -193,7 +205,7 @@ describe('post-run package identity', () => {
       return { contract: { changed: true } };
     });
     const result = await h.entry.execute(h.env), bytes = h.saved.get('/workspace/gate1-runtime-evidence/report.json'), report = JSON.parse(bytes);
-    expect(result).toEqual({ result: 'stopped', stage: 'verify', failure: expectedFailure, reportSha256: base.sha(bytes) });
+    expect(result).toEqual({ result: 'stopped', stage: 'verify', failure: expectedFailure, reportSha256: base.sha(bytes), cleanupFailure: null });
     expect(h.entry.validateReport(report, h.expected)).toEqual(report);
     expect(report).toMatchObject({ result: 'stopped', stage: 'verify', failure: expectedFailure,
       serviceStopped: failure !== 'cleanup', childrenClosed: failure !== 'cleanup' });
@@ -231,11 +243,36 @@ describe('atomic report publication', () => {
       h.entry.validateReport(JSON.parse(h.saved.get(source)), h.expected); link(source, destination);
     });
     const result = await h.entry.execute(h.env);
-    expect(result).toMatchObject({ result: failure ? 'stopped' : 'complete_runtime_only', failure, reportSha256: base.sha(h.saved.get(filename)) });
+    expect(result).toMatchObject({ result: failure ? 'stopped' : 'complete_runtime_only', failure, reportSha256: base.sha(h.saved.get(filename)), cleanupFailure: null });
     expect(h.io.openSync).toHaveBeenCalledWith(pending, 'wx', 0o600); expect(h.io.linkSync).toHaveBeenCalledWith(pending, filename);
     expect(h.saved.has(pending)).toBe(false); expect(h.opened.size).toBe(0);
   });
-  it.each(['write', 'flush', 'link'])('removes the owned pending file after a %s failure without exposing a report', async stage => {
+  it.each([null, 'cleanup', 'isolation'])('retains the committed digest and reports pending cleanup separately after %s', async failure => {
+    const h = executionHarness(failure);
+    h.io.unlinkSync.mockImplementation(() => { throw Object.assign(new Error('private path'), { code: 'EACCES' }); });
+    const result = await h.entry.execute(h.env), bytes = h.saved.get(filename), report = JSON.parse(bytes);
+    expect(result).toEqual({ result: report.result, stage: report.stage, failure, reportSha256: base.sha(bytes), cleanupFailure: 'cleanup' });
+    expect(h.entry.validateReport(report, h.expected)).toEqual(report);
+    expect(h.saved.get(pending)).toEqual(bytes); expect(h.opened.size).toBe(0);
+    expect(h.io.linkSync).toHaveBeenCalledTimes(1); expect(JSON.stringify(result)).not.toContain('private path');
+  });
+  it('still rejects a failed link when pending cleanup also fails', async () => {
+    const h = executionHarness(), error = Object.assign(new Error('link'), { code: 'EIO' });
+    h.io.linkSync.mockImplementation(() => { throw error; });
+    h.io.unlinkSync.mockImplementation(() => { throw Object.assign(new Error('unlink'), { code: 'EACCES' }); });
+    await expect(h.entry.execute(h.env)).rejects.toBe(error);
+    expect(h.saved.has(filename)).toBe(false); expect(h.saved.has(pending)).toBe(true); expect(h.opened.size).toBe(0);
+  });
+  it.each([[null, false], [null, true], ['cleanup', false]])('reports CLI cleanup and exits unsuccessfully for %s or unlink=%s', async (failure, unlink) => {
+    const h = executionHarness(failure);
+    if (unlink) h.io.unlinkSync.mockImplementation(() => { throw Object.assign(new Error('unlink'), { code: 'EACCES' }); });
+    const cli = await h.runCli();
+    expect(cli.stdout.write).toHaveBeenCalledTimes(1); expect(cli.stderr.write).not.toHaveBeenCalled();
+    expect(JSON.parse(cli.stdout.write.mock.calls[0][0])).toMatchObject({ failure, cleanupFailure: unlink ? 'cleanup' : null,
+      reportSha256: base.sha(h.saved.get(filename)) });
+    expect(cli.exitCode).toBe(failure || unlink ? 1 : 0);
+  });
+  it.each(['write', 'flush', 'close', 'link'])('removes the owned pending file after a %s failure without exposing a report', async stage => {
     const h = executionHarness(), error = Object.assign(new Error('disk'), { code: 'EIO' }), write = h.io.writeFileSync.getMockImplementation();
     if (stage === 'write') h.io.writeFileSync.mockImplementation((target, bytes, options) => {
       const name = typeof target === 'number' ? h.opened.get(target) : target;
@@ -243,6 +280,7 @@ describe('atomic report publication', () => {
       write(target, bytes, options);
     });
     if (stage === 'flush') h.io.fsyncSync.mockImplementation(() => { throw error; });
+    if (stage === 'close') h.io.closeSync.mockImplementationOnce(() => { throw error; });
     if (stage === 'link') h.io.linkSync.mockImplementation(() => { throw error; });
     await expect(h.entry.execute(h.env)).rejects.toBe(error);
     expect(h.saved.has(filename)).toBe(false); expect(h.saved.has(pending)).toBe(false); expect(h.opened.size).toBe(0);
@@ -274,6 +312,19 @@ describe('strict retained evidence', () => {
   });
   it('rejects a mismatch between missing evidence and known accounting', () => {
     expect(() => tool.validateReport({ ...tool.initialReport(context()), failure: 'isolation', accounting: 'known' }, context())).toThrow('report_schema');
+  });
+  it.each([1, 2, 6])('requires uncertainty for a stopped request-intent snapshot with %i attempts', attempted => {
+    const partial = { ...requestIntent(), attempted, cases: runtime().cases.slice(0, attempted - 1) };
+    const report = { ...tool.initialReport(context()), stage: 'runtime', failure: 'cancelled', runtime: partial, accounting: 'known', serviceStopped: true };
+    expect(() => tool.validateReport(report, context())).toThrow('report_schema');
+    report.accounting = 'last_attempt_uncertain'; expect(tool.validateReport(report, context())).toBe(report);
+  });
+  it.each(['zero', 'terminal-request', 'terminal-complete'])('preserves known accounting for %s evidence', variant => {
+    const partial = variant === 'terminal-complete' ? runtime() : { ...requestIntent(), attempted: 0, cases: [] };
+    if (variant === 'terminal-request') Object.assign(partial, { attempted: 1, failure: 'http', descriptorsRestored: true, serverClosed: true, nextClosed: true });
+    const report = { ...tool.initialReport(context()), stage: 'runtime', failure: 'cancelled', runtime: partial, accounting: 'known', serviceStopped: true };
+    if (partial.failure) report.failure = partial.failure;
+    expect(tool.validateReport(report, context())).toBe(report);
   });
   it.each(['missing', 'no-intent', 'terminal-stage', 'terminal-failure'])('rejects uncertain accounting with %s evidence', variant => {
     const partial = requestIntent(), report = { ...tool.initialReport(context()), stage: 'runtime', failure: 'cancelled',

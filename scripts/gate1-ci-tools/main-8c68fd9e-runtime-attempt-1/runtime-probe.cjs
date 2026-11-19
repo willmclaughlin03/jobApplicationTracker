@@ -1,5 +1,5 @@
 'use strict';
-/* global process, Buffer, setTimeout, clearTimeout, URL, AbortController */
+/* global process, __dirname, Buffer, setTimeout, clearTimeout, URL, AbortController */
 
 /** Six-case, same-process production-server harness. Its CLI is only for the isolated CI child. */
 const fs = require('node:fs');
@@ -258,9 +258,10 @@ function publish(scratch, name, value, io = fs) {
   return base.sha(bytes);
 }
 
-/** Check ordered phase starts and elapsed bounds, including phases completed between parent polls. */
-function validatePhases(records, releaseAt, now, deadline, terminal = false) {
-  if (!Array.isArray(records) || records.length > PHASE_FILES || !Number.isSafeInteger(releaseAt) || !Number.isSafeInteger(now) || now < releaseAt) throw new RuntimeError('report_schema');
+/** Check phase order and bounds; phaseNow predates a live scan, while now bounds newly observed timestamps and total time. */
+function validatePhases(records, releaseAt, now, deadline, terminal = false, phaseNow = now) {
+  if (!Array.isArray(records) || records.length > PHASE_FILES || !Number.isSafeInteger(releaseAt) || !Number.isSafeInteger(now) ||
+      !Number.isSafeInteger(phaseNow) || phaseNow < releaseAt || phaseNow > now) throw new RuntimeError('report_schema');
   let previous = { phase: 'isolation', at: releaseAt };
   for (const value of records) {
     if (!exactKeys(value, ['phase', 'at']) || !Number.isSafeInteger(value.at) || value.at < previous.at || value.at > now || value.at >= deadline ||
@@ -269,7 +270,7 @@ function validatePhases(records, releaseAt, now, deadline, terminal = false) {
     previous = value;
   }
   if (terminal && !['complete', 'stopped'].includes(previous.phase)) throw new RuntimeError('report_schema');
-  if (!['complete', 'stopped'].includes(previous.phase) && now - previous.at >= (PHASES[previous.phase] || LIMITS.startupMs)) throw new RuntimeError('deadline');
+  if (!['complete', 'stopped'].includes(previous.phase) && phaseNow - previous.at >= (PHASES[previous.phase] || LIMITS.startupMs)) throw new RuntimeError('deadline');
   if (now >= deadline) throw new RuntimeError('deadline');
   return previous.phase;
 }

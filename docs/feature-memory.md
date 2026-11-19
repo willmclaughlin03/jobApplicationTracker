@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+- `2026-11-19` - `Gate 1 cleanup and phase polling refinements`: Accept a confirmed absent `/run/user` while requiring its own protected mount when present. Accept inactive/dead units only with an absent or empty cgroup, retry a failed final cleanup check once within the existing deadline, and separate scan-start phase age from post-scan time validation. Require uncertainty for recovered request intent; preserve committed final-report hashes while exposing pending cleanup failures and a failing CLI exit. Add the missing lint global, document the contract, and cover the changes with 336 passing offline tests plus focused ESLint and whitespace checks.
+
 - `2026-11-19` - `Gate 1 runtime request intent and publication accounting`: Require one case-insensitive raw Location field for protected redirects. Publish request intent before advancing the live attempt count, mark the last recovered intent uncertain, and retain exact terminal accounting. Treat the exclusive hard link as publication commit and report leftover pending links separately as cleanup failures. Document the evidence contract and add regression coverage; all 297 offline runtime tests pass.
 
 - `2026-11-19` - `Gate 1 runtime evidence validation`: Reject quoted Cache-Control values and delimiter-colliding evidence keys. Preserve stopped reports when the final package check throws, publish complete reports exclusively through a pending file, and verify each report from one authenticated byte snapshot. Add failure, overwrite, canonical JSON and valid-policy regressions; all 258 offline runtime tests pass.

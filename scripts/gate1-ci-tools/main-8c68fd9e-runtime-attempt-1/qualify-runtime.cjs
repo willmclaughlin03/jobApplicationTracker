@@ -76,6 +76,8 @@ function validateReport(report, expected) {
   if ((report.runtime === null) !== (report.accounting === 'unknown')) throw new RuntimeError('report_schema');
   if (report.accounting === 'last_attempt_uncertain' && (report.result !== 'stopped' || report.runtime.stage !== 'requests' ||
       report.runtime.failure !== null || report.runtime.attempted !== report.runtime.cases.length + 1)) throw new RuntimeError('report_schema');
+  if (report.accounting === 'known' && report.result === 'stopped' && report.runtime.stage === 'requests' &&
+      report.runtime.failure === null && report.runtime.attempted > 0) throw new RuntimeError('report_schema');
   if ((report.serviceStopped === false && (report.failure !== 'cleanup' || report.childrenClosed !== false)) ||
       (!report.childrenClosed && report.failure !== 'cleanup') || (report.runtime !== null && report.serviceStopped === null) ||
       (report.runtime?.failure === 'cleanup' && report.failure !== 'cleanup') ||
@@ -137,7 +139,7 @@ async function qualify(app, scratch, context, operations = {}) {
   return validateReport(report, context);
 }
 
-/** Reserve fresh runner-local state and preserve one report; no retry or destination reuse is supported. */
+/** Reserve fresh state and atomically commit one report; return pending cleanup failure separately without changing committed bytes. */
 async function execute(env = process.env) {
   const workspace = fs.realpathSync(env.GITHUB_WORKSPACE || '.'), profile = packageProfile(), context = validateContext(env, profile);
   const tooling = path.join(workspace, 'tooling');
@@ -158,16 +160,18 @@ async function execute(env = process.env) {
   }
   validateReport(report, context);
   const pending = path.join(dest, '.pending-report.json');
-  let fd = fs.openSync(pending, 'wx', 0o600), reportSha256;
+  let fd = fs.openSync(pending, 'wx', 0o600), reportSha256, committed = false, cleanupFailure = null;
   try {
     reportSha256 = base.writeOnce(fd, report);
     fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined;
     fs.linkSync(pending, path.join(dest, 'report.json')); // Publish complete bytes atomically without replacing existing evidence.
+    committed = true;
   } finally {
-    try { if (fd !== undefined) fs.closeSync(fd); }
-    finally { fs.unlinkSync(pending); } // Only remove the pending file this attempt opened exclusively.
+    try { if (fd !== undefined) fs.closeSync(fd); } catch { /* Preserve the pre-commit failure. */ }
+    try { fs.unlinkSync(pending); } // Only remove the pending file this attempt opened exclusively.
+    catch { if (committed) cleanupFailure = 'cleanup'; } // Pre-commit errors still reject; committed evidence remains verifiable.
   }
-  return { result: report.result, stage: report.stage, failure: report.failure, reportSha256 };
+  return { result: report.result, stage: report.stage, failure: report.failure, reportSha256, cleanupFailure };
 }
 
 /** Verify one bounded byte snapshot against the run-bound hash, canonical JSON and expected report schema. */
@@ -206,7 +210,7 @@ async function main(args = process.argv.slice(2)) {
 
 if (require.main === module) main().then(result => {
   process.stdout.write(JSON.stringify(result) + '\n');
-  if (result.result === 'stopped') process.exitCode = 1;
+  if (result.result === 'stopped' || result.cleanupFailure) process.exitCode = 1;
 }).catch(error => { process.stderr.write(JSON.stringify({ failure: probe.failureCode(error) }) + '\n'); process.exitCode = 1; });
 
 module.exports = { SOURCE: base.SOURCE, NAME, WORKFLOW, STATIC_DIGEST, FILES, STAGES, workflowPath, profileBytes, packageProfile, executionProfile, validateContext,

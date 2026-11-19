@@ -59,6 +59,9 @@ families, read-only application/toolchain inputs and narrowly writable runtime
 scratch and `.next/cache`. `PrivateTmp` also provides private temporary directories.
 It has four cores' worth of CPU quota, 6 GiB memory, zero swap, 256 tasks, no restart
 and control-group termination. No filesystem storage quota is claimed.
+The runner contract does not provision `/run/user`; confirmed absence skips only
+that path's checks. If present, it requires its own read-only mount. All other
+protected paths and both write exceptions remain required.
 
 Before Next loads, the child verifies that its actual network namespace differs
 from the parent's, its only interface is loopback, and cgroup/privilege/seccomp
@@ -128,6 +131,9 @@ The hard link commits publication even if removing its pending name fails. The
 controller checks the fixed protocol names after producer shutdown and reports any
 pending link beside a published record as `cleanup`, preserving the committed
 phase journal and terminal evidence. A cleanup failure prevents qualification.
+Final report publication also commits at the hard link. A subsequent pending-file
+unlink failure preserves `reportSha256`, returns `cleanupFailure: cleanup` separately
+from the immutable report, and makes the CLI exit unsuccessfully.
 Only contiguous monotonic pre-request snapshots can recover accounting. Without a
 validated terminal report, a request snapshot has `accounting: last_attempt_uncertain`:
 `runtime.attempted` counts journaled intents; the actual transport count lies between
@@ -138,6 +144,9 @@ partial descriptor installation records whether restoration actually succeeded.
 
 Cancellation aborts the owned launcher and separately stops/verifies the owned
 systemd unit and cgroup. Launcher exit alone is not proof of service termination.
+After launcher settlement, an unloaded or inactive/dead unit still requires an
+absent or empty cgroup. A failed final check gets one stop-and-recheck attempt
+within the same five-second settlement deadline; active or failed units cannot pass.
 The service deadline remains a backstop if the controller is abruptly killed;
 such loss does not manufacture a report or successful cleanup. Any failure or
 unavailable evidence stops; cleanup failure takes precedence. No broad process

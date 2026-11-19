@@ -52,7 +52,8 @@ function kernel(c = config()) {
     [`${root}/memory.swap.max`]: '0', [`${root}/pids.max`]: '256', '/proc/self/status': 'NoNewPrivs:\t1\nCapEff:\t0000\nCapBnd:\t0000\nSeccomp:\t2\n' };
   values['/proc/self/mountinfo'] = ['/', '/home', '/root', '/run/user', c.app, c.tooling, path.posix.dirname(c.node), c.scratch, `${c.app}/.next/cache`]
     .map((name, i) => `${i + 1} 0 8:1 / ${name} ${i < 7 ? 'ro' : 'rw'},relatime - ext4 /dev/root rw\n`).join('');
-  const io = { readFileSync: name => values[name], readlinkSync: () => 'net:[2]', readdirSync: () => ['lo'], realpathSync: name => name };
+  const io = { readFileSync: name => values[name], readlinkSync: () => 'net:[2]', readdirSync: () => ['lo'], realpathSync: name => name,
+    lstatSync: () => ({ isDirectory: () => true }) };
   return { values, io, input: { unit: c.unit, hostNamespace: 'net:[1]' }, root, config: c };
 }
 
@@ -110,6 +111,27 @@ describe('service creation and effective readback', () => {
     for (const value of ['A=1\nA=2\n', 'B=1\n', 'A=1\nB=2\n', 'A=' + 'x'.repeat(16384)]) expect(() => tool.parseProperties(Buffer.from(value), ['A'])).toThrow('isolation');
   });
   it('verifies actual kernel controls independently', () => { const k = kernel(); expect(tool.verifyKernel(k.input, k.io, k.config)).toBe(true); });
+  it('accepts an absent optional /run/user without resolving it or requiring its mount', () => {
+    const k = kernel();
+    k.io.lstatSync = jest.fn(() => { throw Object.assign(new Error('absent'), { code: 'ENOENT' }); });
+    k.io.realpathSync = jest.fn(name => { if (name === '/run/user') throw new Error('absent'); return name; });
+    k.values['/proc/self/mountinfo'] = k.values['/proc/self/mountinfo'].split('\n').filter(line => !line.includes(' /run/user ')).join('\n');
+    expect(tool.verifyKernel(k.input, k.io, k.config)).toBe(true);
+    expect(k.io.lstatSync).toHaveBeenCalledWith('/run/user'); expect(k.io.realpathSync).not.toHaveBeenCalledWith('/run/user');
+  });
+  it.each(['parent-only', 'permission', 'file'])('rejects unproven /run/user protection: %s', kind => {
+    const k = kernel();
+    if (kind === 'parent-only') k.values['/proc/self/mountinfo'] = k.values['/proc/self/mountinfo'].split('\n').filter(line => !line.includes(' /run/user ')).join('\n');
+    if (kind === 'permission') k.io.lstatSync = () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); };
+    if (kind === 'file') k.io.lstatSync = () => ({ isDirectory: () => false });
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow('isolation');
+  });
+  it.each(['/home', '/root', '/app', '/tools', '/node/bin', '/scratch', '/app/.next/cache'])('still requires %s when /run/user is absent', name => {
+    const k = kernel();
+    k.io.lstatSync = () => { throw Object.assign(new Error('absent'), { code: 'ENOENT' }); };
+    k.io.realpathSync = value => { if (value === name) throw new Error('absent'); return value; };
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow();
+  });
   it('preserves scratch and cache write exceptions nested under a protected home', () => {
     const c = { ...config(), app: '/home/runner/app', scratch: '/home/runner/scratch', tooling: '/home/runner/tools', node: '/home/runner/node/bin/node' }, k = kernel(c);
     expect(tool.serviceArgs(c)).toContain('--property=ReadWritePaths=/home/runner/scratch /home/runner/app/.next/cache');
@@ -308,11 +330,41 @@ describe('progress, phases and separate service cleanup', () => {
     });
     expect(await h.run()).toMatchObject({ failure: 'deadline', serviceStopped: true, accounting: 'unknown' }); expect(h.ops.stop).toHaveBeenCalledTimes(1);
   });
+  it.each(['transition', 'stall', 'future', 'total'])('uses the scan-start phase clock while retaining post-scan checks: %s', async kind => {
+    const h = harness(), exists = h.ops.fs.existsSync, read = h.ops.read.getMockImplementation();
+    let scanned = false, nextPoll = false, observedTransition = false;
+    h.ops.read.mockImplementation((name, hash, keys) => {
+      if (path.basename(name) === 'phase-01.json') observedTransition = true;
+      return read(name, hash, keys);
+    });
+    h.ops.fs.existsSync = name => {
+      const found = exists(name);
+      if (path.basename(name) === 'phase-01.json' && !found && !scanned && h.records.has('phase-00.json')) {
+        scanned = true; h.advance(kind === 'total' ? 360000 : 100);
+        if (kind === 'transition' || kind === 'future') h.records.set('phase-01.json', { inputHash: h.hash, phase: 'startup', at: h.releaseAt + (kind === 'future' ? 120200 : 119999) });
+      }
+      return found;
+    };
+    h.onTick(() => {
+      if (scanned) { nextPoll = true; if (kind === 'transition' && observedTransition) h.signals.emit('SIGTERM'); return; }
+      h.records.set('phase-00.json', { inputHash: h.hash, phase: 'inspect', at: h.releaseAt }); h.advance(119899);
+    });
+    expect(await h.run()).toMatchObject({ failure: kind === 'transition' ? 'cancelled' : kind === 'future' ? 'report_schema' : 'deadline', serviceStopped: true });
+    expect(nextPoll).toBe(kind !== 'total');
+    if (kind === 'transition') expect(observedTransition).toBe(true);
+  });
+  it('accepts a phase timestamp published during the scan', async () => {
+    const h = harness(), read = h.ops.read.getMockImplementation();
+    h.records.set('phase-00.json', { inputHash: h.hash, phase: 'inspect', at: 1001 });
+    h.ops.read.mockImplementation((name, hash, keys) => { if (path.basename(name) === 'phase-00.json') h.advance(1); return read(name, hash, keys); });
+    h.onTick(() => h.signals.emit('SIGTERM'));
+    expect(await h.run()).toMatchObject({ failure: 'cancelled', serviceStopped: true });
+  });
   it('handles cancellation with owned-service cleanup and removes listeners', async () => {
     const h = harness(); h.onTick(() => h.signals.emit('SIGTERM'));
     expect(await h.run()).toMatchObject({ failure: 'cancelled', serviceStopped: true }); expect(h.signals.listenerCount('SIGTERM')).toBe(0);
   });
-  it.each(['absent', 'empty', 'unloaded', 'loaded', 'populated', 'metadata-error', 'permission'])('rechecks owned resources after launcher settlement: %s', async state => {
+  it.each(['absent', 'empty', 'unloaded', 'loaded', 'active', 'failed', 'populated', 'metadata-error', 'permission'])('rechecks owned resources after launcher settlement: %s', async state => {
     jest.useFakeTimers();
     try {
       const h = harness(), original = h.ops.run.getMockImplementation(), checks = [];
@@ -322,8 +374,9 @@ describe('progress, phases and separate service cleanup', () => {
         if (stopping) {
           checks.push({ settled, timeoutMs: options.timeoutMs });
           if (state === 'metadata-error') throw Object.assign(new Error('metadata'), { code: 'child_exit' });
-          if (args.includes('list-units')) return Buffer.from(state === 'loaded' || state === 'unloaded' ? 'unit row' : '');
-          return lines({ LoadState: state === 'unloaded' ? 'not-found' : 'loaded', ActiveState: 'inactive', SubState: 'dead' });
+          if (args.includes('list-units')) return Buffer.from(['loaded', 'unloaded', 'active', 'failed'].includes(state) ? 'unit row' : '');
+          return lines({ LoadState: state === 'unloaded' ? 'not-found' : 'loaded', ActiveState: state === 'active' ? 'active' : state === 'failed' ? 'failed' : 'inactive',
+            SubState: state === 'active' ? 'running' : state === 'failed' ? 'failed' : 'dead' });
         }
         return original(command, args, options);
       });
@@ -337,7 +390,7 @@ describe('progress, phases and separate service cleanup', () => {
       const pending = h.run(); await jest.advanceTimersByTimeAsync(0);
       expect(h.ops.stop).toHaveBeenCalledTimes(1); expect(checks).toEqual([]);
       h.advance(4000); h.finish();
-      const valid = ['absent', 'empty', 'unloaded'].includes(state);
+      const valid = ['absent', 'empty', 'unloaded', 'loaded'].includes(state);
       expect(await pending).toMatchObject({ failure: valid ? 'cancelled' : 'cleanup', serviceStopped: valid });
       expect(checks.length).toBeGreaterThan(0); expect(checks.every(check => check.settled && check.timeoutMs === 1000)).toBe(true);
       if (valid || state === 'populated' || state === 'permission') expect(h.ops.fs.statSync).toHaveBeenCalledWith('/sys/fs/cgroup/system.slice/' + config().unit);
@@ -365,10 +418,44 @@ describe('progress, phases and separate service cleanup', () => {
       h.ops.stop.mockImplementation(async () => { stopping = true; return true; }); h.onTick(() => h.signals.emit('SIGTERM'));
       const pending = h.run(); await jest.advanceTimersByTimeAsync(0);
       h.advance(4000); h.finish(); await jest.advanceTimersByTimeAsync(0);
-      expect(checks).toEqual([1000]); await jest.advanceTimersByTimeAsync(1000);
+      expect(checks).toEqual([1000]); h.advance(1000); await jest.advanceTimersByTimeAsync(1000);
       expect(await pending).toMatchObject({ failure: 'cleanup', serviceStopped: false });
       expect(h.ops.fs.statSync).not.toHaveBeenCalled(); expect(h.signals.listenerCount('SIGTERM')).toBe(0);
     } finally { jest.useRealTimers(); }
+  });
+  it.each(['stopped', 'unloaded', 'child-exit', 'populated', 'stop-error', 'expired'])('retries one late owned-service stop within the final deadline: %s', async state => {
+    const h = harness(), original = h.ops.run.getMockImplementation(), checks = []; let stopping = false, retried = false;
+    h.ops.stop.mockImplementation(async () => { stopping = true; h.finish(); return true; });
+    h.ops.run.mockImplementation(async (command, args, options) => {
+      if (!stopping) return original(command, args, options);
+      checks.push({ args, timeoutMs: options.timeoutMs });
+      if (args.includes('stop')) {
+        expect(args).toEqual(['-n', 'systemctl', 'stop', config().unit]); retried = true; h.advance(state === 'expired' ? 4900 : 100);
+        if (state === 'stop-error' || state === 'child-exit') throw Object.assign(new Error('stop'), { code: state === 'child-exit' ? 'child_exit' : 'deadline' });
+        return Buffer.alloc(0);
+      }
+      if (args.includes('list-units')) return Buffer.from(retried && ['unloaded', 'child-exit'].includes(state) ? '' : 'unit row');
+      if (!retried) h.advance(100);
+      return lines({ LoadState: 'loaded', ActiveState: retried ? 'inactive' : 'active', SubState: retried ? 'dead' : 'running' });
+    });
+    h.ops.fs.statSync.mockReturnValue({ isDirectory: () => true });
+    h.ops.fs.readFileSync = jest.fn(() => state === 'populated' ? 'populated 1\n' : 'populated 0\n');
+    h.onTick(() => h.signals.emit('SIGTERM'));
+    const valid = ['stopped', 'unloaded', 'child-exit'].includes(state);
+    expect(await h.run()).toMatchObject({ failure: valid ? 'cancelled' : 'cleanup', serviceStopped: valid });
+    expect(checks.filter(check => check.args.includes('stop'))).toHaveLength(1);
+    expect(checks.every(check => check.timeoutMs > 0 && check.timeoutMs <= 5000)).toBe(true);
+    if (valid || state === 'populated') {
+      expect(h.ops.fs.readFileSync).toHaveBeenCalledWith(path.join('/sys/fs/cgroup/system.slice/' + config().unit, 'cgroup.events'), 'utf8');
+      expect(checks.at(-1).timeoutMs).toBe(4800);
+    }
+  });
+  it('records cleanup failure when the final cgroup check consumes the deadline', async () => {
+    const h = harness(); h.onTick(() => h.signals.emit('SIGTERM'));
+    h.ops.fs.statSync.mockImplementation(() => { h.advance(5000); return { isDirectory: () => true }; });
+    h.ops.fs.readFileSync = () => 'populated 0\n';
+    expect(await h.run()).toMatchObject({ failure: 'cleanup', serviceStopped: false });
+    expect(h.signals.listenerCount('SIGTERM')).toBe(0);
   });
   it('does not equate stream-overflow launcher exit with stopped service', async () => {
     const h = harness(); h.onTick(() => { h.fail('stream_limit'); });

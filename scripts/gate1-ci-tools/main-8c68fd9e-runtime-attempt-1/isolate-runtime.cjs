@@ -92,7 +92,12 @@ function validateService(values, config) {
 
 /** Check the child's mount flags before readiness; only scratch/cache may override protected path trees. */
 function verifyMounts(config, io = fs) {
-  const protectedPaths = ['/home', '/root', '/run/user', config.app, config.tooling, path.posix.dirname(config.node)];
+  const protectedPaths = ['/home', '/root', config.app, config.tooling, path.posix.dirname(config.node)];
+  // The runner contract does not provision /run/user; only confirmed absence makes this path optional.
+  try {
+    if (!io.lstatSync('/run/user').isDirectory()) throw new RuntimeError('isolation');
+    protectedPaths.push('/run/user');
+  } catch (error) { if (error.code !== 'ENOENT') throw new RuntimeError('isolation'); }
   const writablePaths = [config.scratch, `${config.app}/.next/cache`];
   for (const name of [...protectedPaths, ...writablePaths]) {
     if (!name.startsWith('/') || io.realpathSync(name) !== name) throw new RuntimeError('isolation');
@@ -117,7 +122,8 @@ function verifyMounts(config, io = fs) {
   });
   for (const name of [...protectedPaths, ...writablePaths]) {
     const matches = mounts.filter(mount => within(name, mount.name)).sort((a, b) => b.name.length - a.name.length);
-    if (!matches.length || matches[0].name === matches[1]?.name || matches[0].readOnly === writablePaths.includes(name)) throw new RuntimeError('isolation');
+    if (!matches.length || (name === '/run/user' && matches[0].name !== name) || matches[0].name === matches[1]?.name ||
+        matches[0].readOnly === writablePaths.includes(name)) throw new RuntimeError('isolation');
   }
   for (const mount of mounts) {
     if (protectedPaths.some(root => within(mount.name, root)) && !writablePaths.some(root => within(mount.name, root)) && !mount.readOnly) throw new RuntimeError('isolation');
@@ -169,7 +175,7 @@ function recoverProgress(scratch, inputHash, io = fs, read = readBoundRecord) {
   return last;
 }
 
-/** Verify only the owned unit and cgroup through bounded commands; requireUnloaded rejects late service registration. */
+/** Verify the owned cgroup and unit; after launcher settlement, only unloaded or inactive/dead units qualify. */
 async function verifyServiceStopped(config, command, io, requireUnloaded = false) {
   const listed = await command(listArgs(config.unit));
   if (listed.toString('utf8').trim()) {
@@ -178,7 +184,7 @@ async function verifyServiceStopped(config, command, io, requireUnloaded = false
     const inactive = values.ActiveState === 'inactive' && values.SubState === 'dead';
     const unloaded = values.LoadState === 'not-found' && inactive;
     const stopped = values.LoadState === 'loaded' && (inactive || (values.ActiveState === 'failed' && values.SubState === 'failed'));
-    if (!(unloaded || (!requireUnloaded && stopped))) throw new RuntimeError('cleanup');
+    if (!(unloaded || (stopped && (!requireUnloaded || inactive)))) throw new RuntimeError('cleanup');
   }
   const group = `/sys/fs/cgroup/system.slice/${config.unit}`;
   try {
@@ -283,8 +289,9 @@ async function runIsolated(app, scratch, context, selected, remainingMs, operati
         }
       }
       if (released) {
+        const phaseNow = now();
         phases = readPhases(scratch, inputHash, phases, io, operations.read || readBoundRecord);
-        probe.validatePhases(phases, releaseAt, now(), input.deadline);
+        probe.validatePhases(phases, releaseAt, now(), input.deadline, false, phaseNow);
       }
       await pause();
     }
@@ -314,15 +321,29 @@ async function runIsolated(app, scratch, context, selected, remainingMs, operati
     if (pending) {
       const deadline = now() + 5000;
       /** Share the launcher settlement bound with final metadata reads, including after cancellation. */
-      async function cleanupMetadata(args) {
+      function cleanupMetadata(args) {
         const remaining = deadline - now();
         if (remaining <= 0) throw new RuntimeError('cleanup');
         return run('sudo', ['-n', 'systemctl', ...args], { ...options, timeoutMs: remaining });
       }
+      /** Capture the remaining bound before starting verification, so expiry cannot leave an unobserved rejection. */
+      function verifyStopped() {
+        const remaining = deadline - now();
+        if (remaining <= 0) throw new RuntimeError('cleanup');
+        return probe.bounded(verifyServiceStopped(config, cleanupMetadata, io, true), remaining, 'cleanup');
+      }
+      /** Retry only this unit after late registration; stop and recheck share the original settlement deadline. */
+      async function stopAndVerify() {
+        const remaining = deadline - now();
+        try { await probe.bounded(cleanupMetadata(['stop', config.unit]), remaining, 'cleanup'); }
+        catch (error) { if (error.code !== 'child_exit') throw error; }
+        await verifyStopped();
+      }
       try {
         await probe.bounded(pending, 5000, 'cleanup');
-        await probe.bounded(verifyServiceStopped(config, cleanupMetadata, io, true), deadline - now(), 'cleanup');
-        if (now() >= deadline) throw new RuntimeError('cleanup');
+        try { await verifyStopped(); }
+        catch { await stopAndVerify(); }
+        if (now() >= deadline) { failure = 'cleanup'; serviceStopped = false; }
       } catch { failure = 'cleanup'; serviceStopped = false; }
     }
     signals.removeListener('SIGINT', cancel); signals.removeListener('SIGTERM', cancel);
