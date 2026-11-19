@@ -1,0 +1,89 @@
+# Preparation/publication grants no dispatch or gate approval.
+name: Gate 1 runtime qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      workflow_sha:
+        description: Separately approved immutable workflow/tool commit
+        required: true
+        type: string
+      run_number:
+        description: Separately approved next workflow run number
+        required: true
+        type: string
+      package_digest:
+        description: Reviewed twelve-file runtime package SHA-256
+        required: true
+        type: string
+      execution_digest:
+        description: Reviewed package plus workflow SHA and run number SHA-256
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate1-runtime-main-8c68fd9e-attempt-1
+  cancel-in-progress: false
+
+jobs:
+  runtime:
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
+      github.repository == 'willmclaughlin03/jobApplicationTracker' &&
+      github.run_attempt == 1 && github.run_number == fromJSON(inputs.run_number) &&
+      github.workflow_sha == inputs.workflow_sha
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GATE1_WORKFLOW_SHA: ${{ inputs.workflow_sha }}
+      GATE1_RUN_NUMBER: ${{ inputs.run_number }}
+      GATE1_PACKAGE_DIGEST: ${{ inputs.package_digest }}
+      GATE1_EXECUTION_DIGEST: ${{ inputs.execution_digest }}
+      NODE_DISABLE_COMPILE_CACHE: '1'
+    steps:
+      - name: Check out immutable qualification tools
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        timeout-minutes: 2
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: tooling
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Check out exact application source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        timeout-minutes: 2
+        with:
+          ref: 8c68fd9e58f717ff766f39fe4c90325fc113e722
+          path: application
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Set up the approved Node version
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        timeout-minutes: 3
+        with:
+          node-version: 22.23.3
+          package-manager-cache: false
+      - name: Qualify the runtime once
+        id: qualify
+        timeout-minutes: 25
+        run: node tooling/scripts/gate1-ci-tools/main-8c68fd9e-runtime-attempt-1/qualify-runtime.cjs --run
+      - name: Validate the report before upload
+        id: validate
+        if: ${{ always() && steps.qualify.outcome != 'skipped' }}
+        timeout-minutes: 1
+        run: node tooling/scripts/gate1-ci-tools/main-8c68fd9e-runtime-attempt-1/qualify-runtime.cjs --validate-upload
+      - name: Retain the sanitized report only
+        if: ${{ always() && steps.validate.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        timeout-minutes: 2
+        with:
+          name: gate1-runtime-8c68fd9e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: gate1-runtime-evidence/report.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false
