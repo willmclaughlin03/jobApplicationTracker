@@ -74,7 +74,7 @@ function harness() {
       records.set('ready.json', { inputHash: hash, kernelVerified: true });
       return new Promise((resolve, fail) => { finish = resolve; reject = fail; });
     }
-    if (args.includes('list-units')) return Buffer.alloc(0);
+    if (args.includes('list-units') || args.includes('list-jobs')) return Buffer.alloc(0);
     return lines(properties());
   });
   const stop = jest.fn(async () => { finish?.(Buffer.alloc(0)); return true; });
@@ -211,13 +211,13 @@ describe('progress, phases and separate service cleanup', () => {
     }
   });
   it('accepts an unloaded completed transient unit only after checking the cgroup is absent', async () => {
-    const run = jest.fn().mockRejectedValueOnce({ code: 'child_exit' }).mockResolvedValueOnce(Buffer.alloc(0));
+    const run = jest.fn().mockResolvedValue(Buffer.alloc(0)).mockRejectedValueOnce({ code: 'child_exit' });
     const io = { statSync: jest.fn(() => { throw Object.assign(new Error('absent'), { code: 'ENOENT' }); }) };
-    expect(await tool.stopService(config(), run, io)).toBe(true); expect(io.statSync).toHaveBeenCalledTimes(1); expect(run).toHaveBeenCalledTimes(2);
+    expect(await tool.stopService(config(), run, io)).toBe(true); expect(io.statSync).toHaveBeenCalledTimes(1); expect(run).toHaveBeenCalledTimes(3);
   });
   it.each(['absent', 'empty', 'populated', 'permission'])('checks the cgroup after a unit unloads between list and show: %s', async state => {
     const run = jest.fn().mockResolvedValueOnce(Buffer.alloc(0)).mockResolvedValueOnce(Buffer.from('unit row'))
-      .mockResolvedValueOnce(lines({ LoadState: 'not-found', ActiveState: 'inactive', SubState: 'dead' }));
+      .mockResolvedValueOnce(lines({ LoadState: 'not-found', ActiveState: 'inactive', SubState: 'dead' })).mockResolvedValue(Buffer.alloc(0));
     const io = { statSync: jest.fn(() => {
       if (state === 'absent' || state === 'permission') throw Object.assign(new Error(state), { code: state === 'absent' ? 'ENOENT' : 'EACCES' });
       return { isDirectory: () => true };
@@ -226,9 +226,35 @@ describe('progress, phases and separate service cleanup', () => {
     if (state === 'absent' || state === 'empty') await expect(result).resolves.toBe(true);
     else await expect(result).rejects.toThrow('cleanup');
     const group = '/sys/fs/cgroup/system.slice/' + config().unit;
-    expect(io.statSync).toHaveBeenCalledWith(group); expect(run).toHaveBeenCalledTimes(3);
+    expect(io.statSync).toHaveBeenCalledWith(group); expect(run).toHaveBeenCalledTimes(4);
     if (state === 'empty' || state === 'populated') expect(io.readFileSync).toHaveBeenCalledWith(path.join(group, 'cgroup.events'), 'utf8');
     else expect(io.readFileSync).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['loaded', null], ['loaded', 'start waiting'], ['loaded', 'restart waiting'], ['loaded', 'start running'],
+    ['unlisted', null], ['unlisted', 'start waiting'], ['unloaded', null], ['unloaded', 'start waiting'],
+  ])('requires no owned job before accepting a %s unit with job=%s', async (state, job) => {
+    const c = config(), jobs = [`31 unrelated.service start waiting`, ...(job ? [`32 ${c.unit} ${job}`] : [])];
+    const run = jest.fn(async (_command, args) => {
+      if (args.includes('list-units')) return Buffer.from(state === 'unlisted' ? '' : 'unit row');
+      if (args.includes('show')) return lines({ LoadState: state === 'unloaded' ? 'not-found' : 'loaded', ActiveState: 'inactive', SubState: 'dead' });
+      if (args.includes('list-jobs')) return Buffer.from(jobs.filter(row => row.split(' ')[1] === args.at(-1)).join('\n'));
+      return Buffer.alloc(0);
+    });
+    const io = { statSync: jest.fn(() => ({ isDirectory: () => true })), readFileSync: jest.fn(() => 'populated 0\n') };
+    if (job) await expect(tool.stopService(c, run, io)).rejects.toThrow('cleanup');
+    else {
+      await expect(tool.stopService(c, run, io)).resolves.toBe(true);
+      expect(io.readFileSync).toHaveBeenCalledWith(path.join('/sys/fs/cgroup/system.slice/' + c.unit, 'cgroup.events'), 'utf8');
+    }
+    expect(run).toHaveBeenCalledWith('sudo', ['-n', 'systemctl', 'list-jobs', '--full', '--no-legend', '--no-pager', c.unit],
+      expect.objectContaining({ capture: true, cap: 16384, timeoutMs: expect.any(Number) }));
+  });
+  it.each(['child_exit', 'deadline', 'stream_limit', 'EACCES'])('does not accept stopped service when listing jobs fails: %s', async code => {
+    const error = Object.assign(new Error('jobs'), { code }), io = { statSync: jest.fn() };
+    const run = jest.fn(async (_command, args) => { if (args.includes('list-jobs')) throw error; return Buffer.alloc(0); });
+    await expect(tool.stopService(config(), run, io)).rejects.toBe(error);
+    expect(io.statSync).not.toHaveBeenCalled();
   });
   it.each([
     { LoadState: 'loaded', ActiveState: 'active', SubState: 'running' },
@@ -254,7 +280,7 @@ describe('progress, phases and separate service cleanup', () => {
   });
   it.each(['populated', 'active', 'permission', 'timeout'])('does not claim service cleanup for %s', kind => {
     const run = jest.fn().mockResolvedValueOnce(Buffer.alloc(0)).mockResolvedValueOnce(Buffer.from('unit row'))
-      .mockResolvedValueOnce(lines({ LoadState: 'loaded', ActiveState: kind === 'active' ? 'active' : 'inactive', SubState: kind === 'active' ? 'running' : 'dead' }));
+      .mockResolvedValueOnce(lines({ LoadState: 'loaded', ActiveState: kind === 'active' ? 'active' : 'inactive', SubState: kind === 'active' ? 'running' : 'dead' })).mockResolvedValue(Buffer.alloc(0));
     if (kind === 'timeout') run.mockReset().mockRejectedValue({ code: 'deadline' });
     const io = { statSync: () => { if (kind === 'permission') throw Object.assign(new Error('denied'), { code: 'EACCES' }); return { isDirectory: () => true }; }, readFileSync: () => 'populated 1\n' };
     return expect(tool.stopService(config(), run, io)).rejects.toThrow('cleanup');
@@ -375,6 +401,7 @@ describe('progress, phases and separate service cleanup', () => {
           checks.push({ settled, timeoutMs: options.timeoutMs });
           if (state === 'metadata-error') throw Object.assign(new Error('metadata'), { code: 'child_exit' });
           if (args.includes('list-units')) return Buffer.from(['loaded', 'unloaded', 'active', 'failed'].includes(state) ? 'unit row' : '');
+          if (args.includes('list-jobs')) return Buffer.alloc(0);
           return lines({ LoadState: state === 'unloaded' ? 'not-found' : 'loaded', ActiveState: state === 'active' ? 'active' : state === 'failed' ? 'failed' : 'inactive',
             SubState: state === 'active' ? 'running' : state === 'failed' ? 'failed' : 'dead' });
         }
@@ -406,13 +433,16 @@ describe('progress, phases and separate service cleanup', () => {
       expect(h.ops.fs.statSync).not.toHaveBeenCalled(); expect(h.signals.listenerCount('SIGTERM')).toBe(0); h.finish();
     } finally { jest.useRealTimers(); }
   });
-  it('bounds a stalled final metadata check by the remaining launcher settlement allowance', async () => {
+  it.each(['list-units', 'list-jobs'])('bounds stalled final %s by the remaining launcher settlement allowance', async query => {
     jest.useFakeTimers();
     try {
       const h = harness(), original = h.ops.run.getMockImplementation(), checks = [];
       let stopping = false;
       h.ops.run.mockImplementation((command, args, options) => {
-        if (stopping) { checks.push(options.timeoutMs); return new Promise(() => {}); }
+        if (stopping) {
+          if (args.includes(query)) { checks.push(options.timeoutMs); return new Promise(() => {}); }
+          return Promise.resolve(Buffer.alloc(0));
+        }
         return original(command, args, options);
       });
       h.ops.stop.mockImplementation(async () => { stopping = true; return true; }); h.onTick(() => h.signals.emit('SIGTERM'));
@@ -435,6 +465,7 @@ describe('progress, phases and separate service cleanup', () => {
         return Buffer.alloc(0);
       }
       if (args.includes('list-units')) return Buffer.from(retried && ['unloaded', 'child-exit'].includes(state) ? '' : 'unit row');
+      if (args.includes('list-jobs')) return Buffer.alloc(0);
       if (!retried) h.advance(100);
       return lines({ LoadState: 'loaded', ActiveState: retried ? 'inactive' : 'active', SubState: retried ? 'dead' : 'running' });
     });
@@ -449,6 +480,26 @@ describe('progress, phases and separate service cleanup', () => {
       expect(h.ops.fs.readFileSync).toHaveBeenCalledWith(path.join('/sys/fs/cgroup/system.slice/' + config().unit, 'cgroup.events'), 'utf8');
       expect(checks.at(-1).timeoutMs).toBe(4800);
     }
+  });
+  it.each(['cleared', 'persistent', 'metadata-error'])('rechecks owned jobs after the bounded cleanup retry: %s', async state => {
+    const h = harness(), original = h.ops.run.getMockImplementation(), jobChecks = []; let stopping = false, retried = false;
+    h.ops.stop.mockImplementation(async () => { stopping = true; h.finish(); return true; });
+    h.ops.run.mockImplementation(async (command, args, options) => {
+      if (!stopping) return original(command, args, options);
+      if (args.includes('stop')) { retried = true; return Buffer.alloc(0); }
+      if (args.includes('list-units')) return Buffer.from('unit row');
+      if (args.includes('show')) return lines({ LoadState: 'loaded', ActiveState: 'inactive', SubState: 'dead' });
+      expect(args).toEqual(['-n', 'systemctl', 'list-jobs', '--full', '--no-legend', '--no-pager', config().unit]);
+      jobChecks.push(options.timeoutMs); h.advance(100);
+      if (state === 'metadata-error') throw Object.assign(new Error('jobs'), { code: 'child_exit' });
+      return Buffer.from(retried && state === 'cleared' ? '' : `32 ${config().unit} start waiting\n`);
+    });
+    h.ops.fs.statSync.mockReturnValue({ isDirectory: () => true }); h.ops.fs.readFileSync = jest.fn(() => 'populated 0\n');
+    h.onTick(() => h.signals.emit('SIGTERM'));
+    expect(await h.run()).toMatchObject({ failure: state === 'cleared' ? 'cancelled' : 'cleanup', serviceStopped: state === 'cleared' });
+    expect(h.ops.run.mock.calls.filter(([, args]) => args.includes('stop'))).toHaveLength(1);
+    expect(jobChecks).toEqual([5000, 4900]);
+    if (state === 'cleared') expect(h.ops.fs.readFileSync).toHaveBeenCalledWith(path.join('/sys/fs/cgroup/system.slice/' + config().unit, 'cgroup.events'), 'utf8');
   });
   it('records cleanup failure when the final cgroup check consumes the deadline', async () => {
     const h = harness(); h.onTick(() => h.signals.emit('SIGTERM'));

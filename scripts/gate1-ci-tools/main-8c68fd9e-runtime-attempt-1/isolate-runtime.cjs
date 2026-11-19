@@ -175,7 +175,7 @@ function recoverProgress(scratch, inputHash, io = fs, read = readBoundRecord) {
   return last;
 }
 
-/** Verify the owned cgroup and unit; after launcher settlement, only unloaded or inactive/dead units qualify. */
+/** Verify the owned cgroup, unit and absence of jobs; after launcher settlement, only unloaded or inactive/dead units qualify. */
 async function verifyServiceStopped(config, command, io, requireUnloaded = false) {
   const listed = await command(listArgs(config.unit));
   if (listed.toString('utf8').trim()) {
@@ -186,6 +186,8 @@ async function verifyServiceStopped(config, command, io, requireUnloaded = false
     const stopped = values.LoadState === 'loaded' && (inactive || (values.ActiveState === 'failed' && values.SubState === 'failed'));
     if (!(unloaded || (stopped && (!requireUnloaded || inactive)))) throw new RuntimeError('cleanup');
   }
+  // An inactive unit can still have queued work; query only this unit and require an empty job list.
+  if ((await command(['list-jobs', '--full', '--no-legend', '--no-pager', config.unit])).toString('utf8').trim()) throw new RuntimeError('cleanup');
   const group = `/sys/fs/cgroup/system.slice/${config.unit}`;
   try {
     if (!io.statSync(group).isDirectory() || !/^populated 0$/m.test(io.readFileSync(path.join(group, 'cgroup.events'), 'utf8'))) throw new RuntimeError('cleanup');
