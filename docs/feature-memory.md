@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+- `2026-11-19` - `Gate 1 six-case runtime qualification preparation`: Add a manual-only workflow and twelve-file package for a fresh pinned build, private compiled-reader attribution, six bounded requests and independently verified systemd isolation/cleanup. Bind the unchanged static dependency, one-run identities and sanitized report-only retention; 169 new offline tests and 117 static regressions pass. Publication grants no runtime dispatch or hosted qualification; Gate 1 remains open and Gate 5A unpassed.
+
 - `2026-11-19` - `Static qualification child exit cleanup`: Terminate the owned process group when the direct child exits and allow at most `LIMITS.closeMs` for final stream closure. Preserve final output validation and failed-exit rejection; regression coverage includes successful exit before close, missing close, late stream overflow, and nonzero exits. All 117 static-tool tests pass.
 
 - `2026-11-18` - `Bounded Gate 1 static CI qualification`: Publish the manual-only workflow and exact-source build/compiled-output inspector with Node 22/React 18 guards, one-run approval binding, sanitized report-only retention and no application probes. Support the published workflow location and register the offline suites in the existing CI test configuration; all 294 tests across eight suites pass. Document the consumed local storage stop separately; CI qualification and runtime evidence remain pending, Gate 1 open and Gate 5A unpassed.
