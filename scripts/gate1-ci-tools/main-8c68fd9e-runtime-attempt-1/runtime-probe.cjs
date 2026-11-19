@@ -310,7 +310,7 @@ async function childMain(app, scratch, operations = {}) {
   }
   try {
     if ((operations.childFlag ?? process.env.GATE1_RUNTIME_CHILD) !== '1') throw new RuntimeError('approval');
-    (operations.verifyKernel || isolation.verifyKernel)(input);
+    (operations.verifyKernel || isolation.verifyKernel)(input, fs, { app, scratch, tooling: path.resolve(__dirname, '../../..'), node: process.execPath });
     base.validateVersions(operations.versions || { node: process.versions.node, ...base.installedVersions(app) }, ['node', 'next', 'react', 'react-dom', 'acorn']);
     publish(scratch, 'ready.json', { inputHash, kernelVerified: true });
     const releaseDeadline = Math.min(input.deadline, now() + LIMITS.startupMs);

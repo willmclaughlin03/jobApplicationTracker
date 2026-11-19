@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+- `2026-11-19` - `Gate 1 runtime review follow-ups`: Require `ProtectHome=read-only` and verify effective protected mounts while preserving scratch/cache writes. Make active journal scans tolerate concurrent appends, retain final gap and observed-prefix checks, accept the exact unloaded cleanup state, and recheck owned resources after launcher settlement within the existing five-second bound. Strengthen exclusive-publication coverage to verify `EEXIST` and original-byte preservation. All 223 offline runtime tests pass; live Linux enforcement remains unqualified.
+
 - `2026-11-19` - `Gate 1 six-case runtime qualification preparation`: Add a manual-only workflow and twelve-file package for a fresh pinned build, private compiled-reader attribution, six bounded requests and independently verified systemd isolation/cleanup. Bind the unchanged static dependency, one-run identities and sanitized report-only retention; 169 new offline tests and 117 static regressions pass. Publication grants no runtime dispatch or hosted qualification; Gate 1 remains open and Gate 5A unpassed.
 
 - `2026-11-19` - `Static qualification child exit cleanup`: Terminate the owned process group when the direct child exits and allow at most `LIMITS.closeMs` for final stream closure. Preserve final output validation and failed-exit rejection; regression coverage includes successful exit before close, missing close, late stream overflow, and nonzero exits. All 117 static-tool tests pass.

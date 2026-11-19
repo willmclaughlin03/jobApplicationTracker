@@ -13,9 +13,9 @@ function config() { return { app: '/app', scratch: '/scratch', tooling: '/tools'
 
 /** Independent fixture for systemd 255's property display, including significant empty values. */
 function properties(c = config()) {
-  return { ...tool.PROPERTIES, User: '1001', Group: '1001', LoadState: 'loaded', Type: 'exec', ActiveState: 'active', SubState: 'running',
+  return { ...tool.PROPERTIES, ProtectHome: 'read-only', User: '1001', Group: '1001', LoadState: 'loaded', Type: 'exec', ActiveState: 'active', SubState: 'running',
     ControlGroup: '/system.slice/' + c.unit, CPUQuotaPerSecUSec: '4s', RuntimeMaxUSec: c.seconds === 360 ? '6min' : '5min 59s',
-    TimeoutStopUSec: '5s', TimeoutStartUSec: '30s', WorkingDirectory: c.app, ReadOnlyPaths: `${c.app} ${c.tooling} /node/bin`, ReadWritePaths: `${c.scratch} ${c.app}/.next/cache` };
+    TimeoutStopUSec: '5s', TimeoutStartUSec: '30s', WorkingDirectory: c.app, ReadOnlyPaths: `${c.app} ${c.tooling} ${path.posix.dirname(c.node)}`, ReadWritePaths: `${c.scratch} ${c.app}/.next/cache` };
 }
 
 /** Serialize only fixture metadata as systemctl output, without any real command execution. */
@@ -45,20 +45,23 @@ function progress(index) {
     descriptorsRestored: index === 0 ? null : false, serverClosed: index === 0 ? null : false, nextClosed: index === 0 ? null : false };
 }
 
-/** Simulate a kernel-visible cgroup and namespace using only in-memory pseudo-file strings. */
-function kernel() {
-  const c = config(), root = '/sys/fs/cgroup/system.slice/' + c.unit;
+/** Simulate kernel-visible controls and mount permissions using only in-memory pseudo-file strings. */
+function kernel(c = config()) {
+  const root = '/sys/fs/cgroup/system.slice/' + c.unit;
   const values = { '/proc/self/cgroup': '0::/system.slice/' + c.unit, [`${root}/cpu.max`]: '400000 100000', [`${root}/memory.max`]: '6442450944',
     [`${root}/memory.swap.max`]: '0', [`${root}/pids.max`]: '256', '/proc/self/status': 'NoNewPrivs:\t1\nCapEff:\t0000\nCapBnd:\t0000\nSeccomp:\t2\n' };
-  const io = { readFileSync: name => values[name], readlinkSync: () => 'net:[2]', readdirSync: () => ['lo'] };
-  return { values, io, input: { unit: c.unit, hostNamespace: 'net:[1]' }, root };
+  values['/proc/self/mountinfo'] = ['/', '/home', '/root', '/run/user', c.app, c.tooling, path.posix.dirname(c.node), c.scratch, `${c.app}/.next/cache`]
+    .map((name, i) => `${i + 1} 0 8:1 / ${name} ${i < 7 ? 'ro' : 'rw'},relatime - ext4 /dev/root rw\n`).join('');
+  const io = { readFileSync: name => values[name], readlinkSync: () => 'net:[2]', readdirSync: () => ['lo'], realpathSync: name => name };
+  return { values, io, input: { unit: c.unit, hostNamespace: 'net:[1]' }, root, config: c };
 }
 
 /** Coordinate mocked launcher completion, atomic record visibility and the parent watchdog on virtual time. */
 function harness() {
   const records = new Map(), hash = 'd'.repeat(64), signals = new EventEmitter();
   let time = 1000, finish, reject, releaseAt = null, tick = () => {};
-  const io = { readlinkSync: () => 'net:[1]', existsSync: name => records.has(path.basename(name)) };
+  const io = { readlinkSync: () => 'net:[1]', existsSync: name => records.has(path.basename(name)),
+    statSync: jest.fn(() => { throw Object.assign(new Error('absent'), { code: 'ENOENT' }); }) };
   const read = jest.fn((name, inputHash, keys) => {
     const value = records.get(path.basename(name));
     if (!probe.exactKeys(value, ['inputHash', ...keys]) || value.inputHash !== inputHash) throw Object.assign(new Error('report_schema'), { code: 'report_schema' });
@@ -85,9 +88,10 @@ describe('service creation and effective readback', () => {
   it('uses a private unprivileged service with strict resource and filesystem bounds, cleared environment and pipes', () => {
     const args = tool.serviceArgs(config());
     for (const value of ['--pipe', '--wait', '--service-type=exec', '--expand-environment=no', '--uid=1001', '--gid=1001', '--property=PrivateNetwork=yes',
-      '--property=MemoryMax=6442450944', '--property=MemorySwapMax=0', '--property=TasksMax=256', '--property=CPUQuota=400%', '--property=RuntimeMaxSec=360s',
+      '--property=ProtectHome=read-only', '--property=MemoryMax=6442450944', '--property=MemorySwapMax=0', '--property=TasksMax=256', '--property=CPUQuota=400%', '--property=RuntimeMaxSec=360s',
       '--property=KillMode=control-group', '--property=Restart=no', '--property=ReadWritePaths=/scratch /app/.next/cache', '/usr/bin/env', '-i']) expect(args).toContain(value);
     expect(args).not.toContain('--scope'); expect(args.at(-3)).toBe('--child'); expect(args.some(value => /GITHUB_TOKEN|VERCEL_TOKEN|NODE_OPTIONS/.test(value))).toBe(false);
+    expect(tool.serviceNames()).toContain('ProtectHome');
   });
   it.each([{ uid: 0 }, { gid: 0 }, { seconds: 361 }, { app: '/app/../escape' }, { scratch: '/scratch space' }, { unit: '../unit' }])('rejects unsafe service configuration %#', change => {
     expect(() => tool.serviceArgs({ ...config(), ...change })).toThrow('isolation');
@@ -97,7 +101,7 @@ describe('service creation and effective readback', () => {
     expect(tool.validateService(tool.parseProperties(lines(values), tool.serviceNames()), c)).toBe(true);
   });
   it.each(['infinity', '359000000', '5min 60s extra', '0.1s', '-1s', '7min'])('rejects unsupported duration %s', value => { expect(() => tool.duration(value)).toThrow('isolation'); });
-  it.each([{ PrivateNetwork: 'no' }, { RestrictAddressFamilies: 'AF_INET AF_INET6 AF_UNIX' }, { RestrictAddressFamilies: 'AF_INET AF_INET' },
+  it.each([{ PrivateNetwork: 'no' }, { ProtectHome: 'no' }, { ProtectHome: 'yes' }, { ProtectHome: 'tmpfs' }, { RestrictAddressFamilies: 'AF_INET AF_INET6 AF_UNIX' }, { RestrictAddressFamilies: 'AF_INET AF_INET' },
     { ReadWritePaths: '/scratch /app' }, { ActiveState: 'failed' }, { LoadState: 'not-found' }, { CPUQuotaPerSecUSec: '5s' }, { RuntimeMaxUSec: '5min' },
     { CapabilityBoundingSet: 'cap_net_admin' }, { ControlGroup: '/other' }, { User: 'root' }])('rejects weakened or unavailable metadata %#', change => {
     expect(() => tool.validateService({ ...properties(), ...change }, config())).toThrow('isolation');
@@ -105,7 +109,34 @@ describe('service creation and effective readback', () => {
   it('rejects missing, duplicate, unexpected and oversized properties', () => {
     for (const value of ['A=1\nA=2\n', 'B=1\n', 'A=1\nB=2\n', 'A=' + 'x'.repeat(16384)]) expect(() => tool.parseProperties(Buffer.from(value), ['A'])).toThrow('isolation');
   });
-  it('verifies actual kernel controls independently', () => { const k = kernel(); expect(tool.verifyKernel(k.input, k.io)).toBe(true); });
+  it('verifies actual kernel controls independently', () => { const k = kernel(); expect(tool.verifyKernel(k.input, k.io, k.config)).toBe(true); });
+  it('preserves scratch and cache write exceptions nested under a protected home', () => {
+    const c = { ...config(), app: '/home/runner/app', scratch: '/home/runner/scratch', tooling: '/home/runner/tools', node: '/home/runner/node/bin/node' }, k = kernel(c);
+    expect(tool.serviceArgs(c)).toContain('--property=ReadWritePaths=/home/runner/scratch /home/runner/app/.next/cache');
+    expect(tool.validateService(properties(c), c)).toBe(true); expect(tool.verifyKernel(k.input, k.io, c)).toBe(true);
+  });
+  it.each(['/home', '/root', '/run/user', '/app', '/tools', '/node/bin'])('rejects a writable protected mount at %s', name => {
+    const k = kernel(); k.values['/proc/self/mountinfo'] = k.values['/proc/self/mountinfo'].replace(` ${name} ro,`, ` ${name} rw,`);
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow('isolation');
+  });
+  it.each(['/scratch', '/app/.next/cache'])('rejects a read-only approved write mount at %s', name => {
+    const k = kernel(); k.values['/proc/self/mountinfo'] = k.values['/proc/self/mountinfo'].replace(` ${name} rw,`, ` ${name} ro,`);
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow('isolation');
+  });
+  it.each(['/home/runner/unapproved', '/app/.next/cache-other', '/home/runner/escaped\\040path'])('rejects an unexpected writable submount at %s', name => {
+    const k = kernel(); k.values['/proc/self/mountinfo'] += `10 2 8:1 / ${name} rw - ext4 /dev/root rw\n`;
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow('isolation');
+  });
+  it.each(['missing', 'malformed', 'oversized', 'ambiguous', 'superblock', 'symlink'])('rejects unavailable or inconsistent mount facts: %s', kind => {
+    const k = kernel();
+    if (kind === 'missing') k.values['/proc/self/mountinfo'] = '';
+    if (kind === 'malformed') k.values['/proc/self/mountinfo'] = 'invalid';
+    if (kind === 'oversized') k.values['/proc/self/mountinfo'] = 'x'.repeat(262145);
+    if (kind === 'ambiguous') k.values['/proc/self/mountinfo'] += '10 2 8:1 / /home ro - ext4 /dev/root rw\n';
+    if (kind === 'superblock') k.values['/proc/self/mountinfo'] = k.values['/proc/self/mountinfo'].replace(/ext4 \/dev\/root rw/g, 'ext4 /dev/root ro');
+    if (kind === 'symlink') k.io.realpathSync = name => name === '/home' ? '/elsewhere' : name;
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow('isolation');
+  });
   it.each(['namespace', 'interfaces', 'cgroup', 'memory', 'swap', 'cpu', 'tasks', 'privileges'])('rejects kernel mismatch %s', kind => {
     const k = kernel();
     if (kind === 'namespace') k.io.readlinkSync = () => 'net:[1]';
@@ -116,7 +147,7 @@ describe('service creation and effective readback', () => {
     if (kind === 'cpu') k.values[k.root + '/cpu.max'] = 'max 100000';
     if (kind === 'tasks') k.values[k.root + '/pids.max'] = 'max';
     if (kind === 'privileges') k.values['/proc/self/status'] = 'NoNewPrivs:\t0\n';
-    expect(() => tool.verifyKernel(k.input, k.io)).toThrow('isolation');
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow('isolation');
   });
 });
 
@@ -128,14 +159,76 @@ describe('progress, phases and separate service cleanup', () => {
     records.set('progress-00.json', progress(0)); expect(tool.recoverProgress('/scratch', 'hash', io, read)).toEqual(progress(1));
     records.set('progress-02.json', { ...progress(2), attempted: 2 }); expect(() => tool.recoverProgress('/scratch', 'hash', io, read)).toThrow('report_schema');
   });
-  it('rejects a mutated or disappearing phase prefix', () => {
-    const io = { existsSync: () => false };
-    expect(() => tool.readPhases('/scratch', 'hash', [{ phase: 'inspect', at: 10 }], io)).toThrow('report_schema');
+  it('ends an active journal scan at the first absent record and observes concurrent appends on the next poll', () => {
+    const initial = { phase: 'inspect', at: 10 }, appended = [{ phase: 'startup', at: 11 }, { phase: 'requests', at: 12 }];
+    const records = new Map([['phase-00.json', initial]]);
+    const io = { existsSync: jest.fn(filename => {
+      const name = path.basename(filename), exists = records.has(name);
+      if (name === 'phase-01.json' && !exists) {
+        records.set('phase-01.json', appended[0]); records.set('phase-02.json', appended[1]);
+      }
+      return exists;
+    }) }, read = jest.fn(filename => records.get(path.basename(filename)));
+    const first = tool.readPhases('/scratch', 'hash', [], io, read);
+    expect(first).toEqual([initial]); expect(read).toHaveBeenCalledTimes(1);
+    expect(io.existsSync).not.toHaveBeenCalledWith(path.join('/scratch', 'phase-02.json'));
+    expect(tool.readPhases('/scratch', 'hash', first, io, read)).toEqual([initial, ...appended]);
+  });
+  it.each([0, 1, 4])('rejects a final journal gap at index %i after the producer stops', missing => {
+    const records = new Map(['inspect', 'startup', 'requests', 'cleanup', 'recheck', 'complete']
+      .map((phase, i) => [`phase-0${i}.json`, { phase, at: 10 + i }]));
+    records.delete(`phase-0${missing}.json`);
+    const io = { existsSync: filename => records.has(path.basename(filename)) }, read = filename => records.get(path.basename(filename));
+    expect(() => tool.readPhases('/scratch', 'hash', [], io, read, true)).toThrow('report_schema');
+  });
+  it.each([false, true])('rejects mutated and disappearing observed prefixes with terminal=%s', terminal => {
+    const previous = [{ phase: 'inspect', at: 10 }], filename = path.join('/scratch', 'phase-00.json');
+    for (const value of [null, { phase: 'inspect', at: 11 }, { phase: 'startup', at: 10 }]) {
+      const io = { existsSync: name => name === filename && value !== null }, read = () => value;
+      expect(() => tool.readPhases('/scratch', 'hash', previous, io, read, terminal)).toThrow('report_schema');
+    }
   });
   it('accepts an unloaded completed transient unit only after checking the cgroup is absent', async () => {
     const run = jest.fn().mockRejectedValueOnce({ code: 'child_exit' }).mockResolvedValueOnce(Buffer.alloc(0));
     const io = { statSync: jest.fn(() => { throw Object.assign(new Error('absent'), { code: 'ENOENT' }); }) };
     expect(await tool.stopService(config(), run, io)).toBe(true); expect(io.statSync).toHaveBeenCalledTimes(1); expect(run).toHaveBeenCalledTimes(2);
+  });
+  it.each(['absent', 'empty', 'populated', 'permission'])('checks the cgroup after a unit unloads between list and show: %s', async state => {
+    const run = jest.fn().mockResolvedValueOnce(Buffer.alloc(0)).mockResolvedValueOnce(Buffer.from('unit row'))
+      .mockResolvedValueOnce(lines({ LoadState: 'not-found', ActiveState: 'inactive', SubState: 'dead' }));
+    const io = { statSync: jest.fn(() => {
+      if (state === 'absent' || state === 'permission') throw Object.assign(new Error(state), { code: state === 'absent' ? 'ENOENT' : 'EACCES' });
+      return { isDirectory: () => true };
+    }), readFileSync: jest.fn(() => state === 'empty' ? 'populated 0\n' : 'populated 1\n') };
+    const result = tool.stopService(config(), run, io);
+    if (state === 'absent' || state === 'empty') await expect(result).resolves.toBe(true);
+    else await expect(result).rejects.toThrow('cleanup');
+    const group = '/sys/fs/cgroup/system.slice/' + config().unit;
+    expect(io.statSync).toHaveBeenCalledWith(group); expect(run).toHaveBeenCalledTimes(3);
+    if (state === 'empty' || state === 'populated') expect(io.readFileSync).toHaveBeenCalledWith(path.join(group, 'cgroup.events'), 'utf8');
+    else expect(io.readFileSync).not.toHaveBeenCalled();
+  });
+  it.each([
+    { LoadState: 'loaded', ActiveState: 'active', SubState: 'running' },
+    { LoadState: 'not-found', ActiveState: 'active', SubState: 'running' },
+    { LoadState: 'not-found', ActiveState: 'inactive', SubState: 'running' },
+    { LoadState: 'not-found', ActiveState: 'failed', SubState: 'failed' },
+    { LoadState: 'error', ActiveState: 'inactive', SubState: 'dead' },
+  ])('rejects active or inconsistent unit metadata before checking the cgroup %#', async values => {
+    const run = jest.fn().mockResolvedValueOnce(Buffer.alloc(0)).mockResolvedValueOnce(Buffer.from('unit row')).mockResolvedValueOnce(lines(values));
+    const io = { statSync: jest.fn(() => { throw Object.assign(new Error('absent'), { code: 'ENOENT' }); }) };
+    await expect(tool.stopService(config(), run, io)).rejects.toThrow('cleanup'); expect(io.statSync).not.toHaveBeenCalled();
+  });
+  it.each(['child_exit', 'deadline', 'EACCES'])('propagates a show-command failure instead of treating it as an unloaded unit: %s', async code => {
+    const error = Object.assign(new Error('metadata'), { code });
+    const run = jest.fn().mockResolvedValueOnce(Buffer.alloc(0)).mockResolvedValueOnce(Buffer.from('unit row')).mockRejectedValueOnce(error);
+    const io = { statSync: jest.fn() };
+    await expect(tool.stopService(config(), run, io)).rejects.toBe(error); expect(io.statSync).not.toHaveBeenCalled();
+  });
+  it.each(['LoadState=not-found\nActiveState=inactive\n', 'LoadState=not-found\nActiveState=inactive\nSubState=dead\nLoadState=not-found\n'])('rejects malformed unloaded metadata %#', async value => {
+    const run = jest.fn().mockResolvedValueOnce(Buffer.alloc(0)).mockResolvedValueOnce(Buffer.from('unit row')).mockResolvedValueOnce(Buffer.from(value));
+    const io = { statSync: jest.fn() };
+    await expect(tool.stopService(config(), run, io)).rejects.toThrow('isolation'); expect(io.statSync).not.toHaveBeenCalled();
   });
   it.each(['populated', 'active', 'permission', 'timeout'])('does not claim service cleanup for %s', kind => {
     const run = jest.fn().mockResolvedValueOnce(Buffer.alloc(0)).mockResolvedValueOnce(Buffer.from('unit row'))
@@ -156,14 +249,27 @@ describe('progress, phases and separate service cleanup', () => {
     const result = await h.run(); expect(result).toMatchObject({ failure: null, serviceStopped: true, accounting: 'known' });
     expect(result.runtime.cases).toHaveLength(6); expect(h.ops.stop).toHaveBeenCalledTimes(1); expect(h.signals.listenerCount('SIGTERM')).toBe(0);
   });
+  it.each([false, true])('validates the final journal after producer exit, including records beyond a gap: %s', gap => {
+    const h = harness();
+    h.onTick(() => {
+      if (h.releaseAt === null) return;
+      for (const [i, phase] of ['inspect', 'stopped'].entries()) h.records.set(`phase-0${i}.json`, { inputHash: h.hash, phase, at: h.releaseAt + i });
+      if (gap) h.records.set('phase-03.json', { inputHash: h.hash, phase: 'stopped', at: h.releaseAt + 2 });
+      h.records.set('progress-00.json', { inputHash: h.hash, runtime: progress(0) });
+      h.records.set('runtime.json', { inputHash: h.hash, runtime: { ...progress(0), stage: 'inspect', failure: 'source_content' } });
+      h.finish();
+    });
+    return expect(h.run()).resolves.toMatchObject({ failure: gap ? 'report_schema' : 'source_content', serviceStopped: true });
+  });
   it('does not launch when the owned name is already reserved', async () => {
     const h = harness(); h.ops.run.mockResolvedValue(Buffer.from('existing unit'));
     expect(await h.run()).toMatchObject({ failure: 'reservation', serviceStopped: null, runtime: null, accounting: 'unknown' });
     expect(h.ops.stop).not.toHaveBeenCalled(); expect(h.ops.run).toHaveBeenCalledTimes(1);
   });
-  it('does not release a child after service readback fails', async () => {
+  it.each([{ PrivateNetwork: 'no' }, { ProtectHome: 'no' }, { ProtectHome: undefined }, { ReadWritePaths: '/scratch /app' }])('does not release a child after service readback fails %#', async change => {
     const h = harness(), original = h.ops.run.getMockImplementation();
-    h.ops.run.mockImplementation((command, args, options) => args.includes('show') ? Promise.resolve(lines({ ...properties(), PrivateNetwork: 'no' })) : original(command, args, options));
+    const values = { ...properties(), ...change }; if (values.ProtectHome === undefined) delete values.ProtectHome;
+    h.ops.run.mockImplementation((command, args, options) => args.includes('show') ? Promise.resolve(lines(values)) : original(command, args, options));
     expect(await h.run()).toMatchObject({ failure: 'isolation', serviceStopped: true, accounting: 'unknown' });
     expect(h.records.has('release.json')).toBe(false);
   });
@@ -179,6 +285,64 @@ describe('progress, phases and separate service cleanup', () => {
   it('handles cancellation with owned-service cleanup and removes listeners', async () => {
     const h = harness(); h.onTick(() => h.signals.emit('SIGTERM'));
     expect(await h.run()).toMatchObject({ failure: 'cancelled', serviceStopped: true }); expect(h.signals.listenerCount('SIGTERM')).toBe(0);
+  });
+  it.each(['absent', 'empty', 'unloaded', 'loaded', 'populated', 'metadata-error', 'permission'])('rechecks owned resources after launcher settlement: %s', async state => {
+    jest.useFakeTimers();
+    try {
+      const h = harness(), original = h.ops.run.getMockImplementation(), checks = [];
+      let stopping = false, settled = false;
+      h.ops.run.mockImplementation(async (command, args, options) => {
+        if (args[1] === 'systemd-run') { const value = await original(command, args, options); settled = true; return value; }
+        if (stopping) {
+          checks.push({ settled, timeoutMs: options.timeoutMs });
+          if (state === 'metadata-error') throw Object.assign(new Error('metadata'), { code: 'child_exit' });
+          if (args.includes('list-units')) return Buffer.from(state === 'loaded' || state === 'unloaded' ? 'unit row' : '');
+          return lines({ LoadState: state === 'unloaded' ? 'not-found' : 'loaded', ActiveState: 'inactive', SubState: 'dead' });
+        }
+        return original(command, args, options);
+      });
+      h.ops.stop.mockImplementation(async () => { stopping = true; return true; });
+      h.ops.fs.statSync.mockImplementation(() => {
+        if (state === 'absent' || state === 'unloaded' || state === 'permission') throw Object.assign(new Error(state), { code: state === 'permission' ? 'EACCES' : 'ENOENT' });
+        return { isDirectory: () => true };
+      });
+      h.ops.fs.readFileSync = jest.fn(() => state === 'populated' ? 'populated 1\n' : 'populated 0\n');
+      h.onTick(() => h.signals.emit('SIGTERM'));
+      const pending = h.run(); await jest.advanceTimersByTimeAsync(0);
+      expect(h.ops.stop).toHaveBeenCalledTimes(1); expect(checks).toEqual([]);
+      h.advance(4000); h.finish();
+      const valid = ['absent', 'empty', 'unloaded'].includes(state);
+      expect(await pending).toMatchObject({ failure: valid ? 'cancelled' : 'cleanup', serviceStopped: valid });
+      expect(checks.length).toBeGreaterThan(0); expect(checks.every(check => check.settled && check.timeoutMs === 1000)).toBe(true);
+      if (valid || state === 'populated' || state === 'permission') expect(h.ops.fs.statSync).toHaveBeenCalledWith('/sys/fs/cgroup/system.slice/' + config().unit);
+      expect(h.signals.listenerCount('SIGTERM')).toBe(0);
+    } finally { jest.useRealTimers(); }
+  });
+  it('keeps cleanup failed when the launcher cannot settle within five seconds', async () => {
+    jest.useFakeTimers();
+    try {
+      const h = harness(); h.onTick(() => h.signals.emit('SIGTERM')); h.ops.stop.mockResolvedValue(true);
+      const pending = h.run(); await jest.advanceTimersByTimeAsync(5000);
+      expect(await pending).toMatchObject({ failure: 'cleanup', serviceStopped: false });
+      expect(h.ops.fs.statSync).not.toHaveBeenCalled(); expect(h.signals.listenerCount('SIGTERM')).toBe(0); h.finish();
+    } finally { jest.useRealTimers(); }
+  });
+  it('bounds a stalled final metadata check by the remaining launcher settlement allowance', async () => {
+    jest.useFakeTimers();
+    try {
+      const h = harness(), original = h.ops.run.getMockImplementation(), checks = [];
+      let stopping = false;
+      h.ops.run.mockImplementation((command, args, options) => {
+        if (stopping) { checks.push(options.timeoutMs); return new Promise(() => {}); }
+        return original(command, args, options);
+      });
+      h.ops.stop.mockImplementation(async () => { stopping = true; return true; }); h.onTick(() => h.signals.emit('SIGTERM'));
+      const pending = h.run(); await jest.advanceTimersByTimeAsync(0);
+      h.advance(4000); h.finish(); await jest.advanceTimersByTimeAsync(0);
+      expect(checks).toEqual([1000]); await jest.advanceTimersByTimeAsync(1000);
+      expect(await pending).toMatchObject({ failure: 'cleanup', serviceStopped: false });
+      expect(h.ops.fs.statSync).not.toHaveBeenCalled(); expect(h.signals.listenerCount('SIGTERM')).toBe(0);
+    } finally { jest.useRealTimers(); }
   });
   it('does not equate stream-overflow launcher exit with stopped service', async () => {
     const h = harness(); h.onTick(() => { h.fail('stream_limit'); });

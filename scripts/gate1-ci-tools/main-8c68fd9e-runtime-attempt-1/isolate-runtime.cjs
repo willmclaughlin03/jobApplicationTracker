@@ -11,7 +11,7 @@ const { RuntimeError } = require('./inspect-runtime.cjs');
 const MEMORY = 6442450944;
 const PHASES = probe.PHASES;
 const STOP_MS = 20000;
-const PROPERTIES = Object.freeze({ PrivateNetwork: 'yes', PrivateTmp: 'yes', NoNewPrivileges: 'yes', ProtectSystem: 'strict', ProtectControlGroups: 'yes',
+const PROPERTIES = Object.freeze({ PrivateNetwork: 'yes', PrivateTmp: 'yes', NoNewPrivileges: 'yes', ProtectSystem: 'strict', ProtectHome: 'read-only', ProtectControlGroups: 'yes',
   CapabilityBoundingSet: '', AmbientCapabilities: '', RestrictAddressFamilies: 'AF_INET AF_INET6', RestrictNamespaces: 'yes', MemoryMax: String(MEMORY), MemorySwapMax: '0', TasksMax: '256',
   KillMode: 'control-group', SendSIGKILL: 'yes', Restart: 'no', LimitCORE: '0' });
 
@@ -90,8 +90,43 @@ function validateService(values, config) {
   return true;
 }
 
-/** Confirm actual namespace, cgroup limits, capabilities and no-new-privileges inside the child before Next loads. */
-function verifyKernel(input, io = fs) {
+/** Check the child's mount flags before readiness; only scratch/cache may override protected path trees. */
+function verifyMounts(config, io = fs) {
+  const protectedPaths = ['/home', '/root', '/run/user', config.app, config.tooling, path.posix.dirname(config.node)];
+  const writablePaths = [config.scratch, `${config.app}/.next/cache`];
+  for (const name of [...protectedPaths, ...writablePaths]) {
+    if (!name.startsWith('/') || io.realpathSync(name) !== name) throw new RuntimeError('isolation');
+  }
+  const text = io.readFileSync('/proc/self/mountinfo', 'utf8');
+  if (typeof text !== 'string' || !text.trim() || text.length > 262144) throw new RuntimeError('isolation');
+  /** Decode kernel mount paths so escaped characters cannot hide a writable protected submount. */
+  function decode(value) { return value.replace(/\\([0-7]{3})/g, (_match, octal) => String.fromCharCode(parseInt(octal, 8))); }
+  /** Compare whole path components; similarly named sibling directories are never write exceptions. */
+  function within(name, root) { return name === root || name.startsWith(root === '/' ? '/' : root + '/'); }
+  /** Require one unambiguous access mode from each per-mount and superblock option list. */
+  function readOnly(options) {
+    const modes = options.split(',').filter(value => value === 'ro' || value === 'rw');
+    if (modes.length !== 1) throw new RuntimeError('isolation');
+    return modes[0] === 'ro';
+  }
+  const mounts = text.trimEnd().split('\n').map(line => {
+    const parts = line.split(' - '), fields = parts[0].split(' '), superFields = parts[1]?.split(' ');
+    if (parts.length !== 2 || fields.length < 6 || superFields.length !== 3 || !fields[4].startsWith('/')) throw new RuntimeError('isolation');
+    const mountReadOnly = readOnly(fields[5]), superReadOnly = readOnly(superFields[2]);
+    return { name: decode(fields[4]), readOnly: mountReadOnly || superReadOnly };
+  });
+  for (const name of [...protectedPaths, ...writablePaths]) {
+    const matches = mounts.filter(mount => within(name, mount.name)).sort((a, b) => b.name.length - a.name.length);
+    if (!matches.length || matches[0].name === matches[1]?.name || matches[0].readOnly === writablePaths.includes(name)) throw new RuntimeError('isolation');
+  }
+  for (const mount of mounts) {
+    if (protectedPaths.some(root => within(mount.name, root)) && !writablePaths.some(root => within(mount.name, root)) && !mount.readOnly) throw new RuntimeError('isolation');
+  }
+  return true;
+}
+
+/** Confirm kernel controls and effective mount permissions inside the child before publishing readiness. */
+function verifyKernel(input, io = fs, config) {
   /** Limit pseudo-file contents in memory; none are copied to retained evidence. */
   const read = name => { const value = io.readFileSync(name, 'utf8'); if (value.length > 16384) throw new RuntimeError('isolation'); return value.trim(); };
   const namespace = io.readlinkSync('/proc/self/ns/net');
@@ -104,6 +139,7 @@ function verifyKernel(input, io = fs) {
       read(`${root}/memory.max`) !== String(MEMORY) || read(`${root}/memory.swap.max`) !== '0' || read(`${root}/pids.max`) !== '256') throw new RuntimeError('isolation');
   const status = read('/proc/self/status');
   if (!/^NoNewPrivs:\s+1$/m.test(status) || !/^CapEff:\s+0+$/m.test(status) || !/^CapBnd:\s+0+$/m.test(status) || !/^Seccomp:\s+2$/m.test(status)) throw new RuntimeError('isolation');
+  verifyMounts(config, io);
   return true;
 }
 
@@ -133,6 +169,24 @@ function recoverProgress(scratch, inputHash, io = fs, read = readBoundRecord) {
   return last;
 }
 
+/** Verify only the owned unit and cgroup through bounded commands; requireUnloaded rejects late service registration. */
+async function verifyServiceStopped(config, command, io, requireUnloaded = false) {
+  const listed = await command(listArgs(config.unit));
+  if (listed.toString('utf8').trim()) {
+    const values = parseProperties(await command(['show', config.unit, '--all', '--property=LoadState,ActiveState,SubState']), ['LoadState', 'ActiveState', 'SubState']);
+    // A transient unit can unload between list and show; its cgroup must still be verified below.
+    const inactive = values.ActiveState === 'inactive' && values.SubState === 'dead';
+    const unloaded = values.LoadState === 'not-found' && inactive;
+    const stopped = values.LoadState === 'loaded' && (inactive || (values.ActiveState === 'failed' && values.SubState === 'failed'));
+    if (!(unloaded || (!requireUnloaded && stopped))) throw new RuntimeError('cleanup');
+  }
+  const group = `/sys/fs/cgroup/system.slice/${config.unit}`;
+  try {
+    if (!io.statSync(group).isDirectory() || !/^populated 0$/m.test(io.readFileSync(path.join(group, 'cgroup.events'), 'utf8'))) throw new RuntimeError('cleanup');
+  } catch (error) { if (error.code !== 'ENOENT') throw new RuntimeError('cleanup'); }
+  return true;
+}
+
 /** Stop exactly the reserved unit and prove its cgroup empty; launcher exit alone is never cleanup evidence. */
 async function stopService(config, run = base.supervise, io = fs, now = Date.now) {
   const deadline = now() + STOP_MS;
@@ -143,15 +197,7 @@ async function stopService(config, run = base.supervise, io = fs, now = Date.now
   }
   try { await command(['stop', config.unit]); }
   catch (error) { if (error.code !== 'child_exit') throw new RuntimeError('cleanup'); }
-  const listed = await command(listArgs(config.unit));
-  if (listed.toString('utf8').trim()) {
-    const values = parseProperties(await command(['show', config.unit, '--all', '--property=LoadState,ActiveState,SubState']), ['LoadState', 'ActiveState', 'SubState']);
-    if (values.LoadState !== 'loaded' || !((values.ActiveState === 'inactive' && values.SubState === 'dead') || (values.ActiveState === 'failed' && values.SubState === 'failed'))) throw new RuntimeError('cleanup');
-  }
-  const group = `/sys/fs/cgroup/system.slice/${config.unit}`;
-  try {
-    if (!io.statSync(group).isDirectory() || !/^populated 0$/m.test(io.readFileSync(path.join(group, 'cgroup.events'), 'utf8'))) throw new RuntimeError('cleanup');
-  } catch (error) { if (error.code !== 'ENOENT') throw new RuntimeError('cleanup'); }
+  await verifyServiceStopped(config, command, io);
   if (now() >= deadline) throw new RuntimeError('cleanup');
   return true;
 }
@@ -159,13 +205,16 @@ async function stopService(config, run = base.supervise, io = fs, now = Date.now
 /** List only the owned unit; unlike show, an unloaded transient unit is a successful empty query. */
 function listArgs(unit) { return ['list-units', '--all', '--full', '--plain', '--no-legend', '--no-pager', unit]; }
 
-/** Read a contiguous immutable phase journal, rejecting gaps and changes between parent observations. */
-function readPhases(scratch, inputHash, previous, io = fs, read = readBoundRecord) {
+/** Read the immutable observed prefix; terminal scans also reject gaps once the producer has stopped. */
+function readPhases(scratch, inputHash, previous, io = fs, read = readBoundRecord, terminal = false) {
   const records = [];
   let gap = false;
   for (let index = 0; index < probe.PHASE_FILES; index++) {
     const filename = path.join(scratch, `phase-${String(index).padStart(2, '0')}.json`);
-    if (!io.existsSync(filename)) { gap = true; continue; }
+    if (!io.existsSync(filename)) {
+      if (!terminal) break; // Later slots may appear while the producer appends; revisit them next poll.
+      gap = true; continue;
+    }
     if (gap) throw new RuntimeError('report_schema');
     const { phase, at } = read(filename, inputHash, ['phase', 'at']);
     records.push({ phase, at });
@@ -232,7 +281,7 @@ async function runIsolated(app, scratch, context, selected, remainingMs, operati
     }
     if (cancelled) throw new RuntimeError('cancelled');
     if (!released) throw new RuntimeError(childFailure || 'isolation');
-    phases = readPhases(scratch, inputHash, phases, io, operations.read || readBoundRecord);
+    phases = readPhases(scratch, inputHash, phases, io, operations.read || readBoundRecord, true);
     const terminal = probe.validatePhases(phases, releaseAt, now(), input.deadline, true);
     const record = (operations.read || readBoundRecord)(path.join(scratch, 'runtime.json'), inputHash, ['runtime']);
     const candidate = probe.validateRuntime(record.runtime, !record.runtime.failure);
@@ -254,7 +303,18 @@ async function runIsolated(app, scratch, context, selected, remainingMs, operati
       catch { serviceStopped = false; failure = 'cleanup'; }
     }
     if (pending) {
-      try { await probe.bounded(pending, 5000, 'cleanup'); } catch { failure = 'cleanup'; serviceStopped = false; }
+      const deadline = now() + 5000;
+      /** Share the launcher settlement bound with final metadata reads, including after cancellation. */
+      async function cleanupMetadata(args) {
+        const remaining = deadline - now();
+        if (remaining <= 0) throw new RuntimeError('cleanup');
+        return run('sudo', ['-n', 'systemctl', ...args], { ...options, timeoutMs: remaining });
+      }
+      try {
+        await probe.bounded(pending, 5000, 'cleanup');
+        await probe.bounded(verifyServiceStopped(config, cleanupMetadata, io, true), deadline - now(), 'cleanup');
+        if (now() >= deadline) throw new RuntimeError('cleanup');
+      } catch { failure = 'cleanup'; serviceStopped = false; }
     }
     signals.removeListener('SIGINT', cancel); signals.removeListener('SIGTERM', cancel);
   }

@@ -1,5 +1,5 @@
 'use strict';
-/* global describe, it, expect, afterEach, jest, __dirname, Buffer, setTimeout */
+/* global describe, it, expect, afterEach, jest, __dirname, Buffer, setTimeout, process */
 
 /** Offline response, lifecycle and evidence fixtures: no real HTTP client, listener or Next instance. */
 const fs = require('node:fs');
@@ -196,9 +196,15 @@ describe('same-process lifecycle and truthful cleanup', () => {
 describe('atomic protocol and strict evidence', () => {
   it('never exposes a partial file and refuses overwrite/replay', () => {
     const dir = scratch(), write = fs.writeFileSync;
-    jest.spyOn(fs, 'writeFileSync').mockImplementation((fd, bytes) => { expect(fs.existsSync(path.join(dir, 'ready.json'))).toBe(false); return write(fd, bytes); });
+    const writeSpy = jest.spyOn(fs, 'writeFileSync').mockImplementation((fd, bytes) => { expect(fs.existsSync(path.join(dir, 'ready.json'))).toBe(false); return write(fd, bytes); });
     tool.publish(dir, 'ready.json', { value: true }); expect(tool.readJson(path.join(dir, 'ready.json'))).toEqual({ value: true });
+    writeSpy.mockRestore();
+    const original = fs.readFileSync(path.join(dir, 'ready.json')), link = jest.spyOn(fs, 'linkSync');
     expect(() => tool.publish(dir, 'ready.json', { value: false })).toThrow('persistence');
+    expect(link).toHaveBeenCalledTimes(1);
+    expect(link).toHaveBeenCalledWith(path.join(dir, '.pending-ready.json'), path.join(dir, 'ready.json'));
+    expect(link.mock.results[0]).toMatchObject({ type: 'throw', value: { code: 'EEXIST' } });
+    expect(fs.readFileSync(path.join(dir, 'ready.json'))).toEqual(original);
     expect(tool.readJson(path.join(dir, 'ready.json'))).toEqual({ value: true });
   });
   it('leaves interrupted pending writes invisible and cannot replay them', () => {
@@ -241,9 +247,10 @@ describe('atomic protocol and strict evidence', () => {
   });
   it('does not load Next before kernel verification and keeps pre-release accounting unavailable to the parent', async () => {
     const dir = scratch(); tool.publish(dir, 'input.json', { synthetic: true });
-    const makeNext = jest.fn();
+    const makeNext = jest.fn(), verifyKernel = jest.fn(() => { throw Object.assign(new Error('isolation'), { code: 'isolation' }); });
     const report = await tool.childMain('/app', dir, { validateInput: value => value, childFlag: '1',
-      verifyKernel: () => { throw Object.assign(new Error('isolation'), { code: 'isolation' }); }, smoke: { makeNext } });
+      verifyKernel, smoke: { makeNext } });
+    expect(verifyKernel).toHaveBeenCalledWith({ synthetic: true }, fs, { app: '/app', scratch: dir, tooling: path.resolve(__dirname, '../../../..'), node: process.execPath });
     expect(report.failure).toBe('isolation'); expect(makeNext).not.toHaveBeenCalled(); expect(fs.existsSync(path.join(dir, 'ready.json'))).toBe(false);
     expect(fs.existsSync(path.join(dir, 'progress-00.json'))).toBe(false);
   });
