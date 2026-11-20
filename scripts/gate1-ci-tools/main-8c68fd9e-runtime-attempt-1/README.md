@@ -123,6 +123,15 @@ deadline across Next preparation and listening. Application cleanup starts both
 asynchronous closures against one deadline and attempts remaining actions even
 when one fails.
 
+A failed startup can journal its expired startup-to-cleanup transition and retain
+observed descriptor restoration and close settlement in a validated stopped report.
+This exception cannot qualify success or extend cleanup, other phase, or total
+deadlines; the live watchdog retains its strict checks. `nextClosed` means only
+that the returned `next.close()` promise settled within the cleanup budget.
+The public Next API hides cleanup-listener outcomes, so this field does not attest
+to listener success. A rejected close still fails cleanup; a late settlement
+never upgrades the flag. Expired bounds still observe already-started rejections.
+
 Protocol JSON is capped and canonical, beneath a checked link-free scratch path.
 An exclusive pending file is fully written, flushed and closed, then atomically
 hard-linked to an exclusive final name. Readers never see a partial final file;
@@ -141,6 +150,13 @@ validated terminal report, a request snapshot has `accounting: last_attempt_unce
 counts and `accounting: known`; validated snapshots before any intent confirm zero.
 Absent or invalid progress remains unknown. Cleanup fields remain null when unobserved;
 partial descriptor installation records whether restoration actually succeeded.
+Before release, only an input-bound, schema-validated failure record with an
+allowlisted category can refine the launcher failure. Runtime/request accounting
+stays unknown; pre-release success or malformed evidence cannot qualify the run.
+
+The runtime adapter requires string build/hash fields and the exact manifest key
+set before delegating inspection validation to the unchanged static package.
+Native caller offsets recognize LF, CR, CRLF as one ending, U+2028 and U+2029.
 
 Cancellation aborts the owned launcher and separately stops/verifies the owned
 systemd unit and cgroup. Launcher exit alone is not proof of service termination.
@@ -158,7 +174,15 @@ also discarded. Manager commands capture only requested bounded metadata in memo
 their stderr is discarded. The tools print only fixed result/failure fields and
 digests. No raw logs, source/AST/spans/stacks, challenges, headers, bodies or secret
 values are uploaded. Ready/progress/phase records remain runner-local; only validated
-`gate1-runtime-evidence/report.json` can be uploaded. Ordinary platform unit lifecycle
+report bytes can be uploaded. Qualification emits the committed `reportSha256`
+through Actions output even for stopped runs and post-commit pending cleanup
+failures. Validation runs from an independent `validation-tooling` checkout of the
+approved workflow revision, checks its head and package against the approved
+context, and receives that output as its expected digest. This also permits a
+stopped `tool_identity` report when the original tooling checkout drifted.
+The verified snapshot is written exclusively to `gate1-runtime-upload/report.json`;
+the upload step reads that snapshot, without rereading the original report.
+Ordinary platform unit lifecycle
 metadata is not a comprehensive platform logging/privacy qualification.
 
 Primary platform references: [execution controls](https://www.freedesktop.org/software/systemd/man/255/systemd.exec.html),

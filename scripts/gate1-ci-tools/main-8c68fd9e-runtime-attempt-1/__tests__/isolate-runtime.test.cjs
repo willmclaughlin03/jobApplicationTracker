@@ -340,6 +340,51 @@ describe('progress, phases and separate service cleanup', () => {
     expect(await h.run()).toMatchObject({ failure: 'reservation', serviceStopped: null, runtime: null, accounting: 'unknown' });
     expect(h.ops.stop).not.toHaveBeenCalled(); expect(h.ops.run).toHaveBeenCalledTimes(1);
   });
+  it.each(['isolation', 'node_version', 'dependency_version', 'persistence'])('retains validated pre-release %s while leaving accounting unknown', async failure => {
+    const h = harness(), original = h.ops.run.getMockImplementation();
+    h.ops.run.mockImplementation(async (command, args, options) => {
+      if (args[1] !== 'systemd-run') return original(command, args, options);
+      h.records.set('runtime.json', { inputHash: h.hash, runtime: { ...probe.emptyRuntime(), failure } });
+      h.records.set('progress-00.json', { inputHash: h.hash, runtime: progress(0) }); // Unreleased progress is never request evidence.
+      throw Object.assign(new Error('child_exit'), { code: 'child_exit' });
+    });
+    expect(await h.run()).toMatchObject({ failure, runtime: null, accounting: 'unknown', serviceStopped: true });
+    expect(h.records.has('release.json')).toBe(false);
+  });
+  it.each(['missing', 'unbound', 'extra', 'category', 'success', 'released', 'requests'])('preserves child_exit for %s pre-release evidence', async variant => {
+    const h = harness(), original = h.ops.run.getMockImplementation();
+    h.ops.run.mockImplementation(async (command, args, options) => {
+      if (args[1] !== 'systemd-run') return original(command, args, options);
+      const record = { inputHash: h.hash, runtime: { ...probe.emptyRuntime(), failure: 'isolation' } };
+      if (variant === 'unbound') record.inputHash = 'f'.repeat(64);
+      if (variant === 'extra') record.extra = true;
+      if (variant === 'category') record.runtime.failure = 'untrusted';
+      if (variant === 'success') record.runtime.failure = null;
+      if (variant === 'released') record.runtime.isolationVerified = true;
+      if (variant === 'requests') record.runtime.attempted = 1;
+      if (variant !== 'missing') h.records.set('runtime.json', record);
+      throw Object.assign(new Error('child_exit'), { code: 'child_exit' });
+    });
+    expect(await h.run()).toMatchObject({ failure: 'child_exit', runtime: null, accounting: 'unknown', serviceStopped: true });
+  });
+  it.each(['valid', 'unbound', 'success', 'cleanup-overrun', 'total', 'phase-gap'])('recovers only stopped startup-timeout cleanup evidence: %s', async variant => {
+    const h = harness();
+    h.onTick(() => {
+      const timings = [0, 1, 30001, variant === 'cleanup-overrun' ? 35001 : 30002];
+      ['inspect', 'startup', 'cleanup', 'stopped'].forEach((phase, i) => {
+        if (variant !== 'phase-gap' || i !== 2) h.records.set(`phase-0${i}.json`, { inputHash: h.hash, phase, at: h.releaseAt + timings[i] });
+      });
+      h.records.set('progress-00.json', { inputHash: h.hash, runtime: progress(0) });
+      h.records.set('runtime.json', { inputHash: variant === 'unbound' ? 'f'.repeat(64) : h.hash, runtime: {
+        ...progress(0), stage: 'cleanup', inspection: facts(), failure: variant === 'success' ? null : 'startup', descriptorsRestored: true, nextClosed: true,
+      } });
+      h.advance(variant === 'total' ? 360000 : 36000); h.finish();
+    });
+    const result = await h.run();
+    expect(result).toMatchObject({ failure: variant === 'valid' ? 'startup' : 'deadline', accounting: 'known', serviceStopped: true });
+    expect(result.runtime.descriptorsRestored).toBe(variant === 'valid' ? true : null);
+    expect(result.runtime.nextClosed).toBe(variant === 'valid' ? true : null);
+  });
   it.each([{ PrivateNetwork: 'no' }, { ProtectHome: 'no' }, { ProtectHome: undefined }, { ReadWritePaths: '/scratch /app' }])('does not release a child after service readback fails %#', async change => {
     const h = harness(), original = h.ops.run.getMockImplementation();
     const values = { ...properties(), ...change }; if (values.ProtectHome === undefined) delete values.ProtectHome;

@@ -70,18 +70,30 @@ jobs:
         id: qualify
         timeout-minutes: 25
         run: node tooling/scripts/gate1-ci-tools/main-8c68fd9e-runtime-attempt-1/qualify-runtime.cjs --run
+      - name: Check out approved tools independently for validation
+        id: validation_tools
+        if: ${{ always() && steps.qualify.outputs.reportSha256 != '' }}
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        timeout-minutes: 2
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: validation-tooling
+          fetch-depth: 1
+          persist-credentials: false
       - name: Validate the report before upload
         id: validate
-        if: ${{ always() && steps.qualify.outcome != 'skipped' }}
+        if: ${{ always() && steps.validation_tools.outcome == 'success' }}
         timeout-minutes: 1
-        run: node tooling/scripts/gate1-ci-tools/main-8c68fd9e-runtime-attempt-1/qualify-runtime.cjs --validate-upload
+        env:
+          GATE1_REPORT_SHA256: ${{ steps.qualify.outputs.reportSha256 }}
+        run: node validation-tooling/scripts/gate1-ci-tools/main-8c68fd9e-runtime-attempt-1/qualify-runtime.cjs --validate-upload
       - name: Retain the sanitized report only
         if: ${{ always() && steps.validate.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         timeout-minutes: 2
         with:
           name: gate1-runtime-8c68fd9e-${{ github.run_id }}-${{ github.run_attempt }}
-          path: gate1-runtime-evidence/report.json
+          path: gate1-runtime-upload/report.json
           if-no-files-found: error
           retention-days: 7
           compression-level: 0

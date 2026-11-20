@@ -174,15 +174,36 @@ async function execute(env = process.env) {
   return { result: report.result, stage: report.stage, failure: report.failure, reportSha256, cleanupFailure };
 }
 
-/** Verify one bounded byte snapshot against the run-bound hash, canonical JSON and expected report schema. */
-function verifyReport(filename, digest, expected) {
-  if (!HASH.test(digest || '')) throw new RuntimeError('report_digest');
+/** Authenticate one bounded snapshot, retaining its bytes so upload never rereads the mutable source file. */
+function verifiedSnapshot(filename, digest, expected) {
+  if (typeof digest !== 'string' || !HASH.test(digest)) throw new RuntimeError('report_digest');
   const bytes = base.readBounded(filename);
   if (base.sha(bytes) !== digest) throw new RuntimeError('report_digest');
   const text = bytes.toString('utf8'); let report;
   try { report = JSON.parse(text); } catch { throw new RuntimeError('report_schema'); }
   if (text !== JSON.stringify(report, null, 2) + '\n') throw new RuntimeError('report_schema');
-  return validateReport(report, expected);
+  return { report: validateReport(report, expected), bytes };
+}
+
+/** Verify a report against an independently supplied digest and approved context for read-only review. */
+function verifyReport(filename, digest, expected) {
+  return verifiedSnapshot(filename, digest, expected).report;
+}
+
+/** Use the fresh approved checkout to validate the committed digest, then stage exactly those bytes for upload. */
+async function validateUpload(env = process.env) {
+  const workspace = fs.realpathSync(env.GITHUB_WORKSPACE), tooling = path.join(workspace, 'validation-tooling');
+  if (path.resolve(__dirname) !== path.join(tooling, 'scripts/gate1-ci-tools', NAME)) throw new RuntimeError('tool_identity');
+  const profile = packageProfile(), context = validateContext(env, profile);
+  const head = (await base.supervise('git', ['-c', 'core.hooksPath=/dev/null', '-C', tooling, 'rev-parse', 'HEAD'],
+    { env: base.childEnvironment(workspace), capture: true, cap: 64 })).toString('utf8').trim();
+  if (head !== context.workflowSha) throw new RuntimeError('tool_identity');
+  const reportSha256 = env.GATE1_REPORT_SHA256;
+  const { bytes } = verifiedSnapshot(path.join(workspace, 'gate1-runtime-evidence/report.json'), reportSha256, context);
+  const upload = path.join(workspace, 'gate1-runtime-upload');
+  fs.mkdirSync(upload, { mode: 0o700 });
+  fs.writeFileSync(path.join(upload, 'report.json'), bytes, { flag: 'wx', mode: 0o400 });
+  return { reportSha256 };
 }
 
 /** Expose read-only preparation/review modes separately from the guarded one-run CI entry point. */
@@ -200,18 +221,17 @@ async function main(args = process.argv.slice(2)) {
     const report = verifyReport(args[1], args[2], expected);
     return { result: report.result, stage: report.stage, failure: report.failure, reportSha256: args[2] };
   }
-  if (args[0] === '--validate-upload' && args.length === 1) {
-    const profile = packageProfile(), context = validateContext(process.env, profile), filename = path.join(fs.realpathSync(process.env.GITHUB_WORKSPACE), 'gate1-runtime-evidence/report.json');
-    const reportSha256 = base.sha(base.readBounded(filename)); verifyReport(filename, reportSha256, context);
-    return { reportSha256 };
-  }
+  if (args[0] === '--validate-upload' && args.length === 1) return validateUpload();
   throw new RuntimeError('approval');
 }
 
 if (require.main === module) main().then(result => {
   process.stdout.write(JSON.stringify(result) + '\n');
+  if (process.argv[2] === '--run' && result.reportSha256 && process.env.GITHUB_OUTPUT) {
+    fs.appendFileSync(process.env.GITHUB_OUTPUT, `reportSha256=${result.reportSha256}\n`);
+  }
   if (result.result === 'stopped' || result.cleanupFailure) process.exitCode = 1;
 }).catch(error => { process.stderr.write(JSON.stringify({ failure: probe.failureCode(error) }) + '\n'); process.exitCode = 1; });
 
 module.exports = { SOURCE: base.SOURCE, NAME, WORKFLOW, STATIC_DIGEST, FILES, STAGES, workflowPath, profileBytes, packageProfile, executionProfile, validateContext,
-  initialReport, validateReport, qualify, execute, verifyReport, main };
+  initialReport, validateReport, qualify, execute, verifyReport, validateUpload, main };

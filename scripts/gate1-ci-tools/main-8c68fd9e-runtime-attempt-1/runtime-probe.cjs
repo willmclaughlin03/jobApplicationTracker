@@ -8,6 +8,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const { createRequire } = require('node:module');
 const base = require('../main-8c68fd9e-static-attempt-1/qualify-static.cjs');
+const staticInspector = require('../main-8c68fd9e-static-attempt-1/inspect-compiled.cjs');
 const inspector = require('./inspect-runtime.cjs');
 const { RuntimeError } = inspector;
 const HEADERS = Object.freeze({ key: 'x-gate1-middleware-probe-key', challenge: 'x-gate1-middleware-probe-challenge', observation: 'x-gate1-middleware-runtime' });
@@ -32,7 +33,10 @@ function failureCode(error) { return CODES.includes(error?.code) ? error.code : 
 /** Bound async startup and cleanup independently; the service deadline also covers synchronous stalls. */
 function bounded(promise, ms, code = 'deadline') {
   let timer;
-  if (!Number.isFinite(ms) || ms <= 0) return Promise.reject(new RuntimeError(code));
+  if (!Number.isFinite(ms) || ms <= 0) {
+    Promise.resolve(promise).catch(() => {}); // The operation already started; observe late rejection even after expiry.
+    return Promise.reject(new RuntimeError(code));
+  }
   return Promise.race([promise, new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new RuntimeError(code)), ms); })]).finally(() => clearTimeout(timer));
 }
 
@@ -146,7 +150,12 @@ function validateRuntime(value, complete = false) {
       ['descriptorsRestored', 'serverClosed', 'nextClosed'].some(key => value[key] !== null && typeof value[key] !== 'boolean')) throw new RuntimeError('report_schema');
   validateCases(value.cases);
   if (value.cases.length > value.attempted || value.attempted - value.cases.length > 1 || (value.attempted > 0 && (!value.serverStarted || !value.isolationVerified || value.inspection === null))) throw new RuntimeError('report_schema');
-  if (value.inspection !== null) base.validateInspection(value.inspection);
+  if (value.inspection !== null) {
+    const facts = value.inspection;
+    if (!facts || typeof facts.buildId !== 'string' || typeof facts.traceHash !== 'string' || typeof facts.compiledClosureHash !== 'string' ||
+        !exactKeys(facts.manifests, staticInspector.NAMES) || Object.values(facts.manifests).some(hash => typeof hash !== 'string')) throw new RuntimeError('report_schema');
+    base.validateInspection(facts);
+  }
   if ((value.serverStarted && (!value.isolationVerified || value.inspection === null)) ||
       (value.inspection !== null && !value.isolationVerified) || (value.compiledUnchanged && (value.inspection === null || value.cases.length !== 6)) ||
       (value.sourceUnchanged && !value.compiledUnchanged) || (value.stage === 'complete' && !complete)) {
@@ -167,7 +176,7 @@ async function smoke(app, inspection, report, progress, operations = {}) {
   const request = operations.request || getLocal;
   const nativeVersion = operations.nativeVersion || process.version;
   const now = operations.now || Date.now, phase = operations.phase || (() => {});
-  let observer, next, server, serverError = false;
+  let observer, next, server, serverError = false, failed = false;
   const sockets = new Set();
   const listening = new AbortController();
   try {
@@ -197,11 +206,14 @@ async function smoke(app, inspection, report, progress, operations = {}) {
       if (serverError) throw new RuntimeError('http');
       report.cases.push(reviewResponse(response, item, observer.snapshot(), nativeVersion));
     }
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
     const cleanup = [];
     const cleanupDeadline = now() + LIMITS.cleanupMs;
     report.stage = 'cleanup';
-    try { phase('cleanup'); } catch { cleanup.push('phase'); }
+    try { phase('cleanup', failed); } catch { cleanup.push('phase'); }
     listening.abort();
     if (observer) {
       try { observer.restore(); report.descriptorsRestored = true; }
@@ -216,7 +228,10 @@ async function smoke(app, inspection, report, progress, operations = {}) {
         .catch(() => { cleanup.push('server'); }));
     } catch { cleanup.push('server'); }
     try {
-      if (next) closures.push(bounded(next.close(), cleanupDeadline - now(), 'cleanup').then(() => { report.nextClosed = true; }).catch(() => { cleanup.push('next'); }));
+      // Public close() hides listener outcomes; this flag observes only its returned promise's timely settlement.
+      if (next) closures.push(bounded(Promise.resolve(next.close()).finally(() => {
+        if (now() < cleanupDeadline) report.nextClosed = true;
+      }), cleanupDeadline - now(), 'cleanup').catch(() => { cleanup.push('next'); }));
     } catch { cleanup.push('next'); }
     await Promise.all(closures);
     if (now() >= cleanupDeadline) cleanup.push('deadline');
@@ -258,18 +273,20 @@ function publish(scratch, name, value, io = fs) {
   return base.sha(bytes);
 }
 
-/** Check phase order and bounds; phaseNow predates a live scan, while now bounds newly observed timestamps and total time. */
-function validatePhases(records, releaseAt, now, deadline, terminal = false, phaseNow = now) {
+/** Check order and deadlines; stoppedStartupCleanup permits only failed startup-to-cleanup overrun, never completion or a longer cleanup/total budget. */
+function validatePhases(records, releaseAt, now, deadline, terminal = false, phaseNow = now, stoppedStartupCleanup = false) {
   if (!Array.isArray(records) || records.length > PHASE_FILES || !Number.isSafeInteger(releaseAt) || !Number.isSafeInteger(now) ||
       !Number.isSafeInteger(phaseNow) || phaseNow < releaseAt || phaseNow > now) throw new RuntimeError('report_schema');
   let previous = { phase: 'isolation', at: releaseAt };
   for (const value of records) {
     if (!exactKeys(value, ['phase', 'at']) || !Number.isSafeInteger(value.at) || value.at < previous.at || value.at > now || value.at >= deadline ||
         !TRANSITIONS[previous.phase].includes(value.phase)) throw new RuntimeError('report_schema');
-    if (value.at - previous.at >= (PHASES[previous.phase] || LIMITS.startupMs)) throw new RuntimeError('deadline');
+    const failedStartup = stoppedStartupCleanup && previous.phase === 'startup' && value.phase === 'cleanup';
+    if (!failedStartup && value.at - previous.at >= (PHASES[previous.phase] || LIMITS.startupMs)) throw new RuntimeError('deadline');
     previous = value;
   }
   if (terminal && !['complete', 'stopped'].includes(previous.phase)) throw new RuntimeError('report_schema');
+  if (stoppedStartupCleanup && !['cleanup', 'stopped'].includes(previous.phase)) throw new RuntimeError('report_schema');
   if (!['complete', 'stopped'].includes(previous.phase) && phaseNow - previous.at >= (PHASES[previous.phase] || LIMITS.startupMs)) throw new RuntimeError('deadline');
   if (now >= deadline) throw new RuntimeError('deadline');
   return previous.phase;
@@ -301,7 +318,7 @@ async function childMain(app, scratch, operations = {}) {
   const isolation = require('./isolate-runtime.cjs'), input = (operations.validateInput || validateInput)(readJson(recordPath(scratch, 'input.json')), app);
   const inputHash = base.sha(base.readBounded(path.join(scratch, 'input.json'))), report = emptyRuntime();
   const now = operations.now || Date.now, phases = [];
-  let sequence = 0, releaseAt = null;
+  let sequence = 0, releaseAt = null, stoppedStartupCleanup = false;
   /** Persist monotonic request intent exclusively; only terminal evidence confirms the last transport attempt. */
   function progress(value) {
     validateRuntime(value);
@@ -309,9 +326,13 @@ async function childMain(app, scratch, operations = {}) {
     publish(scratch, `progress-${String(sequence++).padStart(2, '0')}.json`, { inputHash, runtime: value });
   }
   /** Publish lifecycle transitions before work, so the external watchdog also bounds synchronous stalls. */
-  function phase(name) {
+  function phase(name, failed = false) {
     const value = { phase: name, at: now() };
-    validatePhases([...phases, value], releaseAt, now(), input.deadline);
+    // Only an already-failed startup may record its late cleanup; success paths keep every strict phase cap.
+    const failedStartup = failed && name === 'cleanup' && phases.at(-1)?.phase === 'startup';
+    const checkedAt = now();
+    validatePhases([...phases, value], releaseAt, checkedAt, input.deadline, false, checkedAt, stoppedStartupCleanup || failedStartup);
+    stoppedStartupCleanup ||= failedStartup;
     publish(scratch, `phase-${String(phases.length).padStart(2, '0')}.json`, { inputHash, ...value });
     phases.push(value);
   }

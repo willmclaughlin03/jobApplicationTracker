@@ -70,6 +70,7 @@ function executionHarness(failure = null) {
       if (typeof target !== 'number' && options.flag === 'wx' && saved.has(name)) throw Object.assign(new Error('exists'), { code: 'EEXIST' });
       saved.set(name, Buffer.from(bytes));
     }),
+    appendFileSync: jest.fn((name, bytes) => saved.set(name, Buffer.concat([saved.get(name) || Buffer.alloc(0), Buffer.from(bytes)]))),
     fsyncSync: jest.fn(), closeSync: jest.fn(fd => opened.delete(fd)),
     linkSync: jest.fn((source, destination) => {
       if (saved.has(destination)) throw Object.assign(new Error('exists'), { code: 'EEXIST' });
@@ -77,7 +78,7 @@ function executionHarness(failure = null) {
     }),
     unlinkSync: jest.fn(name => { if (!saved.delete(name)) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); }) };
   jest.spyOn(fs, 'writeFileSync').mockImplementation(io.writeFileSync);
-  const mockedBase = { ...base, packageProfile: jest.fn().mockReturnValue(dependency), readBounded: jest.fn().mockReturnValue(Buffer.from('synthetic-file')),
+  const mockedBase = { ...base, packageProfile: jest.fn().mockReturnValue(dependency), readBounded: jest.fn(name => saved.get(name) || Buffer.from('synthetic-file')),
     sourceProfile: jest.fn().mockResolvedValue({ entries: [], routes: ['/login', '/admin'] }), verifyFiles: jest.fn(),
     supervise: jest.fn(async command => Buffer.from(command === 'git' ? context().workflowSha : base.VERSIONS.npm)),
     installedVersions: () => ({ ...base.VERSIONS }), childEnvironment: () => ({}), writeOnce: jest.fn(base.writeOnce) };
@@ -92,7 +93,7 @@ function executionHarness(failure = null) {
     process: { platform: 'linux', arch: 'x64', versions: { node: base.VERSIONS.node } } };
   const source = fs.readFileSync(path.join(__dirname, '../qualify-runtime.cjs'), 'utf8');
   vm.runInNewContext(source, sandbox);
-  const entry = sandbox.module.exports, current = entry.packageProfile(), env = { ...environment(), GITHUB_WORKSPACE: '/workspace',
+  const entry = sandbox.module.exports, current = entry.packageProfile(), env = { ...environment(), GITHUB_WORKSPACE: '/workspace', GITHUB_OUTPUT: '/workspace/step-output',
     GATE1_PACKAGE_DIGEST: current.packageDigest, GATE1_EXECUTION_DIGEST: entry.executionProfile(current, context().workflowSha, '1').executionDigest };
   mockedBase.packageProfile.mockClear();
   /** Exercise the real CLI handler in a fresh VM with synthetic env/output, preserving the same mocked filesystem. */
@@ -106,7 +107,14 @@ function executionHarness(failure = null) {
     });
     return cli.process;
   }
-  return { entry, env, expected: entry.validateContext(env, current), base: mockedBase, dependency, saved, opened, io, isolate, isolated, runCli };
+  /** Load independently checked validation tooling with the same approved context and runner-local evidence. */
+  function validationEntry() {
+    const validation = { ...sandbox, module: { exports: {} }, __dirname: `/workspace/validation-tooling/scripts/gate1-ci-tools/${tool.NAME}`,
+      process: { ...sandbox.process, env } };
+    vm.runInNewContext(source, validation);
+    return validation.module.exports;
+  }
+  return { entry, env, expected: entry.validateContext(env, current), base: mockedBase, dependency, saved, opened, io, isolate, isolated, runCli, validationEntry };
 }
 
 /** Restore spies so package identity and report readers cannot leak mocks into other tests. */
@@ -271,6 +279,7 @@ describe('atomic report publication', () => {
     expect(JSON.parse(cli.stdout.write.mock.calls[0][0])).toMatchObject({ failure, cleanupFailure: unlink ? 'cleanup' : null,
       reportSha256: base.sha(h.saved.get(filename)) });
     expect(cli.exitCode).toBe(failure || unlink ? 1 : 0);
+    expect(h.saved.get(h.env.GITHUB_OUTPUT).toString('utf8')).toBe(`reportSha256=${base.sha(h.saved.get(filename))}\n`);
   });
   it.each(['write', 'flush', 'close', 'link'])('removes the owned pending file after a %s failure without exposing a report', async stage => {
     const h = executionHarness(), error = Object.assign(new Error('disk'), { code: 'EIO' }), write = h.io.writeFileSync.getMockImplementation();
@@ -299,6 +308,59 @@ describe('atomic report publication', () => {
     await expect(h.entry.execute(h.env)).rejects.toMatchObject({ code: 'EEXIST' });
     expect(h.saved.get(pending)).toEqual(original); expect(h.saved.has(filename)).toBe(false);
     expect(h.io.unlinkSync).not.toHaveBeenCalled(); expect(h.io.linkSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('independent upload validation', () => {
+  const filename = '/workspace/gate1-runtime-evidence/report.json', upload = '/workspace/gate1-runtime-upload/report.json';
+  it.each([null, 'isolation', 'cleanup'])('uploads the authenticated snapshot after %s qualification', async failure => {
+    const h = executionHarness(failure), result = await h.entry.execute(h.env), original = h.saved.get(filename);
+    h.env.GATE1_REPORT_SHA256 = result.reportSha256;
+    const read = h.base.readBounded.getMockImplementation();
+    h.base.readBounded.mockImplementation(name => {
+      const bytes = read(name);
+      if (name === filename) h.saved.set(filename, Buffer.from('changed after validation read'));
+      return bytes;
+    });
+    await expect(h.validationEntry().main(['--validate-upload'])).resolves.toEqual({ reportSha256: result.reportSha256 });
+    expect(h.saved.get(upload)).toEqual(original);
+    expect(h.base.readBounded.mock.calls.filter(([name]) => name === filename)).toHaveLength(1);
+    expect(h.io.writeFileSync).toHaveBeenCalledWith(upload, original, { flag: 'wx', mode: 0o400 });
+  });
+  it.each(['runtime-tooling', 'static-tooling'])('validates a stopped tool_identity report using approved tooling after %s drift', async variant => {
+    const h = executionHarness(), read = h.base.readBounded.getMockImplementation();
+    h.isolate.mockImplementationOnce(async () => {
+      if (variant === 'runtime-tooling') h.base.readBounded.mockImplementation(name => name.startsWith('/workspace/tooling/') ? Buffer.from('changed-tooling') : read(name));
+      else h.base.packageProfile.mockImplementation(root => root.startsWith('/workspace/tooling/') ? { contract: { changed: true } } : h.dependency);
+      return h.isolated;
+    });
+    const result = await h.entry.execute(h.env);
+    expect(result).toMatchObject({ result: 'stopped', failure: 'tool_identity' });
+    h.env.GATE1_REPORT_SHA256 = result.reportSha256;
+    await expect(h.validationEntry().validateUpload(h.env)).resolves.toEqual({ reportSha256: result.reportSha256 });
+    expect(JSON.parse(h.saved.get(upload))).toMatchObject({ failure: 'tool_identity', packageDigest: h.env.GATE1_PACKAGE_DIGEST });
+    await expect(h.entry.validateUpload(h.env)).rejects.toThrow('tool_identity');
+  });
+  it.each(['missing-digest', 'wrong-digest', 'replaced-report', 'context', 'validation-head', 'validation-package'])('rejects %s without staging upload bytes', async variant => {
+    const h = executionHarness(), result = await h.entry.execute(h.env);
+    h.env.GATE1_REPORT_SHA256 = result.reportSha256;
+    if (variant === 'missing-digest') delete h.env.GATE1_REPORT_SHA256;
+    if (variant === 'wrong-digest') h.env.GATE1_REPORT_SHA256 = 'f'.repeat(64);
+    if (variant === 'replaced-report') {
+      const report = JSON.parse(h.saved.get(filename)); report.runtime.inspection.buildId = 'different_build';
+      h.saved.set(filename, Buffer.from(JSON.stringify(report, null, 2) + '\n'));
+    }
+    if (variant === 'context') h.env.GATE1_EXECUTION_DIGEST = 'f'.repeat(64);
+    if (variant === 'validation-head') h.base.supervise.mockResolvedValue(Buffer.from('f'.repeat(40)));
+    if (variant === 'validation-package') h.base.readBounded.mockReturnValue(Buffer.from('changed-validator'));
+    await expect(h.validationEntry().validateUpload(h.env)).rejects.toThrow();
+    expect(h.saved.has(upload)).toBe(false);
+  });
+  it('does not overwrite previously staged upload bytes', async () => {
+    const h = executionHarness(), result = await h.entry.execute(h.env), original = Buffer.from('existing upload');
+    h.env.GATE1_REPORT_SHA256 = result.reportSha256; h.saved.set(upload, original);
+    await expect(h.validationEntry().validateUpload(h.env)).rejects.toMatchObject({ code: 'EEXIST' });
+    expect(h.saved.get(upload)).toEqual(original);
   });
 });
 
