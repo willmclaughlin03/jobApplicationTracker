@@ -70,6 +70,14 @@ describe('same-build static/private agreement', () => {
 });
 
 describe('exact caller attribution and restoration', () => {
+  it.each(['\n', '\r\n', '\r', '\u2028', '\u2029', '\n\r\n\r\u2028\u2029'])('attributes native reads across ECMAScript line boundaries %j', ending => {
+    const text = `(function read(){${ending}return {${ending}version:n.version,${ending}nodeVersion:n.versions.node,${ending}releaseName:n.release.name}})`;
+    const n = native(), r = reader('synthetic-lines.cjs', text), observer = tool.observeNativeReads(r, n);
+    try {
+      vm.runInNewContext(text, { n }, { filename: r.filename })();
+      expect(observer.snapshot()).toEqual({ version: 1, nodeVersion: 1, releaseName: 1 });
+    } finally { observer.restore(); }
+  });
   it('returns original values, counts only exact spans, resets, and restores descriptors and stack preparation', () => {
     const n = native(), r = reader(), before = Object.getOwnPropertyDescriptors(n), stackBefore = Object.getOwnPropertyDescriptor(Error, 'prepareStackTrace');
     const observer = tool.observeNativeReads(r, n);

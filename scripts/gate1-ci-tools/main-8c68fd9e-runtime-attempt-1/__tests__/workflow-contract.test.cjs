@@ -20,7 +20,7 @@ describe('manual workflow and report-only retention', () => {
   });
   it('checks out immutable tooling and the pinned application without persisted credentials', () => {
     const checkouts = job.steps.filter(step => step.uses?.startsWith('actions/checkout@'));
-    expect(checkouts.map(step => [step.with.ref, step.with.path])).toEqual([['${{ github.workflow_sha }}', 'tooling'], [tool.SOURCE, 'application']]);
+    expect(checkouts.map(step => [step.with.ref, step.with.path])).toEqual([['${{ github.workflow_sha }}', 'tooling'], [tool.SOURCE, 'application'], ['${{ github.workflow_sha }}', 'validation-tooling']]);
     for (const step of checkouts) expect(step.with['persist-credentials']).toBe(false);
   });
   it('pins every action, exact Node, runner and finite timeouts without dependency caching', () => {
@@ -33,15 +33,19 @@ describe('manual workflow and report-only retention', () => {
   it('has only fixed guarded runner and validation commands, never interpolated user input', () => {
     expect(job.steps.filter(step => step.run).map(step => step.run)).toEqual([
       'node tooling/scripts/gate1-ci-tools/main-8c68fd9e-runtime-attempt-1/qualify-runtime.cjs --run',
-      'node tooling/scripts/gate1-ci-tools/main-8c68fd9e-runtime-attempt-1/qualify-runtime.cjs --validate-upload',
+      'node validation-tooling/scripts/gate1-ci-tools/main-8c68fd9e-runtime-attempt-1/qualify-runtime.cjs --validate-upload',
     ]);
     expect(text).not.toMatch(/secrets\.|curl |wget |npm start|next start|workflow_call|pull_request/);
     for (const step of job.steps.filter(step => step.run)) expect(step.run).not.toContain('${{');
   });
   it('validates failed-run reports too, and uploads only the validated report for seven days', () => {
     const validate = job.steps.find(step => step.id === 'validate'), upload = job.steps.find(step => step.uses?.startsWith('actions/upload-artifact@'));
+    const tools = job.steps.find(step => step.id === 'validation_tools');
+    expect(tools.if).toContain("always() && steps.qualify.outputs.reportSha256 != ''");
+    expect(validate.if).toContain("steps.validation_tools.outcome == 'success'");
+    expect(validate.env).toEqual({ GATE1_REPORT_SHA256: '${{ steps.qualify.outputs.reportSha256 }}' });
     expect(validate.if).toContain('always()'); expect(upload.if).toContain("steps.validate.outcome == 'success'");
-    expect(upload.with).toMatchObject({ path: 'gate1-runtime-evidence/report.json', 'retention-days': 7, overwrite: false, 'include-hidden-files': false,
+    expect(upload.with).toMatchObject({ path: 'gate1-runtime-upload/report.json', 'retention-days': 7, overwrite: false, 'include-hidden-files': false,
       'compression-level': 0, 'if-no-files-found': 'error' });
     expect(upload.with.name).toContain('${{ github.run_id }}-${{ github.run_attempt }}');
   });

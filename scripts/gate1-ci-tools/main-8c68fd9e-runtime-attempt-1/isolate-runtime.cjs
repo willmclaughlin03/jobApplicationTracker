@@ -298,7 +298,17 @@ async function runIsolated(app, scratch, context, selected, remainingMs, operati
       await pause();
     }
     if (cancelled) throw new RuntimeError('cancelled');
-    if (!released) throw new RuntimeError(childFailure || 'isolation');
+    if (!released) {
+      let preReleaseFailure = childFailure || 'isolation';
+      try {
+        const record = (operations.read || readBoundRecord)(path.join(scratch, 'runtime.json'), inputHash, ['runtime']);
+        const candidate = probe.validateRuntime(record.runtime);
+        // Only a failed, untouched pre-release record may refine the launcher error; accounting stays unknown.
+        if (probe.CODES.includes(candidate.failure) && Object.entries(probe.emptyRuntime()).every(([key, value]) =>
+          key === 'failure' || (key === 'cases' ? candidate.cases.length === 0 : candidate[key] === value))) preReleaseFailure = candidate.failure;
+      } catch { /* Missing, unbound or malformed evidence cannot replace the existing launcher failure. */ }
+      throw new RuntimeError(preReleaseFailure);
+    }
     phases = readPhases(scratch, inputHash, phases, io, operations.read || readBoundRecord, true);
     const terminal = probe.validatePhases(phases, releaseAt, now(), input.deadline, true);
     const record = (operations.read || readBoundRecord)(path.join(scratch, 'runtime.json'), inputHash, ['runtime']);
@@ -350,7 +360,21 @@ async function runIsolated(app, scratch, context, selected, remainingMs, operati
     }
     signals.removeListener('SIGINT', cancel); signals.removeListener('SIGTERM', cancel);
   }
-  if (!runtime) {
+  if (!runtime && released && failure === 'deadline') {
+    try {
+      // A strict watchdog timeout may race with completed failure cleanup; retain only terminal stopped evidence.
+      const record = (operations.read || readBoundRecord)(path.join(scratch, 'runtime.json'), inputHash, ['runtime']);
+      const candidate = probe.validateRuntime(record.runtime);
+      if (candidate.stage !== 'cleanup' || !['startup', 'deadline', 'cleanup'].includes(candidate.failure) || candidate.attempted !== 0 || !candidate.isolationVerified) throw new RuntimeError('report_schema');
+      const terminalPhases = readPhases(scratch, inputHash, phases, io, operations.read || readBoundRecord, true);
+      const checkedAt = now();
+      if (probe.validatePhases(terminalPhases, releaseAt, checkedAt, input.deadline, true, checkedAt, true) !== 'stopped') throw new RuntimeError('report_schema');
+      const progress = (operations.recover || recoverProgress)(scratch, inputHash, io, operations.read || readBoundRecord);
+      if (!progress || progress.attempted !== 0 || (progress.inspection && JSON.stringify(candidate.inspection) !== JSON.stringify(progress.inspection))) throw new RuntimeError('report_schema');
+      runtime = candidate; accounting = 'known'; failure = candidate.failure;
+    } catch { /* Preserve the strict deadline and recover only the independently validated progress below. */ }
+  }
+  if (!runtime && released) {
     try {
       runtime = (operations.recover || recoverProgress)(scratch, inputHash, io, operations.read || readBoundRecord);
       if (runtime) accounting = runtime.attempted > 0 ? 'last_attempt_uncertain' : 'known';

@@ -63,6 +63,28 @@ afterEach(() => {
 });
 
 describe('exact evidence keys', () => {
+  it.each(['buildId', 'traceHash', 'compiledClosureHash', 'manifest'])('rejects coerced inspection %s before invoking the static validator', field => {
+    const facts = inspection().facts, validate = jest.spyOn(base, 'validateInspection');
+    if (field === 'manifest') facts.manifests[staticInspector.NAMES[0]] = ['d'.repeat(64)];
+    else facts[field] = field === 'buildId' ? 123 : [facts[field]];
+    expect(() => tool.validateRuntime({ ...tool.emptyRuntime(), isolationVerified: true, inspection: facts })).toThrow('report_schema');
+    expect(validate).not.toHaveBeenCalled();
+  });
+  it.each(['combined', 'missing', 'extra'])('rejects %s manifest keys before invoking the static validator', variant => {
+    const facts = inspection().facts, keys = [...staticInspector.NAMES].sort(), validate = jest.spyOn(base, 'validateInspection');
+    if (variant === 'combined') facts.manifests = Object.fromEntries([[keys[0] + '|' + keys[1], 'd'.repeat(64)], ...keys.slice(2).map(key => [key, 'd'.repeat(64)])]);
+    if (variant === 'missing') delete facts.manifests[keys[0]];
+    if (variant === 'extra') facts.manifests.extra = 'd'.repeat(64);
+    expect(() => tool.validateRuntime({ ...tool.emptyRuntime(), isolationVerified: true, inspection: facts })).toThrow('report_schema');
+    expect(validate).not.toHaveBeenCalled();
+  });
+  it('still delegates valid inspection records to the frozen validator', () => {
+    const facts = inspection().facts, validate = jest.spyOn(base, 'validateInspection');
+    tool.validateRuntime({ ...tool.emptyRuntime(), isolationVerified: true, inspection: facts });
+    expect(validate).toHaveBeenCalledWith(facts);
+    facts.traceHash = 'invalid';
+    expect(() => tool.validateRuntime({ ...tool.emptyRuntime(), isolationVerified: true, inspection: facts })).toThrow('report_schema');
+  });
   it.each([{ 'a|b': true }, { a: true }, { a: true, b: true, extra: true }])('rejects merged, missing or extra fields %#', value => {
     expect(tool.exactKeys(value, ['a', 'b'])).toBe(false);
   });
@@ -213,6 +235,40 @@ describe('bounded transport without network', () => {
 });
 
 describe('same-process lifecycle and truthful cleanup', () => {
+  it.each([0, -1, NaN, Infinity])('observes late rejection after an expired or invalid allowance %s', async ms => {
+    let reject;
+    const operation = new Promise((_resolve, fail) => { reject = fail; });
+    await expect(tool.bounded(operation, ms, 'cleanup')).rejects.toThrow('cleanup');
+    reject(new Error('synthetic late failure'));
+    await new Promise(resolve => setTimeout(resolve, 0)); // An unhandled late rejection would fail the suite.
+  });
+  it('attempts and observes Next closure even after descriptor restoration consumes the cleanup budget', async () => {
+    const h = harness(); let time = 0;
+    h.ops.now = () => time;
+    h.observer.restore.mockImplementation(() => { time = 5000; });
+    h.next.close.mockRejectedValue(new Error('synthetic close rejection'));
+    await expect(h.run()).rejects.toThrow('cleanup');
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(h.next.close).toHaveBeenCalledTimes(1); expect(h.report.nextClosed).toBe(false);
+  });
+  it('records timely close settlement without claiming listener success', async () => {
+    const h = harness(), listener = jest.fn().mockRejectedValue(new Error('synthetic listener failure'));
+    h.next.close.mockImplementation(async () => { await Promise.allSettled([listener()]); });
+    await h.run();
+    expect(listener).toHaveBeenCalledTimes(1); expect(h.report.nextClosed).toBe(true);
+  });
+  it('keeps close rejection a cleanup failure while recording timely promise settlement', async () => {
+    const h = harness(); h.next.close.mockRejectedValue(new Error('synthetic close rejection'));
+    await expect(h.run()).rejects.toThrow('cleanup'); expect(h.report.nextClosed).toBe(true);
+  });
+  it('never upgrades nextClosed after a timed-out close later settles', async () => {
+    jest.useFakeTimers(); const h = harness(); let finish;
+    h.next.close.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const pending = expect(h.run()).rejects.toThrow('cleanup');
+    await jest.advanceTimersByTimeAsync(5000); await pending;
+    finish(); await Promise.resolve(); await Promise.resolve();
+    expect(h.report.nextClosed).toBe(false);
+  });
   it('makes exactly six attempts, then closes descriptors/server/Next and aborts the listen signal', async () => {
     const h = harness();
     await tool.smoke('/synthetic-app', inspection(), h.report, value => {
@@ -225,7 +281,7 @@ describe('same-process lifecycle and truthful cleanup', () => {
     }, h.ops);
     expect(h.ops.request).toHaveBeenCalledTimes(6); expect(h.progress.map(p => p.attempted)).toEqual([0, 1, 2, 3, 4, 5, 6]);
     expect(h.report).toMatchObject({ attempted: 6, serverStarted: true, descriptorsRestored: true, serverClosed: true, nextClosed: true });
-    expect(h.server.options.signal.aborted).toBe(true); expect(h.ops.phase.mock.calls.flat()).toEqual(['startup', 'requests', 'cleanup']);
+    expect(h.server.options.signal.aborted).toBe(true); expect(h.ops.phase.mock.calls).toEqual([['startup'], ['requests'], ['cleanup', false]]);
   });
   it('counts a failed transport attempt before invoking it, stops and still cleans up', async () => {
     const h = harness(); h.ops.request.mockRejectedValueOnce(new Error('private'));
@@ -357,6 +413,28 @@ describe('atomic protocol and strict evidence', () => {
     expect(verifyKernel).toHaveBeenCalledWith({ synthetic: true }, fs, { app: '/app', scratch: dir, tooling: path.resolve(__dirname, '../../../..'), node: process.execPath });
     expect(report.failure).toBe('isolation'); expect(makeNext).not.toHaveBeenCalled(); expect(fs.existsSync(path.join(dir, 'ready.json'))).toBe(false);
     expect(fs.existsSync(path.join(dir, 'progress-00.json'))).toBe(false);
+  });
+  it('retains expired startup and observed cleanup in stopped evidence without relaxing successful phases', async () => {
+    jest.useFakeTimers();
+    const dir = scratch(), input = { deadline: Date.now() + 360000, entries: [], routes: ['/login', '/admin'] };
+    const inputHash = tool.publish(dir, 'input.json', input), h = harness();
+    h.next.prepare.mockImplementation(() => new Promise(() => {}));
+    const pending = tool.childMain('/synthetic-app', dir, { validateInput: value => value, childFlag: '1', verifyKernel: jest.fn(), versions: base.VERSIONS,
+      verify: jest.fn(), inspect: () => inspection(), parse: jest.fn(), smoke: h.ops, pause: async () => {
+        tool.publish(dir, 'release.json', { inputHash, serviceVerified: true, at: Date.now() });
+      } });
+    await jest.advanceTimersByTimeAsync(30000);
+    const result = await pending;
+    expect(result).toMatchObject({ stage: 'cleanup', failure: 'startup', attempted: 0, descriptorsRestored: true, serverClosed: null, nextClosed: true });
+    expect(h.next.close).toHaveBeenCalledTimes(1); expect(h.ops.request).not.toHaveBeenCalled();
+    const phases = Array.from({ length: 4 }, (_v, i) => {
+      const { phase, at } = tool.readJson(path.join(dir, `phase-0${i}.json`)); return { phase, at };
+    });
+    expect(phases.map(value => value.phase)).toEqual(['inspect', 'startup', 'cleanup', 'stopped']);
+    expect(phases[2].at - phases[1].at).toBe(30000);
+    expect(() => tool.validatePhases(phases, phases[0].at, Date.now(), input.deadline, true)).toThrow('deadline');
+    expect(tool.validatePhases(phases, phases[0].at, Date.now(), input.deadline, true, Date.now(), true)).toBe('stopped');
+    expect(tool.readJson(path.join(dir, 'runtime.json'))).toEqual({ inputHash, runtime: result });
   });
   it.each([null, 'phase-00.json', 'phase-05.json', 'progress-02.json', 'runtime.json'])('preserves the full committed child lifecycle despite pending cleanup failure for %s', async pending => {
     const dir = scratch(), input = { deadline: Date.now() + 360000, entries: [], routes: ['/login', '/admin'] };

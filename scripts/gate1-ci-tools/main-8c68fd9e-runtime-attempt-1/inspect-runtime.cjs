@@ -89,7 +89,11 @@ function recheck(app, routes, parse, before) {
 function observeNativeReads(reader, native = process) {
   const counts = { version: 0, nodeVersion: 0, releaseName: 0 }, restores = [], lines = [0];
   let restored = false, unavailable = false;
-  for (let index = 0; index < reader.text.length; index++) if (reader.text[index] === '\n') lines.push(index + 1);
+  for (let index = 0; index < reader.text.length; index++) {
+    const char = reader.text[index];
+    if (char === '\r' && reader.text[index + 1] === '\n') index++;
+    if (char === '\n' || char === '\r' || char === '\u2028' || char === '\u2029') lines.push(index + 1);
+  }
   /** Attempt every restoration even after one fails; restoration cannot silently become a pass. */
   function restore() {
     if (restored) return;
