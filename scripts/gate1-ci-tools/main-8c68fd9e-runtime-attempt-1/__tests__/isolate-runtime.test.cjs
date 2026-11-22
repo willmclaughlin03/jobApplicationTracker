@@ -13,7 +13,7 @@ function config() { return { app: '/app', scratch: '/scratch', tooling: '/tools'
 
 /** Independent fixture for systemd 255's property display, including significant empty values. */
 function properties(c = config()) {
-  return { ...tool.PROPERTIES, ProtectHome: 'read-only', User: '1001', Group: '1001', LoadState: 'loaded', Type: 'exec', ActiveState: 'active', SubState: 'running',
+  return { ...tool.PROPERTIES, CollectMode: 'inactive-or-failed', ProtectHome: 'read-only', User: '1001', Group: '1001', LoadState: 'loaded', Type: 'exec', ActiveState: 'active', SubState: 'running',
     ControlGroup: '/system.slice/' + c.unit, CPUQuotaPerSecUSec: '4s', RuntimeMaxUSec: c.seconds === 360 ? '6min' : '5min 59s',
     TimeoutStopUSec: '5s', TimeoutStartUSec: '30s', WorkingDirectory: c.app, ReadOnlyPaths: `${c.app} ${c.tooling} ${path.posix.dirname(c.node)}`, ReadWritePaths: `${c.scratch} ${c.app}/.next/cache` };
 }
@@ -85,6 +85,28 @@ function harness() {
     run: () => tool.runIsolated('/app', '/scratch', { runId: '123', executionDigest: 'e'.repeat(64) }, { entries: [], routes: [] }, 360000, ops) };
 }
 
+/** Exercise real stopService with a failed child and virtual collection delay; all manager/filesystem effects stay mocked. */
+function failedService(primaryFailure, collectAfter) {
+  const h = harness(), checks = [];
+  let launched = false, stoppedAt = null;
+  delete h.ops.stop;
+  h.ops.pause = jest.fn(async () => { h.advance(50); });
+  h.ops.run.mockImplementation(async (_command, args, options) => {
+    if (args[1] === 'systemd-run') {
+      launched = true;
+      h.records.set('runtime.json', { inputHash: h.hash, runtime: { ...probe.emptyRuntime(), failure: primaryFailure } });
+      throw Object.assign(new Error('child_exit'), { code: 'child_exit' });
+    }
+    checks.push({ args, at: h.time, timeoutMs: options.timeoutMs });
+    if (args.includes('stop')) { stoppedAt ??= h.time; return Buffer.alloc(0); }
+    if (args.includes('list-units')) return Buffer.from(launched && (stoppedAt === null || h.time - stoppedAt < collectAfter) ? 'owned unit row\n' : '');
+    if (args.includes('show')) return lines({ LoadState: 'loaded', ActiveState: 'failed', SubState: 'failed' });
+    if (args.includes('list-jobs')) return Buffer.alloc(0);
+    throw new Error('unexpected manager command');
+  });
+  return { h, checks, get stoppedAt() { return stoppedAt; } };
+}
+
 describe('service creation and effective readback', () => {
   it('uses a private unprivileged service with strict resource and filesystem bounds, cleared environment and pipes', () => {
     const args = tool.serviceArgs(config());
@@ -93,6 +115,17 @@ describe('service creation and effective readback', () => {
       '--property=KillMode=control-group', '--property=Restart=no', '--property=ReadWritePaths=/scratch /app/.next/cache', '/usr/bin/env', '-i']) expect(args).toContain(value);
     expect(args).not.toContain('--scope'); expect(args.at(-3)).toBe('--child'); expect(args.some(value => /GITHUB_TOKEN|VERCEL_TOKEN|NODE_OPTIONS/.test(value))).toBe(false);
     expect(tool.serviceNames()).toContain('ProtectHome');
+  });
+  it('creates and independently verifies the explicit failed-unit collection policy', () => {
+    expect(tool.serviceArgs(config()).filter(value => value.startsWith('--property=CollectMode='))).toEqual(['--property=CollectMode=inactive-or-failed']);
+    expect(tool.serviceNames()).toContain('CollectMode');
+    expect(tool.validateService(tool.parseProperties(lines(properties()), tool.serviceNames()), config())).toBe(true);
+  });
+  it.each([null, '', 'inactive', 'unknown'])('rejects missing or incorrect effective CollectMode: %s', value => {
+    const values = properties();
+    if (value === null) delete values.CollectMode;
+    else values.CollectMode = value;
+    expect(() => tool.validateService(tool.parseProperties(lines(values), tool.serviceNames()), config())).toThrow('isolation');
   });
   it.each([{ uid: 0 }, { gid: 0 }, { seconds: 361 }, { app: '/app/../escape' }, { scratch: '/scratch space' }, { unit: '../unit' }])('rejects unsafe service configuration %#', change => {
     expect(() => tool.serviceArgs({ ...config(), ...change })).toThrow('isolation');
@@ -435,6 +468,64 @@ describe('progress, phases and separate service cleanup', () => {
     const h = harness(); h.onTick(() => h.signals.emit('SIGTERM'));
     expect(await h.run()).toMatchObject({ failure: 'cancelled', serviceStopped: true }); expect(h.signals.listenerCount('SIGTERM')).toBe(0);
   });
+  it.each([['isolation', 0], ['isolation', 150], ['dependency_version', 0], ['dependency_version', 150],
+    ['isolation', 4950], ['isolation', 5000], ['isolation', 5050], ['isolation', Infinity]])(
+    'preserves %s only after failed-unit collection within the deadline (%s ms)', async (primaryFailure, collectAfter) => {
+      const f = failedService(primaryFailure, collectAfter), { h, checks } = f;
+      const result = await h.run(), collected = collectAfter < 5000;
+      expect(result).toEqual({ failure: collected ? primaryFailure : 'cleanup', serviceStopped: collected, runtime: null, accounting: 'unknown' });
+      expect(h.time - f.stoppedAt).toBe(collected ? collectAfter : 5000);
+      expect(h.ops.run.mock.calls.filter(([, args]) => args[1] === 'systemd-run')).toHaveLength(1);
+      expect(checks.filter(check => check.args.includes('stop'))).toHaveLength(1);
+      expect(checks.every(check => !check.args.includes('reset-failed') && check.timeoutMs > 0)).toBe(true);
+      const polls = checks.filter(check => check.args.includes('list-units') && check.at > f.stoppedAt);
+      expect(polls.length).toBe(collected ? collectAfter / 50 : 99);
+      expect(polls.every(check => check.timeoutMs === 5000 - (check.at - f.stoppedAt))).toBe(true);
+      expect(h.records.has('release.json')).toBe(false);
+      expect(h.signals.listenerCount('SIGTERM')).toBe(0); expect(h.signals.listenerCount('SIGINT')).toBe(0);
+    });
+  it('also verifies an empty retained cgroup throughout failed-unit collection', async () => {
+    const { h } = failedService('isolation', 150);
+    h.ops.fs.statSync.mockReturnValue({ isDirectory: () => true });
+    h.ops.fs.readFileSync = jest.fn(() => 'populated 0\n');
+    expect(await h.run()).toEqual({ failure: 'isolation', serviceStopped: true, runtime: null, accounting: 'unknown' });
+    expect(h.ops.fs.readFileSync.mock.calls.every(([name]) => name === path.join('/sys/fs/cgroup/system.slice/' + config().unit, 'cgroup.events'))).toBe(true);
+    expect(h.ops.fs.readFileSync).toHaveBeenCalledTimes(5);
+  });
+  it('bounds a stalled collection pause and observes its late rejection', async () => {
+    jest.useFakeTimers();
+    try {
+      const f = failedService('isolation', 150), { h } = f, pause = h.ops.pause.getMockImplementation();
+      let rejectPause;
+      h.ops.pause.mockImplementation(() => f.stoppedAt === null ? pause() : new Promise((_resolve, reject) => { rejectPause = reject; }));
+      const pending = h.run(); await jest.advanceTimersByTimeAsync(0);
+      expect(rejectPause).toEqual(expect.any(Function));
+      const commands = h.ops.run.mock.calls.length;
+      h.advance(5000); await jest.advanceTimersByTimeAsync(5000);
+      expect(await pending).toEqual({ failure: 'cleanup', serviceStopped: false, runtime: null, accounting: 'unknown' });
+      rejectPause(new Error('late pause rejection')); await jest.advanceTimersByTimeAsync(0);
+      expect(h.ops.run).toHaveBeenCalledTimes(commands);
+      expect(jest.getTimerCount()).toBe(0); expect(h.signals.listenerCount('SIGTERM')).toBe(0);
+    } finally { jest.useRealTimers(); }
+  });
+  it.each(['populated', 'queued-job', 'metadata-error', 'permission'])('fails cleanup when %s appears while collection is pending', async fault => {
+    const f = failedService('isolation', 150), { h } = f, original = h.ops.run.getMockImplementation();
+    h.ops.run.mockImplementation((command, args, options) => {
+      if (f.stoppedAt !== null && h.time > f.stoppedAt) {
+        if (fault === 'metadata-error' && args.includes('show')) return Promise.reject(Object.assign(new Error('unavailable'), { code: 'child_exit' }));
+        if (fault === 'queued-job' && args.includes('list-jobs')) return Promise.resolve(Buffer.from('owned job\n'));
+      }
+      return original(command, args, options);
+    });
+    h.ops.fs.statSync.mockImplementation(() => {
+      if (fault === 'permission' && f.stoppedAt !== null && h.time > f.stoppedAt) throw Object.assign(new Error('unavailable'), { code: 'EACCES' });
+      return { isDirectory: () => true };
+    });
+    h.ops.fs.readFileSync = jest.fn(() => fault === 'populated' && f.stoppedAt !== null && h.time > f.stoppedAt ? 'populated 1\n' : 'populated 0\n');
+    expect(await h.run()).toEqual({ failure: 'cleanup', serviceStopped: false, runtime: null, accounting: 'unknown' });
+    expect(h.time - f.stoppedAt).toBe(50);
+    expect(h.ops.run.mock.calls.filter(([, args]) => args.includes('stop'))).toHaveLength(2);
+  });
   it.each(['absent', 'empty', 'unloaded', 'loaded', 'active', 'failed', 'populated', 'metadata-error', 'permission'])('rechecks owned resources after launcher settlement: %s', async state => {
     jest.useFakeTimers();
     try {
@@ -464,7 +555,8 @@ describe('progress, phases and separate service cleanup', () => {
       h.advance(4000); h.finish();
       const valid = ['absent', 'empty', 'unloaded', 'loaded'].includes(state);
       expect(await pending).toMatchObject({ failure: valid ? 'cancelled' : 'cleanup', serviceStopped: valid });
-      expect(checks.length).toBeGreaterThan(0); expect(checks.every(check => check.settled && check.timeoutMs === 1000)).toBe(true);
+      expect(checks.length).toBeGreaterThan(0); expect(checks[0].timeoutMs).toBe(1000);
+      expect(checks.every(check => check.settled && check.timeoutMs > 0 && check.timeoutMs <= 1000)).toBe(true);
       if (valid || state === 'populated' || state === 'permission') expect(h.ops.fs.statSync).toHaveBeenCalledWith('/sys/fs/cgroup/system.slice/' + config().unit);
       expect(h.signals.listenerCount('SIGTERM')).toBe(0);
     } finally { jest.useRealTimers(); }

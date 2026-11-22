@@ -13,7 +13,7 @@ const PHASES = probe.PHASES;
 const STOP_MS = 20000;
 const PROPERTIES = Object.freeze({ PrivateNetwork: 'yes', PrivateTmp: 'yes', NoNewPrivileges: 'yes', ProtectSystem: 'strict', ProtectHome: 'read-only', ProtectControlGroups: 'yes',
   CapabilityBoundingSet: '', AmbientCapabilities: '', RestrictAddressFamilies: 'AF_INET AF_INET6', RestrictNamespaces: 'yes', MemoryMax: String(MEMORY), MemorySwapMax: '0', TasksMax: '256',
-  KillMode: 'control-group', SendSIGKILL: 'yes', Restart: 'no', LimitCORE: '0' });
+  KillMode: 'control-group', SendSIGKILL: 'yes', Restart: 'no', LimitCORE: '0', CollectMode: 'inactive-or-failed' });
 
 /** Validate the run identifier before deriving any service or cgroup name. */
 function unitName(runId) {
@@ -175,8 +175,9 @@ function recoverProgress(scratch, inputHash, io = fs, read = readBoundRecord) {
   return last;
 }
 
-/** Verify the owned cgroup, unit and absence of jobs; after launcher settlement, only unloaded or inactive/dead units qualify. */
+/** Verify owned jobs/cgroup; final verification returns false only for stopped failed metadata still awaiting collection. */
 async function verifyServiceStopped(config, command, io, requireUnloaded = false) {
+  let collectionPending = false;
   const listed = await command(listArgs(config.unit));
   if (listed.toString('utf8').trim()) {
     const values = parseProperties(await command(['show', config.unit, '--all', '--property=LoadState,ActiveState,SubState']), ['LoadState', 'ActiveState', 'SubState']);
@@ -184,7 +185,8 @@ async function verifyServiceStopped(config, command, io, requireUnloaded = false
     const inactive = values.ActiveState === 'inactive' && values.SubState === 'dead';
     const unloaded = values.LoadState === 'not-found' && inactive;
     const stopped = values.LoadState === 'loaded' && (inactive || (values.ActiveState === 'failed' && values.SubState === 'failed'));
-    if (!(unloaded || (stopped && (!requireUnloaded || inactive)))) throw new RuntimeError('cleanup');
+    if (!(unloaded || stopped)) throw new RuntimeError('cleanup');
+    collectionPending = requireUnloaded && stopped && !inactive;
   }
   // An inactive unit can still have queued work; query only this unit and require an empty job list.
   if ((await command(['list-jobs', '--full', '--no-legend', '--no-pager', config.unit])).toString('utf8').trim()) throw new RuntimeError('cleanup');
@@ -192,7 +194,7 @@ async function verifyServiceStopped(config, command, io, requireUnloaded = false
   try {
     if (!io.statSync(group).isDirectory() || !/^populated 0$/m.test(io.readFileSync(path.join(group, 'cgroup.events'), 'utf8'))) throw new RuntimeError('cleanup');
   } catch (error) { if (error.code !== 'ENOENT') throw new RuntimeError('cleanup'); }
-  return true;
+  return !collectionPending;
 }
 
 /** Stop exactly the reserved unit and prove its cgroup empty; launcher exit alone is never cleanup evidence. */
@@ -338,11 +340,16 @@ async function runIsolated(app, scratch, context, selected, remainingMs, operati
         if (remaining <= 0) throw new RuntimeError('cleanup');
         return run('sudo', ['-n', 'systemctl', ...args], { ...options, timeoutMs: remaining });
       }
-      /** Capture the remaining bound before starting verification, so expiry cannot leave an unobserved rejection. */
-      function verifyStopped() {
-        const remaining = deadline - now();
-        if (remaining <= 0) throw new RuntimeError('cleanup');
-        return probe.bounded(verifyServiceStopped(config, cleanupMetadata, io, true), remaining, 'cleanup');
+      /** Poll only stopped failed units awaiting collection; all reads/waits share the launcher settlement deadline. */
+      async function verifyStopped() {
+        for (;;) {
+          const remaining = deadline - now();
+          if (remaining <= 0) throw new RuntimeError('cleanup');
+          if (await probe.bounded(verifyServiceStopped(config, cleanupMetadata, io, true), remaining, 'cleanup')) return;
+          const waitMs = deadline - now();
+          if (waitMs <= 0) throw new RuntimeError('cleanup');
+          await probe.bounded(pause(), waitMs, 'cleanup');
+        }
       }
       /** Retry only this unit after late registration; stop and recheck share the original settlement deadline. */
       async function stopAndVerify() {
