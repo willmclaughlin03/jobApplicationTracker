@@ -59,6 +59,10 @@ families, read-only application/toolchain inputs and narrowly writable runtime
 scratch and `.next/cache`. `PrivateTmp` also provides private temporary directories.
 It has four cores' worth of CPU quota, 6 GiB memory, zero swap, 256 tasks, no restart
 and control-group termination. No filesystem storage quota is claimed.
+`CollectMode=inactive-or-failed` is explicitly set and its effective value is
+verified before release. This permits failed transient units to be collected;
+the default `inactive` policy retains failed-state metadata even after processes
+exit. The setting alone does not prove that collection or cleanup has completed.
 The runner contract does not provision `/run/user`; confirmed absence skips only
 that path's checks. If present, it requires its own read-only mount. All other
 protected paths and both write exceptions remain required.
@@ -161,8 +165,18 @@ Native caller offsets recognize LF, CR, CRLF as one ending, U+2028 and U+2029.
 Cancellation aborts the owned launcher and separately stops/verifies the owned
 systemd unit and cgroup. Launcher exit alone is not proof of service termination.
 After launcher settlement, an unloaded or inactive/dead unit still requires an
-absent or empty cgroup. A failed final check gets one stop-and-recheck attempt
-within the same five-second settlement deadline; active or failed units cannot pass.
+absent or empty cgroup and no owned jobs. A loaded failed/failed unit with those
+same resource checks is pending collection, never a successful final result.
+The parent polls it at the existing 50 ms cadence, sharing the original five-second
+deadline with launcher settlement and all final metadata reads/waits. Collection
+must be observed within that bound; it grants no extra time or runtime attempt.
+Other failed final checks retain one owned stop-and-recheck attempt within that
+same deadline. Active units, persistent failed units, queued jobs, populated
+cgroups or unavailable metadata cannot qualify cleanup. Successful cleanup
+preserves the original allowlisted failure; cleanup failure still takes precedence.
+Collection discards unit failure-state metadata; it does not establish the cause
+of a historical failed run or prove a live-process leak. These offline contracts
+and mocked regressions do not establish a real runner or gate pass.
 The service deadline remains a backstop if the controller is abruptly killed;
 such loss does not manufacture a report or successful cleanup. Any failure or
 unavailable evidence stops; cleanup failure takes precedence. No broad process
