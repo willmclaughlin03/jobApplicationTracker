@@ -14,6 +14,8 @@ Use this file as a quick-running log of implemented changes.
 
 ## Entries
 
+- `2026-11-22` - `Gate 1 failed-unit collection`: Set and verify `CollectMode=inactive-or-failed`, then poll stopped failed units within the existing shared launcher-settlement deadline while retaining job/cgroup checks and cleanup-failure precedence. Add 19 regressions for collection, effective metadata, deadline boundaries and failed cleanup; all 423 offline runtime-package tests plus focused ESLint, syntax and whitespace checks pass on local Node 22.18.0. The consumed run and evidence are preserved; live runner qualification remains outstanding, Gate 1 open and Gate 5A unpassed.
+
 - `2026-11-19` - `Gate 1 runtime evidence review hardening`: Bind upload validation to the committed report digest and a fresh approved tooling checkout, then upload only the verified snapshot. Recognize all JavaScript line endings, validate inspection field types and manifest keys, retain validated pre-release failures without request accounting, and preserve stopped startup cleanup evidence without relaxing qualification deadlines. Define `nextClosed` as timely promise settlement only and observe expired-bound rejections. All 404 runtime tests and 707 Gate 1 tooling tests pass, along with focused ESLint, syntax and whitespace checks; live runtime qualification remains outstanding.
 
 - `2026-11-19` - `Gate 1 owned-service job verification`: Require a bounded, unit-filtered empty job list before accepting service cleanup. Preserve inactive/dead acceptance with an absent or empty cgroup and recheck jobs after the existing cleanup retry. Add queued/running job, unrelated-unit, query-error and deadline coverage; all 352 offline runtime tests, focused ESLint and whitespace checks pass.
