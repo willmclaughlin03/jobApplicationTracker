@@ -32,7 +32,7 @@ function serviceArgs(config) {
   const { app, scratch, tooling, node, unit, uid, gid, seconds } = config;
   if (!/^gate1-runtime-[1-9]\d{0,14}-1\.service$/.test(unit) || !Number.isInteger(uid) || uid < 1 || !Number.isInteger(gid) || gid < 1 ||
       !Number.isInteger(seconds) || seconds < 1 || seconds > 360 || [app, scratch, tooling, node].some(value => typeof value !== 'string' || !value.startsWith('/') || /[\s%\\]/.test(value) ||
-        [...value].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) || value.split('/').includes('..'))) throw new RuntimeError('isolation');
+        [...value].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) || value.split('/').includes('..'))) throw new RuntimeError('isolation_service_config');
   return ['-n', 'systemd-run', '--quiet', '--wait', '--pipe', '--expand-environment=no', '--service-type=exec', `--unit=${unit}`, `--uid=${uid}`, `--gid=${gid}`,
     ...Object.entries(PROPERTIES).map(([key, value]) => `--property=${key}=${value}`), '--property=CPUQuota=400%', `--property=RuntimeMaxSec=${seconds}s`,
     '--property=TimeoutStopSec=5s', '--property=TimeoutStartSec=30s', `--property=WorkingDirectory=${app}`,
@@ -43,25 +43,26 @@ function serviceArgs(config) {
 
 /** Parse only requested systemd metadata; duplicate/unexpected properties cannot qualify isolation. */
 function parseProperties(bytes, allowed) {
-  if (bytes.length > 16384 || [...bytes.toString('utf8')].some(char => (char.charCodeAt(0) < 32 && char !== '\n') || char.charCodeAt(0) === 127)) throw new RuntimeError('isolation');
+  if (bytes.length > 16384) throw new RuntimeError('isolation_service_metadata_size');
+  if ([...bytes.toString('utf8')].some(char => (char.charCodeAt(0) < 32 && char !== '\n') || char.charCodeAt(0) === 127)) throw new RuntimeError('isolation_service_metadata_encoding');
   const result = {};
   for (const line of bytes.toString('utf8').trimEnd().split('\n')) {
     const split = line.indexOf('=');
-    if (split < 1) throw new RuntimeError('isolation');
+    if (split < 1) throw new RuntimeError('isolation_service_metadata_format');
     const key = line.slice(0, split);
-    if (!allowed.includes(key) || Object.hasOwn(result, key)) throw new RuntimeError('isolation');
+    if (!allowed.includes(key) || Object.hasOwn(result, key)) throw new RuntimeError('isolation_service_metadata_keys');
     result[key] = line.slice(split + 1);
   }
-  if (!probe.exactKeys(result, allowed)) throw new RuntimeError('isolation');
+  if (!probe.exactKeys(result, allowed)) throw new RuntimeError('isolation_service_metadata_missing');
   return result;
 }
 
-/** Parse only bounded systemd display units needed by these sub-six-minute limits; unknown forms fail closed. */
-function duration(value) {
-  if (typeof value !== 'string' || value.length > 32 || !/^(?:\d{1,3}min(?: \d{1,2}s)?|\d{1,3}s)$/.test(value)) throw new RuntimeError('isolation');
+/** Parse bounded display units; a fixed caller code attributes invalid forms to their service property. */
+function duration(value, code = 'isolation') {
+  if (typeof value !== 'string' || value.length > 32 || !/^(?:\d{1,3}min(?: \d{1,2}s)?|\d{1,3}s)$/.test(value)) throw new RuntimeError(code);
   let seconds = 0;
   for (const match of value.matchAll(/(\d+)(min|s)/g)) seconds += Number(match[1]) * (match[2] === 'min' ? 60 : 1);
-  if (seconds > 360) throw new RuntimeError('isolation');
+  if (seconds > 360) throw new RuntimeError(code);
   return seconds;
 }
 
@@ -80,13 +81,24 @@ function serviceNames() {
 
 /** Compare effective service metadata before releasing the child; kernel checks separately prove quotas. */
 function validateService(values, config) {
-  if (!probe.exactKeys(values, serviceNames())) throw new RuntimeError('isolation');
-  for (const [key, expected] of Object.entries(PROPERTIES)) if (key === 'RestrictAddressFamilies' ? !sameSet(values[key], expected) : values[key] !== expected) throw new RuntimeError('isolation');
-  if (values.User !== String(config.uid) || values.Group !== String(config.gid) || values.ActiveState !== 'active' || values.SubState !== 'running' ||
-      values.LoadState !== 'loaded' || values.Type !== 'exec' || values.ControlGroup !== `/system.slice/${config.unit}` || duration(values.CPUQuotaPerSecUSec) !== 4 ||
-      duration(values.RuntimeMaxUSec) !== config.seconds || duration(values.TimeoutStopUSec) !== 5 || duration(values.TimeoutStartUSec) !== 30 ||
-      values.WorkingDirectory !== config.app || !sameSet(values.ReadOnlyPaths, `${config.app} ${config.tooling} ${path.posix.dirname(config.node)}`) ||
-      !sameSet(values.ReadWritePaths, `${config.scratch} ${config.app}/.next/cache`)) throw new RuntimeError('isolation');
+  if (!probe.exactKeys(values, serviceNames())) throw new RuntimeError('isolation_service_metadata_shape');
+  const codes = probe.SERVICE_CODES;
+  for (const [key, expected] of Object.entries(PROPERTIES)) if (key === 'RestrictAddressFamilies' ? !sameSet(values[key], expected) : values[key] !== expected) throw new RuntimeError(codes[key]);
+  // Keep the original short-circuit order, including duration parsing and filesystem-set comparisons.
+  if (values.User !== String(config.uid)) throw new RuntimeError(codes.User);
+  if (values.Group !== String(config.gid)) throw new RuntimeError(codes.Group);
+  if (values.ActiveState !== 'active') throw new RuntimeError(codes.ActiveState);
+  if (values.SubState !== 'running') throw new RuntimeError(codes.SubState);
+  if (values.LoadState !== 'loaded') throw new RuntimeError(codes.LoadState);
+  if (values.Type !== 'exec') throw new RuntimeError(codes.Type);
+  if (values.ControlGroup !== `/system.slice/${config.unit}`) throw new RuntimeError(codes.ControlGroup);
+  if (duration(values.CPUQuotaPerSecUSec, codes.CPUQuotaPerSecUSec) !== 4) throw new RuntimeError(codes.CPUQuotaPerSecUSec);
+  if (duration(values.RuntimeMaxUSec, codes.RuntimeMaxUSec) !== config.seconds) throw new RuntimeError(codes.RuntimeMaxUSec);
+  if (duration(values.TimeoutStopUSec, codes.TimeoutStopUSec) !== 5) throw new RuntimeError(codes.TimeoutStopUSec);
+  if (duration(values.TimeoutStartUSec, codes.TimeoutStartUSec) !== 30) throw new RuntimeError(codes.TimeoutStartUSec);
+  if (values.WorkingDirectory !== config.app) throw new RuntimeError(codes.WorkingDirectory);
+  if (!sameSet(values.ReadOnlyPaths, `${config.app} ${config.tooling} ${path.posix.dirname(config.node)}`)) throw new RuntimeError(codes.ReadOnlyPaths);
+  if (!sameSet(values.ReadWritePaths, `${config.scratch} ${config.app}/.next/cache`)) throw new RuntimeError(codes.ReadWritePaths);
   return true;
 }
 
@@ -95,15 +107,15 @@ function verifyMounts(config, io = fs) {
   const protectedPaths = ['/home', '/root', config.app, config.tooling, path.posix.dirname(config.node)];
   // The runner contract does not provision /run/user; only confirmed absence makes this path optional.
   try {
-    if (!io.lstatSync('/run/user').isDirectory()) throw new RuntimeError('isolation');
+    if (!io.lstatSync('/run/user').isDirectory()) throw new RuntimeError('isolation_path_run_user');
     protectedPaths.push('/run/user');
-  } catch (error) { if (error.code !== 'ENOENT') throw new RuntimeError('isolation'); }
+  } catch (error) { if (error.code !== 'ENOENT') throw new RuntimeError('isolation_path_run_user'); }
   const writablePaths = [config.scratch, `${config.app}/.next/cache`];
   for (const name of [...protectedPaths, ...writablePaths]) {
-    if (!name.startsWith('/') || io.realpathSync(name) !== name) throw new RuntimeError('isolation');
+    if (!name.startsWith('/') || io.realpathSync(name) !== name) throw new RuntimeError('isolation_path_canonical');
   }
   const text = io.readFileSync('/proc/self/mountinfo', 'utf8');
-  if (typeof text !== 'string' || !text.trim() || text.length > 262144) throw new RuntimeError('isolation');
+  if (typeof text !== 'string' || !text.trim() || text.length > 262144) throw new RuntimeError('isolation_mount_table_input');
   /** Decode kernel mount paths so escaped characters cannot hide a writable protected submount. */
   function decode(value) { return value.replace(/\\([0-7]{3})/g, (_match, octal) => String.fromCharCode(parseInt(octal, 8))); }
   /** Compare whole path components; similarly named sibling directories are never write exceptions. */
@@ -111,22 +123,24 @@ function verifyMounts(config, io = fs) {
   /** Require one unambiguous access mode from each per-mount and superblock option list. */
   function readOnly(options) {
     const modes = options.split(',').filter(value => value === 'ro' || value === 'rw');
-    if (modes.length !== 1) throw new RuntimeError('isolation');
+    if (modes.length !== 1) throw new RuntimeError('isolation_mount_options');
     return modes[0] === 'ro';
   }
   const mounts = text.trimEnd().split('\n').map(line => {
     const parts = line.split(' - '), fields = parts[0].split(' '), superFields = parts[1]?.split(' ');
-    if (parts.length !== 2 || fields.length < 6 || superFields.length !== 3 || !fields[4].startsWith('/')) throw new RuntimeError('isolation');
+    if (parts.length !== 2 || fields.length < 6 || superFields.length !== 3 || !fields[4].startsWith('/')) throw new RuntimeError('isolation_mount_table_format');
     const mountReadOnly = readOnly(fields[5]), superReadOnly = readOnly(superFields[2]);
     return { name: decode(fields[4]), readOnly: mountReadOnly || superReadOnly };
   });
   for (const name of [...protectedPaths, ...writablePaths]) {
     const matches = mounts.filter(mount => within(name, mount.name)).sort((a, b) => b.name.length - a.name.length);
-    if (!matches.length || (name === '/run/user' && matches[0].name !== name) || matches[0].name === matches[1]?.name ||
-        matches[0].readOnly === writablePaths.includes(name)) throw new RuntimeError('isolation');
+    if (!matches.length) throw new RuntimeError('isolation_mount_missing');
+    if (name === '/run/user' && matches[0].name !== name) throw new RuntimeError('isolation_mount_run_user');
+    if (matches[0].name === matches[1]?.name) throw new RuntimeError('isolation_mount_ambiguous');
+    if (matches[0].readOnly === writablePaths.includes(name)) throw new RuntimeError('isolation_mount_mode');
   }
   for (const mount of mounts) {
-    if (protectedPaths.some(root => within(mount.name, root)) && !writablePaths.some(root => within(mount.name, root)) && !mount.readOnly) throw new RuntimeError('isolation');
+    if (protectedPaths.some(root => within(mount.name, root)) && !writablePaths.some(root => within(mount.name, root)) && !mount.readOnly) throw new RuntimeError('isolation_mount_descendant');
   }
   return true;
 }
@@ -134,17 +148,23 @@ function verifyMounts(config, io = fs) {
 /** Confirm kernel controls and effective mount permissions inside the child before publishing readiness. */
 function verifyKernel(input, io = fs, config) {
   /** Limit pseudo-file contents in memory; none are copied to retained evidence. */
-  const read = name => { const value = io.readFileSync(name, 'utf8'); if (value.length > 16384) throw new RuntimeError('isolation'); return value.trim(); };
+  const read = name => { const value = io.readFileSync(name, 'utf8'); if (value.length > 16384) throw new RuntimeError('isolation_kernel_metadata_size'); return value.trim(); };
   const namespace = io.readlinkSync('/proc/self/ns/net');
-  if (!/^net:\[\d+\]$/.test(namespace) || namespace === input.hostNamespace || io.readdirSync('/sys/class/net').sort().join(',') !== 'lo') throw new RuntimeError('isolation');
+  if (!/^net:\[\d+\]$/.test(namespace) || namespace === input.hostNamespace) throw new RuntimeError('isolation_network_namespace');
+  if (io.readdirSync('/sys/class/net').sort().join(',') !== 'lo') throw new RuntimeError('isolation_network_interfaces');
   const group = read('/proc/self/cgroup');
-  if (group !== `0::/system.slice/${input.unit}`) throw new RuntimeError('isolation');
+  if (group !== `0::/system.slice/${input.unit}`) throw new RuntimeError('isolation_cgroup_membership');
   const root = `/sys/fs/cgroup/system.slice/${input.unit}`;
   const cpu = read(`${root}/cpu.max`).split(/\s+/).map(Number);
-  if (cpu.length !== 2 || cpu.some(value => !Number.isSafeInteger(value) || value <= 0) || cpu[0] / cpu[1] !== 4 ||
-      read(`${root}/memory.max`) !== String(MEMORY) || read(`${root}/memory.swap.max`) !== '0' || read(`${root}/pids.max`) !== '256') throw new RuntimeError('isolation');
+  if (cpu.length !== 2 || cpu.some(value => !Number.isSafeInteger(value) || value <= 0) || cpu[0] / cpu[1] !== 4) throw new RuntimeError('isolation_cpu_limit');
+  if (read(`${root}/memory.max`) !== String(MEMORY)) throw new RuntimeError('isolation_memory_limit');
+  if (read(`${root}/memory.swap.max`) !== '0') throw new RuntimeError('isolation_swap_limit');
+  if (read(`${root}/pids.max`) !== '256') throw new RuntimeError('isolation_tasks_limit');
   const status = read('/proc/self/status');
-  if (!/^NoNewPrivs:\s+1$/m.test(status) || !/^CapEff:\s+0+$/m.test(status) || !/^CapBnd:\s+0+$/m.test(status) || !/^Seccomp:\s+2$/m.test(status)) throw new RuntimeError('isolation');
+  if (!/^NoNewPrivs:\s+1$/m.test(status)) throw new RuntimeError('isolation_no_new_privileges');
+  if (!/^CapEff:\s+0+$/m.test(status)) throw new RuntimeError('isolation_effective_capabilities');
+  if (!/^CapBnd:\s+0+$/m.test(status)) throw new RuntimeError('isolation_bounding_capabilities');
+  if (!/^Seccomp:\s+2$/m.test(status)) throw new RuntimeError('isolation_seccomp');
   verifyMounts(config, io);
   return true;
 }
@@ -281,14 +301,15 @@ async function runIsolated(app, scratch, context, selected, remainingMs, operati
       if (cancelled) throw new RuntimeError('cancelled');
       if (now() >= input.deadline) throw new RuntimeError('deadline');
       if (!released) {
-        if (now() >= readyDeadline) throw new RuntimeError('isolation');
+        if (now() >= readyDeadline) throw new RuntimeError('isolation_ready_deadline');
         if (io.existsSync(path.join(scratch, 'ready.json'))) {
           const ready = (operations.read || readBoundRecord)(path.join(scratch, 'ready.json'), inputHash, ['kernelVerified']);
-          if (ready.kernelVerified !== true) throw new RuntimeError('isolation');
+          if (ready.kernelVerified !== true) throw new RuntimeError('isolation_ready_record');
           const names = serviceNames();
           validateService(parseProperties(await metadata(['show', config.unit, '--all', `--property=${names.join(',')}`]), names), config);
           if (cancelled) throw new RuntimeError('cancelled');
-          if (now() >= readyDeadline || finished) throw new RuntimeError('isolation');
+          if (now() >= readyDeadline) throw new RuntimeError('isolation_release_deadline');
+          if (finished) throw new RuntimeError('isolation_release_race');
           releaseAt = now(); write(scratch, 'release.json', { inputHash, serviceVerified: true, at: releaseAt }); released = true;
         }
       }
