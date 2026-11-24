@@ -10,6 +10,33 @@ const base = require('../../main-8c68fd9e-static-attempt-1/qualify-static.cjs');
 const staticInspector = require('../../main-8c68fd9e-static-attempt-1/inspect-compiled.cjs');
 const fixtureBase = path.resolve(__dirname, '../../../../.tmp/gate1-runtime-tests'), fixtures = [];
 
+// The owner-reviewed vocabulary is independent of the exported map; added or misspelled codes fail this fixture.
+const EXPECTED_ISOLATION_CODES = [
+  'isolation_service_private_network', 'isolation_service_private_tmp', 'isolation_service_no_new_privileges',
+  'isolation_service_protect_system', 'isolation_service_protect_home', 'isolation_service_protect_control_groups',
+  'isolation_service_capability_bounding_set', 'isolation_service_ambient_capabilities', 'isolation_service_restrict_address_families',
+  'isolation_service_restrict_namespaces', 'isolation_service_memory_max', 'isolation_service_memory_swap_max',
+  'isolation_service_tasks_max', 'isolation_service_kill_mode', 'isolation_service_send_sigkill',
+  'isolation_service_restart', 'isolation_service_limit_core', 'isolation_service_collect_mode',
+  'isolation_service_user', 'isolation_service_group', 'isolation_service_active_state',
+  'isolation_service_sub_state', 'isolation_service_load_state', 'isolation_service_type',
+  'isolation_service_control_group', 'isolation_service_cpu_quota', 'isolation_service_runtime_max',
+  'isolation_service_timeout_stop', 'isolation_service_timeout_start', 'isolation_service_working_directory',
+  'isolation_service_read_only_paths', 'isolation_service_read_write_paths', 'isolation_service_config',
+  'isolation_service_metadata_size', 'isolation_service_metadata_encoding', 'isolation_service_metadata_format',
+  'isolation_service_metadata_keys', 'isolation_service_metadata_missing', 'isolation_service_metadata_shape',
+  'isolation_kernel_metadata_size', 'isolation_network_namespace', 'isolation_network_interfaces',
+  'isolation_cgroup_membership', 'isolation_cpu_limit', 'isolation_memory_limit',
+  'isolation_swap_limit', 'isolation_tasks_limit', 'isolation_no_new_privileges',
+  'isolation_effective_capabilities', 'isolation_bounding_capabilities', 'isolation_seccomp',
+  'isolation_path_run_user', 'isolation_path_canonical', 'isolation_mount_table_input',
+  'isolation_mount_options', 'isolation_mount_table_format', 'isolation_mount_missing',
+  'isolation_mount_run_user', 'isolation_mount_ambiguous', 'isolation_mount_mode',
+  'isolation_mount_descendant', 'isolation_ready_deadline', 'isolation_ready_record',
+  'isolation_release_deadline', 'isolation_release_race', 'isolation_child_release_deadline',
+  'isolation_child_release_record',
+];
+
 /** Allocate bounded protocol fixtures only below this suite's scratch boundary. */
 function scratch() {
   fs.mkdirSync(fixtureBase, { recursive: true });
@@ -344,6 +371,72 @@ describe('same-process lifecycle and truthful cleanup', () => {
   });
 });
 
+describe('fixed isolation diagnostics', () => {
+  it('allows exactly the 67 approved guard identifiers and preserves the generic fallback', () => {
+    expect([...tool.ISOLATION_CODES].sort()).toEqual([...EXPECTED_ISOLATION_CODES].sort());
+    expect(tool.ISOLATION_CODES).toHaveLength(67);
+    expect(new Set(tool.ISOLATION_CODES).size).toBe(67);
+    expect(Object.isFrozen(tool.ISOLATION_CODES)).toBe(true);
+    expect(tool.CODES.filter(code => code.startsWith('isolation_')).sort()).toEqual([...EXPECTED_ISOLATION_CODES].sort());
+    expect(tool.failureCode({ code: 'isolation' })).toBe('isolation');
+  });
+  it.each(EXPECTED_ISOLATION_CODES)('publishes only %s from an allowlisted child failure', async code => {
+    const dir = scratch(); tool.publish(dir, 'input.json', { synthetic: true });
+    const makeNext = jest.fn(), inspect = jest.fn();
+    const result = await tool.childMain('/app', dir, { validateInput: value => value, childFlag: '1', inspect,
+      verifyKernel: () => { throw Object.assign(new Error('SYNTHETIC_SECRET_SENTINEL'), { code, privateMetadata: 'SYNTHETIC_SECRET_SENTINEL' }); },
+      smoke: { makeNext } });
+    expect(result).toEqual({ ...tool.emptyRuntime(), failure: code });
+    const retained = tool.readJson(path.join(dir, 'runtime.json'));
+    expect(retained).toEqual({ inputHash: base.sha(fs.readFileSync(path.join(dir, 'input.json'))), runtime: result });
+    expect(JSON.stringify(retained)).not.toContain('SYNTHETIC_SECRET_SENTINEL');
+    expect(inspect).not.toHaveBeenCalled(); expect(makeNext).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(dir, 'ready.json'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'progress-00.json'))).toBe(false);
+  });
+  it.each(['isolation_SYNTHETIC_SECRET_SENTINEL', 'isolation_memory_limit SYNTHETIC_SECRET_SENTINEL', 'EACCES'])('sanitizes unknown child code %s to internal', async code => {
+    const dir = scratch(); tool.publish(dir, 'input.json', { synthetic: true });
+    const result = await tool.childMain('/app', dir, { validateInput: value => value, childFlag: '1',
+      verifyKernel: () => { throw Object.assign(new Error('SYNTHETIC_SECRET_SENTINEL'), { code }); } });
+    expect(result.failure).toBe('internal');
+    expect(fs.readFileSync(path.join(dir, 'runtime.json'), 'utf8')).not.toContain('SYNTHETIC_SECRET_SENTINEL');
+    expect(() => tool.validateRuntime({ ...tool.emptyRuntime(), failure: code })).toThrow('report_schema');
+  });
+  it('rejects extra diagnostic fields even beside an allowlisted code', () => {
+    expect(() => tool.validateRuntime({ ...tool.emptyRuntime(), failure: 'isolation_memory_limit', details: 'SYNTHETIC_SECRET_SENTINEL' })).toThrow('report_schema');
+  });
+  it.each([
+    ['absent', 'isolation_child_release_deadline'], ['late', 'isolation_child_release_deadline'],
+    ['unbound', 'isolation_child_release_record'], ['unverified', 'isolation_child_release_record'],
+    ['extra', 'isolation_child_release_record'], ['timestamp-type', 'isolation_child_release_record'],
+    ['future', 'isolation_child_release_record'], ['noncanonical', 'report_schema'], ['duplicate', 'report_schema'],
+  ])('stops on %s release evidence before inspection or Next startup', async (kind, code) => {
+    const dir = scratch(); let time = 1000;
+    tool.publish(dir, 'input.json', { deadline: 361000 });
+    const inputHash = base.sha(fs.readFileSync(path.join(dir, 'input.json'))), inspect = jest.fn(), makeNext = jest.fn();
+    const result = await tool.childMain('/app', dir, { validateInput: value => value, childFlag: '1', versions: base.VERSIONS,
+      verifyKernel: jest.fn(), now: () => time, inspect, smoke: { makeNext }, pause: async () => {
+        if (kind === 'absent') { time = 31000; return; }
+        const release = { inputHash, serviceVerified: true, at: 1000 };
+        if (kind === 'late') time = 31000;
+        if (kind === 'unbound') release.inputHash = 'f'.repeat(64);
+        if (kind === 'unverified') release.serviceVerified = false;
+        if (kind === 'extra') release.private = 'SYNTHETIC_SECRET_SENTINEL';
+        if (kind === 'timestamp-type') release.at = '1000';
+        if (kind === 'future') release.at = 1001;
+        if (kind === 'noncanonical' || kind === 'duplicate') {
+          let bytes = JSON.stringify(release);
+          if (kind === 'duplicate') bytes = bytes.replace('"at":', '"at":1000,"at":');
+          fs.writeFileSync(path.join(dir, 'release.json'), bytes, { flag: 'wx' });
+        } else tool.publish(dir, 'release.json', release);
+      } });
+    expect(result).toEqual({ ...tool.emptyRuntime(), failure: code });
+    expect(inspect).not.toHaveBeenCalled(); expect(makeNext).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(dir, 'progress-00.json'))).toBe(false);
+    expect(fs.readFileSync(path.join(dir, 'runtime.json'), 'utf8')).not.toContain('SYNTHETIC_SECRET_SENTINEL');
+  });
+});
+
 describe('atomic protocol and strict evidence', () => {
   it('returns the committed digest after unlink failure and still refuses overwrite', () => {
     const dir = scratch(), filename = path.join(dir, 'ready.json'), pending = path.join(dir, '.pending-ready.json');
@@ -464,7 +557,7 @@ describe('atomic protocol and strict evidence', () => {
     const inspect = jest.fn();
     const result = await tool.childMain('/synthetic-app', dir, { validateInput: value => value, childFlag: '1', verifyKernel: jest.fn(), versions: base.VERSIONS, inspect,
       pause: async () => { tool.publish(dir, 'release.json', { inputHash: 'f'.repeat(64), serviceVerified: true, at: Date.now() }); } });
-    expect(result.failure).toBe('isolation'); expect(inspect).not.toHaveBeenCalled(); expect(fs.existsSync(path.join(dir, 'progress-00.json'))).toBe(false);
+    expect(result.failure).toBe('isolation_child_release_record'); expect(inspect).not.toHaveBeenCalled(); expect(fs.existsSync(path.join(dir, 'progress-00.json'))).toBe(false);
   });
   it('applies the installed Zod boundary before accepting an inventory', () => {
     const app = path.resolve(path.dirname(require.resolve('zod/package.json')), '../..');

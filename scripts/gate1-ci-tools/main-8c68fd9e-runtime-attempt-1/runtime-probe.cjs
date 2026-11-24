@@ -14,7 +14,30 @@ const { RuntimeError } = inspector;
 const HEADERS = Object.freeze({ key: 'x-gate1-middleware-probe-key', challenge: 'x-gate1-middleware-probe-challenge', observation: 'x-gate1-middleware-runtime' });
 const CASES = Object.freeze(['baseline', 'authenticated_1', 'authenticated_2', 'wrong_credential', 'query_excluded', 'protected_redirect']);
 const LIMITS = Object.freeze({ requests: 6, httpMs: 10000, headerBytes: 16384, bodyBytes: 1048576, startupMs: 30000, cleanupMs: 5000, runtimeMs: 360000, progressFiles: 8 });
-const CODES = Object.freeze([...base.CODES, 'isolation', 'runtime_read', 'http', 'http_cap', 'observation', 'cache_cookie', 'route', 'startup', 'cancelled']);
+// Only known guard identifiers enter evidence; never construct a code from observed metadata or paths.
+const SERVICE_CODES = Object.freeze({
+  PrivateNetwork: 'isolation_service_private_network', PrivateTmp: 'isolation_service_private_tmp', NoNewPrivileges: 'isolation_service_no_new_privileges',
+  ProtectSystem: 'isolation_service_protect_system', ProtectHome: 'isolation_service_protect_home', ProtectControlGroups: 'isolation_service_protect_control_groups',
+  CapabilityBoundingSet: 'isolation_service_capability_bounding_set', AmbientCapabilities: 'isolation_service_ambient_capabilities',
+  RestrictAddressFamilies: 'isolation_service_restrict_address_families', RestrictNamespaces: 'isolation_service_restrict_namespaces',
+  MemoryMax: 'isolation_service_memory_max', MemorySwapMax: 'isolation_service_memory_swap_max', TasksMax: 'isolation_service_tasks_max',
+  KillMode: 'isolation_service_kill_mode', SendSIGKILL: 'isolation_service_send_sigkill', Restart: 'isolation_service_restart',
+  LimitCORE: 'isolation_service_limit_core', CollectMode: 'isolation_service_collect_mode', User: 'isolation_service_user', Group: 'isolation_service_group',
+  ActiveState: 'isolation_service_active_state', SubState: 'isolation_service_sub_state', LoadState: 'isolation_service_load_state', Type: 'isolation_service_type',
+  ControlGroup: 'isolation_service_control_group', CPUQuotaPerSecUSec: 'isolation_service_cpu_quota', RuntimeMaxUSec: 'isolation_service_runtime_max',
+  TimeoutStopUSec: 'isolation_service_timeout_stop', TimeoutStartUSec: 'isolation_service_timeout_start', WorkingDirectory: 'isolation_service_working_directory',
+  ReadOnlyPaths: 'isolation_service_read_only_paths', ReadWritePaths: 'isolation_service_read_write_paths',
+});
+const ISOLATION_CODES = Object.freeze([...Object.values(SERVICE_CODES), 'isolation_service_config', 'isolation_service_metadata_size',
+  'isolation_service_metadata_encoding', 'isolation_service_metadata_format', 'isolation_service_metadata_keys', 'isolation_service_metadata_missing',
+  'isolation_service_metadata_shape', 'isolation_kernel_metadata_size', 'isolation_network_namespace', 'isolation_network_interfaces',
+  'isolation_cgroup_membership', 'isolation_cpu_limit', 'isolation_memory_limit', 'isolation_swap_limit', 'isolation_tasks_limit',
+  'isolation_no_new_privileges', 'isolation_effective_capabilities', 'isolation_bounding_capabilities', 'isolation_seccomp',
+  'isolation_path_run_user', 'isolation_path_canonical', 'isolation_mount_table_input', 'isolation_mount_options', 'isolation_mount_table_format',
+  'isolation_mount_missing', 'isolation_mount_run_user', 'isolation_mount_ambiguous', 'isolation_mount_mode', 'isolation_mount_descendant',
+  'isolation_ready_deadline', 'isolation_ready_record', 'isolation_release_deadline', 'isolation_release_race',
+  'isolation_child_release_deadline', 'isolation_child_release_record']);
+const CODES = Object.freeze([...base.CODES, 'isolation', ...ISOLATION_CODES, 'runtime_read', 'http', 'http_cap', 'observation', 'cache_cookie', 'route', 'startup', 'cancelled']);
 const COUNT_KEYS = ['version', 'nodeVersion', 'releaseName'];
 const PHASES = Object.freeze({ inspect: 120000, startup: 30000, requests: 60000, cleanup: 5000, recheck: 120000 });
 const TRANSITIONS = Object.freeze({ isolation: ['inspect'], inspect: ['startup', 'stopped'], startup: ['requests', 'cleanup'],
@@ -343,12 +366,13 @@ async function childMain(app, scratch, operations = {}) {
     publish(scratch, 'ready.json', { inputHash, kernelVerified: true });
     const releaseDeadline = Math.min(input.deadline, now() + LIMITS.startupMs);
     while (!fs.existsSync(path.join(scratch, 'release.json'))) {
-      if (now() >= releaseDeadline) throw new RuntimeError('isolation');
+      if (now() >= releaseDeadline) throw new RuntimeError('isolation_child_release_deadline');
       await (operations.pause || (() => new Promise(resolve => setTimeout(resolve, 50))))();
     }
     const release = readJson(path.join(scratch, 'release.json'));
     if (!exactKeys(release, ['inputHash', 'serviceVerified', 'at']) || release.inputHash !== inputHash || release.serviceVerified !== true ||
-        !Number.isSafeInteger(release.at) || release.at > now() || now() >= releaseDeadline) throw new RuntimeError('isolation');
+        !Number.isSafeInteger(release.at) || release.at > now()) throw new RuntimeError('isolation_child_release_record');
+    if (now() >= releaseDeadline) throw new RuntimeError('isolation_child_release_deadline');
     releaseAt = release.at;
     report.isolationVerified = true; progress(report);
     report.stage = 'inspect'; phase('inspect');
@@ -378,5 +402,5 @@ if (require.main === module) {
   else childMain(path.resolve(process.argv[3]), path.resolve(process.argv[4])).then(report => process.exit(report.failure ? 1 : 0)).catch(() => process.exit(1));
 }
 
-module.exports = { HEADERS, CASES, LIMITS, CODES, PHASES, PHASE_FILES, exactKeys, failureCode, bounded, smokeCases, getLocal, privateNoStore, reviewResponse, validateCases,
+module.exports = { HEADERS, CASES, LIMITS, SERVICE_CODES, ISOLATION_CODES, CODES, PHASES, PHASE_FILES, exactKeys, failureCode, bounded, smokeCases, getLocal, privateNoStore, reviewResponse, validateCases,
   emptyRuntime, validateRuntime, smoke, recordPath, publish, validatePhases, readJson, validateInput, childMain };
