@@ -7,6 +7,43 @@ const { EventEmitter } = require('node:events');
 const tool = require('../isolate-runtime.cjs');
 const probe = require('../runtime-probe.cjs');
 const staticInspector = require('../../main-8c68fd9e-static-attempt-1/inspect-compiled.cjs');
+const base = require('../../main-8c68fd9e-static-attempt-1/qualify-static.cjs');
+
+// Independent expected identifiers: each fixture mutates one effective property, never the implementation map.
+const SERVICE_FAILURES = [
+  ['PrivateNetwork', 'isolation_service_private_network'],
+  ['PrivateTmp', 'isolation_service_private_tmp'],
+  ['NoNewPrivileges', 'isolation_service_no_new_privileges'],
+  ['ProtectSystem', 'isolation_service_protect_system'],
+  ['ProtectHome', 'isolation_service_protect_home'],
+  ['ProtectControlGroups', 'isolation_service_protect_control_groups'],
+  ['CapabilityBoundingSet', 'isolation_service_capability_bounding_set'],
+  ['AmbientCapabilities', 'isolation_service_ambient_capabilities'],
+  ['RestrictAddressFamilies', 'isolation_service_restrict_address_families'],
+  ['RestrictNamespaces', 'isolation_service_restrict_namespaces'],
+  ['MemoryMax', 'isolation_service_memory_max'],
+  ['MemorySwapMax', 'isolation_service_memory_swap_max'],
+  ['TasksMax', 'isolation_service_tasks_max'],
+  ['KillMode', 'isolation_service_kill_mode'],
+  ['SendSIGKILL', 'isolation_service_send_sigkill'],
+  ['Restart', 'isolation_service_restart'],
+  ['LimitCORE', 'isolation_service_limit_core'],
+  ['CollectMode', 'isolation_service_collect_mode'],
+  ['User', 'isolation_service_user'],
+  ['Group', 'isolation_service_group'],
+  ['ActiveState', 'isolation_service_active_state'],
+  ['SubState', 'isolation_service_sub_state'],
+  ['LoadState', 'isolation_service_load_state'],
+  ['Type', 'isolation_service_type'],
+  ['ControlGroup', 'isolation_service_control_group'],
+  ['CPUQuotaPerSecUSec', 'isolation_service_cpu_quota'],
+  ['RuntimeMaxUSec', 'isolation_service_runtime_max'],
+  ['TimeoutStopUSec', 'isolation_service_timeout_stop'],
+  ['TimeoutStartUSec', 'isolation_service_timeout_start'],
+  ['WorkingDirectory', 'isolation_service_working_directory'],
+  ['ReadOnlyPaths', 'isolation_service_read_only_paths'],
+  ['ReadWritePaths', 'isolation_service_read_write_paths'],
+];
 
 /** Bind all mocked service facts to one concrete Linux configuration. */
 function config() { return { app: '/app', scratch: '/scratch', tooling: '/tools', node: '/node/bin/node', uid: 1001, gid: 1001, seconds: 360, unit: 'gate1-runtime-123-1.service' }; }
@@ -106,6 +143,159 @@ function failedService(primaryFailure, collectAfter) {
   });
   return { h, checks, get stoppedAt() { return stoppedAt; } };
 }
+
+describe('isolation diagnostic regressions', () => {
+  it.each(SERVICE_FAILURES)('attributes effective %s rejection to %s', (key, code) => {
+    expect(tool.validateService(properties(), config())).toBe(true);
+    expect(() => tool.validateService({ ...properties(), [key]: 'synthetic-private-value' }, config()))
+      .toThrow(expect.objectContaining({ code, message: code }));
+  });
+  it('covers every requested service property with one distinct fixed identifier', () => {
+    expect(SERVICE_FAILURES.map(([key]) => key).sort()).toEqual(tool.serviceNames().sort());
+    expect(probe.SERVICE_CODES).toEqual(Object.fromEntries(SERVICE_FAILURES));
+    expect(new Set(SERVICE_FAILURES.map(([, code]) => code)).size).toBe(32);
+    expect(Object.isFrozen(probe.SERVICE_CODES)).toBe(true);
+  });
+  it.each([
+    ['A=' + 'x'.repeat(16384), ['A'], 'isolation_service_metadata_size'],
+    ['A=private\r\n', ['A'], 'isolation_service_metadata_encoding'],
+    ['private', ['A'], 'isolation_service_metadata_format'],
+    ['A=1\nA=2\n', ['A'], 'isolation_service_metadata_keys'],
+    ['private=1\n', ['A'], 'isolation_service_metadata_keys'],
+    ['A=1\n', ['A', 'B'], 'isolation_service_metadata_missing'],
+  ])('classifies bounded property metadata %#', (value, allowed, code) => {
+    expect(() => tool.parseProperties(Buffer.from(value), allowed)).toThrow(expect.objectContaining({ code, message: code }));
+  });
+  it('keeps configuration and direct property-shape failures distinct', () => {
+    expect(() => tool.serviceArgs({ ...config(), uid: 0 })).toThrow(expect.objectContaining({ code: 'isolation_service_config' }));
+    expect(() => tool.validateService({ ...properties(), arbitrary: 'private' }, config()))
+      .toThrow(expect.objectContaining({ code: 'isolation_service_metadata_shape' }));
+  });
+  it.each([
+    ['CPUQuotaPerSecUSec', 'isolation_service_cpu_quota'], ['RuntimeMaxUSec', 'isolation_service_runtime_max'],
+    ['TimeoutStopUSec', 'isolation_service_timeout_stop'], ['TimeoutStartUSec', 'isolation_service_timeout_start'],
+  ])('keeps malformed, out-of-range and incorrect %s durations property-specific', (key, code) => {
+    for (const value of ['infinity', '7min', '1s']) {
+      expect(() => tool.validateService({ ...properties(), [key]: value }, config())).toThrow(expect.objectContaining({ code }));
+    }
+  });
+  it('preserves service short-circuit precedence before parsing later duration metadata', () => {
+    const values = { ...properties(), User: 'private', CPUQuotaPerSecUSec: 'private' };
+    expect(() => tool.validateService(values, config())).toThrow(expect.objectContaining({ code: 'isolation_service_user' }));
+  });
+  it.each([
+    ['size', 'isolation_kernel_metadata_size'], ['namespace', 'isolation_network_namespace'], ['namespace-format', 'isolation_network_namespace'],
+    ['interfaces', 'isolation_network_interfaces'], ['cgroup', 'isolation_cgroup_membership'], ['cpu', 'isolation_cpu_limit'],
+    ['memory', 'isolation_memory_limit'], ['swap', 'isolation_swap_limit'], ['tasks', 'isolation_tasks_limit'],
+    ['NoNewPrivs', 'isolation_no_new_privileges'], ['CapEff', 'isolation_effective_capabilities'],
+    ['CapBnd', 'isolation_bounding_capabilities'], ['Seccomp', 'isolation_seccomp'],
+  ])('identifies the kernel %s check as %s', (kind, code) => {
+    const k = kernel();
+    if (kind === 'size') k.values['/proc/self/cgroup'] = 'x'.repeat(16385);
+    if (kind === 'namespace') k.io.readlinkSync = () => 'net:[1]';
+    if (kind === 'namespace-format') k.io.readlinkSync = () => 'private';
+    if (kind === 'interfaces') k.io.readdirSync = () => ['lo', 'eth0'];
+    if (kind === 'cgroup') k.values['/proc/self/cgroup'] = '0::/private';
+    if (kind === 'cpu') k.values[k.root + '/cpu.max'] = 'max 100000';
+    if (kind === 'memory') k.values[k.root + '/memory.max'] = 'max';
+    if (kind === 'swap') k.values[k.root + '/memory.swap.max'] = '1';
+    if (kind === 'tasks') k.values[k.root + '/pids.max'] = 'max';
+    if (['NoNewPrivs', 'CapEff', 'CapBnd', 'Seccomp'].includes(kind)) {
+      k.values['/proc/self/status'] = k.values['/proc/self/status'].split('\n').filter(line => !line.startsWith(kind + ':')).join('\n');
+    }
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow(expect.objectContaining({ code, message: code }));
+  });
+  it.each([
+    ['file', 'isolation_path_run_user'], ['permission', 'isolation_path_run_user'], ['symlink', 'isolation_path_canonical'],
+    ['empty', 'isolation_mount_table_input'], ['oversized', 'isolation_mount_table_input'], ['format', 'isolation_mount_table_format'],
+    ['mount-options', 'isolation_mount_options'], ['super-options', 'isolation_mount_options'], ['missing', 'isolation_mount_missing'],
+    ['run-user-parent', 'isolation_mount_run_user'], ['ambiguous', 'isolation_mount_ambiguous'], ['mode', 'isolation_mount_mode'],
+    ['descendant', 'isolation_mount_descendant'],
+  ])('identifies the mount/path %s check as %s', (kind, code) => {
+    const k = kernel(), file = '/proc/self/mountinfo';
+    if (kind === 'file') k.io.lstatSync = () => ({ isDirectory: () => false });
+    if (kind === 'permission') k.io.lstatSync = () => { throw Object.assign(new Error('synthetic-private-value'), { code: 'EACCES' }); };
+    if (kind === 'symlink') k.io.realpathSync = name => name === '/home' ? '/private' : name;
+    if (kind === 'empty') k.values[file] = '';
+    if (kind === 'oversized') k.values[file] = 'x'.repeat(262145);
+    if (kind === 'format') k.values[file] = 'private';
+    if (kind === 'mount-options') k.values[file] = k.values[file].replace('ro,relatime', 'ro,rw');
+    if (kind === 'super-options') k.values[file] = k.values[file].replace('ext4 /dev/root rw', 'ext4 /dev/root ro,rw');
+    if (kind === 'missing') k.values[file] = k.values[file].split('\n').filter(line => !line.includes(' / ro,') && !line.includes(' /home ro,')).join('\n');
+    if (kind === 'run-user-parent') k.values[file] = k.values[file].split('\n').filter(line => !line.includes(' /run/user ')).join('\n');
+    if (kind === 'ambiguous') k.values[file] += '10 2 8:1 / /home ro - ext4 /dev/root rw\n';
+    if (kind === 'mode') k.values[file] = k.values[file].replace(' /home ro,', ' /home rw,');
+    if (kind === 'descendant') k.values[file] += '10 2 8:1 / /home/private rw - ext4 /dev/root rw\n';
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow(expect.objectContaining({ code, message: code }));
+  });
+  it('keeps unexpected kernel I/O errors generic without inventing an observed check result', () => {
+    const k = kernel(), error = Object.assign(new Error('synthetic-private-value'), { code: 'EACCES' });
+    k.io.readlinkSync = () => { throw error; };
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow(error);
+    expect(probe.failureCode(error)).toBe('internal');
+  });
+  it.each([
+    ['ready-deadline', 'isolation_ready_deadline'], ['ready-record', 'isolation_ready_record'],
+    ['release-deadline', 'isolation_release_deadline'], ['release-race', 'isolation_release_race'],
+  ])('stops before release for %s and retains only %s', async (kind, code) => {
+    const h = harness(), original = h.ops.run.getMockImplementation();
+    h.ops.run.mockImplementation(async (command, args, options) => {
+      const result = original(command, args, options);
+      if (args[1] === 'systemd-run') {
+        if (kind === 'ready-deadline') h.records.delete('ready.json');
+        if (kind === 'ready-record') h.records.set('ready.json', { inputHash: h.hash, kernelVerified: false });
+      }
+      if (args.includes('show')) {
+        if (kind === 'release-deadline') h.advance(30000);
+        if (kind === 'release-race') { h.finish(); await Promise.resolve(); }
+      }
+      return result;
+    });
+    expect(await h.run()).toEqual({ failure: code, serviceStopped: true, runtime: null, accounting: 'unknown' });
+    expect(h.records.has('release.json')).toBe(false);
+    expect(h.ops.stop).toHaveBeenCalledTimes(1);
+  });
+  it.each(['canonical', 'noncanonical', 'duplicate', 'unbound', 'extra', 'unknown', 'touched'])('trusts only canonical untouched bound child diagnostics: %s', async kind => {
+    const h = harness(), original = h.ops.run.getMockImplementation();
+    const record = { inputHash: h.hash, runtime: { ...probe.emptyRuntime(), failure: 'isolation_memory_limit' } };
+    if (kind === 'unbound') record.inputHash = 'f'.repeat(64);
+    if (kind === 'extra') record.private = 'synthetic-private-value';
+    if (kind === 'unknown') record.runtime.failure = 'isolation_private_value';
+    if (kind === 'touched') record.runtime.isolationVerified = true;
+    let bytes = JSON.stringify(record, null, 2) + '\n';
+    if (kind === 'noncanonical') bytes = JSON.stringify(record);
+    if (kind === 'duplicate') bytes = bytes.replace('"failure":', '"failure": "isolation_memory_limit", "failure":');
+    const bounded = jest.spyOn(base, 'readBounded').mockReturnValue(Buffer.from(bytes));
+    const recordPath = jest.spyOn(probe, 'recordPath').mockImplementation((scratch, name) => path.join(scratch, name));
+    h.ops.read = tool.readBoundRecord;
+    h.ops.run.mockImplementation(async (command, args, options) => {
+      if (args[1] === 'systemd-run') throw Object.assign(new Error('synthetic-private-value'), { code: 'child_exit' });
+      return original(command, args, options);
+    });
+    try {
+      const result = await h.run();
+      expect(result).toEqual({ failure: kind === 'canonical' ? 'isolation_memory_limit' : 'child_exit', serviceStopped: true, runtime: null, accounting: 'unknown' });
+      expect(JSON.stringify(result)).not.toContain('synthetic-private-value');
+    } finally { bounded.mockRestore(); recordPath.mockRestore(); }
+  });
+  it.each([0, 150, 4950, 5000, 5050])('preserves specific diagnostics only when collection completes inside the unchanged bound: %s', async delay => {
+    const { h } = failedService('isolation_memory_limit', delay);
+    expect(await h.run()).toEqual({ failure: delay < 5000 ? 'isolation_memory_limit' : 'cleanup', serviceStopped: delay < 5000, runtime: null, accounting: 'unknown' });
+    expect(h.records.has('release.json')).toBe(false);
+  });
+  it('identifies the effective service property without retaining its observed value', () => {
+    expect(() => tool.validateService({ ...properties(), PrivateNetwork: 'synthetic-private-value' }, config()))
+      .toThrow(expect.objectContaining({ code: 'isolation_service_private_network' }));
+  });
+  it('identifies the actual kernel memory guard', () => {
+    const k = kernel(); k.values[k.root + '/memory.max'] = 'max';
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow(expect.objectContaining({ code: 'isolation_memory_limit' }));
+  });
+  it('retains a bound child diagnostic without turning unreleased accounting into zero', async () => {
+    const { h } = failedService('isolation_memory_limit', 150);
+    expect(await h.run()).toEqual({ failure: 'isolation_memory_limit', serviceStopped: true, runtime: null, accounting: 'unknown' });
+  });
+});
 
 describe('service creation and effective readback', () => {
   it('uses a private unprivileged service with strict resource and filesystem bounds, cleared environment and pipes', () => {
@@ -418,11 +608,12 @@ describe('progress, phases and separate service cleanup', () => {
     expect(result.runtime.descriptorsRestored).toBe(variant === 'valid' ? true : null);
     expect(result.runtime.nextClosed).toBe(variant === 'valid' ? true : null);
   });
-  it.each([{ PrivateNetwork: 'no' }, { ProtectHome: 'no' }, { ProtectHome: undefined }, { ReadWritePaths: '/scratch /app' }])('does not release a child after service readback fails %#', async change => {
+  it.each([[{ PrivateNetwork: 'no' }, 'isolation_service_private_network'], [{ ProtectHome: 'no' }, 'isolation_service_protect_home'],
+    [{ ProtectHome: undefined }, 'isolation_service_metadata_missing'], [{ ReadWritePaths: '/scratch /app' }, 'isolation_service_read_write_paths']])('does not release a child after service readback fails %#', async (change, failure) => {
     const h = harness(), original = h.ops.run.getMockImplementation();
     const values = { ...properties(), ...change }; if (values.ProtectHome === undefined) delete values.ProtectHome;
     h.ops.run.mockImplementation((command, args, options) => args.includes('show') ? Promise.resolve(lines(values)) : original(command, args, options));
-    expect(await h.run()).toMatchObject({ failure: 'isolation', serviceStopped: true, accounting: 'unknown' });
+    expect(await h.run()).toMatchObject({ failure, serviceStopped: true, accounting: 'unknown' });
     expect(h.records.has('release.json')).toBe(false);
   });
   it.each(['missing-phase', 'inspection-stall', 'total'])('stops the owned service on %s deadline', async kind => {

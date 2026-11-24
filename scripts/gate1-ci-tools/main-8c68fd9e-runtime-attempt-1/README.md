@@ -102,6 +102,137 @@ following, browser script, subresource load or replacement challenge is allowed.
 Each request intent is durably recorded before invoking transport; the sequence stops
 on the first failure.
 
+## Fixed isolation diagnostics
+
+The existing `failure` field additionally accepts 67 fixed isolation identifiers.
+`runtime-probe.cjs` owns the frozen `SERVICE_CODES` map and `ISOLATION_CODES`
+allowlist. Report fields and structural schema version remain unchanged; final
+report verification and independent upload validation consume the same finite
+vocabulary. No prefix wildcard is accepted. Generic `isolation` remains valid
+for historical records and the existing unclassified pre-release fallback.
+
+Every suffix in the following tables has the literal prefix `isolation_`.
+For example, `memory_limit` means `isolation_memory_limit`. Implementation values
+are fixed literals selected only by known guards, never assembled from observed
+paths, property names/values, command output, exception messages or provider data.
+
+| Service configuration / metadata check | Code suffix |
+| --- | --- |
+| `serviceArgs`: invalid unit, UID/GID, duration or configured path | `service_config` |
+| `parseProperties`: byte cap exceeded | `service_metadata_size` |
+| Disallowed control characters | `service_metadata_encoding` |
+| Malformed property assignment | `service_metadata_format` |
+| Duplicate or unexpected property | `service_metadata_keys` |
+| Missing requested properties | `service_metadata_missing` |
+| `validateService`: incorrect property-object shape | `service_metadata_shape` |
+
+Each effective-property mismatch in `validateService` has its own identifier.
+Malformed/out-of-range duration parsing receives the same fixed code as that
+property's value mismatch. Standalone `duration` calls retain generic `isolation`
+unless supplied a property code. Original comparison and short-circuit order,
+accepted sets, numeric limits and duration representations are preserved.
+
+| Effective service property | Code suffix |
+| --- | --- |
+| `PrivateNetwork` | `service_private_network` |
+| `PrivateTmp` | `service_private_tmp` |
+| `NoNewPrivileges` | `service_no_new_privileges` |
+| `ProtectSystem` | `service_protect_system` |
+| `ProtectHome` | `service_protect_home` |
+| `ProtectControlGroups` | `service_protect_control_groups` |
+| `CapabilityBoundingSet` | `service_capability_bounding_set` |
+| `AmbientCapabilities` | `service_ambient_capabilities` |
+| `RestrictAddressFamilies` | `service_restrict_address_families` |
+| `RestrictNamespaces` | `service_restrict_namespaces` |
+| `MemoryMax` | `service_memory_max` |
+| `MemorySwapMax` | `service_memory_swap_max` |
+| `TasksMax` | `service_tasks_max` |
+| `KillMode` | `service_kill_mode` |
+| `SendSIGKILL` | `service_send_sigkill` |
+| `Restart` | `service_restart` |
+| `LimitCORE` | `service_limit_core` |
+| `CollectMode` | `service_collect_mode` |
+| `User` | `service_user` |
+| `Group` | `service_group` |
+| `ActiveState` | `service_active_state` |
+| `SubState` | `service_sub_state` |
+| `LoadState` | `service_load_state` |
+| `Type` | `service_type` |
+| `ControlGroup` | `service_control_group` |
+| `CPUQuotaPerSecUSec` | `service_cpu_quota` |
+| `RuntimeMaxUSec` | `service_runtime_max` |
+| `TimeoutStopUSec` | `service_timeout_stop` |
+| `TimeoutStartUSec` | `service_timeout_start` |
+| `WorkingDirectory` | `service_working_directory` |
+| `ReadOnlyPaths` | `service_read_only_paths` |
+| `ReadWritePaths` | `service_read_write_paths` |
+
+| Child kernel check in `verifyKernel` | Code suffix |
+| --- | --- |
+| Oversized pseudo-file contents | `kernel_metadata_size` |
+| Invalid network namespace identifier or namespace equals the parent's | `network_namespace` |
+| Interface set differs from loopback only | `network_interfaces` |
+| Incorrect cgroup membership | `cgroup_membership` |
+| Invalid CPU quota representation or ratio | `cpu_limit` |
+| Incorrect memory limit | `memory_limit` |
+| Incorrect swap limit | `swap_limit` |
+| Incorrect task limit | `tasks_limit` |
+| Missing required `NoNewPrivs` state | `no_new_privileges` |
+| Nonzero or malformed effective capabilities | `effective_capabilities` |
+| Nonzero or malformed bounding capabilities | `bounding_capabilities` |
+| Missing required seccomp state | `seccomp` |
+
+| Path / mount check in `verifyMounts` | Code suffix |
+| --- | --- |
+| `/run/user` is not a directory or checking it fails other than confirmed absence | `path_run_user` |
+| Configured path is nonabsolute or noncanonical | `path_canonical` |
+| Mount-table input is invalid, empty or oversized | `mount_table_input` |
+| Mount or superblock options lack one unambiguous access mode | `mount_options` |
+| Malformed mount-table row | `mount_table_format` |
+| No covering mount | `mount_missing` |
+| Present `/run/user` lacks its own mount | `mount_run_user` |
+| Duplicate deepest covering mount | `mount_ambiguous` |
+| Effective access mode violates the existing requirement | `mount_mode` |
+| Writable protected descendant outside permitted exceptions | `mount_descendant` |
+
+The existing `/run/user` own-mount requirement is unchanged. A prior synthetic
+parent-mount experiment did not establish a reachable defect under the complete
+service configuration; it is not evidence of the cause of run 2.
+
+| Handshake check | Code suffix |
+| --- | --- |
+| Parent readiness deadline expires before checking the ready record | `ready_deadline` |
+| Bound ready record lacks `kernelVerified: true` | `ready_record` |
+| Parent readiness deadline expires during service verification | `release_deadline` |
+| Launcher finishes before the parent releases the child | `release_race` |
+| Child release deadline expires while waiting or validating a release | `child_release_deadline` |
+| Child release fields, input binding, verification claim or timestamp are invalid | `child_release_record` |
+
+A code identifies the rejected check, not necessarily its root cause, the observed
+value or a complete execution history. Unobserved checks receive no invented code.
+Canonical-byte/context failures still use their existing schema/digest codes;
+unexpected I/O errors continue through existing sanitization, ordinarily `internal`.
+Metadata parsing used during service cleanup does not bypass cleanup precedence.
+
+Before release, only the existing canonical, input-bound, schema-valid, untouched
+failed child record may refine a launcher failure. A specific code leaves
+`runtime: null` and `accounting: unknown`; it does not attest to zero requests.
+Missing, malformed, unbound, extra-field or unsupported-code records remain
+untrusted. Cleanup failure still supersedes a specific isolation failure. No
+additional primary/cleanup fields are introduced to recover that lost detail.
+
+Service controls, acceptance/rejection conditions, deadlines, request budgets,
+cancellation, failed-unit collection and evidence-publication rules are unchanged.
+The consumed run-2 report remains `stopped` / `runtime` / `isolation`, with unknown
+accounting and successful cleanup qualification. Its exact failed guard remains
+unknown; these diagnostics do not reinterpret or amend that evidence.
+
+Offline fixtures cover every code's guard, child sanitization, strict parent
+recovery, report validation and independent upload staging. They use synthetic
+metadata and mocked execution; they establish no actual systemd/runner behavior.
+Any package-file edit changes the package digest. Preserved reports need their
+original tooling/context, and consumed package/execution approvals cannot be reused.
+
 ## Bounds, evidence and cleanup
 
 | Boundary | Limit |
@@ -212,9 +343,10 @@ needed here, including `5min 59s`; unknown forms stop rather than weaken validat
 Run the package's Jest config in-band with no cache and the main checkout's existing
 dependencies via NODE_PATH. All HTTP, Next, systemd, process launch and time-dependent
 execution paths in these suites use mocks; synthetic reader attribution uses VM
-fixtures only. Also run the frozen static helper suites, syntax checks, focused
-repository ESLint, workflow contracts, Jest discovery and explicit ignored-file
-scope/whitespace checks. No dependency install, application build or live service
+fixtures only. For this diagnostic change, run all five runtime-package suites,
+including the existing workflow contracts, plus changed-JavaScript syntax checks,
+focused repository ESLint and exact changed-file scope/whitespace checks. Verify
+the frozen static dependency through read-only package preparation. No dependency install, application build or live service
 is part of preparation. Set Windows TEMP/TMP to the repository's `.tmp` directory.
 
 Read-only source/package preparation:

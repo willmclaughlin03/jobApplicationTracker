@@ -311,10 +311,32 @@ describe('atomic report publication', () => {
   });
 });
 
+describe('diagnostic report boundaries', () => {
+  it('sanitizes a specific controller exception without retaining its message or metadata', async () => {
+    const ops = operations();
+    ops.isolate.mockRejectedValue(Object.assign(new Error('SYNTHETIC_SECRET_SENTINEL'), {
+      code: 'isolation_network_namespace', details: 'SYNTHETIC_SECRET_SENTINEL',
+    }));
+    const report = await tool.qualify('/app', '/scratch', context(), ops);
+    expect(report).toMatchObject({ failure: 'isolation_network_namespace', result: 'stopped', stage: 'runtime', runtime: null, accounting: 'unknown' });
+    expect(JSON.stringify(report)).not.toContain('SYNTHETIC_SECRET_SENTINEL');
+    expect(Object.keys(report)).toEqual(Object.keys(tool.initialReport(context())));
+  });
+  it('keeps unexpected failure codes internal rather than admitting a prefix match', async () => {
+    const ops = operations();
+    ops.isolate.mockRejectedValue(Object.assign(new Error('SYNTHETIC_SECRET_SENTINEL'), { code: 'isolation_SYNTHETIC_SECRET_SENTINEL' }));
+    const report = await tool.qualify('/app', '/scratch', context(), ops);
+    expect(report.failure).toBe('internal'); expect(JSON.stringify(report)).not.toContain('SYNTHETIC_SECRET_SENTINEL');
+  });
+});
+
 describe('independent upload validation', () => {
   const filename = '/workspace/gate1-runtime-evidence/report.json', upload = '/workspace/gate1-runtime-upload/report.json';
-  it.each([null, 'isolation', 'cleanup'])('uploads the authenticated snapshot after %s qualification', async failure => {
+  it.each([null, 'isolation', 'cleanup', ...probe.ISOLATION_CODES])('uploads the authenticated snapshot after %s qualification', async failure => {
     const h = executionHarness(failure), result = await h.entry.execute(h.env), original = h.saved.get(filename);
+    const report = JSON.parse(original);
+    if (failure) expect(report).toMatchObject({ failure, result: 'stopped', runtime: null, accounting: 'unknown', gate1: 'open', gate5A: 'unpassed' });
+    expect(result.reportSha256).toBe(base.sha(original));
     h.env.GATE1_REPORT_SHA256 = result.reportSha256;
     const read = h.base.readBounded.getMockImplementation();
     h.base.readBounded.mockImplementation(name => {
@@ -326,6 +348,21 @@ describe('independent upload validation', () => {
     expect(h.saved.get(upload)).toEqual(original);
     expect(h.base.readBounded.mock.calls.filter(([name]) => name === filename)).toHaveLength(1);
     expect(h.io.writeFileSync).toHaveBeenCalledWith(upload, original, { flag: 'wx', mode: 0o400 });
+  });
+  it.each(['unknown-code', 'extra-field', 'noncanonical', 'duplicate', 'cleanup-precedence', 'context'])('rejects %s even with a correct digest and a specific diagnostic', async kind => {
+    const h = executionHarness('isolation_memory_limit'); await h.entry.execute(h.env);
+    const report = JSON.parse(h.saved.get(filename));
+    if (kind === 'unknown-code') report.failure = 'isolation_SYNTHETIC_SECRET_SENTINEL';
+    if (kind === 'extra-field') report.diagnostic = 'SYNTHETIC_SECRET_SENTINEL';
+    if (kind === 'cleanup-precedence') { report.serviceStopped = false; report.childrenClosed = false; }
+    if (kind === 'context') report.runId = '456';
+    let bytes = JSON.stringify(report, null, 2) + '\n';
+    if (kind === 'noncanonical') bytes = JSON.stringify(report);
+    if (kind === 'duplicate') bytes = bytes.replace('"failure":', '"failure": "isolation_memory_limit", "failure":');
+    h.saved.set(filename, Buffer.from(bytes)); h.env.GATE1_REPORT_SHA256 = base.sha(Buffer.from(bytes));
+    expect(() => h.entry.verifyReport(filename, h.env.GATE1_REPORT_SHA256, h.expected)).toThrow('report_schema');
+    await expect(h.validationEntry().main(['--validate-upload'])).rejects.toThrow('report_schema');
+    expect(h.saved.has(upload)).toBe(false);
   });
   it.each(['runtime-tooling', 'static-tooling'])('validates a stopped tool_identity report using approved tooling after %s drift', async variant => {
     const h = executionHarness(), read = h.base.readBounded.getMockImplementation();
