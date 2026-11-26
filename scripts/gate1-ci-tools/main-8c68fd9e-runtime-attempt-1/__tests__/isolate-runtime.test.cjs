@@ -87,11 +87,23 @@ function kernel(c = config()) {
   const root = '/sys/fs/cgroup/system.slice/' + c.unit;
   const values = { '/proc/self/cgroup': '0::/system.slice/' + c.unit, [`${root}/cpu.max`]: '400000 100000', [`${root}/memory.max`]: '6442450944',
     [`${root}/memory.swap.max`]: '0', [`${root}/pids.max`]: '256', '/proc/self/status': 'NoNewPrivs:\t1\nCapEff:\t0000\nCapBnd:\t0000\nSeccomp:\t2\n' };
-  values['/proc/self/mountinfo'] = ['/', '/home', '/root', '/run/user', c.app, c.tooling, path.posix.dirname(c.node), c.scratch, `${c.app}/.next/cache`]
-    .map((name, i) => `${i + 1} 0 8:1 / ${name} ${i < 7 ? 'ro' : 'rw'},relatime - ext4 /dev/root rw\n`).join('');
+  const mounts = ['/', '/home', '/root', '/run/user', c.app, c.tooling, path.posix.dirname(c.node), c.scratch, `${c.app}/.next/cache`];
+  values['/proc/self/mountinfo'] = mounts.map((name, i) => {
+    const parent = name === '/' ? '/' : mounts.filter(candidate => candidate !== name && name.startsWith(candidate === '/' ? '/' : candidate + '/'))
+      .sort((a, b) => b.length - a.length)[0];
+    return `${i + 1} ${mounts.indexOf(parent) + 1} 8:1 / ${name} ${i < 7 ? 'ro' : 'rw'},relatime - ext4 /dev/root rw\n`;
+  }).join('');
   const io = { readFileSync: name => values[name], readlinkSync: () => 'net:[2]', readdirSync: () => ['lo'], realpathSync: name => name,
     lstatSync: () => ({ isDirectory: () => true }) };
   return { values, io, input: { unit: c.unit, hostNamespace: 'net:[1]' }, root, config: c };
+}
+
+/** Append explicit ID/parent/path/mode rows to a mocked kernel; distinct devices keep superblock fixtures consistent. */
+function mountFixture(rows, c = config()) {
+  const k = kernel(c);
+  k.values['/proc/self/mountinfo'] += rows.map(([id, parentId, name, mode = 'rw', superMode = 'rw', device = '8:1']) =>
+    `${id} ${parentId} ${device} / ${name} ${mode},relatime - ext4 ${device === '8:1' ? '/dev/root' : '/dev/synthetic'} ${superMode}\n`).join('');
+  return k;
 }
 
 /** Coordinate mocked launcher completion, atomic record visibility and the parent watchdog on virtual time. */
@@ -297,6 +309,119 @@ describe('isolation diagnostic regressions', () => {
   });
 });
 
+describe('same-path mount stacks', () => {
+  it('accepts a read-only upper mount over a writable lower mount', () => {
+    const k = kernel();
+    k.values['/proc/self/mountinfo'] += '10 2 8:1 / /home/runner/example rw,relatime - ext4 /dev/root rw\n' +
+      '11 10 8:1 / /home/runner/example ro,relatime - ext4 /dev/root rw\n';
+    expect(tool.verifyKernel(k.input, k.io, k.config)).toBe(true);
+  });
+  it.each([
+    [50, 70, 10], [50, 10, 70], [70, 50, 10], [70, 10, 50], [10, 50, 70], [10, 70, 50],
+  ])('accepts three layers in row order %s / %s / %s with the smallest ID on top', (...order) => {
+    const rows = { 50: [50, 2, '/home/runner/example'], 70: [70, 50, '/home/runner/example'], 10: [10, 70, '/home/runner/example', 'ro'] };
+    const k = mountFixture(order.map(id => rows[id]));
+    expect(tool.verifyKernel(k.input, k.io, k.config)).toBe(true);
+  });
+  it.each([
+    ['two layers', [[10, 2, '/home/runner/example', 'ro'], [11, 10, '/home/runner/example']]],
+    ['three layers', [[10, 2, '/home/runner/example'], [11, 10, '/home/runner/example', 'ro'], [12, 11, '/home/runner/example']]],
+    ['upper row first', [[11, 10, '/home/runner/example'], [10, 2, '/home/runner/example', 'ro']]],
+    ['uncovered mount', [[10, 2, '/home/runner/example']]],
+  ])('rejects an exposed writable mount: %s', (_label, rows) => {
+    const k = mountFixture(rows);
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow(expect.objectContaining({ code: 'isolation_mount_descendant' }));
+  });
+  it.each([
+    ['per-mount', 'ro', 'rw'], ['superblock', 'rw', 'ro'], ['both', 'ro', 'ro'],
+  ])('accepts effective read-only protection from %s flags', (_label, mode, superMode) => {
+    const k = mountFixture([[10, 2, '/home/runner/example'], [11, 10, '/home/runner/example', mode, superMode, '8:2']]);
+    expect(tool.verifyKernel(k.input, k.io, k.config)).toBe(true);
+  });
+  it('matches decoded paths when the raw kernel encodings differ', () => {
+    const k = mountFixture([[10, 2, '/home/runner/escaped\\040path'], [11, 10, '/home/\\162unner/escaped\\040path', 'ro']]);
+    expect(tool.verifyKernel(k.input, k.io, k.config)).toBe(true);
+  });
+  it.each(['self', 'outside-table'])('accepts the documented %s root-parent boundary', kind => {
+    const k = mountFixture([[10, 2, '/home/runner/example'], [11, 10, '/home/runner/example', 'ro']]);
+    if (kind === 'outside-table') k.values['/proc/self/mountinfo'] = k.values['/proc/self/mountinfo'].replace('1 1 8:1 / / ', '1 999 8:1 / / ');
+    expect(tool.verifyKernel(k.input, k.io, k.config)).toBe(true);
+  });
+  it.each([
+    ['unrelated rows', [[10, 2], [11, 2]]],
+    ['disconnected extra row', [[10, 2], [11, 10], [12, 2]]],
+    ['fork', [[10, 2], [11, 10], [12, 10]]],
+    ['two-row cycle', [[10, 11], [11, 10]]],
+    ['three-row cycle', [[10, 12], [11, 10], [12, 11]]],
+    ['disconnected cycle', [[10, 2], [11, 10], [12, 13], [13, 12]]],
+    ['non-root self-parent', [[10, 10], [11, 10]]],
+    ['missing bottom parent', [[10, 999], [11, 10]]],
+    ['unrelated bottom parent', [[10, 3], [11, 10]]],
+  ])('does not exempt a writable row with an uncertain same-path relationship: %s', (_label, links) => {
+    const k = mountFixture(links.map(([id, parentId], index) => [id, parentId, '/home/runner/example', index === 0 ? 'rw' : 'ro']));
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow(expect.objectContaining({ code: 'isolation_mount_descendant', message: 'isolation_mount_descendant' }));
+  });
+  it.each([
+    ['missing ancestor', 999, '/home/runner'],
+    ['self-parent ancestor', 12, '/home/runner'],
+    ['cycle through another path', 10, '/home/runner'],
+    ['sibling ancestor', 2, '/home/runner-other'],
+    ['descendant ancestor', 2, '/home/runner/example/child'],
+  ])('requires consistent known ancestry: %s', (_label, parentId, name) => {
+    const k = mountFixture([[12, parentId, name, 'ro'], [10, 12, '/home/runner/example'], [11, 10, '/home/runner/example', 'ro']]);
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow(expect.objectContaining({ code: 'isolation_mount_descendant' }));
+  });
+  it('does not treat a chain through a different mountpoint as a same-path covering relationship', () => {
+    const k = mountFixture([[10, 2, '/home/runner/example'], [12, 10, '/home/runner/example/child', 'ro'], [11, 12, '/home/runner/example', 'ro']]);
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow(expect.objectContaining({ code: 'isolation_mount_descendant' }));
+  });
+  it('rejects a root-parent link back into the descendant stack', () => {
+    const k = mountFixture([[10, 2, '/home/runner/example'], [11, 10, '/home/runner/example', 'ro']]);
+    k.values['/proc/self/mountinfo'] = k.values['/proc/self/mountinfo'].replace('1 1 8:1 / / ', '1 10 8:1 / / ');
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow(expect.objectContaining({ code: 'isolation_mount_descendant' }));
+  });
+  it.each(['0', '-1', '+10', '010', '1.0', '1e1', 'NaN', 'Infinity', '9007199254740992', '10x', ''])('rejects malformed or unsafe IDs: %s', invalid => {
+    for (const field of [0, 1]) {
+      const row = [10, 2, '/home/runner/example', 'ro']; row[field] = invalid;
+      const k = mountFixture([row]);
+      expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow(expect.objectContaining({ code: 'isolation_mount_table_format', message: 'isolation_mount_table_format' }));
+    }
+  });
+  it.each([
+    ['same path', [[10, 2, '/home/runner/example'], [10, 10, '/home/runner/example', 'ro']]],
+    ['different path', [[10, 2, '/home/runner/example'], [10, 2, '/home/runner/other', 'ro']]],
+    ['existing root ID', [[1, 2, '/home/runner/example', 'ro']]],
+  ])('rejects duplicate IDs even when a row is read-only: %s', (_label, rows) => {
+    const k = mountFixture(rows);
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow(expect.objectContaining({ code: 'isolation_mount_table_format' }));
+  });
+  it.each([10, 11])('still rejects a writable child attached to layer %s at a different path', parentId => {
+    const k = mountFixture([[10, 2, '/home/runner/example'], [11, 10, '/home/runner/example', 'ro'], [12, parentId, '/home/runner/example/child']]);
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow(expect.objectContaining({ code: 'isolation_mount_descendant' }));
+  });
+  it.each(['/home', '/app', '/scratch', '/app/.next/cache', '/run/user'])('preserves covering-mount ambiguity at %s even for a proven stack', name => {
+    const parentIds = { '/home': 2, '/app': 5, '/scratch': 8, '/app/.next/cache': 9, '/run/user': 4 };
+    const k = mountFixture([[10, parentIds[name], name, 'ro']]);
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow(expect.objectContaining({ code: 'isolation_mount_ambiguous' }));
+  });
+  it('preserves missing /run/user own-mount rejection alongside a valid descendant stack', () => {
+    const k = mountFixture([[10, 2, '/home/runner/example'], [11, 10, '/home/runner/example', 'ro']]);
+    k.values['/proc/self/mountinfo'] = k.values['/proc/self/mountinfo'].split('\n').filter(line => !line.includes(' /run/user ')).join('\n');
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow(expect.objectContaining({ code: 'isolation_mount_run_user' }));
+  });
+  it('preserves nested scratch/cache write exceptions, their submounts and private temporary mounts', () => {
+    const c = { ...config(), app: '/home/runner/app', scratch: '/home/runner/scratch', tooling: '/home/runner/tools', node: '/home/runner/node/bin/node' };
+    const k = mountFixture([[10, 8, c.scratch + '/child'], [11, 9, c.app + '/.next/cache/child'], [12, 1, '/tmp'], [13, 1, '/var/tmp'],
+      [14, 2, '/home/runner/example'], [15, 14, '/home/runner/example', 'ro']], c);
+    expect(tool.verifyKernel(k.input, k.io, k.config)).toBe(true);
+  });
+  it.each(['/home/runner/app/.next/cache-other', '/home/runner/scratch-other'])('rejects an uncovered similarly named exception sibling: %s', name => {
+    const c = { ...config(), app: '/home/runner/app', scratch: '/home/runner/scratch' };
+    const k = mountFixture([[10, name.includes('/app/') ? 5 : 2, name]], c);
+    expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow(expect.objectContaining({ code: 'isolation_mount_descendant' }));
+  });
+});
+
 describe('service creation and effective readback', () => {
   it('uses a private unprivileged service with strict resource and filesystem bounds, cleared environment and pipes', () => {
     const args = tool.serviceArgs(config());
@@ -369,7 +494,7 @@ describe('service creation and effective readback', () => {
     expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow('isolation');
   });
   it.each(['/home/runner/unapproved', '/app/.next/cache-other', '/home/runner/escaped\\040path'])('rejects an unexpected writable submount at %s', name => {
-    const k = kernel(); k.values['/proc/self/mountinfo'] += `10 2 8:1 / ${name} rw - ext4 /dev/root rw\n`;
+    const k = kernel(); k.values['/proc/self/mountinfo'] += `10 ${name.startsWith('/app/') ? 5 : 2} 8:1 / ${name} rw - ext4 /dev/root rw\n`;
     expect(() => tool.verifyKernel(k.input, k.io, k.config)).toThrow('isolation');
   });
   it.each(['missing', 'malformed', 'oversized', 'ambiguous', 'superblock', 'symlink'])('rejects unavailable or inconsistent mount facts: %s', kind => {
