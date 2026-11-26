@@ -102,6 +102,38 @@ following, browser script, subresource load or replacement challenge is allowed.
 Each request intent is durably recorded before invoking transport; the sequence stops
 on the first failure.
 
+## Same-path mount stacks
+
+The mount parser retains canonical positive safe-integer mount and parent IDs and
+rejects malformed or duplicate mount IDs. Existing protected-root and write-exception
+checks still inspect the complete table, including their duplicate-covering-mount
+rejection and the present `/run/user` own-mount requirement.
+
+Only the protected-descendant check can disregard a writable lower layer. All rows
+at that decoded mountpoint must form one connected, acyclic, unbranched parent chain
+with one bottom and one top. Parent links, not row order or ID magnitude, establish
+the covering relationship described by [Linux mountinfo](https://man7.org/linux/man-pages/man5/proc_pid_mountinfo.5.html).
+The top layer remains subject to the existing effective read-only check: either
+the per-mount or superblock mode must be read-only. A writable top or uncovered
+writable descendant still rejects.
+
+The bottom's ancestry must reach `/` through known, path-consistent parent links.
+The root may name itself or an outside-table parent. Missing non-root ancestors,
+non-root self-parenting, cycles, forks or disconnected same-path rows grant no
+exemption; the writable descendant remains rejected. Traversals are iterative and
+bounded by the parsed row count, and results are cached only for this mount-table
+check. This is not a general hidden-subtree resolver: writable mounts at other
+descendant paths still reject, even beneath a covered lower layer. No writable
+directory, service control, resource bound or report field is added.
+
+The November 25 read-only diagnosis reproduced this false rejection in the actual
+exported `verifyKernel()` helper with mocked inputs. Run 3 (`45725212814`, attempt 1)
+reported `isolation_mount_descendant`, but its rejected row and runner systemd version
+were not retained. The reproduced defect does not establish that run's cause.
+Its stopped result, unknown request accounting, qualified cleanup and consumed
+approval remain unchanged. Offline regression results establish neither runner
+support nor completion of either gate.
+
 ## Fixed isolation diagnostics
 
 The existing `failure` field additionally accepts 67 fixed isolation identifiers.
@@ -188,7 +220,7 @@ accepted sets, numeric limits and duration representations are preserved.
 | Configured path is nonabsolute or noncanonical | `path_canonical` |
 | Mount-table input is invalid, empty or oversized | `mount_table_input` |
 | Mount or superblock options lack one unambiguous access mode | `mount_options` |
-| Malformed mount-table row | `mount_table_format` |
+| Malformed row, invalid mount/parent ID or duplicate mount ID | `mount_table_format` |
 | No covering mount | `mount_missing` |
 | Present `/run/user` lacks its own mount | `mount_run_user` |
 | Duplicate deepest covering mount | `mount_ambiguous` |
@@ -221,8 +253,10 @@ Missing, malformed, unbound, extra-field or unsupported-code records remain
 untrusted. Cleanup failure still supersedes a specific isolation failure. No
 additional primary/cleanup fields are introduced to recover that lost detail.
 
-Service controls, acceptance/rejection conditions, deadlines, request budgets,
-cancellation, failed-unit collection and evidence-publication rules are unchanged.
+Service controls, service-readback checks, deadlines, request budgets, cancellation,
+failed-unit collection and evidence-publication rules are unchanged. The same-path
+mount correction above narrowly changes the descendant check and validates IDs;
+it preserves all existing root/write-exception covering checks and access-mode rules.
 The consumed run-2 report remains `stopped` / `runtime` / `isolation`, with unknown
 accounting and successful cleanup qualification. Its exact failed guard remains
 unknown; these diagnostics do not reinterpret or amend that evidence.
@@ -343,9 +377,14 @@ needed here, including `5min 59s`; unknown forms stop rather than weaken validat
 Run the package's Jest config in-band with no cache and the main checkout's existing
 dependencies via NODE_PATH. All HTTP, Next, systemd, process launch and time-dependent
 execution paths in these suites use mocks; synthetic reader attribution uses VM
-fixtures only. For this diagnostic change, run all five runtime-package suites,
+fixtures only. For the mount correction, first demonstrate the targeted regression
+against unchanged runtime code, then run focused isolation tests and all five runtime-package suites,
 including the existing workflow contracts, plus changed-JavaScript syntax checks,
-focused repository ESLint and exact changed-file scope/whitespace checks. Verify
+focused repository ESLint and exact changed-file scope/whitespace checks. Regressions
+cover writable upper/uncovered mounts, multiple layers and row orders, malformed
+and duplicate IDs, cycles and uncertain ancestry, decoded paths, both read-only flag
+sources, nested write exceptions and rejected siblings, root ambiguity, `/run/user`,
+and continued rejection of writable mounts in unsupported hidden subtrees. Verify
 the frozen static dependency through read-only package preparation. No dependency install, application build or live service
 is part of preparation. Set Windows TEMP/TMP to the repository's `.tmp` directory.
 

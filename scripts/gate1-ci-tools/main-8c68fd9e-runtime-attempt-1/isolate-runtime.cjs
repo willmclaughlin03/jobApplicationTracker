@@ -126,11 +126,20 @@ function verifyMounts(config, io = fs) {
     if (modes.length !== 1) throw new RuntimeError('isolation_mount_options');
     return modes[0] === 'ro';
   }
+  /** Parse mount/parent identifiers without coercion aliases or numeric rounding before linking rows. */
+  function mountId(value) {
+    if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) throw new RuntimeError('isolation_mount_table_format');
+    return Number(value);
+  }
+  const byId = new Map();
   const mounts = text.trimEnd().split('\n').map(line => {
     const parts = line.split(' - '), fields = parts[0].split(' '), superFields = parts[1]?.split(' ');
     if (parts.length !== 2 || fields.length < 6 || superFields.length !== 3 || !fields[4].startsWith('/')) throw new RuntimeError('isolation_mount_table_format');
     const mountReadOnly = readOnly(fields[5]), superReadOnly = readOnly(superFields[2]);
-    return { name: decode(fields[4]), readOnly: mountReadOnly || superReadOnly };
+    const mount = { id: mountId(fields[0]), parentId: mountId(fields[1]), name: decode(fields[4]), readOnly: mountReadOnly || superReadOnly };
+    if (byId.has(mount.id)) throw new RuntimeError('isolation_mount_table_format');
+    byId.set(mount.id, mount);
+    return mount;
   });
   for (const name of [...protectedPaths, ...writablePaths]) {
     const matches = mounts.filter(mount => within(name, mount.name)).sort((a, b) => b.name.length - a.name.length);
@@ -139,8 +148,52 @@ function verifyMounts(config, io = fs) {
     if (matches[0].name === matches[1]?.name) throw new RuntimeError('isolation_mount_ambiguous');
     if (matches[0].readOnly === writablePaths.includes(name)) throw new RuntimeError('isolation_mount_mode');
   }
+  const byPath = new Map(), coveredByPath = new Map();
   for (const mount of mounts) {
-    if (protectedPaths.some(root => within(mount.name, root)) && !writablePaths.some(root => within(mount.name, root)) && !mount.readOnly) throw new RuntimeError('isolation_mount_descendant');
+    if (!byPath.has(mount.name)) byPath.set(mount.name, []);
+    byPath.get(mount.name).push(mount);
+  }
+  /** Return covered lower IDs for one decoded-path group; uncertain parent links grant no descendant exemption. */
+  function coveredMounts(group) {
+    const none = new Set();
+    if (group.length < 2) return none;
+    const ids = new Set(group.map(mount => mount.id)), children = new Map();
+    let bottom;
+    for (const mount of group) {
+      if (ids.has(mount.parentId)) {
+        if (mount.id === mount.parentId || children.has(mount.parentId)) return none;
+        children.set(mount.parentId, mount);
+      } else {
+        if (bottom) return none;
+        bottom = mount;
+      }
+    }
+    if (!bottom) return none;
+    const visited = new Set();
+    let current = bottom, top;
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id); top = current; current = children.get(current.id);
+    }
+    if (current || visited.size !== group.length) return none;
+    // Parent links must reach a known root; this does not resolve visibility at other paths.
+    const ancestry = new Set();
+    current = bottom;
+    while (!ancestry.has(current.id)) {
+      ancestry.add(current.id);
+      const parent = byId.get(current.parentId);
+      if (current.name === '/' && (!parent || parent.id === current.id)) {
+        visited.delete(top.id);
+        return visited;
+      }
+      if (!parent || parent.id === current.id || !within(current.name, parent.name)) return none;
+      current = parent;
+    }
+    return none;
+  }
+  for (const mount of mounts) {
+    if (mount.readOnly || !protectedPaths.some(root => within(mount.name, root)) || writablePaths.some(root => within(mount.name, root))) continue;
+    if (!coveredByPath.has(mount.name)) coveredByPath.set(mount.name, coveredMounts(byPath.get(mount.name)));
+    if (!coveredByPath.get(mount.name).has(mount.id)) throw new RuntimeError('isolation_mount_descendant');
   }
   return true;
 }
