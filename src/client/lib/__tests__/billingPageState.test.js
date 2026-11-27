@@ -8,6 +8,32 @@ const { BILLING_SUBSCRIPTION_STATUSES } = require('../../../shared/constants/bil
 
 describe('billingPageState', () => {
   describe('getBillingStatusSummary', () => {
+    it('explains baseline Free access after an abandoned upgrade', () => {
+      expect(getBillingStatusSummary({
+        billingStatus: { hasCustomerMapping: true, hasSubscription: false, entitled: false },
+        loadState: BILLING_PAGE_LOAD_STATES.READY,
+      })).toEqual({
+        title: 'No active subscription',
+        description: 'Free features remain available. Start checkout whenever you are ready to upgrade.',
+      });
+    });
+
+    it('allows a fresh upgrade and explains Free access after initial payment expiry', () => {
+      const input = {
+        billingStatus: {
+          hasSubscription: true,
+          entitled: false,
+          status: BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED,
+        },
+        loadState: BILLING_PAGE_LOAD_STATES.READY,
+      };
+      expect(getBillingStatusSummary(input)).toEqual({
+        title: 'Previous checkout expired',
+        description: 'The last checkout attempt did not complete in time. Free features remain available, and you can try again.',
+      });
+      expect(canStartCheckoutFromLocalStatus(input)).toBe(true);
+    });
+
     it('returns explicit unavailable copy when the billing status read failed', () => {
       expect(
         getBillingStatusSummary({
