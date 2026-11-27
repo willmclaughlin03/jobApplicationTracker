@@ -612,6 +612,8 @@ describe('billingWebhookDispatcher', () => {
     const result = await processBillingWebhookEvent(event, mockLog);
 
     expect(mockSyncSubscriptionFromEvent).not.toHaveBeenCalled();
+    expect(mockMarkSubscriptionDeletedFromEvent).not.toHaveBeenCalled();
+    expect(mockReconcileStorageTransitionsForUser).not.toHaveBeenCalled();
     expect(mockMarkMintedCheckoutSessionTerminalByStripeSessionId).toHaveBeenCalledWith(
       {
         sessionId: 'cs_test_expired_123',

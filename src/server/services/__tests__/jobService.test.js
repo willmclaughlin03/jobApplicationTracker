@@ -530,11 +530,6 @@ describe('createJob - atomic storage quota enforcement', () => {
       STORAGE_CREATE_ACTIONS.BLOCK_PAYMENT_RECOVERY,
       STORAGE_CREATE_ERROR_CODES.PAYMENT_METHOD_UPDATE_REQUIRED,
     ],
-    [
-      STORAGE_STATUSES.SYNC_PENDING,
-      STORAGE_CREATE_ACTIONS.BLOCK_SYNC_PENDING,
-      STORAGE_CREATE_ERROR_CODES.BILLING_SYNC_PENDING,
-    ],
   ])('blocks %s before the jobs RPC', async (status, action, code) => {
     const result = await createJob(
       validJobData,
@@ -1093,7 +1088,11 @@ describe('getJobById', () => {
     expect(result.error).toBe(dbError);
   });
 
-  it('returns 423-style locked error for locked rows under terminal Free', async () => {
+  it.each([
+    STORAGE_STATUSES.TERMINAL_FREE,
+    STORAGE_STATUSES.FREE_UNSUBSCRIBED,
+    STORAGE_STATUSES.SYNC_PENDING,
+  ])('does not expose full locked rows under %s', async (status) => {
     mockFrom.mockReturnValueOnce(fakeQuery({ data: lockedAccessRecord, error: null }));
 
     const result = await getJobById(
@@ -1101,7 +1100,7 @@ describe('getJobById', () => {
       userId,
       mockSupabaseClient,
       undefined,
-      terminalFreeAccessStatus
+      { status }
     );
 
     expect(result.data).toBeNull();
@@ -1333,7 +1332,11 @@ describe('deleteJob', () => {
     expect(JSON.stringify(result.data)).not.toContain('Hidden notes');
   });
 
-  it('rejects locked row deletion during ambiguous billing status before delete', async () => {
+  it.each([
+    STORAGE_STATUSES.BILLING_UNAVAILABLE,
+    STORAGE_STATUSES.FREE_UNSUBSCRIBED,
+    STORAGE_STATUSES.SYNC_PENDING,
+  ])('rejects locked row deletion during %s before delete', async (status) => {
     mockFrom.mockReturnValueOnce(fakeQuery({ data: lockedAccessRecord, error: null }));
 
     const result = await deleteJob(
@@ -1341,7 +1344,7 @@ describe('deleteJob', () => {
       userId,
       mockSupabaseClient,
       undefined,
-      billingUnavailableAccessStatus
+      { status }
     );
 
     expect(result.data).toBeNull();

@@ -211,6 +211,7 @@ describe('storageLockedBulkDeleteService', () => {
     STORAGE_STATUSES.PREMIUM_CANCELING,
     STORAGE_STATUSES.PAYMENT_RECOVERY,
     STORAGE_STATUSES.SYNC_PENDING,
+    STORAGE_STATUSES.FREE_UNSUBSCRIBED,
     STORAGE_STATUSES.NON_ENTITLED_NON_TERMINAL,
   ])('rejects %s without calling the delete RPC', async (status) => {
     const result = await deleteLockedJobsForTerminalFreeUser(userId, mockLog, {

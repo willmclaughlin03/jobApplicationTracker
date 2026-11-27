@@ -89,6 +89,9 @@ const {
   isAutomaticOverflowLockEligible,
   isStorageStatusRetryable,
 } = require('../billingService.js');
+const { createJob } = require('../../services/jobService.js');
+const { reconcileStorageTransitionsForUser } = require('../../services/storageTransitionService.js');
+const { FREE_ACTIVE_JOB_LIMIT, ABSOLUTE_RETAINED_JOB_LIMIT } = require('../../../shared/constants/storage.js');
 
 /**
  * Build a Supabase query-builder mock so billing tests can script terminal responses.
@@ -1083,11 +1086,21 @@ describe('billingService', () => {
       ).toBe(STORAGE_STATUSES.TERMINAL_FREE);
     });
 
+    it('classifies a customer without a subscription as free_unsubscribed', () => {
+      expect(classifyConfirmedBillingStatusForStorage(
+        buildBillingStatusFixture({ hasCustomerMapping: true }), { now }
+      )).toBe(STORAGE_STATUSES.FREE_UNSUBSCRIBED);
+    });
+
+    it('classifies an expired initial payment as terminal_free', () => {
+      expect(classifyConfirmedBillingStatusForStorage(buildBillingStatusFixture({
+        hasCustomerMapping: true,
+        hasSubscription: true,
+        status: BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED,
+      }), { now })).toBe(STORAGE_STATUSES.TERMINAL_FREE);
+    });
+
     it.each([
-      [
-        'customer mapping without a subscription row',
-        buildBillingStatusFixture({ hasCustomerMapping: true }),
-      ],
       [
         'incomplete subscription',
         buildBillingStatusFixture({
@@ -1104,7 +1117,6 @@ describe('billingService', () => {
 
     it.each([
       BILLING_SUBSCRIPTION_STATUSES.PAUSED,
-      BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED,
       BILLING_SUBSCRIPTION_STATUSES.ACTIVE,
       'trialing',
       null,
@@ -1122,8 +1134,10 @@ describe('billingService', () => {
       expect(status).toBe(STORAGE_STATUSES.NON_ENTITLED_NON_TERMINAL);
     });
 
-    it('classifies malformed trusted input as billing_unavailable instead of terminal_free', () => {
-      expect(classifyConfirmedBillingStatusForStorage(null, { now }))
+    it.each([null, undefined, {}, [], { hasSubscription: false }, {
+      hasSubscription: 'false', hasCustomerMapping: true, entitled: false,
+    }])('classifies malformed input %p as billing_unavailable', (input) => {
+      expect(classifyConfirmedBillingStatusForStorage(input, { now }))
         .toBe(STORAGE_STATUSES.BILLING_UNAVAILABLE);
     });
   });
@@ -1214,11 +1228,21 @@ describe('billingService', () => {
       [
         STORAGE_STATUSES.SYNC_PENDING,
         {
-          action: STORAGE_CREATE_ACTIONS.BLOCK_SYNC_PENDING,
-          limitTier: null,
-          code: STORAGE_CREATE_ERROR_CODES.BILLING_SYNC_PENDING,
+          action: STORAGE_CREATE_ACTIONS.APPLY_FREE_LIMIT,
+          limitTier: TIERS.FREE,
+          code: STORAGE_CREATE_ERROR_CODES.STORAGE_LIMIT_EXCEEDED,
           retryable: false,
-          mayUseFreeQuotaCopy: false,
+          mayUseFreeQuotaCopy: true,
+        },
+      ],
+      [
+        STORAGE_STATUSES.FREE_UNSUBSCRIBED,
+        {
+          action: STORAGE_CREATE_ACTIONS.APPLY_FREE_LIMIT,
+          limitTier: TIERS.FREE,
+          code: STORAGE_CREATE_ERROR_CODES.STORAGE_LIMIT_EXCEEDED,
+          retryable: false,
+          mayUseFreeQuotaCopy: true,
         },
       ],
       [
@@ -1243,6 +1267,150 @@ describe('billingService', () => {
         retryable: true,
         mayUseFreeQuotaCopy: false,
       });
+    });
+  });
+
+  describe('initial upgrade to job-create regression', () => {
+    const userId = '8c67f1cf-5dd9-4b03-bfd6-b9c35b94fe82';
+    const job = { id: 'job-after-upgrade', user_id: userId, company: 'Free application' };
+
+    /**
+     * Script database boundaries while retaining the real billing and job services.
+     * status models the local subscription; customerId can model a placeholder.
+     * Checkout history is supplied separately and must not be needed for creation.
+     * Returns a mock admin client; installing it makes job RPC calls observable.
+     */
+    function buildUpgradeClient({ status = null, customerId = 'cus_abandoned', checkout = null, error = null } = {}) {
+      return createSupabaseClient({
+        billing_customers: {
+          maybeSingle: { data: { user_id: userId, stripe_customer_id: customerId }, error: null },
+        },
+        billing_subscriptions: {
+          maybeSingle: {
+            data: status ? {
+              user_id: userId,
+              stripe_customer_id: customerId,
+              stripe_subscription_id: 'sub_initial',
+              price_id: 'price_premium_monthly',
+              status,
+              cancel_at_period_end: false,
+            } : null,
+            error,
+          },
+        },
+        billing_checkout_sessions: {
+          // Reflect a successful terminal write without mocking its service logic.
+          maybeSingle: ({ updatePayload }) => ({
+            data: checkout ? { ...checkout, ...updatePayload } : null,
+            error: null,
+          }),
+        },
+        rpc: {
+          create_job_with_storage_quota: {
+            data: {
+              created: true,
+              job,
+              activeCountBeforeCreate: 0,
+              retainedTotalCountBeforeCreate: 0,
+              activeLimit: FREE_ACTIVE_JOB_LIMIT,
+              absoluteRetainedLimit: ABSOLUTE_RETAINED_JOB_LIMIT,
+            },
+            error: null,
+          },
+        },
+      });
+    }
+
+    it.each([
+      ['no checkout history', {}],
+      ['open checkout', { checkout: { status: 'open', expires_at: '2099-01-01T00:00:00.000Z' } }],
+      ['expired checkout', { checkout: { status: 'expired', expires_at: '2000-01-01T00:00:00.000Z' } }],
+      ['missed expiry webhook', { checkout: { status: 'open', expires_at: '2000-01-01T00:00:00.000Z' } }],
+      ['failed customer setup', { customerId: null }],
+      ['incomplete payment', { status: BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE }],
+      ['expired initial payment', { status: BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED }],
+    ])('permits Free creation with %s using real billing and create policy', async (_label, fixture) => {
+      const client = useAdminClient(buildUpgradeClient(fixture));
+      const storage = await resolveStorageStatus(userId, client, mockLog);
+      if (fixture.status !== BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED) {
+        const repair = await reconcileStorageTransitionsForUser(userId, mockLog, {
+          storageStatusResult: storage,
+        });
+        expect(repair.error).toBeNull();
+        expect(client.rpc).not.toHaveBeenCalled();
+      }
+      const result = await createJob(job, userId, client, mockLog, storage);
+
+      expect(storage.status).toBe(fixture.status === BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE
+        ? STORAGE_STATUSES.SYNC_PENDING
+        : fixture.status === BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED
+          ? STORAGE_STATUSES.TERMINAL_FREE : STORAGE_STATUSES.FREE_UNSUBSCRIBED);
+      expect(storage.billingStatus.entitled).toBe(false);
+      expect(storage.lockEligible).toBe(fixture.status === BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED);
+      expect(result.error).toBeNull();
+      expect(result.data).toEqual([job]);
+      expect(result.storageSummary.activeLimit).toBe(FREE_ACTIVE_JOB_LIMIT);
+      expect(client.rpc).toHaveBeenCalledWith('create_job_with_storage_quota', expect.objectContaining({
+        p_user_id: userId,
+        p_storage_status: storage.status,
+        p_active_job_limit: FREE_ACTIVE_JOB_LIMIT,
+        p_absolute_retained_job_limit: ABSOLUTE_RETAINED_JOB_LIMIT,
+      }));
+      expect(client.from.mock.calls.map(([table]) => table).sort())
+        .toEqual(['billing_customers', 'billing_subscriptions']);
+      expect(mockStripe.subscriptions.retrieve).not.toHaveBeenCalled();
+    });
+
+    it('still permits Free creation after the actual expiry write releases an old checkout', async () => {
+      const client = useAdminClient(buildUpgradeClient({
+        checkout: {
+          id: 42,
+          user_id: userId,
+          plan: 'premium_monthly',
+          stripe_checkout_session_id: 'cs_test_abandoned',
+          checkout_url: 'https://checkout.stripe.test/session_abandoned',
+          status: 'open',
+          expires_at: '2000-01-01T00:00:00.000Z',
+          created_at: '1999-12-31T00:00:00.000Z',
+          updated_at: '1999-12-31T00:00:00.000Z',
+        },
+      }));
+      const expiredSession = await markMintedCheckoutSessionTerminalByStripeSessionId({
+        sessionId: 'cs_test_abandoned', status: 'expired',
+      }, mockLog);
+      expect(expiredSession.status).toBe('expired');
+      const storage = await resolveStorageStatus(userId, client, mockLog);
+      const result = await createJob(job, userId, client, mockLog, storage);
+
+      expect(result.error).toBeNull();
+      expect(storage.status).toBe(STORAGE_STATUSES.FREE_UNSUBSCRIBED);
+      expect(storage.lockEligible).toBe(false);
+      expect(client.buildersByTable.billing_checkout_sessions[0].state).toEqual(expect.objectContaining({
+        updatePayload: { status: 'expired' },
+        eqArgs: [['stripe_checkout_session_id', 'cs_test_abandoned'], ['status', 'open']],
+      }));
+    });
+
+    it('keeps a newer active subscription Premium when an older checkout expires', async () => {
+      const client = useAdminClient(buildUpgradeClient({ status: BILLING_SUBSCRIPTION_STATUSES.ACTIVE }));
+      await markMintedCheckoutSessionTerminalByStripeSessionId({
+        sessionId: 'cs_test_old_attempt', status: 'expired',
+      }, mockLog);
+      const storage = await resolveStorageStatus(userId, client, mockLog);
+      expect(storage.status).toBe(STORAGE_STATUSES.PREMIUM_ACTIVE);
+      expect(storage.billingStatus.entitled).toBe(true);
+      expect(storage.lockEligible).toBe(false);
+      expect(client.buildersByTable.billing_subscriptions[0].state.updatePayload).toBeUndefined();
+    });
+
+    it('blocks creation when a customer exists but the subscription read fails', async () => {
+      const client = useAdminClient(buildUpgradeClient({ error: new Error('database unavailable') }));
+      const storage = await resolveStorageStatus(userId, client, mockLog);
+      const result = await createJob(job, userId, client, mockLog, storage);
+      expect(storage.status).toBe(STORAGE_STATUSES.BILLING_UNAVAILABLE);
+      expect(storage.lockEligible).toBe(false);
+      expect(result.error.code).toBe(STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE);
+      expect(client.rpc).not.toHaveBeenCalled();
     });
   });
 
@@ -1556,6 +1724,26 @@ describe('billingService', () => {
   describe('resolvePremiumEntitlement', () => {
     const userId = 'user-premium';
 
+    it.each([
+      [BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE, 'BILLING_SYNC_PENDING'],
+      [BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED, 'SUBSCRIPTION_REQUIRED'],
+    ])('does not grant Premium for %s', async (status, code) => {
+      const client = createSupabaseClient({
+        billing_customers: {
+          maybeSingle: { data: { user_id: userId, stripe_customer_id: 'cus_initial' }, error: null },
+        },
+        billing_subscriptions: {
+          maybeSingle: {
+            data: { user_id: userId, status, price_id: 'price_premium_monthly' },
+            error: null,
+          },
+        },
+      });
+      await expect(resolvePremiumEntitlement(userId, client, mockLog)).resolves.toEqual(
+        expect.objectContaining({ entitled: false, entitlement: null, code })
+      );
+    });
+
     it('returns the premium entitlement for an allowlisted active subscription', async () => {
       const client = createSupabaseClient({
         billing_customers: {
@@ -1633,8 +1821,8 @@ describe('billingService', () => {
       expect(result).toEqual(
         expect.objectContaining({
           entitled: false,
-          code: 'BILLING_SYNC_PENDING',
-          message: ERROR_MESSAGES.BILLING_SYNC_PENDING,
+          code: 'SUBSCRIPTION_REQUIRED',
+          message: ERROR_MESSAGES.SUBSCRIPTION_REQUIRED,
         })
       );
     });

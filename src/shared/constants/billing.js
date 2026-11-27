@@ -44,6 +44,7 @@ export const STORAGE_STATUSES = {
   PREMIUM_CANCELING: 'premium_canceling',
   BILLING_RECONCILIATION_PENDING: 'billing_reconciliation_pending',
   TERMINAL_FREE: 'terminal_free',
+  FREE_UNSUBSCRIBED: 'free_unsubscribed',
   PAYMENT_RECOVERY: 'payment_recovery',
   SYNC_PENDING: 'sync_pending',
   NON_ENTITLED_NON_TERMINAL: 'non_entitled_non_terminal',

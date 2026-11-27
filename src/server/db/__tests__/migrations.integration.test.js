@@ -25,20 +25,19 @@
  *   A12 - daily_spend canonical global-date shape and exact-date cleanup
  */
 
-import { existsSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 
 const SUPABASE_MIGRATIONS_DIR = join(process.cwd(), 'supabase', 'migrations');
-const CANONICAL_MIGRATIONS = Object.freeze([
-  {
-    filename: '20260713000000_authoritative_preproduction_baseline.sql',
-    version: '20260713000000',
-  },
-  {
-    filename: '20260713000100_reconcile_preproduction_schema_drift.sql',
-    version: '20260713000100',
-  },
-]);
+// Compare the target catalog with this checkout's complete deployable chain.
+// Discovering filenames also accounts for independently prepared migrations
+// (including ACL hardening) without replaying or modifying them in this suite.
+const CANONICAL_MIGRATIONS = Object.freeze(
+  readdirSync(SUPABASE_MIGRATIONS_DIR)
+    .filter((filename) => /^\d{14}_.+\.sql$/.test(filename))
+    .sort()
+    .map((filename) => ({ filename, version: filename.slice(0, 14) }))
+);
 
 const {
   TEST_SUPABASE_ENV_NAMES,

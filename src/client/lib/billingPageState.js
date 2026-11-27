@@ -48,7 +48,7 @@ export function getBillingStatusSummary(input = {}) {
   if (!billingStatus?.hasSubscription) {
     return {
       title: 'No active subscription',
-      description: 'Start checkout to enable premium access.',
+      description: 'Free features remain available. Start checkout whenever you are ready to upgrade.',
     };
   }
 
@@ -61,7 +61,7 @@ export function getBillingStatusSummary(input = {}) {
     case BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED:
       return {
         title: 'Previous checkout expired',
-        description: 'The last checkout attempt did not complete in time. You can try again.',
+        description: 'The last checkout attempt did not complete in time. Free features remain available, and you can try again.',
       };
     case BILLING_SUBSCRIPTION_STATUSES.PAST_DUE:
     case BILLING_SUBSCRIPTION_STATUSES.UNPAID:
