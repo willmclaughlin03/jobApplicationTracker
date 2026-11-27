@@ -21,6 +21,10 @@ import {
 import { STORAGE_CREATE_ERROR_CODES, STORAGE_STATUSES } from '../../../shared/constants/billing.js';
 
 const MIGRATIONS_DIR = join(process.cwd(), 'migrations');
+const FREE_ACCESS_MIGRATION_PATH = join(
+  process.cwd(), 'supabase', 'migrations',
+  '20261127000000_fix_abandoned_checkout_free_access.sql'
+);
 const FINAL_STORAGE_MIGRATION_FILES = Object.freeze([
   '016_jobs_storage_state_boundary.sql',
   '017_jobs_atomic_create_quota.sql',
@@ -324,6 +328,14 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
       await execSql(readFileSync(migrationPath, 'utf8'));
     }
 
+    // Legacy fixtures redefine the resolver and create RPC. Apply the forward
+    // policy last so this suite verifies the behavior deployed with the app.
+    // Strip only this fixture's outer transaction statements: exec_sql runs the
+    // entire remaining body atomically inside the single RPC transaction.
+    const freeAccessMigrationSql = readFileSync(FREE_ACCESS_MIGRATION_PATH, 'utf8')
+      .replace(/^BEGIN;\r?\n/m, '')
+      .replace(/\r?\nCOMMIT;\s*$/, '\n');
+    await execSql(freeAccessMigrationSql);
     await reloadPostgrestSchema();
   }
 
@@ -660,6 +672,7 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
   });
 
   test('H1: final jobs storage migration fixtures exist', () => {
+    expect(existsSync(FREE_ACCESS_MIGRATION_PATH)).toBe(true);
     for (const migrationFile of FINAL_STORAGE_MIGRATION_FILES) {
       expect(existsSync(join(MIGRATIONS_DIR, migrationFile))).toBe(true);
     }
@@ -746,6 +759,87 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
     });
   });
 
+  test.each([
+    [null, STORAGE_STATUSES.FREE_UNSUBSCRIBED],
+    ['incomplete', STORAGE_STATUSES.SYNC_PENDING],
+    ['incomplete_expired', STORAGE_STATUSES.FREE_UNSUBSCRIBED],
+  ])('H2b: initial payment %s uses atomic Free and retained limits', async (subscriptionStatus, storageStatus) => {
+    const user = await createTempUser('final-upgrade-free-quota');
+    if (subscriptionStatus) {
+      await seedBillingSubscription(user.id, {
+        status: subscriptionStatus,
+        current_period_end: null,
+        cancel_at_period_end: false,
+      });
+    } else {
+      await seedBillingCustomerOnly(user.id);
+    }
+    await expect(resolveCanonicalStorageStatus(user.id)).resolves.toBe(storageStatus);
+    await seedJobs(user.id, {
+      activeRows: Array.from({ length: FREE_ACTIVE_JOB_LIMIT - 1 }, (_, i) => ({ company: `Free quota ${i}` })),
+    });
+
+    const results = await Promise.all([
+      callCreateJobRpc(user.id, { storageStatus, company: 'Concurrent Free A' }),
+      callCreateJobRpc(user.id, { storageStatus, company: 'Concurrent Free B' }),
+    ]);
+    expect(results.filter((result) => result.created)).toHaveLength(1);
+    expect(results.find((result) => !result.created)).toEqual(expect.objectContaining({
+      code: STORAGE_CREATE_ERROR_CODES.STORAGE_LIMIT_EXCEEDED,
+      reason: 'active_limit_exceeded',
+      activeLimit: FREE_ACTIVE_JOB_LIMIT,
+    }));
+    await expect(getStorageCounts(user.id)).resolves.toEqual({
+      active_count: FREE_ACTIVE_JOB_LIMIT,
+      locked_count: 0,
+      retained_total_count: FREE_ACTIVE_JOB_LIMIT,
+    });
+    await expect(callCreateJobRpc(user.id, { storageStatus })).resolves.toEqual(expect.objectContaining({
+      created: false,
+      reason: 'active_limit_exceeded',
+      activeLimit: FREE_ACTIVE_JOB_LIMIT,
+    }));
+
+    // Make active capacity available while filling the independent retained cap.
+    const removed = await serviceClient.from('jobs').delete().eq('user_id', user.id);
+    if (removed.error) throw removed.error;
+    await seedJobs(user.id, {
+      lockedRows: Array.from({ length: ABSOLUTE_RETAINED_JOB_LIMIT }, (_, i) => ({ company: `Retained quota ${i}` })),
+    });
+    await expect(callCreateJobRpc(user.id, { storageStatus })).resolves.toEqual(expect.objectContaining({
+      created: false,
+      reason: 'retained_limit_exceeded',
+      absoluteRetainedLimit: ABSOLUTE_RETAINED_JOB_LIMIT,
+    }));
+    await expect(getStorageCounts(user.id)).resolves.toEqual({
+      active_count: 0,
+      locked_count: ABSOLUTE_RETAINED_JOB_LIMIT,
+      retained_total_count: ABSOLUTE_RETAINED_JOB_LIMIT,
+    });
+  });
+
+  test('H2c: a subscription arriving after the Free read requires a fresh canonical decision', async () => {
+    const user = await createTempUser('final-upgrade-race');
+    await seedBillingCustomerOnly(user.id);
+    const statusBeforePayment = await resolveCanonicalStorageStatus(user.id);
+    expect(statusBeforePayment).toBe(STORAGE_STATUSES.FREE_UNSUBSCRIBED);
+    await seedBillingSubscription(user.id);
+    await expect(callCreateJobRpc(user.id, { storageStatus: statusBeforePayment })).resolves.toEqual(
+      expect.objectContaining({
+        created: false,
+        code: STORAGE_CREATE_ERROR_CODES.BILLING_STATUS_UNAVAILABLE,
+        reason: 'billing_status_changed',
+        canonicalStorageStatus: STORAGE_STATUSES.PREMIUM_ACTIVE,
+      })
+    );
+    await expect(getStorageCounts(user.id)).resolves.toEqual({
+      active_count: 0, locked_count: 0, retained_total_count: 0,
+    });
+    await expect(callCreateJobRpc(user.id, { storageStatus: STORAGE_STATUSES.PREMIUM_ACTIVE })).resolves.toEqual(
+      expect.objectContaining({ created: true, activeLimit: ABSOLUTE_RETAINED_JOB_LIMIT })
+    );
+  });
+
   test('H3: canonical SQL storage resolver covers every database-observable storage status', async () => {
     const cases = [
       {
@@ -804,8 +898,8 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
         }),
       },
       {
-        label: 'sync-pending-customer-only',
-        expected: STORAGE_STATUSES.SYNC_PENDING,
+        label: 'free-unsubscribed-customer-only',
+        expected: STORAGE_STATUSES.FREE_UNSUBSCRIBED,
         setup: async (userId) => seedBillingCustomerOnly(userId),
       },
       {
@@ -813,6 +907,15 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
         expected: STORAGE_STATUSES.SYNC_PENDING,
         setup: async (userId) => seedBillingSubscription(userId, {
           status: 'incomplete',
+          current_period_end: null,
+          cancel_at_period_end: false,
+        }),
+      },
+      {
+        label: 'free-unsubscribed-incomplete-expired',
+        expected: STORAGE_STATUSES.FREE_UNSUBSCRIBED,
+        setup: async (userId) => seedBillingSubscription(userId, {
+          status: 'incomplete_expired',
           current_period_end: null,
           cancel_at_period_end: false,
         }),
@@ -840,6 +943,7 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
       STORAGE_STATUSES.BILLING_RECONCILIATION_PENDING,
       STORAGE_STATUSES.PAYMENT_RECOVERY,
       STORAGE_STATUSES.SYNC_PENDING,
+      STORAGE_STATUSES.FREE_UNSUBSCRIBED,
       STORAGE_STATUSES.NON_ENTITLED_NON_TERMINAL,
       STORAGE_STATUSES.BILLING_UNAVAILABLE,
     ];
@@ -888,6 +992,45 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
       }));
       await expect(getStorageCounts(user.id)).resolves.toEqual(beforeCounts);
     }
+  });
+
+  /**
+   * Verify expired initial payments cannot mutate archives, even with a stale
+   * terminal-Free caller status. Seed both row states to detect lock or delete.
+   */
+  test.each([
+    STORAGE_STATUSES.FREE_UNSUBSCRIBED,
+    STORAGE_STATUSES.TERMINAL_FREE,
+  ])('H4a: expired initial payment rejects archive mutations with caller status %s', async (storageStatus) => {
+    const user = await createTempUser('final-expired-payment-archive');
+    await seedBillingSubscription(user.id, {
+      status: 'incomplete_expired',
+      current_period_end: null,
+      cancel_at_period_end: false,
+    });
+    await seedJobs(user.id, {
+      activeRows: [{ company: 'Expired Active 1' }, { company: 'Expired Active 2' }],
+      lockedRows: [{ company: 'Expired Locked' }],
+    });
+    await expect(resolveCanonicalStorageStatus(user.id)).resolves.toBe(STORAGE_STATUSES.FREE_UNSUBSCRIBED);
+    const beforeCounts = await getStorageCounts(user.id);
+    const lockResult = await callOverflowLockRpc(user.id, { storageStatus, activeLimit: 1 });
+    const deleteResult = await callLockedBulkDeleteRpc(user.id, { storageStatus, deleteLimit: 10 });
+    const staleCaller = storageStatus === STORAGE_STATUSES.TERMINAL_FREE;
+
+    expect(lockResult).toEqual(expect.objectContaining({
+      applied: false,
+      reason: staleCaller ? 'canonical_billing_not_terminal_free' : 'storage_status_not_lock_eligible',
+      lockedCount: 0,
+      ...(staleCaller ? { canonicalStorageStatus: STORAGE_STATUSES.FREE_UNSUBSCRIBED } : {}),
+    }));
+    expect(deleteResult).toEqual(expect.objectContaining({
+      applied: false,
+      reason: staleCaller ? 'canonical_billing_not_terminal_free' : 'storage_status_not_delete_eligible',
+      deletedCount: 0,
+      ...(staleCaller ? { canonicalStorageStatus: STORAGE_STATUSES.FREE_UNSUBSCRIBED } : {}),
+    }));
+    await expect(getStorageCounts(user.id)).resolves.toEqual(beforeCounts);
   });
 
   test('H4b: Premium restore allowlist and stale-caller negatives do not unlock rows', async () => {

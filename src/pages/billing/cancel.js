@@ -47,9 +47,9 @@ export default function BillingCancelPage() {
       <p className="text-dashboard-caption font-semibold uppercase tracking-wider text-dashboard-accent">
         Billing
       </p>
-      <h1 className="mt-2 text-2xl font-semibold tracking-tight text-dashboard-text sm:text-[1.75rem] sm:leading-9">Checkout was canceled</h1>
+      <h1 className="mt-2 text-2xl font-semibold tracking-tight text-dashboard-text sm:text-[1.75rem] sm:leading-9">Checkout was not completed</h1>
       <p className="mt-3 text-dashboard-body leading-6 text-dashboard-muted">
-        Checkout was not completed. You can return to billing whenever you are ready to try again.
+        You can keep using Free features and return to billing whenever you are ready to try again.
       </p>
 
       <div className="mt-8 flex flex-col gap-3">

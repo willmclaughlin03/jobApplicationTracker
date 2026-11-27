@@ -5,6 +5,10 @@ const {
 const { STORAGE_STATUSES } = require('../../../shared/constants/billing.js');
 
 const EXPECTED_ENTRY_POINTS = {
+  [STORAGE_STATUSES.FREE_UNSUBSCRIBED]: {
+    label: 'Upgrade',
+    action: DASHBOARD_BILLING_ENTRY_ACTIONS.OPEN_UPGRADE_MODAL,
+  },
   [STORAGE_STATUSES.TERMINAL_FREE]: {
     label: 'Upgrade',
     action: DASHBOARD_BILLING_ENTRY_ACTIONS.OPEN_UPGRADE_MODAL,

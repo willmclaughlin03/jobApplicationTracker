@@ -179,6 +179,7 @@ describe('storageRestoreService', () => {
     STORAGE_STATUSES.TERMINAL_FREE,
     STORAGE_STATUSES.PAYMENT_RECOVERY,
     STORAGE_STATUSES.SYNC_PENDING,
+    STORAGE_STATUSES.FREE_UNSUBSCRIBED,
     STORAGE_STATUSES.NON_ENTITLED_NON_TERMINAL,
   ])('skips %s without calling the restore RPC', async (status) => {
     const result = await restoreLockedJobsForPremiumUser(
