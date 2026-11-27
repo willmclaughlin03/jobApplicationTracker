@@ -10,7 +10,8 @@ BEGIN;
 
 -- Map trusted local billing rows to storage state under the per-user billing
 -- lock. A customer without a subscription permits Free creation but cannot
--- authorize archive transitions. Initial payment expiry is terminal Free.
+-- authorize archive transitions. Initial payment expiry also stays Free without
+-- passing the canonical terminal_free checks in the overflow-lock and delete RPCs.
 CREATE OR REPLACE FUNCTION "public"."resolve_canonical_storage_status_for_user"("p_user_id" "uuid") RETURNS "text"
     LANGUAGE "plpgsql"
     SET "search_path" TO 'pg_catalog', 'public'
@@ -77,7 +78,11 @@ BEGIN
     RETURN 'sync_pending';
   END IF;
 
-  IF subscription_status IN ('canceled', 'incomplete_expired') THEN
+  IF subscription_status = 'incomplete_expired' THEN
+    RETURN 'free_unsubscribed';
+  END IF;
+
+  IF subscription_status = 'canceled' THEN
     RETURN 'terminal_free';
   END IF;
 

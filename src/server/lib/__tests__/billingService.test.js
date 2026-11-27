@@ -91,6 +91,7 @@ const {
 } = require('../billingService.js');
 const { createJob } = require('../../services/jobService.js');
 const { reconcileStorageTransitionsForUser } = require('../../services/storageTransitionService.js');
+const { deleteLockedJobsForTerminalFreeUser } = require('../../services/storageLockedBulkDeleteService.js');
 const { FREE_ACTIVE_JOB_LIMIT, ABSOLUTE_RETAINED_JOB_LIMIT } = require('../../../shared/constants/storage.js');
 
 /**
@@ -1092,12 +1093,12 @@ describe('billingService', () => {
       )).toBe(STORAGE_STATUSES.FREE_UNSUBSCRIBED);
     });
 
-    it('classifies an expired initial payment as terminal_free', () => {
+    it('classifies an expired initial payment as free_unsubscribed', () => {
       expect(classifyConfirmedBillingStatusForStorage(buildBillingStatusFixture({
         hasCustomerMapping: true,
         hasSubscription: true,
         status: BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED,
-      }), { now })).toBe(STORAGE_STATUSES.TERMINAL_FREE);
+      }), { now })).toBe(STORAGE_STATUSES.FREE_UNSUBSCRIBED);
     });
 
     it.each([
@@ -1332,21 +1333,25 @@ describe('billingService', () => {
     ])('permits Free creation with %s using real billing and create policy', async (_label, fixture) => {
       const client = useAdminClient(buildUpgradeClient(fixture));
       const storage = await resolveStorageStatus(userId, client, mockLog);
-      if (fixture.status !== BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED) {
-        const repair = await reconcileStorageTransitionsForUser(userId, mockLog, {
-          storageStatusResult: storage,
-        });
-        expect(repair.error).toBeNull();
-        expect(client.rpc).not.toHaveBeenCalled();
-      }
+      const repair = await reconcileStorageTransitionsForUser(userId, mockLog, {
+        storageStatusResult: storage,
+      });
+      expect(repair.error).toBeNull();
+      const deletion = await deleteLockedJobsForTerminalFreeUser(userId, mockLog, {
+        storageStatusResult: storage,
+      });
+      expect(deletion.error).toEqual(expect.objectContaining({
+        reason: 'storage_status_not_delete_eligible',
+        storageStatus: storage.status,
+      }));
+      expect(client.rpc).not.toHaveBeenCalled();
       const result = await createJob(job, userId, client, mockLog, storage);
 
       expect(storage.status).toBe(fixture.status === BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE
         ? STORAGE_STATUSES.SYNC_PENDING
-        : fixture.status === BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED
-          ? STORAGE_STATUSES.TERMINAL_FREE : STORAGE_STATUSES.FREE_UNSUBSCRIBED);
+        : STORAGE_STATUSES.FREE_UNSUBSCRIBED);
       expect(storage.billingStatus.entitled).toBe(false);
-      expect(storage.lockEligible).toBe(fixture.status === BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED);
+      expect(storage.lockEligible).toBe(false);
       expect(result.error).toBeNull();
       expect(result.data).toEqual([job]);
       expect(result.storageSummary.activeLimit).toBe(FREE_ACTIVE_JOB_LIMIT);
@@ -1392,10 +1397,33 @@ describe('billingService', () => {
     });
 
     it('keeps a newer active subscription Premium when an older checkout expires', async () => {
-      const client = useAdminClient(buildUpgradeClient({ status: BILLING_SUBSCRIPTION_STATUSES.ACTIVE }));
-      await markMintedCheckoutSessionTerminalByStripeSessionId({
+      const client = useAdminClient(buildUpgradeClient({
+        status: BILLING_SUBSCRIPTION_STATUSES.ACTIVE,
+        checkout: {
+          id: 43,
+          user_id: userId,
+          plan: 'premium_monthly',
+          stripe_checkout_session_id: 'cs_test_old_attempt',
+          checkout_url: 'https://checkout.stripe.test/session_old_attempt',
+          status: 'open',
+          expires_at: '2000-01-01T00:00:00.000Z',
+          created_at: '1999-12-31T00:00:00.000Z',
+          updated_at: '1999-12-31T00:00:00.000Z',
+        },
+      }));
+      const expiredSession = await markMintedCheckoutSessionTerminalByStripeSessionId({
         sessionId: 'cs_test_old_attempt', status: 'expired',
       }, mockLog);
+      expect(expiredSession).toEqual(expect.objectContaining({
+        id: 43,
+        userId,
+        stripeCheckoutSessionId: 'cs_test_old_attempt',
+        status: 'expired',
+      }));
+      expect(client.buildersByTable.billing_checkout_sessions[0].state).toEqual(expect.objectContaining({
+        updatePayload: { status: 'expired' },
+        eqArgs: [['stripe_checkout_session_id', 'cs_test_old_attempt'], ['status', 'open']],
+      }));
       const storage = await resolveStorageStatus(userId, client, mockLog);
       expect(storage.status).toBe(STORAGE_STATUSES.PREMIUM_ACTIVE);
       expect(storage.billingStatus.entitled).toBe(true);

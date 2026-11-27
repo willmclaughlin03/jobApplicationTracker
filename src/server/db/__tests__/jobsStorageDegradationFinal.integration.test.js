@@ -330,7 +330,12 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
 
     // Legacy fixtures redefine the resolver and create RPC. Apply the forward
     // policy last so this suite verifies the behavior deployed with the app.
-    await execSql(readFileSync(FREE_ACCESS_MIGRATION_PATH, 'utf8'));
+    // Strip only this fixture's outer transaction statements: exec_sql runs the
+    // entire remaining body atomically inside the single RPC transaction.
+    const freeAccessMigrationSql = readFileSync(FREE_ACCESS_MIGRATION_PATH, 'utf8')
+      .replace(/^BEGIN;\r?\n/m, '')
+      .replace(/\r?\nCOMMIT;\s*$/, '\n');
+    await execSql(freeAccessMigrationSql);
     await reloadPostgrestSchema();
   }
 
@@ -757,7 +762,7 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
   test.each([
     [null, STORAGE_STATUSES.FREE_UNSUBSCRIBED],
     ['incomplete', STORAGE_STATUSES.SYNC_PENDING],
-    ['incomplete_expired', STORAGE_STATUSES.TERMINAL_FREE],
+    ['incomplete_expired', STORAGE_STATUSES.FREE_UNSUBSCRIBED],
   ])('H2b: initial payment %s uses atomic Free and retained limits', async (subscriptionStatus, storageStatus) => {
     const user = await createTempUser('final-upgrade-free-quota');
     if (subscriptionStatus) {
@@ -907,8 +912,8 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
         }),
       },
       {
-        label: 'terminal-free-incomplete-expired',
-        expected: STORAGE_STATUSES.TERMINAL_FREE,
+        label: 'free-unsubscribed-incomplete-expired',
+        expected: STORAGE_STATUSES.FREE_UNSUBSCRIBED,
         setup: async (userId) => seedBillingSubscription(userId, {
           status: 'incomplete_expired',
           current_period_end: null,
@@ -987,6 +992,45 @@ describeOrSkip('Suite H - Final paid-to-free storage degradation integration', (
       }));
       await expect(getStorageCounts(user.id)).resolves.toEqual(beforeCounts);
     }
+  });
+
+  /**
+   * Verify expired initial payments cannot mutate archives, even with a stale
+   * terminal-Free caller status. Seed both row states to detect lock or delete.
+   */
+  test.each([
+    STORAGE_STATUSES.FREE_UNSUBSCRIBED,
+    STORAGE_STATUSES.TERMINAL_FREE,
+  ])('H4a: expired initial payment rejects archive mutations with caller status %s', async (storageStatus) => {
+    const user = await createTempUser('final-expired-payment-archive');
+    await seedBillingSubscription(user.id, {
+      status: 'incomplete_expired',
+      current_period_end: null,
+      cancel_at_period_end: false,
+    });
+    await seedJobs(user.id, {
+      activeRows: [{ company: 'Expired Active 1' }, { company: 'Expired Active 2' }],
+      lockedRows: [{ company: 'Expired Locked' }],
+    });
+    await expect(resolveCanonicalStorageStatus(user.id)).resolves.toBe(STORAGE_STATUSES.FREE_UNSUBSCRIBED);
+    const beforeCounts = await getStorageCounts(user.id);
+    const lockResult = await callOverflowLockRpc(user.id, { storageStatus, activeLimit: 1 });
+    const deleteResult = await callLockedBulkDeleteRpc(user.id, { storageStatus, deleteLimit: 10 });
+    const staleCaller = storageStatus === STORAGE_STATUSES.TERMINAL_FREE;
+
+    expect(lockResult).toEqual(expect.objectContaining({
+      applied: false,
+      reason: staleCaller ? 'canonical_billing_not_terminal_free' : 'storage_status_not_lock_eligible',
+      lockedCount: 0,
+      ...(staleCaller ? { canonicalStorageStatus: STORAGE_STATUSES.FREE_UNSUBSCRIBED } : {}),
+    }));
+    expect(deleteResult).toEqual(expect.objectContaining({
+      applied: false,
+      reason: staleCaller ? 'canonical_billing_not_terminal_free' : 'storage_status_not_delete_eligible',
+      deletedCount: 0,
+      ...(staleCaller ? { canonicalStorageStatus: STORAGE_STATUSES.FREE_UNSUBSCRIBED } : {}),
+    }));
+    await expect(getStorageCounts(user.id)).resolves.toEqual(beforeCounts);
   });
 
   test('H4b: Premium restore allowlist and stale-caller negatives do not unlock rows', async () => {

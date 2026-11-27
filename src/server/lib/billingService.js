@@ -126,7 +126,6 @@ const CHECKOUT_START_ALLOWED_STATUSES = new Set([
 ]);
 const TERMINAL_FREE_BILLING_STATUSES = new Set([
   BILLING_SUBSCRIPTION_STATUSES.CANCELED,
-  BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED,
 ]);
 const SYNC_PENDING_BILLING_STATUSES = new Set([
   BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE,
@@ -2035,6 +2034,11 @@ export function classifyConfirmedBillingStatusForStorage(billingStatus, options 
 
   if (SYNC_PENDING_BILLING_STATUSES.has(subscriptionStatus)) {
     return STORAGE_STATUSES.SYNC_PENDING;
+  }
+
+  // An expired initial payment permits Free creation, not archive transitions.
+  if (subscriptionStatus === BILLING_SUBSCRIPTION_STATUSES.INCOMPLETE_EXPIRED) {
+    return STORAGE_STATUSES.FREE_UNSUBSCRIBED;
   }
 
   if (TERMINAL_FREE_BILLING_STATUSES.has(subscriptionStatus)) {
